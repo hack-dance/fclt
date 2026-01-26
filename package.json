@@ -1,0 +1,17 @@
+{
+  "name": "hack-dance-tackle-box",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "tacklebox": "./src/index.ts"
+  },
+  "scripts": {
+    "tacklebox": "bun run ./src/index.ts",
+    "scan": "bun run ./src/index.ts scan",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
