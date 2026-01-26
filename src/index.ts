@@ -6,7 +6,7 @@ function printHelp() {
   console.log(`tacklebox — inspect local agent configs for skills + MCP servers
 
 Usage:
-  tacklebox scan [--json] [--show-duplicates]
+  tacklebox scan [--json] [--show-duplicates] [--tui]
   tacklebox --show-duplicates
 
 Commands:
@@ -14,7 +14,8 @@ Commands:
 
 Options:
   --json              Print full JSON (ScanResult)
-  --show-duplicates   Print a deduplicated skills table showing where each skill appears
+  --show-duplicates   Print a deduplicated skills table (unique skill name, count, and sources)
+  --tui               Render scan output in an interactive TUI (skills table)
 `);
 }
 

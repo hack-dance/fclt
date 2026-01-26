@@ -24,12 +24,18 @@ JSON output:
 bun run tacklebox scan --json
 ```
 
-Show duplicate skill names across sources:
+Show a deduplicated skills table (unique skill name, count, and sources/paths):
 
 ```bash
 bun run tacklebox scan --show-duplicates
 # shorthand:
 bun run tacklebox --show-duplicates
+```
+
+Interactive TUI (scrollable list):
+
+```bash
+bun run tacklebox scan --tui
 ```
 
 ### Install as a local CLI (optional)

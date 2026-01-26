@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import { mkdir } from "node:fs/promises";
+import { computeSkillOccurrences } from "./util/skills";
 
 export type ScanResult = {
   version: 2;
@@ -410,52 +411,21 @@ function printHuman(res: ScanResult) {
   }
 }
 
-type SkillOccurrence = {
-  name: string;
-  count: number;
-  sources: string[];
-};
-
-function skillNameFromEntryDir(entryDir: string): string {
-  // The skill name is derived from the directory that contains SKILL.md.
-  // e.g. /path/to/skills/my-skill -> my-skill
-  return path.basename(entryDir);
-}
-
-function computeSkillOccurrences(res: ScanResult): SkillOccurrence[] {
-  const byName = new Map<string, { count: number; sources: Set<string> }>();
-
-  for (const src of res.sources) {
-    for (const entryDir of src.skills.entries) {
-      const name = skillNameFromEntryDir(entryDir);
-      const cur = byName.get(name) ?? { count: 0, sources: new Set<string>() };
-      cur.count += 1;
-      cur.sources.add(src.id);
-      byName.set(name, cur);
-    }
-  }
-
-  return [...byName.entries()]
-    .map(([name, v]) => ({ name, count: v.count, sources: [...v.sources].sort() }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-}
-
-function printDuplicateSkillsTable(res: ScanResult) {
+function printSkillsTable(res: ScanResult) {
   const all = computeSkillOccurrences(res);
-  const dups = all.filter((s) => s.count > 1);
 
   console.log(`tacklebox scan — ${res.scannedAt}`);
-  console.log("Duplicate skills (same name found in multiple places):");
+  console.log("Skills (deduplicated by SKILL.md parent directory name):");
 
-  if (dups.length === 0) {
+  if (all.length === 0) {
     console.log("(none)");
     return;
   }
 
-  const rows = dups.map((d) => ({
+  const rows = all.map((d) => ({
     skill: d.name,
     count: String(d.count),
-    sources: d.sources.join(", "),
+    sources: d.locations.join(", "),
   }));
 
   const wSkill = Math.max("SKILL".length, ...rows.map((r) => r.skill.length));
@@ -496,17 +466,28 @@ export async function writeState(res: ScanResult) {
 export async function scanCommand(argv: string[]) {
   const json = argv.includes("--json");
   const showDuplicates = argv.includes("--show-duplicates");
+  const tui = argv.includes("--tui");
 
   const res = await scan(argv);
   await writeState(res);
 
   if (json) {
+    if (tui) {
+      console.error("--json and --tui are mutually exclusive");
+      process.exitCode = 2;
+      return;
+    }
     console.log(JSON.stringify(res, null, 2));
     return;
   }
 
-  if (showDuplicates) {
-    printDuplicateSkillsTable(res);
+  if (tui) {
+    const { runSkillsTui } = await import("./tui");
+    await runSkillsTui(res);
+  } else if (showDuplicates) {
+    // Despite the flag name, this prints a deduplicated skills table including counts and sources.
+    // Duplicates are simply rows with COUNT > 1.
+    printSkillsTable(res);
   } else {
     printHuman(res);
   }
