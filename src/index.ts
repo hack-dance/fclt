@@ -14,8 +14,8 @@ Commands:
 
 Options:
   --json              Print full JSON (ScanResult)
-  --show-duplicates   Print a deduplicated skills table (unique skill name, count, and sources)
-  --tui               Render scan output in an interactive TUI (skills table)
+  --show-duplicates   Print only duplicate skills as a table (skill, count, sources)
+  --tui               Render scan output in an interactive TUI (skills list)
 `);
 }
 

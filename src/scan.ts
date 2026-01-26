@@ -411,6 +411,15 @@ function printHuman(res: ScanResult) {
   }
 }
 
+function sourcesFromLocations(locations: string[]): string[] {
+  const out = new Set<string>();
+  for (const loc of locations) {
+    const i = loc.indexOf(":");
+    if (i > 0) out.add(loc.slice(0, i));
+  }
+  return [...out].sort();
+}
+
 function printSkillsTable(res: ScanResult) {
   const all = computeSkillOccurrences(res);
 
@@ -425,7 +434,34 @@ function printSkillsTable(res: ScanResult) {
   const rows = all.map((d) => ({
     skill: d.name,
     count: String(d.count),
-    sources: d.locations.join(", "),
+    sources: sourcesFromLocations(d.locations).join(", "),
+  }));
+
+  const wSkill = Math.max("SKILL".length, ...rows.map((r) => r.skill.length));
+  const wCount = Math.max("COUNT".length, ...rows.map((r) => r.count.length));
+
+  console.log(`${"SKILL".padEnd(wSkill)}  ${"COUNT".padStart(wCount)}  SOURCES`);
+  console.log(`${"-".repeat(wSkill)}  ${"-".repeat(wCount)}  ${"-".repeat("SOURCES".length)}`);
+  for (const r of rows) {
+    console.log(`${r.skill.padEnd(wSkill)}  ${r.count.padStart(wCount)}  ${r.sources}`);
+  }
+}
+
+function printDuplicatesTable(res: ScanResult) {
+  const all = computeSkillOccurrences(res).filter((d) => d.count > 1);
+
+  console.log(`tacklebox scan — ${res.scannedAt}`);
+  console.log("Duplicate skills (same skill name appears in multiple places):");
+
+  if (all.length === 0) {
+    console.log("(none)");
+    return;
+  }
+
+  const rows = all.map((d) => ({
+    skill: d.name,
+    count: String(d.count),
+    sources: sourcesFromLocations(d.locations).join(", "),
   }));
 
   const wSkill = Math.max("SKILL".length, ...rows.map((r) => r.skill.length));
@@ -485,9 +521,7 @@ export async function scanCommand(argv: string[]) {
     const { runSkillsTui } = await import("./tui");
     await runSkillsTui(res);
   } else if (showDuplicates) {
-    // Despite the flag name, this prints a deduplicated skills table including counts and sources.
-    // Duplicates are simply rows with COUNT > 1.
-    printSkillsTable(res);
+    printDuplicatesTable(res);
   } else {
     printHuman(res);
   }

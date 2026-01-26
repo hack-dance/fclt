@@ -35,15 +35,21 @@ export async function runSkillsTui(res: ScanResult): Promise<void> {
     width: Math.max(10, width - 4),
     height: 1,
     fg: "#E0FBFC",
-    content: "↑/↓ or j/k to scroll • Enter to copy name • q / Esc to quit",
+    content:
+      "↑/↓ or j/k to scroll • Enter to copy name • d = duplicates-only • a = all • q / Esc to quit",
   });
 
-  const occurrences = computeSkillOccurrences(res);
-  const options: SelectOption[] = occurrences.map((o) => ({
-    name: `${o.name}  (${o.count})`,
-    description: o.locations.join(" · "),
-    value: o.name,
-  }));
+  const occurrencesAll = computeSkillOccurrences(res);
+
+  function toOptions(occ: typeof occurrencesAll): SelectOption[] {
+    return occ.map((o) => ({
+      name: `${o.count > 1 ? "[dup] " : ""}${o.name}  (${o.count})`,
+      description: o.locations.join(" · "),
+      value: o.name,
+    }));
+  }
+
+  const options: SelectOption[] = toOptions(occurrencesAll);
 
   const select = new SelectRenderable(renderer, {
     id: "skills",
@@ -65,6 +71,17 @@ export async function runSkillsTui(res: ScanResult): Promise<void> {
   renderer.keyInput.on("keypress", async (key: KeyEvent) => {
     if (key.name === "escape" || key.name === "q") {
       renderer.destroy();
+      return;
+    }
+
+    if (key.name === "d") {
+      const next = occurrencesAll.filter((o) => o.count > 1);
+      select.options = toOptions(next);
+      return;
+    }
+
+    if (key.name === "a") {
+      select.options = toOptions(occurrencesAll);
       return;
     }
 
