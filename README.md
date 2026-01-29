@@ -1,11 +1,11 @@
-# tacklebox (hack-dance-tackle-box)
+# facult (hack-dance-facult)
 
 Minimal Bun CLI that scans common local agent configuration locations and prints:
 - discovered sources + paths
 - MCP configs (and server names when detectable)
 - skills folders/files
 
-It also stores the last scan result at `~/.tacklebox/sources.json`.
+It also stores the last scan result at `~/.facult/sources.json`.
 
 ## Usage
 
@@ -13,7 +13,7 @@ Run directly from the repo:
 
 ```bash
 bun install
-bun run tacklebox scan
+bun run facult scan
 # or
 bun run scan
 ```
@@ -21,21 +21,21 @@ bun run scan
 JSON output:
 
 ```bash
-bun run tacklebox scan --json
+bun run facult scan --json
 ```
 
 Show duplicate skills (same skill name appears in multiple places):
 
 ```bash
-bun run tacklebox scan --show-duplicates
+bun run facult scan --show-duplicates
 # shorthand:
-bun run tacklebox --show-duplicates
+bun run facult --show-duplicates
 ```
 
 Interactive TUI (scrollable list):
 
 ```bash
-bun run tacklebox scan --tui
+bun run facult scan --tui
 ```
 
 TUI keys:
@@ -49,7 +49,7 @@ TUI keys:
 
 ```bash
 bun link
-tacklebox scan
+facult scan
 ```
 
 ## What it scans (best-effort)

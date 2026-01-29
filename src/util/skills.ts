@@ -31,3 +31,14 @@ export function computeSkillOccurrences(res: ScanResult): SkillOccurrence[] {
     .map(([name, v]) => ({ name, count: v.count, locations: [...v.locations].sort() }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
+
+export async function lastModified(p: string): Promise<Date | null> {
+  try {
+    const st = await Bun.file(p).stat();
+    if (st.mtime instanceof Date) return st.mtime;
+    if (typeof st.mtimeMs === "number") return new Date(st.mtimeMs);
+    return null;
+  } catch {
+    return null;
+  }
+}

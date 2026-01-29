@@ -368,7 +368,7 @@ function formatServers(servers?: string[]): string {
 }
 
 function printHuman(res: ScanResult) {
-  console.log(`tacklebox scan — ${res.scannedAt}`);
+  console.log(`facult scan — ${res.scannedAt}`);
   console.log("");
 
   const foundSources = res.sources.filter((s) => s.found);
@@ -423,7 +423,7 @@ function sourcesFromLocations(locations: string[]): string[] {
 function printSkillsTable(res: ScanResult) {
   const all = computeSkillOccurrences(res);
 
-  console.log(`tacklebox scan — ${res.scannedAt}`);
+  console.log(`facult scan — ${res.scannedAt}`);
   console.log("Skills (deduplicated by SKILL.md parent directory name):");
 
   if (all.length === 0) {
@@ -450,7 +450,7 @@ function printSkillsTable(res: ScanResult) {
 function printDuplicatesTable(res: ScanResult) {
   const all = computeSkillOccurrences(res).filter((d) => d.count > 1);
 
-  console.log(`tacklebox scan — ${res.scannedAt}`);
+  console.log(`facult scan — ${res.scannedAt}`);
   console.log("Duplicate skills (same skill name appears in multiple places):");
 
   if (all.length === 0) {
@@ -493,7 +493,7 @@ export async function scan(argv: string[]): Promise<ScanResult> {
 }
 
 export async function writeState(res: ScanResult) {
-  const stateDir = path.join(os.homedir(), ".tacklebox");
+  const stateDir = path.join(os.homedir(), ".facult");
   await ensureDir(stateDir);
   const outPath = path.join(stateDir, "sources.json");
   await Bun.write(outPath, JSON.stringify(res, null, 2) + "\n");
@@ -526,5 +526,5 @@ export async function scanCommand(argv: string[]) {
     printHuman(res);
   }
 
-  console.log(`State written to ${path.join(os.homedir(), ".tacklebox", "sources.json")}`);
+  console.log(`State written to ${path.join(os.homedir(), ".facult", "sources.json")}`);
 }

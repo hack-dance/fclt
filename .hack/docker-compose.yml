@@ -1,0 +1,21 @@
+name: tackle-box
+services:
+  app:
+    image: imbios/bun-node:latest
+    working_dir: /app
+    volumes:
+      - ..:/app
+    command: bun run dev -- --port 3000 --host 0.0.0.0
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    labels:
+      caddy: tackle-box.hack
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+      caddy.tls: internal
+    networks:
+      - hack-dev
+      - default
+networks:
+  hack-dev:
+    external: true

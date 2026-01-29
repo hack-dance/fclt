@@ -1,4 +1,4 @@
-# tackle-box — Implementation Tasks
+# facult — Implementation Tasks
 
 Generated from Council Deliberation (2026-01-29)
 
@@ -25,7 +25,7 @@ Generated from Council Deliberation (2026-01-29)
 - Parse SKILL.md frontmatter/description extraction
 - Parse `servers.json` for MCP entries
 - Build and write `index.json`
-- Add `tacklebox index` and `tacklebox index --force` commands
+- Add `facult index` and `facult index --force` commands
 
 ### T-003: Query engine and list/show commands
 **Effort:** 1–2 days  
@@ -34,8 +34,8 @@ Generated from Council Deliberation (2026-01-29)
 - Create `src/query.ts`
 - Filter by type, tags, enabled-for, audit status
 - Full-text search in descriptions
-- Add `tacklebox list [skills|mcp|agents]` command
-- Add `tacklebox show <name>` command
+- Add `facult list [skills|mcp|agents]` command
+- Add `facult show <name>` command
 - Support `mcp:` prefix for MCP servers
 
 ---
@@ -61,18 +61,18 @@ Generated from Council Deliberation (2026-01-29)
 - Implement backup flow: `skills/` → `skills.bak/`, `mcp.json` → `mcp.json.bak`
 - Implement per-skill symlink creation
 - Generate tool-specific configs from canonical
-- Track managed tools in `~/.tacklebox/managed.json`
-- Add `tacklebox manage <tool>`, `unmanage`, `managed` commands
+- Track managed tools in `~/.facult/managed.json`
+- Add `facult manage <tool>`, `unmanage`, `managed` commands
 
 ### T-006: Enable/disable and sync commands
 **Effort:** 2 days  
 **Status:** Todo
 
-- Add `tacklebox enable <name> --for <tools>` command
-- Add `tacklebox disable <name> --for <tools>` command
+- Add `facult enable <name> --for <tools>` command
+- Add `facult disable <name> --for <tools>` command
 - Update `enabledFor` arrays in index
 - Regenerate configs for managed tools on enable/disable
-- Add `tacklebox sync [tool]` and `--dry-run`
+- Add `facult sync [tool]` and `--dry-run`
 
 ---
 
@@ -119,7 +119,7 @@ Generated from Council Deliberation (2026-01-29)
 - Scan files for `<!-- tb:NAME -->...<!-- /tb:NAME -->` markers
 - Look up snippets (project-level first, then global)
 - Replace block content, preserve markers
-- Add `tacklebox snippets list|show|create|edit|sync` commands
+- Add `facult snippets list|show|create|edit|sync` commands
 - Support `--dry-run` for sync
 
 ---
@@ -137,9 +137,9 @@ Generated from Council Deliberation (2026-01-29)
   - Shell escapes
   - Suspicious network calls
   - Obfuscated content
-- Configurable ruleset (`~/.tacklebox/audit-rules.yaml`)
+- Configurable ruleset (`~/.facult/audit-rules.yaml`)
 - Risk scoring (low/medium/high/critical)
-- Add `tacklebox audit static [name]` command
+- Add `facult audit static [name]` command
 
 ### T-012: Agent-assisted audit
 **Effort:** 2–3 days  
@@ -150,7 +150,7 @@ Generated from Council Deliberation (2026-01-29)
 - Support `--with codex|claude|gemini` flag
 - Parse agent response into structured findings
 - Track coverage metadata (full vs partial audit)
-- Store results in `~/.tacklebox/audit/`
+- Store results in `~/.facult/audit/`
 - Support `--full` override when using summaries
 
 ### T-013: Trust system
@@ -158,7 +158,7 @@ Generated from Council Deliberation (2026-01-29)
 **Status:** Todo
 
 - Add `trusted` and `auditStatus` fields to index
-- Implement `tacklebox trust <name>` and `untrust <name>`
+- Implement `facult trust <name>` and `untrust <name>`
 - Add `--untrusted` and `--flagged` filters to list
 - Trust annotation in UI (does not skip audit, only annotates)
 - Placeholder for future org trust lists (signed/checksummed)

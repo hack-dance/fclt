@@ -1,4 +1,4 @@
-# tackle-box — Full Specification
+# facult — Full Specification
 
 **Version:** 0.2.0-draft  
 **Date:** 2026-01-29  
@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-**tackle-box** is a unified CLI for managing agent configurations across tools. It provides a single source of truth for skills, MCP servers, and agent configs that syncs bidirectionally with tool-specific formats.
+**facult** is a unified CLI for managing agent configurations across tools. It provides a single source of truth for skills, MCP servers, and agent configs that syncs bidirectionally with tool-specific formats.
 
 **Core value proposition:**
 - Scan and discover all agent configs across your machine
@@ -27,16 +27,16 @@
 - **Discovery:** Finds skills (by SKILL.md) and MCP configs (JSON)
 - **Consolidation:** Interactive clacks-based flow to copy items to `~/agents/.tb/`
 - **Deduplication:** Shows duplicates with last-modified dates, inline preview
-- **State tracking:** `~/.tacklebox/sources.json`, `consolidated.json`
+- **State tracking:** `~/.facult/sources.json`, `consolidated.json`
 
 ### Commands Available
 ```bash
-tacklebox scan              # Discover all sources
-tacklebox scan --json       # JSON output
-tacklebox scan --tui        # Interactive TUI
-tacklebox scan --show-duplicates
-tacklebox consolidate       # Interactive consolidation
-tacklebox consolidate --force
+facult scan              # Discover all sources
+facult scan --json       # JSON output
+facult scan --tui        # Interactive TUI
+facult scan --show-duplicates
+facult consolidate       # Interactive consolidation
+facult consolidate --force
 ```
 
 ---
@@ -46,7 +46,7 @@ tacklebox consolidate --force
 ### Directory Structure
 
 ```
-~/agents/.tb/                    # Central tacklebox home
+~/agents/.tb/                    # Central facult home
 ├── skills/                      # Consolidated skills (each is a directory with SKILL.md)
 │   ├── github/
 │   │   └── SKILL.md
@@ -70,7 +70,7 @@ tacklebox consolidate --force
 ├── adapters/                    # Tool format adapters (internal)
 └── index.json                   # Master index of everything
 
-~/.tacklebox/                    # State directory
+~/.facult/                    # State directory
 ├── sources.json                 # Last scan results
 ├── consolidated.json            # Consolidation state
 ├── managed.json                 # Which tools are in managed mode
@@ -82,7 +82,7 @@ tacklebox consolidate --force
 ### Canonical Index Schema
 
 ```typescript
-interface TackleboxIndex {
+interface FacultIndex {
   version: number;
   updatedAt: string;
   
@@ -151,17 +151,17 @@ Establish canonical structure and queryable index.
 ### Commands
 
 ```bash
-tacklebox index                  # Rebuild index from consolidated state
-tacklebox index --force          # Full reindex
+facult index                  # Rebuild index from consolidated state
+facult index --force          # Full reindex
 
-tacklebox list                   # List all (skills, mcp, agents)
-tacklebox list skills            # List skills
-tacklebox list mcp               # List MCP servers  
-tacklebox list agents            # List agent profiles
+facult list                   # List all (skills, mcp, agents)
+facult list skills            # List skills
+facult list mcp               # List MCP servers  
+facult list agents            # List agent profiles
 
-tacklebox show <name>            # Show details + contents
-tacklebox show github            # Show github skill
-tacklebox show mcp:filesystem    # Show MCP server
+facult show <name>            # Show details + contents
+facult show github            # Show github skill
+facult show mcp:filesystem    # Show MCP server
 ```
 
 ### Implementation
@@ -181,30 +181,30 @@ tacklebox show mcp:filesystem    # Show MCP server
 ## Phase 4: Managed Mode & Sync
 
 ### Goal
-Let tacklebox take control of tool-specific configs with backup + symlink pattern.
+Let facult take control of tool-specific configs with backup + symlink pattern.
 
 ### Managed Mode Flow
 
 ```bash
-tacklebox manage cursor          # Enable managed mode for Cursor
+facult manage cursor          # Enable managed mode for Cursor
 
 # What happens:
 # 1. Backup: ~/.cursor/skills → ~/.cursor/skills.bak/
 # 2. Backup: ~/.cursor/mcp.json → ~/.cursor/mcp.json.bak
 # 3. Create per-skill symlinks based on enabledFor
 # 4. Generate tool-specific mcp.json from servers.json
-# 5. Record in ~/.tacklebox/managed.json
+# 5. Record in ~/.facult/managed.json
 
-tacklebox unmanage cursor        # Restore from backup, remove symlinks
-tacklebox managed                # List managed tools
+facult unmanage cursor        # Restore from backup, remove symlinks
+facult managed                # List managed tools
 ```
 
 ### Enable/Disable Commands
 
 ```bash
-tacklebox enable github --for cursor,claude
-tacklebox disable weather --for codex
-tacklebox enable mcp:filesystem --for cursor
+facult enable github --for cursor,claude
+facult disable weather --for codex
+facult enable mcp:filesystem --for cursor
 
 # Updates index.json enabledFor arrays
 # If tool is managed, regenerates its config
@@ -213,9 +213,9 @@ tacklebox enable mcp:filesystem --for cursor
 ### Sync Commands
 
 ```bash
-tacklebox sync                   # Sync all managed tools
-tacklebox sync cursor            # Sync specific tool
-tacklebox sync --dry-run         # Show what would change
+facult sync                   # Sync all managed tools
+facult sync cursor            # Sync specific tool
+facult sync --dry-run         # Show what would change
 ```
 
 ### Per-Skill Symlinks
@@ -327,7 +327,7 @@ Reference snippets with HTML comment markers:
 ## Coding Style
 
 - Use TypeScript strict mode
-... (content managed by tacklebox)
+... (content managed by facult)
 <!-- /tb:codingstyle -->
 
 ## Project-Specific
@@ -338,14 +338,14 @@ Reference snippets with HTML comment markers:
 ### Commands
 
 ```bash
-tacklebox snippets list                    # List all snippets
-tacklebox snippets show codingstyle        # View snippet content
-tacklebox snippets create myboundaries     # Create new snippet (opens editor)
-tacklebox snippets edit codingstyle        # Edit existing
+facult snippets list                    # List all snippets
+facult snippets show codingstyle        # View snippet content
+facult snippets create myboundaries     # Create new snippet (opens editor)
+facult snippets edit codingstyle        # Edit existing
 
-tacklebox snippets sync                    # Update all files using snippets
-tacklebox snippets sync --dry-run          # Preview changes
-tacklebox snippets sync CLAUDE.md          # Sync specific file
+facult snippets sync                    # Update all files using snippets
+facult snippets sync --dry-run          # Preview changes
+facult snippets sync CLAUDE.md          # Sync specific file
 ```
 
 ### Sync Algorithm
@@ -375,9 +375,9 @@ Detect suspicious patterns in skills and MCP configs.
 #### Static Analysis
 
 ```bash
-tacklebox audit static                     # Full static scan
-tacklebox audit static github              # Single skill
-tacklebox audit static --severity high     # Filter by severity
+facult audit static                     # Full static scan
+facult audit static github              # Single skill
+facult audit static --severity high     # Filter by severity
 ```
 
 **What it checks:**
@@ -398,15 +398,15 @@ MCP Servers:
 **Implementation:**
 - Pattern matching (regex rules)
 - Optional: semgrep integration
-- Configurable ruleset (`~/.tacklebox/audit-rules.yaml`)
+- Configurable ruleset (`~/.facult/audit-rules.yaml`)
 
 #### Agent-Assisted Audit
 
 ```bash
-tacklebox audit --with codex               # Use Codex to review
-tacklebox audit --with claude              # Use Claude
-tacklebox audit --with gemini              # Use Gemini
-tacklebox audit github --with claude       # Single item
+facult audit --with codex               # Use Codex to review
+facult audit --with claude              # Use Claude
+facult audit --with gemini              # Use Gemini
+facult audit github --with claude       # Single item
 ```
 
 **Flow:**
@@ -415,7 +415,7 @@ tacklebox audit github --with claude       # Single item
 3. Send to chosen coding agent
 4. Agent reviews each item for security issues
 5. Parse agent response into structured findings
-6. Store results in `~/.tacklebox/audit/`
+6. Store results in `~/.facult/audit/`
 
 **Agent prompt includes:**
 - Full SKILL.md content
@@ -426,12 +426,12 @@ tacklebox audit github --with claude       # Single item
 ### Trust System
 
 ```bash
-tacklebox trust github                     # Mark as trusted
-tacklebox trust mcp:filesystem             # Trust MCP server
-tacklebox untrust github                   # Remove trust
+facult trust github                     # Mark as trusted
+facult trust mcp:filesystem             # Trust MCP server
+facult untrust github                   # Remove trust
 
-tacklebox list --untrusted                 # Show untrusted items
-tacklebox list --flagged                   # Show items with audit findings
+facult list --untrusted                 # Show untrusted items
+facult list --flagged                   # Show items with audit findings
 ```
 
 ### Audit Results
@@ -473,14 +473,14 @@ Pull skills and MCP servers from public indices.
 ### Commands
 
 ```bash
-tacklebox search weather                   # Search all indices
-tacklebox search weather --index clawdhub  # Specific index
+facult search weather                   # Search all indices
+facult search weather --index clawdhub  # Specific index
 
-tacklebox install clawdhub:weather         # Install from index
-tacklebox install smithery:filesystem      # Install MCP
+facult install clawdhub:weather         # Install from index
+facult install smithery:filesystem      # Install MCP
 
-tacklebox update                           # Check for updates
-tacklebox update --apply                   # Apply updates
+facult update                           # Check for updates
+facult update --apply                   # Apply updates
 ```
 
 ### Provenance
@@ -505,7 +505,7 @@ Track where each item came from:
 ### Command Structure
 
 ```
-tacklebox <command> [subcommand] [args] [flags]
+facult <command> [subcommand] [args] [flags]
 ```
 
 ### Global Flags
@@ -522,7 +522,7 @@ tacklebox <command> [subcommand] [args] [flags]
 ### Full Command Tree
 
 ```
-tacklebox
+facult
 ├── scan                      # Discovery
 │   ├── --json
 │   ├── --tui
@@ -640,46 +640,46 @@ tacklebox
 
 ```bash
 # On old machine
-tacklebox scan --json > ~/Desktop/tacklebox-export.json
+facult scan --json > ~/Desktop/facult-export.json
 
 # On new machine
-tacklebox import ~/Desktop/tacklebox-export.json
-tacklebox manage cursor
-tacklebox manage claude
-tacklebox sync
+facult import ~/Desktop/facult-export.json
+facult manage cursor
+facult manage claude
+facult sync
 ```
 
 ### Adding a new skill
 
 ```bash
 # Install from remote
-tacklebox install clawdhub:new-skill
+facult install clawdhub:new-skill
 
 # Or manually copy, then consolidate
-tacklebox consolidate
+facult consolidate
 
 # Enable for tools
-tacklebox enable new-skill --for cursor,claude
+facult enable new-skill --for cursor,claude
 
 # Audit before use
-tacklebox audit new-skill --with claude
-tacklebox trust new-skill
+facult audit new-skill --with claude
+facult trust new-skill
 ```
 
 ### Security review
 
 ```bash
 # Full audit
-tacklebox audit static
-tacklebox audit --with codex
+facult audit static
+facult audit --with codex
 
 # Review findings
-tacklebox list --flagged
-tacklebox show flagged-skill
+facult list --flagged
+facult show flagged-skill
 
 # Trust or remove
-tacklebox trust flagged-skill
+facult trust flagged-skill
 # or
 rm ~/agents/.tb/skills/flagged-skill
-tacklebox index
+facult index
 ```

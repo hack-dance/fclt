@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schemas.hack/hack.config.schema.json",
+  "name": "facult",
+  "dev_host": "facult.hack",
+  "logs": {
+    "follow_backend": "compose",
+    "snapshot_backend": "loki",
+    "clear_on_down": false
+  },
+  "internal": {
+    "dns": true,
+    "tls": true
+  },
+  "oauth": {
+    "enabled": false,
+    "tld": "gy"
+  },
+  "controlPlane": {
+    "extensions": {
+      "dance.hack.tickets": { "enabled": true }
+    }
+  }
+}

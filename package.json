@@ -1,12 +1,12 @@
 {
-  "name": "hack-dance-tackle-box",
+  "name": "hack-dance-facult",
   "type": "module",
   "private": true,
   "bin": {
-    "tacklebox": "./src/index.ts"
+    "facult": "./src/index.ts"
   },
   "scripts": {
-    "tacklebox": "bun run ./src/index.ts",
+    "facult": "bun run ./src/index.ts",
     "scan": "bun run ./src/index.ts scan",
     "check": "tsc --noEmit"
   },
@@ -15,6 +15,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@clack/prompts": "^1.0.0",
     "@opentui/core": "^0.1.75"
   }
 }

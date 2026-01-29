@@ -1,21 +1,25 @@
 #!/usr/bin/env bun
 
 import { scanCommand } from "./scan";
+import { consolidateCommand } from "./consolidate";
 
 function printHelp() {
-  console.log(`tacklebox — inspect local agent configs for skills + MCP servers
+  console.log(`facult — inspect local agent configs for skills + MCP servers
 
 Usage:
-  tacklebox scan [--json] [--show-duplicates] [--tui]
-  tacklebox --show-duplicates
+  facult scan [--json] [--show-duplicates] [--tui]
+  facult consolidate [--force]
+  facult --show-duplicates
 
 Commands:
-  scan     Scan common config locations (Cursor, Claude, Claude Desktop, etc.)
+  scan         Scan common config locations (Cursor, Claude, Claude Desktop, etc.)
+  consolidate  Interactively deduplicate and copy skills + MCP configs
 
 Options:
   --json              Print full JSON (ScanResult)
   --show-duplicates   Print only duplicate skills as a table (skill, count, sources)
   --tui               Render scan output in an interactive TUI (skills list)
+  --force             Re-copy items already consolidated
 `);
 }
 
@@ -26,7 +30,7 @@ async function main(argv: string[]) {
     return;
   }
 
-  // Convenience: allow `tacklebox --show-duplicates` as shorthand for `tacklebox scan --show-duplicates`.
+  // Convenience: allow `facult --show-duplicates` as shorthand for `facult scan --show-duplicates`.
   if (cmd === "--show-duplicates") {
     await scanCommand([cmd, ...rest]);
     return;
@@ -35,6 +39,9 @@ async function main(argv: string[]) {
   switch (cmd) {
     case "scan":
       await scanCommand(rest);
+      return;
+    case "consolidate":
+      await consolidateCommand(rest);
       return;
     default:
       console.error(`Unknown command: ${cmd}`);
