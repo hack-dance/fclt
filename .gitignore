@@ -38,3 +38,11 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # hack tickets
 .hack/tickets/
+
+# local editor/agent config
+.vscode/
+.cursor/
+.claude/
+
+# tests
+.tmp-tests/

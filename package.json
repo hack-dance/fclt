@@ -8,11 +8,17 @@
   "scripts": {
     "facult": "bun run ./src/index.ts",
     "scan": "bun run ./src/index.ts scan",
-    "check": "tsc --noEmit"
+    "check": "ultracite check",
+    "fix": "ultracite fix",
+    "type-check": "tsc --noEmit",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.13",
     "@types/bun": "latest",
-    "typescript": "^5"
+    "husky": "^9.1.7",
+    "typescript": "5.9.3",
+    "ultracite": "7.1.1"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",
