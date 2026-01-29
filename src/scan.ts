@@ -1,16 +1,16 @@
-import * as path from "node:path";
-import * as os from "node:os";
 import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
 import { computeSkillOccurrences } from "./util/skills";
 
-export type ScanResult = {
-  version: 2;
+export interface ScanResult {
+  version: 3;
   scannedAt: string;
   cwd: string;
   sources: SourceResult[];
-};
+}
 
-export type SourceResult = {
+export interface SourceResult {
   id: string;
   name: string;
   found: boolean;
@@ -23,35 +23,43 @@ export type SourceResult = {
     roots: string[];
     entries: string[]; // skill directories (parent dirs of SKILL.md)
   };
-};
+}
 
-export type McpConfig = {
+export interface McpConfig {
   path: string;
   format: "json" | "unknown";
   servers?: string[];
+  /** Parsed JSON object when format is json; used to preserve unknown fields. */
+  data?: unknown;
   error?: string;
-};
+}
 
-type SourceSpec = {
+interface SourceSpec {
   id: string;
   name: string;
   candidates: string[]; // files/dirs to check
   skillDirs?: string[];
   configFiles?: string[];
-};
+}
+
+const GLOB_CHARS_REGEX = /[*?[]/;
 
 function expandTilde(p: string): string {
-  if (p === "~") return os.homedir();
-  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  if (p === "~") {
+    return homedir();
+  }
+  if (p.startsWith("~/")) {
+    return join(homedir(), p.slice(2));
+  }
   return p;
 }
 
 function hasGlobChars(p: string): boolean {
-  return /[*?\[]/.test(p);
+  return GLOB_CHARS_REGEX.test(p);
 }
 
 function firstGlobIndex(p: string): number {
-  return p.search(/[*?\[]/);
+  return p.search(GLOB_CHARS_REGEX);
 }
 
 function isSafePathString(p: string): boolean {
@@ -61,10 +69,12 @@ function isSafePathString(p: string): boolean {
 
 function globBaseDir(absPattern: string): string {
   const i = firstGlobIndex(absPattern);
-  if (i < 0) return path.dirname(absPattern);
+  if (i < 0) {
+    return dirname(absPattern);
+  }
   // The non-glob prefix can end mid-segment (e.g. antigravity*), so stat the parent dir.
   const prefix = absPattern.slice(0, i);
-  const dir = path.dirname(prefix);
+  const dir = dirname(prefix);
   return dir === "." ? "/" : dir;
 }
 
@@ -72,9 +82,11 @@ async function expandPathPatterns(patterns: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const pat of patterns) {
     const expanded = expandTilde(pat);
-    const abs = expanded.startsWith("/") ? expanded : path.resolve(expanded);
+    const abs = expanded.startsWith("/") ? expanded : resolve(expanded);
 
-    if (!isSafePathString(abs)) continue;
+    if (!isSafePathString(abs)) {
+      continue;
+    }
 
     if (!hasGlobChars(abs)) {
       out.push(abs);
@@ -83,12 +95,16 @@ async function expandPathPatterns(patterns: string[]): Promise<string[]> {
 
     const baseDir = globBaseDir(abs);
     const baseSt = await statSafe(baseDir);
-    if (!baseSt?.isDir) continue;
+    if (!baseSt?.isDir) {
+      continue;
+    }
 
     try {
       const glob = new Bun.Glob(abs);
       for await (const m of glob.scan({ cwd: "/", onlyFiles: false })) {
-        if (isSafePathString(m)) out.push(m);
+        if (isSafePathString(m)) {
+          out.push(m);
+        }
       }
     } catch {
       // If the glob can't be scanned (e.g. missing base dir), treat as no matches.
@@ -97,7 +113,9 @@ async function expandPathPatterns(patterns: string[]): Promise<string[]> {
   return uniqueSorted(out);
 }
 
-async function statSafe(p: string): Promise<{ isFile: boolean; isDir: boolean } | null> {
+async function statSafe(
+  p: string
+): Promise<{ isFile: boolean; isDir: boolean } | null> {
   try {
     const s = await Bun.file(p).stat();
     return { isFile: s.isFile(), isDir: s.isDirectory() };
@@ -106,7 +124,7 @@ async function statSafe(p: string): Promise<{ isFile: boolean; isDir: boolean } 
   }
 }
 
-async function readJsonSafe(p: string): Promise<any> {
+async function readJsonSafe(p: string): Promise<unknown> {
   const f = Bun.file(p);
   const txt = await f.text();
   return JSON.parse(txt);
@@ -118,7 +136,9 @@ function uniqueSorted(xs: string[]): string[] {
 
 async function listSkillEntries(skillRoot: string): Promise<string[]> {
   const st = await statSafe(skillRoot);
-  if (!st?.isDir) return [];
+  if (!st?.isDir) {
+    return [];
+  }
 
   // We treat any directory that contains a SKILL.md as a single skill entry.
   // This prevents noisy output like package.json/README.md under skills.
@@ -126,8 +146,10 @@ async function listSkillEntries(skillRoot: string): Promise<string[]> {
   const glob = new Bun.Glob("**/SKILL.md");
   for await (const rel of glob.scan({ cwd: skillRoot, onlyFiles: true })) {
     // Avoid scanning/including dependencies vendored under skills.
-    if (rel.split(path.sep).includes("node_modules")) continue;
-    out.push(path.join(skillRoot, path.dirname(rel)));
+    if (rel.split(sep).includes("node_modules")) {
+      continue;
+    }
+    out.push(join(skillRoot, dirname(rel)));
   }
 
   return uniqueSorted(out);
@@ -135,20 +157,29 @@ async function listSkillEntries(skillRoot: string): Promise<string[]> {
 
 async function discoverMcpConfig(p: string): Promise<McpConfig | null> {
   const st = await statSafe(p);
-  if (!st?.isFile) return null;
+  if (!st?.isFile) {
+    return null;
+  }
 
   const cfg: McpConfig = { path: p, format: "unknown" };
 
   if (p.endsWith(".json")) {
     cfg.format = "json";
     try {
-      const obj = await readJsonSafe(p);
-      const serversObj = obj?.mcpServers ?? obj?.mcp?.servers ?? obj?.servers;
+      const obj = (await readJsonSafe(p)) as Record<string, unknown> | null;
+      cfg.data = obj;
+      const serversObj =
+        (obj?.mcpServers as Record<string, unknown> | undefined) ??
+        ((obj?.mcp as Record<string, unknown> | undefined)?.servers as
+          | Record<string, unknown>
+          | undefined) ??
+        (obj?.servers as Record<string, unknown> | undefined);
       if (serversObj && typeof serversObj === "object") {
         cfg.servers = uniqueSorted(Object.keys(serversObj));
       }
-    } catch (e: any) {
-      cfg.error = String(e?.message ?? e);
+    } catch (e: unknown) {
+      const err = e as { message?: string } | null;
+      cfg.error = String(err?.message ?? e);
     }
   }
 
@@ -156,8 +187,6 @@ async function discoverMcpConfig(p: string): Promise<McpConfig | null> {
 }
 
 function defaultSourceSpecs(cwd: string): SourceSpec[] {
-  const home = os.homedir();
-
   return [
     {
       id: "cursor",
@@ -185,7 +214,9 @@ function defaultSourceSpecs(cwd: string): SourceSpec[] {
         "~/.windsurf",
       ],
       // Windsurf is VS Code-like; settings.json may contain mcpServers.
-      configFiles: ["~/Library/Application Support/Windsurf/User/settings.json"],
+      configFiles: [
+        "~/Library/Application Support/Windsurf/User/settings.json",
+      ],
     },
     {
       id: "vscode",
@@ -210,7 +241,11 @@ function defaultSourceSpecs(cwd: string): SourceSpec[] {
         "~/.codex/mcp.json",
       ],
       skillDirs: ["~/.codex/skills"],
-      configFiles: ["~/.config/openai/codex.json", "~/.codex/config.json", "~/.codex/mcp.json"],
+      configFiles: [
+        "~/.config/openai/codex.json",
+        "~/.codex/config.json",
+        "~/.codex/mcp.json",
+      ],
     },
     {
       id: "claude",
@@ -226,7 +261,9 @@ function defaultSourceSpecs(cwd: string): SourceSpec[] {
         "~/Library/Application Support/Claude/claude_desktop_config.json",
         "~/Library/Application Support/Claude",
       ],
-      configFiles: ["~/Library/Application Support/Claude/claude_desktop_config.json"],
+      configFiles: [
+        "~/Library/Application Support/Claude/claude_desktop_config.json",
+      ],
     },
     {
       id: "gemini",
@@ -248,7 +285,10 @@ function defaultSourceSpecs(cwd: string): SourceSpec[] {
       name: "Antigravity",
       candidates: ["~/.antigravity", "~/.config/antigravity"],
       skillDirs: ["~/.antigravity/skills", "~/.config/antigravity/skills"],
-      configFiles: ["~/.antigravity/mcp.json", "~/.config/antigravity/mcp.json"],
+      configFiles: [
+        "~/.antigravity/mcp.json",
+        "~/.config/antigravity/mcp.json",
+      ],
     },
     {
       id: "clawdbot",
@@ -277,7 +317,12 @@ function defaultSourceSpecs(cwd: string): SourceSpec[] {
     {
       id: "agents",
       name: "Agents / Skills (generic)",
-      candidates: ["~/.agents", "~/agents", "~/clawdbot/agents", "~/clawd/agents"],
+      candidates: [
+        "~/.agents",
+        "~/agents",
+        "~/clawdbot/agents",
+        "~/clawd/agents",
+      ],
       skillDirs: [
         "~/.agents/skills",
         "~/agents",
@@ -294,62 +339,91 @@ function defaultSourceSpecs(cwd: string): SourceSpec[] {
     {
       id: "dot-clawdbot",
       name: ".clawdbot (project)",
-      candidates: [path.join(cwd, ".clawdbot")],
-      skillDirs: [path.join(cwd, ".clawdbot", "skills"), path.join(cwd, "skills")],
+      candidates: [join(cwd, ".clawdbot")],
+      skillDirs: [join(cwd, ".clawdbot", "skills"), join(cwd, "skills")],
       configFiles: [
-        path.join(cwd, ".clawdbot", "mcp.json"),
-        path.join(cwd, ".clawdbot", "config.json"),
+        join(cwd, ".clawdbot", "mcp.json"),
+        join(cwd, ".clawdbot", "config.json"),
       ],
     },
   ];
 }
 
-async function buildSourceResult(spec: SourceSpec): Promise<SourceResult> {
+async function discoverRootsAndEvidence(
+  candidates: string[]
+): Promise<{ roots: string[]; evidence: string[] }> {
   const roots: string[] = [];
   const evidence: string[] = [];
-
-  const candidatePaths = await expandPathPatterns(spec.candidates);
+  const candidatePaths = await expandPathPatterns(candidates);
   for (const p of candidatePaths) {
     const st = await statSafe(p);
     if (st) {
       evidence.push(p);
-      if (st.isDir) roots.push(p);
-      else roots.push(path.dirname(p));
+      roots.push(st.isDir ? p : dirname(p));
     }
   }
+  return { roots, evidence };
+}
 
-  const skillRoots = await expandPathPatterns(spec.skillDirs ?? []);
-  const skillEntries: string[] = [];
-  const existingSkillRoots: string[] = [];
+async function discoverSkillsFromDirs(
+  skillDirs: string[]
+): Promise<{ roots: string[]; entries: string[] }> {
+  const skillRoots = await expandPathPatterns(skillDirs);
+  const entries: string[] = [];
+  const existingRoots: string[] = [];
   for (const sr of skillRoots) {
     const st = await statSafe(sr);
     if (st?.isDir) {
-      existingSkillRoots.push(sr);
-      skillEntries.push(...(await listSkillEntries(sr)));
+      existingRoots.push(sr);
+      entries.push(...(await listSkillEntries(sr)));
     }
   }
+  return { roots: existingRoots, entries };
+}
+
+const COMMON_MCP_FILENAMES = [
+  "mcp.json",
+  "mcp.config.json",
+  "claude_desktop_config.json",
+];
+
+async function discoverMcpConfigsFromRoots(
+  roots: string[]
+): Promise<McpConfig[]> {
+  const configs: McpConfig[] = [];
+  for (const r of roots) {
+    const st = await statSafe(r);
+    if (!st?.isDir) {
+      continue;
+    }
+    for (const name of COMMON_MCP_FILENAMES) {
+      const cfg = await discoverMcpConfig(join(r, name));
+      if (cfg) {
+        configs.push(cfg);
+      }
+    }
+  }
+  return configs;
+}
+
+async function buildSourceResult(spec: SourceSpec): Promise<SourceResult> {
+  const { roots, evidence } = await discoverRootsAndEvidence(spec.candidates);
+  const skills = await discoverSkillsFromDirs(spec.skillDirs ?? []);
 
   const configs: McpConfig[] = [];
   const configPaths = await expandPathPatterns(spec.configFiles ?? []);
   for (const p of configPaths) {
     const cfg = await discoverMcpConfig(p);
-    if (cfg) configs.push(cfg);
-  }
-
-  // Also opportunistically detect common MCP filenames under any discovered roots.
-  const rootSearch: string[] = uniqueSorted(roots);
-  for (const r of rootSearch) {
-    const st = await statSafe(r);
-    if (!st?.isDir) continue;
-    const common = ["mcp.json", "mcp.config.json", "claude_desktop_config.json"];
-    for (const name of common) {
-      const p = path.join(r, name);
-      const cfg = await discoverMcpConfig(p);
-      if (cfg) configs.push(cfg);
+    if (cfg) {
+      configs.push(cfg);
     }
   }
 
-  const found = evidence.length > 0 || configs.length > 0 || skillEntries.length > 0;
+  // Also opportunistically detect common MCP filenames under any discovered roots.
+  configs.push(...(await discoverMcpConfigsFromRoots(uniqueSorted(roots))));
+
+  const found =
+    evidence.length > 0 || configs.length > 0 || skills.entries.length > 0;
 
   return {
     id: spec.id,
@@ -357,14 +431,50 @@ async function buildSourceResult(spec: SourceSpec): Promise<SourceResult> {
     found,
     roots: uniqueSorted(roots),
     evidence: uniqueSorted(evidence),
-    mcp: { configs: uniqueSorted(configs.map((c) => JSON.stringify(c))).map((s) => JSON.parse(s)) },
-    skills: { roots: uniqueSorted(existingSkillRoots), entries: uniqueSorted(skillEntries) },
+    mcp: {
+      configs: uniqueSorted(configs.map((c) => JSON.stringify(c))).map((s) =>
+        JSON.parse(s)
+      ),
+    },
+    skills: {
+      roots: uniqueSorted(skills.roots),
+      entries: uniqueSorted(skills.entries),
+    },
   };
 }
 
 function formatServers(servers?: string[]): string {
-  if (!servers?.length) return "";
+  if (!servers?.length) {
+    return "";
+  }
   return ` (servers: ${servers.join(", ")})`;
+}
+
+function printSourceMcpConfigs(configs: McpConfig[]) {
+  if (configs.length) {
+    console.log("  MCP configs:");
+    for (const c of configs) {
+      const err = c.error ? ` (error: ${c.error})` : "";
+      console.log(`    - ${c.path}${formatServers(c.servers)}${err}`);
+    }
+  } else {
+    console.log("  MCP configs: (none)");
+  }
+}
+
+function printSourceSkills(skills: SourceResult["skills"]) {
+  if (skills.entries.length) {
+    console.log("  Skills:");
+    for (const p of skills.entries) {
+      console.log(`    - ${p}`);
+    }
+  } else if (skills.roots.length) {
+    console.log(
+      `  Skills: (no SKILL.md found under ${skills.roots.join(", ")})`
+    );
+  } else {
+    console.log("  Skills: (none)");
+  }
 }
 
 function printHuman(res: ScanResult) {
@@ -387,26 +497,8 @@ function printHuman(res: ScanResult) {
 
   for (const s of foundSources) {
     console.log(`${s.name}`);
-
-    if (s.mcp.configs.length) {
-      console.log("  MCP configs:");
-      for (const c of s.mcp.configs) {
-        const err = c.error ? ` (error: ${c.error})` : "";
-        console.log(`    - ${c.path}${formatServers(c.servers)}${err}`);
-      }
-    } else {
-      console.log("  MCP configs: (none)");
-    }
-
-    if (s.skills.entries.length) {
-      console.log("  Skills:");
-      for (const p of s.skills.entries) console.log(`    - ${p}`);
-    } else if (s.skills.roots.length) {
-      console.log(`  Skills: (no SKILL.md found under ${s.skills.roots.join(", ")})`);
-    } else {
-      console.log("  Skills: (none)");
-    }
-
+    printSourceMcpConfigs(s.mcp.configs);
+    printSourceSkills(s.skills);
     console.log("");
   }
 }
@@ -415,12 +507,14 @@ function sourcesFromLocations(locations: string[]): string[] {
   const out = new Set<string>();
   for (const loc of locations) {
     const i = loc.indexOf(":");
-    if (i > 0) out.add(loc.slice(0, i));
+    if (i > 0) {
+      out.add(loc.slice(0, i));
+    }
   }
   return [...out].sort();
 }
 
-function printSkillsTable(res: ScanResult) {
+function _printSkillsTable(res: ScanResult) {
   const all = computeSkillOccurrences(res);
 
   console.log(`facult scan — ${res.scannedAt}`);
@@ -440,10 +534,16 @@ function printSkillsTable(res: ScanResult) {
   const wSkill = Math.max("SKILL".length, ...rows.map((r) => r.skill.length));
   const wCount = Math.max("COUNT".length, ...rows.map((r) => r.count.length));
 
-  console.log(`${"SKILL".padEnd(wSkill)}  ${"COUNT".padStart(wCount)}  SOURCES`);
-  console.log(`${"-".repeat(wSkill)}  ${"-".repeat(wCount)}  ${"-".repeat("SOURCES".length)}`);
+  console.log(
+    `${"SKILL".padEnd(wSkill)}  ${"COUNT".padStart(wCount)}  SOURCES`
+  );
+  console.log(
+    `${"-".repeat(wSkill)}  ${"-".repeat(wCount)}  ${"-".repeat("SOURCES".length)}`
+  );
   for (const r of rows) {
-    console.log(`${r.skill.padEnd(wSkill)}  ${r.count.padStart(wCount)}  ${r.sources}`);
+    console.log(
+      `${r.skill.padEnd(wSkill)}  ${r.count.padStart(wCount)}  ${r.sources}`
+    );
   }
 }
 
@@ -467,10 +567,16 @@ function printDuplicatesTable(res: ScanResult) {
   const wSkill = Math.max("SKILL".length, ...rows.map((r) => r.skill.length));
   const wCount = Math.max("COUNT".length, ...rows.map((r) => r.count.length));
 
-  console.log(`${"SKILL".padEnd(wSkill)}  ${"COUNT".padStart(wCount)}  SOURCES`);
-  console.log(`${"-".repeat(wSkill)}  ${"-".repeat(wCount)}  ${"-".repeat("SOURCES".length)}`);
+  console.log(
+    `${"SKILL".padEnd(wSkill)}  ${"COUNT".padStart(wCount)}  SOURCES`
+  );
+  console.log(
+    `${"-".repeat(wSkill)}  ${"-".repeat(wCount)}  ${"-".repeat("SOURCES".length)}`
+  );
   for (const r of rows) {
-    console.log(`${r.skill.padEnd(wSkill)}  ${r.count.padStart(wCount)}  ${r.sources}`);
+    console.log(
+      `${r.skill.padEnd(wSkill)}  ${r.count.padStart(wCount)}  ${r.sources}`
+    );
   }
 }
 
@@ -478,14 +584,16 @@ async function ensureDir(p: string) {
   await mkdir(p, { recursive: true });
 }
 
-export async function scan(argv: string[]): Promise<ScanResult> {
+export async function scan(_argv: string[]): Promise<ScanResult> {
   const cwd = process.cwd();
   const specs = defaultSourceSpecs(cwd);
   const sources: SourceResult[] = [];
-  for (const spec of specs) sources.push(await buildSourceResult(spec));
+  for (const spec of specs) {
+    sources.push(await buildSourceResult(spec));
+  }
 
   return {
-    version: 2,
+    version: 3,
     scannedAt: new Date().toISOString(),
     cwd,
     sources,
@@ -493,10 +601,10 @@ export async function scan(argv: string[]): Promise<ScanResult> {
 }
 
 export async function writeState(res: ScanResult) {
-  const stateDir = path.join(os.homedir(), ".facult");
+  const stateDir = join(homedir(), ".facult");
   await ensureDir(stateDir);
-  const outPath = path.join(stateDir, "sources.json");
-  await Bun.write(outPath, JSON.stringify(res, null, 2) + "\n");
+  const outPath = join(stateDir, "sources.json");
+  await Bun.write(outPath, `${JSON.stringify(res, null, 2)}\n`);
 }
 
 export async function scanCommand(argv: string[]) {
@@ -526,5 +634,5 @@ export async function scanCommand(argv: string[]) {
     printHuman(res);
   }
 
-  console.log(`State written to ${path.join(os.homedir(), ".facult", "sources.json")}`);
+  console.log(`State written to ${join(homedir(), ".facult", "sources.json")}`);
 }
