@@ -1,7 +1,18 @@
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, extname, join } from "node:path";
 import { confirm, intro, isCancel, note, outro, select } from "@clack/prompts";
+import {
+  type AutoDecision,
+  type AutoMode,
+  type ConflictMeta,
+  contentHash,
+  decideAuto,
+  hashesMatch,
+  mcpServerHash,
+  normalizeJson,
+  normalizeText,
+} from "./conflicts";
 import { type McpConfig, type ScanResult, scan } from "./scan";
 import type {
   CanonicalMcpRegistry,
@@ -71,6 +82,60 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+async function archiveExisting(p: string): Promise<string | null> {
+  if (!(await fileExists(p))) {
+    return null;
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = `${p}.bak.${stamp}`;
+  await rename(p, backup);
+  return backup;
+}
+
+async function readTextSafe(p: string): Promise<string | null> {
+  try {
+    return await Bun.file(p).text();
+  } catch {
+    return null;
+  }
+}
+
+function normalizedTextHash(text: string | null): string | null {
+  if (text === null) {
+    return null;
+  }
+  return contentHash(normalizeText(text));
+}
+
+function normalizedJsonHash(text: string | null): string | null {
+  if (text === null) {
+    return null;
+  }
+  try {
+    return contentHash(normalizeJson(text));
+  } catch {
+    return contentHash(normalizeText(text));
+  }
+}
+
+async function nextAvailableName({
+  base,
+  suffix,
+  exists,
+}: {
+  base: string;
+  suffix: string;
+  exists: (candidate: string) => Promise<boolean> | boolean;
+}): Promise<string> {
+  let candidate = `${base}-${suffix}`;
+  let index = 2;
+  while (await exists(candidate)) {
+    candidate = `${base}-${suffix}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
 async function copyDir(src: string, dest: string, force: boolean) {
   if (force) {
     await rm(dest, { recursive: true, force: true });
@@ -86,6 +151,39 @@ async function copyDir(src: string, dest: string, force: boolean) {
       await Bun.write(to, Bun.file(from));
     }
   }
+}
+
+async function diffPreview({
+  currentLabel,
+  incomingLabel,
+  currentContent,
+  incomingContent,
+}: {
+  currentLabel: string;
+  incomingLabel: string;
+  currentContent: string;
+  incomingContent: string;
+}) {
+  const dir = await mkdtemp(join(tmpdir(), "facult-diff-"));
+  const currentPath = join(dir, "current");
+  const incomingPath = join(dir, "incoming");
+  await Bun.write(currentPath, currentContent);
+  await Bun.write(incomingPath, incomingContent);
+
+  const { spawnSync } = await import("node:child_process");
+  const res = spawnSync("diff", ["-u", currentPath, incomingPath], {
+    encoding: "utf8",
+  });
+  const raw = res.stdout?.trim() || "(no diff)";
+  const lines = raw.split("\n");
+  const maxLines = 200;
+  const preview = lines.slice(0, maxLines).join("\n");
+  const suffix =
+    lines.length > maxLines
+      ? `\n... (${lines.length - maxLines} more lines)`
+      : "";
+  note(`${preview}${suffix}`, `${currentLabel} ↔ ${incomingLabel}`);
+  await rm(dir, { recursive: true, force: true });
 }
 
 async function loadState(): Promise<ConsolidatedState> {
@@ -300,6 +398,99 @@ async function promptViewMcpContents(
   }
 }
 
+async function promptConflictResolution({
+  title,
+  currentLabel,
+  incomingLabel,
+  currentContent,
+  incomingContent,
+}: {
+  title: string;
+  currentLabel: string;
+  incomingLabel: string;
+  currentContent: string;
+  incomingContent: string;
+}): Promise<AutoDecision | "skip"> {
+  while (true) {
+    const selection = await select({
+      message: `Conflict detected: ${title}`,
+      options: [
+        { value: "keep-current", label: `Keep current (${currentLabel})` },
+        { value: "keep-incoming", label: `Keep incoming (${incomingLabel})` },
+        { value: "keep-both", label: "Keep both" },
+        { value: "diff", label: "View diff" },
+        { value: "skip", label: "Cancel" },
+      ],
+    });
+
+    if (isCancel(selection) || selection === "skip") {
+      return "skip";
+    }
+    if (selection === "diff") {
+      await diffPreview({
+        currentLabel,
+        incomingLabel,
+        currentContent,
+        incomingContent,
+      });
+      continue;
+    }
+    if (selection === "keep-current") {
+      return "keep-current";
+    }
+    if (selection === "keep-incoming") {
+      return "keep-incoming";
+    }
+    if (selection === "keep-both") {
+      return "keep-both";
+    }
+  }
+}
+
+async function resolveConflictAction({
+  title,
+  currentLabel,
+  incomingLabel,
+  currentContent,
+  incomingContent,
+  currentHash,
+  incomingHash,
+  autoMode,
+  currentMeta,
+  incomingMeta,
+}: {
+  title: string;
+  currentLabel: string;
+  incomingLabel: string;
+  currentContent: string | null;
+  incomingContent: string | null;
+  currentHash: string | null;
+  incomingHash: string | null;
+  autoMode: AutoMode | undefined;
+  currentMeta: ConflictMeta;
+  incomingMeta: ConflictMeta;
+}): Promise<AutoDecision | "skip"> {
+  if (!currentContent) {
+    return "keep-incoming";
+  }
+  if (!incomingContent) {
+    return "keep-current";
+  }
+  if (hashesMatch(currentHash, incomingHash)) {
+    return "keep-current";
+  }
+  if (autoMode) {
+    return decideAuto(autoMode, currentMeta, incomingMeta);
+  }
+  return await promptConflictResolution({
+    title,
+    currentLabel,
+    incomingLabel,
+    currentContent,
+    incomingContent,
+  });
+}
+
 async function copySkillAndUpdateState({
   name,
   sourceDir,
@@ -329,18 +520,120 @@ async function copySkillAndUpdateState({
   }
 }
 
+async function resolveSkillConflictAndCopy({
+  name,
+  sourceDir,
+  dest,
+  state,
+  force,
+  autoMode,
+  incomingModified,
+}: {
+  name: string;
+  sourceDir: string;
+  dest: string;
+  state: ConsolidatedState;
+  force: boolean;
+  autoMode: AutoMode | undefined;
+  incomingModified: Date | null;
+}): Promise<void> {
+  if (!(await fileExists(dest))) {
+    await copySkillAndUpdateState({
+      name,
+      sourceDir,
+      dest,
+      state,
+      force,
+    });
+    return;
+  }
+
+  const currentContent = await readTextSafe(join(dest, "SKILL.md"));
+  const incomingContent = await readTextSafe(join(sourceDir, "SKILL.md"));
+  const currentHash = normalizedTextHash(currentContent);
+  const incomingHash = normalizedTextHash(incomingContent);
+
+  const decision = await resolveConflictAction({
+    title: `Skill ${name}`,
+    currentLabel: dest,
+    incomingLabel: sourceDir,
+    currentContent,
+    incomingContent,
+    currentHash,
+    incomingHash,
+    autoMode,
+    currentMeta: { modified: await lastModified(dest) },
+    incomingMeta: { modified: incomingModified },
+  });
+
+  if (decision === "skip") {
+    return;
+  }
+
+  if (decision === "keep-current") {
+    state.skills[name] = {
+      source: dest,
+      target: dest,
+      consolidatedAt: new Date().toISOString(),
+    };
+    note(`Kept existing skill at ${dest}`, `Skill: ${name}`);
+    return;
+  }
+
+  if (decision === "keep-incoming") {
+    const backup = await archiveExisting(dest);
+    if (backup) {
+      note(`Archived existing skill to ${backup}`, `Skill: ${name}`);
+    }
+    await copySkillAndUpdateState({
+      name,
+      sourceDir,
+      dest,
+      state,
+      force: true,
+    });
+    return;
+  }
+
+  const parent = dirname(dest);
+  const newName = await nextAvailableName({
+    base: name,
+    suffix: "incoming",
+    exists: async (candidate) => fileExists(join(parent, candidate)),
+  });
+  const newDest = join(parent, newName);
+  await copySkillAndUpdateState({
+    name: newName,
+    sourceDir,
+    dest: newDest,
+    state,
+    force,
+  });
+
+  if (!state.skills[name]) {
+    state.skills[name] = {
+      source: dest,
+      target: dest,
+      consolidatedAt: new Date().toISOString(),
+    };
+  }
+  note(`Kept both skills: ${name} + ${newName}`, `Skill: ${name}`);
+}
+
 async function handleSingleSkillLocation({
   name,
   loc,
   dest,
   state,
   force,
+  autoMode,
 }: {
   name: string;
   loc: SkillLocation;
   dest: string;
   state: ConsolidatedState;
   force: boolean;
+  autoMode: AutoMode | undefined;
 }): Promise<void> {
   const ok = await confirm({
     message: `Copy ${name} from ${loc.entryDir} (modified ${formatDate(loc.modified)})?`,
@@ -348,12 +641,14 @@ async function handleSingleSkillLocation({
   if (isCancel(ok) || !ok) {
     return;
   }
-  await copySkillAndUpdateState({
+  await resolveSkillConflictAndCopy({
     name,
     sourceDir: loc.entryDir,
     dest,
     state,
     force,
+    autoMode,
+    incomingModified: loc.modified,
   });
 }
 
@@ -363,12 +658,14 @@ async function handleMultipleSkillLocations({
   dest,
   state,
   force,
+  autoMode,
 }: {
   name: string;
   locs: SkillLocation[];
   dest: string;
   state: ConsolidatedState;
   force: boolean;
+  autoMode: AutoMode | undefined;
 }): Promise<void> {
   while (true) {
     const selection = await select({
@@ -393,12 +690,14 @@ async function handleMultipleSkillLocations({
     if (!chosen) {
       break;
     }
-    await copySkillAndUpdateState({
+    await resolveSkillConflictAndCopy({
       name,
       sourceDir: chosen.entryDir,
       dest,
       state,
       force,
+      autoMode,
+      incomingModified: chosen.modified,
     });
     break;
   }
@@ -408,7 +707,8 @@ async function consolidateSkills(
   res: ScanResult,
   state: ConsolidatedState,
   targets: { skills: string },
-  force: boolean
+  force: boolean,
+  autoMode: AutoMode | undefined
 ) {
   const skillMap = await buildSkillLocations(res);
   const skillNames = [...skillMap.keys()].sort();
@@ -439,9 +739,17 @@ async function consolidateSkills(
         dest,
         state,
         force,
+        autoMode,
       });
     } else {
-      await handleMultipleSkillLocations({ name, locs, dest, state, force });
+      await handleMultipleSkillLocations({
+        name,
+        locs,
+        dest,
+        state,
+        force,
+        autoMode,
+      });
     }
   }
 }
@@ -670,18 +978,147 @@ async function mergeServerAndSave({
   note(`Merged into ${consolidatedPath}`, `MCP server: ${serverName}`);
 }
 
-async function handleSingleMcpServerLocation({
+async function resolveMcpServerConflictAndMerge({
   serverName,
   loc,
   consolidatedPath,
   consolidatedObj,
   state,
+  autoMode,
 }: {
   serverName: string;
   loc: McpServerLocation;
   consolidatedPath: string;
   consolidatedObj: McpConsolidatedObject;
   state: ConsolidatedState;
+  autoMode: AutoMode | undefined;
+}): Promise<void> {
+  const currentEntry = consolidatedObj.mcpServers[serverName];
+  if (!currentEntry) {
+    await mergeServerAndSave({
+      serverName,
+      serverConfig: loc.serverConfig,
+      sourceId: loc.sourceId,
+      modified: loc.modified,
+      configPath: loc.configPath,
+      consolidatedPath,
+      consolidatedObj,
+      state,
+    });
+    return;
+  }
+
+  const currentContent = JSON.stringify(currentEntry, null, 2);
+  const incomingCanonical = canonicalizeMcpServer({
+    serverName,
+    serverConfig: loc.serverConfig,
+    sourceId: loc.sourceId,
+    configPath: loc.configPath,
+    modified: loc.modified,
+  });
+  const incomingContent = JSON.stringify(incomingCanonical, null, 2);
+  const currentHash = await mcpServerHash(currentEntry);
+  const incomingHash = await mcpServerHash(incomingCanonical);
+
+  const decision = await resolveConflictAction({
+    title: `MCP server ${serverName}`,
+    currentLabel: consolidatedPath,
+    incomingLabel: loc.configPath,
+    currentContent,
+    incomingContent,
+    currentHash,
+    incomingHash,
+    autoMode,
+    currentMeta: { modified: await lastModified(consolidatedPath) },
+    incomingMeta: { modified: loc.modified },
+  });
+
+  if (decision === "skip") {
+    return;
+  }
+
+  if (decision === "keep-current") {
+    if (!state.mcpServers[serverName]) {
+      state.mcpServers[serverName] = {
+        source: consolidatedPath,
+        target: consolidatedPath,
+        consolidatedAt: nowIso(),
+      };
+    }
+    note(
+      `Kept existing MCP server in ${consolidatedPath}`,
+      `MCP server: ${serverName}`
+    );
+    return;
+  }
+
+  if (decision === "keep-incoming") {
+    const backup = await archiveExisting(consolidatedPath);
+    if (backup) {
+      note(`Archived existing MCP registry to ${backup}`, "MCP registry");
+    }
+    consolidatedObj.updatedAt = nowIso();
+    consolidatedObj.mcpServers[serverName] = incomingCanonical;
+    state.mcpServers[serverName] = {
+      source: loc.configPath,
+      target: consolidatedPath,
+      consolidatedAt: nowIso(),
+    };
+    await Bun.write(
+      consolidatedPath,
+      `${JSON.stringify(consolidatedObj, null, 2)}\n`
+    );
+    note(`Merged into ${consolidatedPath}`, `MCP server: ${serverName}`);
+    return;
+  }
+
+  const newName = await nextAvailableName({
+    base: serverName,
+    suffix: "incoming",
+    exists: (candidate) => candidate in consolidatedObj.mcpServers,
+  });
+  const renamedCanonical = canonicalizeMcpServer({
+    serverName: newName,
+    serverConfig: loc.serverConfig,
+    sourceId: loc.sourceId,
+    configPath: loc.configPath,
+    modified: loc.modified,
+  });
+  consolidatedObj.updatedAt = nowIso();
+  consolidatedObj.mcpServers[newName] = renamedCanonical;
+  state.mcpServers[newName] = {
+    source: loc.configPath,
+    target: consolidatedPath,
+    consolidatedAt: nowIso(),
+  };
+  if (!state.mcpServers[serverName]) {
+    state.mcpServers[serverName] = {
+      source: consolidatedPath,
+      target: consolidatedPath,
+      consolidatedAt: nowIso(),
+    };
+  }
+  await Bun.write(
+    consolidatedPath,
+    `${JSON.stringify(consolidatedObj, null, 2)}\n`
+  );
+  note(`Kept both servers: ${serverName} + ${newName}`, "MCP server");
+}
+
+async function handleSingleMcpServerLocation({
+  serverName,
+  loc,
+  consolidatedPath,
+  consolidatedObj,
+  state,
+  autoMode,
+}: {
+  serverName: string;
+  loc: McpServerLocation;
+  consolidatedPath: string;
+  consolidatedObj: McpConsolidatedObject;
+  state: ConsolidatedState;
+  autoMode: AutoMode | undefined;
 }): Promise<void> {
   const ok = await confirm({
     message: `Add MCP server "${serverName}" from ${loc.configPath} (modified ${formatDate(loc.modified)})?`,
@@ -689,15 +1126,13 @@ async function handleSingleMcpServerLocation({
   if (isCancel(ok) || !ok) {
     return;
   }
-  await mergeServerAndSave({
+  await resolveMcpServerConflictAndMerge({
     serverName,
-    serverConfig: loc.serverConfig,
-    sourceId: loc.sourceId,
-    modified: loc.modified,
-    configPath: loc.configPath,
+    loc,
     consolidatedPath,
     consolidatedObj,
     state,
+    autoMode,
   });
 }
 
@@ -707,12 +1142,14 @@ async function handleMultipleMcpServerLocations({
   consolidatedPath,
   consolidatedObj,
   state,
+  autoMode,
 }: {
   serverName: string;
   locs: McpServerLocation[];
   consolidatedPath: string;
   consolidatedObj: McpConsolidatedObject;
   state: ConsolidatedState;
+  autoMode: AutoMode | undefined;
 }): Promise<void> {
   while (true) {
     const selection = await select({
@@ -737,17 +1174,134 @@ async function handleMultipleMcpServerLocations({
     if (!chosen) {
       break;
     }
-    await mergeServerAndSave({
+    await resolveMcpServerConflictAndMerge({
       serverName,
-      serverConfig: chosen.serverConfig,
-      sourceId: chosen.sourceId,
-      modified: chosen.modified,
-      configPath: chosen.configPath,
+      loc: chosen,
       consolidatedPath,
       consolidatedObj,
       state,
+      autoMode,
     });
     break;
+  }
+}
+
+async function resolveMcpConfigConflictAndCopy({
+  config,
+  dest,
+  state,
+  autoMode,
+  key,
+  mcpDir,
+}: {
+  config: McpConfigLocation;
+  dest: string;
+  state: ConsolidatedState;
+  autoMode: AutoMode | undefined;
+  key: string;
+  mcpDir: string;
+}): Promise<void> {
+  if (!(await fileExists(dest))) {
+    try {
+      await Bun.write(dest, Bun.file(config.configPath));
+      state.mcpConfigs[key] = {
+        source: config.configPath,
+        target: dest,
+        consolidatedAt: new Date().toISOString(),
+      };
+      note(`Copied to ${dest}`, `MCP config: ${basename(config.configPath)}`);
+    } catch (e: unknown) {
+      const err = e as { message?: string } | null;
+      note(
+        `Copy failed: ${String(err?.message ?? e)}`,
+        `MCP config: ${config.configPath}`
+      );
+    }
+    return;
+  }
+
+  const currentContent = await readTextSafe(dest);
+  const incomingContent = await readTextSafe(config.configPath);
+  const currentHash = normalizedJsonHash(currentContent);
+  const incomingHash = normalizedJsonHash(incomingContent);
+
+  const decision = await resolveConflictAction({
+    title: `MCP config ${basename(config.configPath)}`,
+    currentLabel: dest,
+    incomingLabel: config.configPath,
+    currentContent,
+    incomingContent,
+    currentHash,
+    incomingHash,
+    autoMode,
+    currentMeta: { modified: await lastModified(dest) },
+    incomingMeta: { modified: config.modified },
+  });
+
+  if (decision === "skip") {
+    return;
+  }
+
+  if (decision === "keep-current") {
+    state.mcpConfigs[key] = {
+      source: dest,
+      target: dest,
+      consolidatedAt: new Date().toISOString(),
+    };
+    note(
+      `Kept existing MCP config at ${dest}`,
+      `MCP config: ${basename(dest)}`
+    );
+    return;
+  }
+
+  if (decision === "keep-incoming") {
+    const backup = await archiveExisting(dest);
+    if (backup) {
+      note(`Archived existing MCP config to ${backup}`, "MCP config");
+    }
+    try {
+      await Bun.write(dest, Bun.file(config.configPath));
+      state.mcpConfigs[key] = {
+        source: config.configPath,
+        target: dest,
+        consolidatedAt: new Date().toISOString(),
+      };
+      note(`Copied to ${dest}`, `MCP config: ${basename(config.configPath)}`);
+    } catch (e: unknown) {
+      const err = e as { message?: string } | null;
+      note(
+        `Copy failed: ${String(err?.message ?? e)}`,
+        `MCP config: ${config.configPath}`
+      );
+    }
+    return;
+  }
+
+  const baseName = basename(config.configPath);
+  const ext = extname(baseName);
+  const stem = ext ? baseName.slice(0, -ext.length) : baseName;
+  const newBase = await nextAvailableName({
+    base: stem,
+    suffix: "incoming",
+    exists: async (candidate) => fileExists(join(mcpDir, `${candidate}${ext}`)),
+  });
+  const newName = `${newBase}${ext}`;
+  const newDest = join(mcpDir, newName);
+  try {
+    await Bun.write(newDest, Bun.file(config.configPath));
+    state.mcpConfigs[key] = {
+      source: config.configPath,
+      target: newDest,
+      consolidatedAt: new Date().toISOString(),
+    };
+    note(`Copied to ${newDest}`, `MCP config: ${newName}`);
+  } catch (e: unknown) {
+    const err = e as { message?: string } | null;
+    note(
+      `Copy failed: ${String(err?.message ?? e)}`,
+      `MCP config: ${config.configPath}`
+    );
   }
 }
 
@@ -755,7 +1309,8 @@ async function consolidateMcpConfigFiles(
   configs: McpConfigLocation[],
   state: ConsolidatedState,
   mcpDir: string,
-  force: boolean
+  force: boolean,
+  autoMode: AutoMode | undefined
 ): Promise<void> {
   const sorted = configs.sort((a, b) =>
     a.configPath.localeCompare(b.configPath)
@@ -776,21 +1331,14 @@ async function consolidateMcpConfigFiles(
     if (isCancel(ok) || !ok) {
       continue;
     }
-    try {
-      await Bun.write(dest, Bun.file(config.configPath));
-      state.mcpConfigs[key] = {
-        source: config.configPath,
-        target: dest,
-        consolidatedAt: new Date().toISOString(),
-      };
-      note(`Copied to ${dest}`, `MCP config: ${basename(config.configPath)}`);
-    } catch (e: unknown) {
-      const err = e as { message?: string } | null;
-      note(
-        `Copy failed: ${String(err?.message ?? e)}`,
-        `MCP config: ${config.configPath}`
-      );
-    }
+    await resolveMcpConfigConflictAndCopy({
+      config,
+      dest,
+      state,
+      autoMode,
+      key,
+      mcpDir,
+    });
   }
 }
 
@@ -798,7 +1346,8 @@ async function consolidateMcpServers(
   res: ScanResult,
   state: ConsolidatedState,
   targets: { mcp: string },
-  force: boolean
+  force: boolean,
+  autoMode: AutoMode | undefined
 ) {
   const { servers, configs } = await buildMcpLocations(res);
   const serverNames = [...servers.keys()].sort();
@@ -822,6 +1371,7 @@ async function consolidateMcpServers(
         consolidatedPath,
         consolidatedObj,
         state,
+        autoMode,
       });
     } else if (locs.length > 1) {
       await handleMultipleMcpServerLocations({
@@ -830,15 +1380,53 @@ async function consolidateMcpServers(
         consolidatedPath,
         consolidatedObj,
         state,
+        autoMode,
       });
     }
   }
 
-  await consolidateMcpConfigFiles(configs, state, targets.mcp, force);
+  await consolidateMcpConfigFiles(configs, state, targets.mcp, force, autoMode);
+}
+
+function parseAutoMode(argv: string[]): AutoMode | undefined {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--auto") {
+      const value = argv[i + 1];
+      if (
+        value === "keep-newest" ||
+        value === "keep-current" ||
+        value === "keep-incoming"
+      ) {
+        return value;
+      }
+      throw new Error(
+        "--auto requires keep-newest, keep-current, or keep-incoming"
+      );
+    }
+    if (arg.startsWith("--auto=")) {
+      const value = arg.slice("--auto=".length);
+      if (
+        value === "keep-newest" ||
+        value === "keep-current" ||
+        value === "keep-incoming"
+      ) {
+        return value;
+      }
+      throw new Error(
+        "--auto requires keep-newest, keep-current, or keep-incoming"
+      );
+    }
+  }
+  return undefined;
 }
 
 export async function consolidateCommand(argv: string[]) {
   const force = argv.includes("--force");
+  const autoMode = parseAutoMode(argv);
   intro("facult consolidate");
 
   const res = await scan(argv);
@@ -854,8 +1442,20 @@ export async function consolidateCommand(argv: string[]) {
   await ensureDir(targets.mcp);
   await ensureDir(targets.agents);
 
-  await consolidateSkills(res, state, { skills: targets.skills }, force);
-  await consolidateMcpServers(res, state, { mcp: targets.mcp }, force);
+  await consolidateSkills(
+    res,
+    state,
+    { skills: targets.skills },
+    force,
+    autoMode
+  );
+  await consolidateMcpServers(
+    res,
+    state,
+    { mcp: targets.mcp },
+    force,
+    autoMode
+  );
 
   await saveState(state);
   outro(

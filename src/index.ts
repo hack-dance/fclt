@@ -35,7 +35,7 @@ function printHelp() {
 
 Usage:
   facult scan [--json] [--show-duplicates] [--tui]
-  facult consolidate [--force]
+  facult consolidate [--force] [--auto <mode>]
   facult index [--force]
   facult list [skills|mcp|agents|snippets] [--enabled-for TOOL] [--untrusted] [--flagged] [--json]
   facult show <name>
@@ -54,6 +54,7 @@ Options:
   --show-duplicates   Print only duplicate skills as a table (skill, count, sources)
   --tui               Render scan output in an interactive TUI (skills list)
   --force             Re-copy items already consolidated OR rebuild index from scratch
+  --auto              Auto-resolve consolidate conflicts: keep-newest, keep-current, keep-incoming
   --enabled-for       Filter list to entries enabled for a specific tool
   --untrusted         Filter list to entries that are not trusted
   --flagged           Filter list to entries flagged by audit
