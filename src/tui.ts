@@ -1,4 +1,11 @@
-import { BoxRenderable, SelectRenderable, TextRenderable, createCliRenderer, type KeyEvent, type SelectOption } from "@opentui/core";
+import {
+  BoxRenderable,
+  createCliRenderer,
+  type KeyEvent,
+  type SelectOption,
+  SelectRenderable,
+  TextRenderable,
+} from "@opentui/core";
 import type { ScanResult } from "./scan";
 import { computeSkillOccurrences } from "./util/skills";
 
