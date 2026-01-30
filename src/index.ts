@@ -2,6 +2,7 @@
 
 import { join } from "node:path";
 import { consolidateCommand } from "./consolidate";
+import { disableCommand, enableCommand } from "./enable-disable";
 import type {
   AgentEntry,
   FacultIndex,
@@ -10,7 +11,12 @@ import type {
   SnippetEntry,
 } from "./index-builder";
 import { indexCommand } from "./index-builder";
-import { manageCommand, managedCommand, unmanageCommand } from "./manage";
+import {
+  manageCommand,
+  managedCommand,
+  syncCommand,
+  unmanageCommand,
+} from "./manage";
 import type { QueryFilters } from "./query";
 import {
   filterAgents,
@@ -44,6 +50,9 @@ Usage:
   facult manage <tool>
   facult unmanage <tool>
   facult managed
+  facult enable <name> [moreNames...] [--for <tools>]
+  facult disable <name> [moreNames...] [--for <tools>]
+  facult sync [tool] [--dry-run]
   facult --show-duplicates
 
 Commands:
@@ -55,6 +64,9 @@ Commands:
   manage       Back up tool config and enter managed mode
   unmanage     Restore backups and exit managed mode
   managed      List tools in managed mode
+  enable       Enable skills or MCP servers for tools
+  disable      Disable skills or MCP servers for tools
+  sync         Sync managed tools with canonical configs
 
 Options:
   --json              Print full JSON (ScanResult or list output)
@@ -65,6 +77,8 @@ Options:
   --enabled-for       Filter list to entries enabled for a specific tool
   --untrusted         Filter list to entries that are not trusted
   --flagged           Filter list to entries flagged by audit
+  --for               Comma-separated list of tools for enable/disable
+  --dry-run           Show what sync would change
 `);
 }
 
@@ -307,6 +321,15 @@ async function main(argv: string[]) {
       return;
     case "managed":
       await managedCommand();
+      return;
+    case "enable":
+      await enableCommand(rest);
+      return;
+    case "disable":
+      await disableCommand(rest);
+      return;
+    case "sync":
+      await syncCommand(rest);
       return;
     default:
       console.error(`Unknown command: ${cmd}`);

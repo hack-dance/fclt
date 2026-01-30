@@ -1,4 +1,12 @@
-import { lstat, mkdir, readdir, rename, rm, symlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readlink,
+  rename,
+  rm,
+  symlink,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -27,6 +35,13 @@ export interface ManageOptions {
   tbRoot?: string;
   toolPaths?: Record<string, ToolPaths>;
   now?: () => Date;
+}
+
+export interface SyncOptions {
+  homeDir?: string;
+  tbRoot?: string;
+  tool?: string;
+  dryRun?: boolean;
 }
 
 const MANAGED_VERSION = 1 as const;
@@ -97,16 +112,36 @@ function defaultToolPaths(home: string): Record<string, ToolPaths> {
   };
 }
 
-function resolveToolPaths(
+async function resolveToolPaths(
   tool: string,
   home: string,
   override?: Record<string, ToolPaths>
-): ToolPaths | null {
+): Promise<ToolPaths | null> {
   if (override?.[tool]) {
     return override[tool] ?? null;
   }
   const defaults = defaultToolPaths(home);
-  return defaults[tool] ?? null;
+  const base = defaults[tool] ?? null;
+  if (!base) {
+    return null;
+  }
+  if (tool !== "codex") {
+    return base;
+  }
+
+  const candidates = [
+    homePath(home, ".config", "openai", "codex.json"),
+    homePath(home, ".codex", "config.json"),
+    homePath(home, ".codex", "mcp.json"),
+  ];
+
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) {
+      return { ...base, mcpConfig: candidate };
+    }
+  }
+
+  return base;
 }
 
 export function managedStatePath(home: string = homedir()): string {
@@ -351,6 +386,142 @@ async function createSkillSymlinks({
   }
 }
 
+async function planSkillSymlinkChanges({
+  toolSkillsDir,
+  tbRoot,
+  tool,
+}: {
+  toolSkillsDir: string;
+  tbRoot: string;
+  tool: string;
+}): Promise<{ add: string[]; remove: string[] }> {
+  const desired = await loadEnabledSkillNames({ tbRoot, tool });
+  const desiredSet = new Set(desired);
+  const existing = await readdir(toolSkillsDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+
+  const remove: string[] = [];
+  const add: string[] = [];
+
+  for (const entry of existing) {
+    if (!desiredSet.has(entry.name)) {
+      remove.push(entry.name);
+      continue;
+    }
+    const linkPath = join(toolSkillsDir, entry.name);
+    const target = join(tbRoot, "skills", entry.name);
+    try {
+      const st = await lstat(linkPath);
+      if (!st.isSymbolicLink()) {
+        remove.push(entry.name);
+        add.push(entry.name);
+        continue;
+      }
+      const current = await readlink(linkPath);
+      if (current !== target) {
+        remove.push(entry.name);
+        add.push(entry.name);
+      }
+    } catch {
+      add.push(entry.name);
+    }
+  }
+
+  for (const name of desired) {
+    if (existing.find((entry) => entry.name === name)) {
+      continue;
+    }
+    const target = join(tbRoot, "skills", name);
+    if (await fileExists(target)) {
+      add.push(name);
+    }
+  }
+
+  return {
+    add: Array.from(new Set(add)).sort(),
+    remove: Array.from(new Set(remove)).sort(),
+  };
+}
+
+async function syncSkillSymlinks({
+  toolSkillsDir,
+  tbRoot,
+  tool,
+  dryRun,
+}: {
+  toolSkillsDir: string;
+  tbRoot: string;
+  tool: string;
+  dryRun?: boolean;
+}): Promise<{ add: string[]; remove: string[] }> {
+  const plan = await planSkillSymlinkChanges({ toolSkillsDir, tbRoot, tool });
+  if (dryRun) {
+    return plan;
+  }
+
+  await ensureDir(toolSkillsDir);
+  for (const name of plan.remove) {
+    const linkPath = join(toolSkillsDir, name);
+    await rm(linkPath, { recursive: true, force: true });
+  }
+  for (const name of plan.add) {
+    const target = join(tbRoot, "skills", name);
+    if (!(await fileExists(target))) {
+      continue;
+    }
+    const linkPath = join(toolSkillsDir, name);
+    await symlink(target, linkPath, "dir");
+  }
+  return plan;
+}
+
+async function planMcpWrite({
+  mcpConfigPath,
+  tbRoot,
+  tool,
+}: {
+  mcpConfigPath: string;
+  tbRoot: string;
+  tool: string;
+}): Promise<{ needsWrite: boolean; contents: string }> {
+  const { servers } = await loadCanonicalServers(tbRoot);
+  const filtered = filterServersForTool(servers, tool);
+  const contents = `${JSON.stringify({ mcpServers: filtered }, null, 2)}\n`;
+
+  if (!(await fileExists(mcpConfigPath))) {
+    return { needsWrite: true, contents };
+  }
+  try {
+    const current = await Bun.file(mcpConfigPath).text();
+    return { needsWrite: current !== contents, contents };
+  } catch {
+    return { needsWrite: true, contents };
+  }
+}
+
+async function syncMcpConfig({
+  mcpConfigPath,
+  tbRoot,
+  tool,
+  dryRun,
+}: {
+  mcpConfigPath: string;
+  tbRoot: string;
+  tool: string;
+  dryRun?: boolean;
+}): Promise<{ needsWrite: boolean }> {
+  const plan = await planMcpWrite({ mcpConfigPath, tbRoot, tool });
+  if (dryRun) {
+    return { needsWrite: plan.needsWrite };
+  }
+  if (plan.needsWrite) {
+    await ensureDir(dirname(mcpConfigPath));
+    await Bun.write(mcpConfigPath, plan.contents);
+  }
+  return { needsWrite: plan.needsWrite };
+}
+
 async function writeToolMcpConfig({
   mcpConfigPath,
   tbRoot,
@@ -378,7 +549,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     throw new Error(`${tool} is already managed`);
   }
 
-  const toolPaths = resolveToolPaths(tool, home, opts.toolPaths);
+  const toolPaths = await resolveToolPaths(tool, home, opts.toolPaths);
   if (!toolPaths) {
     throw new Error(`Unknown tool: ${tool}`);
   }
@@ -489,6 +660,95 @@ export async function listManagedTools(
   return Object.keys(state.tools).sort();
 }
 
+function logSyncDryRun({
+  tool,
+  entry,
+  skillPlan,
+  mcpPlan,
+}: {
+  tool: string;
+  entry: ManagedToolState;
+  skillPlan: { add: string[]; remove: string[] };
+  mcpPlan: { needsWrite: boolean };
+}) {
+  for (const name of skillPlan.add) {
+    console.log(`${tool}: would add skill ${name}`);
+  }
+  for (const name of skillPlan.remove) {
+    console.log(`${tool}: would remove skill ${name}`);
+  }
+  if (mcpPlan.needsWrite && entry.mcpConfig) {
+    console.log(`${tool}: would update mcp config ${entry.mcpConfig}`);
+  }
+  if (
+    skillPlan.add.length === 0 &&
+    skillPlan.remove.length === 0 &&
+    !mcpPlan.needsWrite
+  ) {
+    console.log(`${tool}: no changes`);
+  }
+}
+
+async function syncManagedToolEntry({
+  tool,
+  entry,
+  tbRoot,
+  dryRun,
+}: {
+  tool: string;
+  entry: ManagedToolState;
+  tbRoot: string;
+  dryRun?: boolean;
+}) {
+  const skillPlan = entry.skillsDir
+    ? await syncSkillSymlinks({
+        toolSkillsDir: entry.skillsDir,
+        tbRoot,
+        tool,
+        dryRun,
+      })
+    : { add: [], remove: [] };
+
+  const mcpPlan = entry.mcpConfig
+    ? await syncMcpConfig({
+        mcpConfigPath: entry.mcpConfig,
+        tbRoot,
+        tool,
+        dryRun,
+      })
+    : { needsWrite: false };
+
+  if (dryRun) {
+    logSyncDryRun({ tool, entry, skillPlan, mcpPlan });
+  } else {
+    console.log(`${tool} synced`);
+  }
+}
+
+export async function syncManagedTools(opts: SyncOptions = {}) {
+  const home = opts.homeDir ?? homedir();
+  const tbRoot = opts.tbRoot ?? join(home, "agents", ".tb");
+  const state = await loadManagedState(home);
+  const tools = opts.tool ? [opts.tool] : Object.keys(state.tools).sort();
+
+  if (!tools.length) {
+    throw new Error("No managed tools to sync.");
+  }
+
+  for (const tool of tools) {
+    const entry = state.tools[tool];
+    if (!entry) {
+      throw new Error(`${tool} is not managed`);
+    }
+    await syncManagedToolEntry({
+      tool,
+      entry,
+      tbRoot,
+      dryRun: opts.dryRun,
+    });
+  }
+}
+
 export async function manageCommand(argv: string[]) {
   const tool = argv[0];
   if (!tool) {
@@ -529,5 +789,16 @@ export async function managedCommand() {
   }
   for (const tool of tools) {
     console.log(tool);
+  }
+}
+
+export async function syncCommand(argv: string[]) {
+  const tool = argv.find((arg) => !arg.startsWith("-"));
+  const dryRun = argv.includes("--dry-run");
+  try {
+    await syncManagedTools({ tool, dryRun });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
   }
 }
