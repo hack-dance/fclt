@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { join } from "node:path";
+import { getAllAdapters } from "./adapters";
 import { consolidateCommand } from "./consolidate";
 import { disableCommand, enableCommand } from "./enable-disable";
 import type {
@@ -47,6 +48,7 @@ Usage:
   facult list [skills|mcp|agents|snippets] [--enabled-for TOOL] [--untrusted] [--flagged] [--json]
   facult show <name>
   facult show mcp:<name>
+  facult adapters
   facult manage <tool>
   facult unmanage <tool>
   facult managed
@@ -61,6 +63,7 @@ Commands:
   index        Build a queryable index from ~/agents/.tb/
   list         List indexed skills, MCP servers, agents, or snippets
   show         Show a single indexed entry, including file contents
+  adapters     List registered tool adapters
   manage       Back up tool config and enter managed mode
   unmanage     Restore backups and exit managed mode
   managed      List tools in managed mode
@@ -284,6 +287,18 @@ async function showCommand(argv: string[]) {
   console.log(contents);
 }
 
+function adaptersCommand() {
+  const adapters = getAllAdapters();
+  if (!adapters.length) {
+    console.log("No adapters registered.");
+    return;
+  }
+  for (const adapter of adapters) {
+    const versions = adapter.versions.join(", ");
+    console.log(`${adapter.id}\t${versions}`);
+  }
+}
+
 async function main(argv: string[]) {
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
@@ -312,6 +327,9 @@ async function main(argv: string[]) {
       return;
     case "show":
       await showCommand(rest);
+      return;
+    case "adapters":
+      await adaptersCommand();
       return;
     case "manage":
       await manageCommand(rest);
