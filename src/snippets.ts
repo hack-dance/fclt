@@ -1,4 +1,4 @@
-export const SNIPPET_MARKER_RE = /<!--\s*(\/?)tb:([^>]*?)\s*-->/g;
+export const SNIPPET_MARKER_RE = /<!--\s*(\/?)fclty:([^>]*?)\s*-->/g;
 
 const VALID_MARKER_NAME_RE = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 const WHITESPACE_RE = /\s/;

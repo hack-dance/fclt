@@ -45,9 +45,9 @@ describe("validateSnippetMarkersInText", () => {
   it("returns errors with file path and line number", () => {
     const text = [
       "line 1",
-      "<!-- tb:good/name -->",
-      "<!-- tb:bad name -->",
-      "<!-- /tb:good/name -->",
+      "<!-- fclty:good/name -->",
+      "<!-- fclty:bad name -->",
+      "<!-- /fclty:good/name -->",
     ].join("\n");
 
     const errors = validateSnippetMarkersInText(text, "/tmp/file.md");
