@@ -10,6 +10,7 @@ import type {
   SnippetEntry,
 } from "./index-builder";
 import { indexCommand } from "./index-builder";
+import { manageCommand, managedCommand, unmanageCommand } from "./manage";
 import type { QueryFilters } from "./query";
 import {
   filterAgents,
@@ -40,6 +41,9 @@ Usage:
   facult list [skills|mcp|agents|snippets] [--enabled-for TOOL] [--untrusted] [--flagged] [--json]
   facult show <name>
   facult show mcp:<name>
+  facult manage <tool>
+  facult unmanage <tool>
+  facult managed
   facult --show-duplicates
 
 Commands:
@@ -48,6 +52,9 @@ Commands:
   index        Build a queryable index from ~/agents/.tb/
   list         List indexed skills, MCP servers, agents, or snippets
   show         Show a single indexed entry, including file contents
+  manage       Back up tool config and enter managed mode
+  unmanage     Restore backups and exit managed mode
+  managed      List tools in managed mode
 
 Options:
   --json              Print full JSON (ScanResult or list output)
@@ -291,6 +298,15 @@ async function main(argv: string[]) {
       return;
     case "show":
       await showCommand(rest);
+      return;
+    case "manage":
+      await manageCommand(rest);
+      return;
+    case "unmanage":
+      await unmanageCommand(rest);
+      return;
+    case "managed":
+      await managedCommand();
       return;
     default:
       console.error(`Unknown command: ${cmd}`);
