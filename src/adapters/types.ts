@@ -1,5 +1,15 @@
+export interface CanonicalMcpServer {
+  transport?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+  vendorExtensions?: Record<string, unknown>;
+}
+
 export interface CanonicalMcpConfig {
-  servers: Record<string, unknown>;
+  servers: Record<string, CanonicalMcpServer>;
+  vendorExtensions?: Record<string, unknown>;
 }
 
 export interface CanonicalSkill {
@@ -10,7 +20,7 @@ export interface CanonicalSkill {
 
 export interface AdapterDefaultPaths {
   mcp?: string;
-  skills?: string;
+  skills?: string | string[];
   config?: string;
 }
 

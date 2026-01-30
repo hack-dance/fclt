@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { getAdapter } from "./adapters";
 
 export interface ManagedToolState {
   tool: string;
@@ -54,6 +55,16 @@ function homePath(home: string, ...parts: string[]): string {
   return join(home, ...parts);
 }
 
+function expandHomePath(pathValue: string, home: string): string {
+  if (pathValue === "~") {
+    return home;
+  }
+  if (pathValue.startsWith("~/")) {
+    return join(home, pathValue.slice(2));
+  }
+  return pathValue;
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try {
     await Bun.file(p).stat();
@@ -68,7 +79,7 @@ async function ensureDir(p: string) {
 }
 
 function defaultToolPaths(home: string): Record<string, ToolPaths> {
-  return {
+  const defaults: Record<string, ToolPaths> = {
     cursor: {
       tool: "cursor",
       skillsDir: homePath(home, ".cursor", "skills"),
@@ -110,6 +121,36 @@ function defaultToolPaths(home: string): Record<string, ToolPaths> {
       mcpConfig: homePath(home, ".antigravity", "mcp.json"),
     },
   };
+
+  const adapterDefaults = (tool: string): ToolPaths | null => {
+    const adapter = getAdapter(tool);
+    if (!adapter?.getDefaultPaths) {
+      return null;
+    }
+    const paths = adapter.getDefaultPaths();
+    const rawSkills = paths?.skills;
+    const skillsDir = Array.isArray(rawSkills)
+      ? rawSkills[0]
+      : (rawSkills ?? undefined);
+
+    return {
+      tool,
+      skillsDir: skillsDir ? expandHomePath(skillsDir, home) : undefined,
+      mcpConfig: paths?.mcp ? expandHomePath(paths.mcp, home) : undefined,
+    };
+  };
+
+  for (const tool of ["cursor", "codex"]) {
+    const adapterPath = adapterDefaults(tool);
+    if (adapterPath) {
+      defaults[tool] = {
+        ...defaults[tool],
+        ...adapterPath,
+      };
+    }
+  }
+
+  return defaults;
 }
 
 async function resolveToolPaths(
@@ -129,11 +170,17 @@ async function resolveToolPaths(
     return base;
   }
 
+  const adapterPaths = getAdapter("codex")?.getDefaultPaths?.();
+  const adapterConfig = adapterPaths?.config
+    ? expandHomePath(adapterPaths.config, home)
+    : null;
+
   const candidates = [
+    adapterConfig,
     homePath(home, ".config", "openai", "codex.json"),
     homePath(home, ".codex", "config.json"),
     homePath(home, ".codex", "mcp.json"),
-  ];
+  ].filter((value): value is string => Boolean(value));
 
   for (const candidate of candidates) {
     if (await fileExists(candidate)) {
