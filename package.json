@@ -34,7 +34,7 @@
     "LICENSE"
   ],
   "bin": {
-    "facult": "./bin/facult.cjs"
+    "facult": "bin/facult.cjs"
   },
   "scripts": {
     "facult": "bun run ./src/index.ts",
