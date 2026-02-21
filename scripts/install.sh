@@ -57,7 +57,11 @@ detect_arch() {
 resolve_tag() {
   if [[ "$REQUESTED_VERSION" == "latest" ]]; then
     local latest_url
-    latest_url="$(curl "${CURL_AUTH_ARGS[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest")"
+    if [[ -n "$GITHUB_AUTH_TOKEN" ]]; then
+      latest_url="$(curl -H "Authorization: Bearer ${GITHUB_AUTH_TOKEN}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest")"
+    else
+      latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest")"
+    fi
     basename "$latest_url"
     return
   fi
@@ -70,10 +74,6 @@ resolve_tag() {
 }
 
 GITHUB_AUTH_TOKEN="$(resolve_github_token)"
-CURL_AUTH_ARGS=()
-if [[ -n "$GITHUB_AUTH_TOKEN" ]]; then
-  CURL_AUTH_ARGS=(-H "Authorization: Bearer ${GITHUB_AUTH_TOKEN}")
-fi
 
 PLATFORM="$(detect_platform)"
 ARCH="$(detect_arch "$PLATFORM")"
@@ -89,7 +89,12 @@ trap 'rm -f "$TMP_FILE"' EXIT
 echo "Downloading ${ASSET_NAME} from ${TAG}..."
 attempt=1
 while true; do
-  if curl "${CURL_AUTH_ARGS[@]}" -fsSL "$ASSET_URL" -o "$TMP_FILE"; then
+  if [[ -n "$GITHUB_AUTH_TOKEN" ]]; then
+    curl_cmd=(curl -H "Authorization: Bearer ${GITHUB_AUTH_TOKEN}" -fsSL "$ASSET_URL" -o "$TMP_FILE")
+  else
+    curl_cmd=(curl -fsSL "$ASSET_URL" -o "$TMP_FILE")
+  fi
+  if "${curl_cmd[@]}"; then
     break
   fi
   if [[ "$attempt" -ge "$DOWNLOAD_RETRIES" ]]; then
