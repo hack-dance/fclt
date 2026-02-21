@@ -1,3 +1,9 @@
+## [1.0.2](https://github.com/hack-dance/facult/compare/v1.0.1...v1.0.2) (2026-02-21)
+
+### Bug Fixes
+
+* **install:** support bash 3 with empty auth token ([bfa5221](https://github.com/hack-dance/facult/commit/bfa5221bb77c022361b47d464cc88a59a203f5d5))
+
 ## [1.0.1](https://github.com/hack-dance/facult/compare/v1.0.0...v1.0.1) (2026-02-21)
 
 ### Bug Fixes
