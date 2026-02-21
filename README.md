@@ -75,7 +75,17 @@ Pin to a specific version:
 facult self-update --version 0.0.1
 ```
 
-### 2. Import existing skills/configs
+### 2. Start with a read-only inventory (recommended first)
+
+```bash
+facult scan --show-duplicates
+# optional machine-readable output
+facult scan --json
+```
+
+`scan` is read-only. It inspects local configs and reports what `facult` found without changing files.
+
+### 3. Import existing skills/configs
 
 ```bash
 facult consolidate --auto keep-current --from ~/.codex/skills --from ~/.agents/skills
@@ -86,7 +96,7 @@ Why `keep-current`: it is deterministic and non-interactive for duplicate source
 
 Default canonical store: `~/agents/.facult`. You can change it later with `FACULT_ROOT_DIR` or `~/.facult/config.json`.
 
-### 3. Inspect what you have
+### 4. Inspect what you have
 
 ```bash
 facult list skills
@@ -95,7 +105,7 @@ facult show requesting-code-review
 facult show mcp:github
 ```
 
-### 4. Enable managed mode for your tools
+### 5. Enable managed mode for your tools
 
 ```bash
 facult manage codex
@@ -108,7 +118,7 @@ facult sync
 
 At this point, your selected skills are actively synced to all managed tools.
 
-### 5. Turn on source trust and strict install flow
+### 6. Turn on source trust and strict install flow
 
 ```bash
 facult sources list
