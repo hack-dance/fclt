@@ -5,14 +5,12 @@ import { confirm, intro, isCancel, note, outro, select } from "@clack/prompts";
 import {
   type AutoDecision,
   type AutoMode,
-  type ConflictMeta,
   contentHash,
-  decideAuto,
-  hashesMatch,
   mcpServerHash,
   normalizeJson,
   normalizeText,
 } from "./conflicts";
+import { resolveConflictAction } from "./consolidate-conflict-action";
 import { facultRootDir } from "./paths";
 import { type McpConfig, type ScanResult, scan } from "./scan";
 import type {
@@ -448,50 +446,6 @@ async function promptConflictResolution({
   }
 }
 
-async function resolveConflictAction({
-  title,
-  currentLabel,
-  incomingLabel,
-  currentContent,
-  incomingContent,
-  currentHash,
-  incomingHash,
-  autoMode,
-  currentMeta,
-  incomingMeta,
-}: {
-  title: string;
-  currentLabel: string;
-  incomingLabel: string;
-  currentContent: string | null;
-  incomingContent: string | null;
-  currentHash: string | null;
-  incomingHash: string | null;
-  autoMode: AutoMode | undefined;
-  currentMeta: ConflictMeta;
-  incomingMeta: ConflictMeta;
-}): Promise<AutoDecision | "skip"> {
-  if (!currentContent) {
-    return "keep-incoming";
-  }
-  if (!incomingContent) {
-    return "keep-current";
-  }
-  if (hashesMatch(currentHash, incomingHash)) {
-    return "keep-current";
-  }
-  if (autoMode) {
-    return decideAuto(autoMode, currentMeta, incomingMeta);
-  }
-  return await promptConflictResolution({
-    title,
-    currentLabel,
-    incomingLabel,
-    currentContent,
-    incomingContent,
-  });
-}
-
 async function copySkillAndUpdateState({
   name,
   sourceDir,
@@ -565,6 +519,7 @@ async function resolveSkillConflictAndCopy({
     autoMode,
     currentMeta: { modified: await lastModified(dest) },
     incomingMeta: { modified: incomingModified },
+    promptConflictResolution,
   });
 
   if (decision === "skip") {
@@ -1034,6 +989,7 @@ async function resolveMcpServerConflictAndMerge({
     autoMode,
     currentMeta: { modified: await lastModified(consolidatedPath) },
     incomingMeta: { modified: loc.modified },
+    promptConflictResolution,
   });
 
   if (decision === "skip") {
@@ -1241,6 +1197,7 @@ async function resolveMcpConfigConflictAndCopy({
     autoMode,
     currentMeta: { modified: await lastModified(dest) },
     incomingMeta: { modified: config.modified },
+    promptConflictResolution,
   });
 
   if (decision === "skip") {

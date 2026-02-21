@@ -11,10 +11,17 @@ import {
 } from "./remote";
 
 const BLOCKED_BY_POLICY_RE = /blocked by policy/i;
+const INTEGRITY_CHECK_FAILED_RE = /integrity check failed/i;
 const REQUIRES_REVIEW_RE = /requires review/i;
 
 let tempDir: string | null = null;
 const originalCwd = process.cwd();
+
+function sha256Hex(input: string): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(input);
+  return hasher.digest("hex");
+}
 
 async function makeTempRoot(): Promise<{ home: string; root: string }> {
   const dir = await mkdtemp(join(tmpdir(), "facult-remote-"));
@@ -200,6 +207,116 @@ describe("remote search/install/update", () => {
       "utf8"
     );
     expect(next).toContain("# v2");
+  });
+
+  it("verifies checksum-pinned manifest sources before install", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const indexPath = join(home, "integrity-index.json");
+    const manifest = {
+      items: [
+        {
+          id: "safe-skill",
+          type: "skill",
+          version: "1.0.0",
+          skill: {
+            name: "safe-skill",
+            files: {
+              "SKILL.md": "# safe-skill\n",
+            },
+          },
+        },
+      ],
+    };
+    const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+    await writeFile(indexPath, manifestText);
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          indices: [
+            {
+              name: "integrity-local",
+              url: indexPath,
+              integrity: `sha256:${sha256Hex(manifestText)}`,
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await installRemoteItem({
+      ref: "integrity-local:safe-skill",
+      homeDir: home,
+      rootDir: root,
+      cwd: home,
+    });
+
+    expect(
+      await Bun.file(join(root, "skills", "safe-skill", "SKILL.md")).exists()
+    ).toBe(true);
+  });
+
+  it("rejects installs when pinned manifest integrity does not match", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const indexPath = join(home, "integrity-index.json");
+    await writeFile(
+      indexPath,
+      `${JSON.stringify(
+        {
+          items: [
+            {
+              id: "safe-skill",
+              type: "skill",
+              version: "1.0.0",
+              skill: {
+                name: "safe-skill",
+                files: {
+                  "SKILL.md": "# safe-skill\n",
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          indices: [
+            {
+              name: "integrity-local",
+              url: indexPath,
+              integrity:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await expect(
+      installRemoteItem({
+        ref: "integrity-local:safe-skill",
+        homeDir: home,
+        rootDir: root,
+        cwd: home,
+      })
+    ).rejects.toThrow(INTEGRITY_CHECK_FAILED_RE);
   });
 
   it("supports smithery alias search/install without local index config", async () => {

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rm,
+  symlink,
   utimes,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -279,5 +281,74 @@ describe("consolidate command", () => {
       name.startsWith(".claude.json.bak.")
     );
     expect(backups.length > 0).toBe(true);
+  });
+
+  it("skips unreadable skill files and continues consolidating remaining skills", async () => {
+    const { rootDir, fromRoot } = await makeTempEnv();
+
+    const blockedDir = join(fromRoot, "blocked-skill");
+    await mkdir(blockedDir, { recursive: true });
+    const blockedSkillPath = join(blockedDir, "SKILL.md");
+    await Bun.write(blockedSkillPath, "# blocked-skill\n");
+    await chmod(blockedSkillPath, 0o000);
+
+    const okDir = join(fromRoot, "ok-skill");
+    await mkdir(okDir, { recursive: true });
+    await Bun.write(join(okDir, "SKILL.md"), "# ok-skill\n");
+
+    try {
+      await withMutedConsole(async () => {
+        await consolidateCommand(
+          ["--auto", "keep-incoming", "--no-config-from", "--from", fromRoot],
+          {
+            homeDir: process.env.HOME,
+            rootDir,
+            cwd: process.cwd(),
+          }
+        );
+      });
+    } finally {
+      await chmod(blockedSkillPath, 0o644);
+    }
+
+    expect(
+      await Bun.file(join(rootDir, "skills", "ok-skill", "SKILL.md")).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(
+        join(rootDir, "skills", "blocked-skill", "SKILL.md")
+      ).exists()
+    ).toBe(false);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it("does not follow skill-directory symlinks during copy", async () => {
+    const { rootDir, fromRoot } = await makeTempEnv();
+    const skillDir = join(fromRoot, "symlink-skill");
+    await mkdir(skillDir, { recursive: true });
+    await Bun.write(join(skillDir, "SKILL.md"), "# symlink-skill\n");
+    await symlink("../", join(skillDir, "loop-link"));
+
+    await withMutedConsole(async () => {
+      await consolidateCommand(
+        ["--auto", "keep-incoming", "--no-config-from", "--from", fromRoot],
+        {
+          homeDir: process.env.HOME,
+          rootDir,
+          cwd: process.cwd(),
+        }
+      );
+    });
+
+    expect(
+      await Bun.file(
+        join(rootDir, "skills", "symlink-skill", "SKILL.md")
+      ).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(
+        join(rootDir, "skills", "symlink-skill", "loop-link")
+      ).exists()
+    ).toBe(false);
   });
 });

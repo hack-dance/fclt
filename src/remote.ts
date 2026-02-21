@@ -4,6 +4,11 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildIndex } from "./index-builder";
 import { facultRootDir, facultStateDir } from "./paths";
 import {
+  assertManifestIntegrity,
+  type ManifestIntegrity,
+  parseManifestIntegrity,
+} from "./remote-manifest-integrity";
+import {
   assertSourceAllowed,
   evaluateSourceTrust,
   sourcesCommand as runSourcesCommand,
@@ -101,6 +106,7 @@ interface IndexSource {
   name: string;
   url: string;
   kind: IndexSourceKind;
+  integrity?: ManifestIntegrity;
 }
 
 interface LoadManifestHints {
@@ -1554,6 +1560,9 @@ async function readIndexSources(
           ? KNOWN_PROVIDER_SOURCES[provider]
           : undefined;
         const rawUrl = typeof entry.url === "string" ? entry.url.trim() : "";
+        const integrity = parseManifestIntegrity(
+          entry.integrity ?? entry.checksum
+        );
 
         if (!name) {
           continue;
@@ -1564,6 +1573,7 @@ async function readIndexSources(
             name,
             kind: providerDefault.kind,
             url: rawUrl || providerDefault.url,
+            integrity,
           });
           continue;
         }
@@ -1579,7 +1589,7 @@ async function readIndexSources(
           isAbsolute(rawUrl)
             ? rawUrl
             : resolve(cwd, rawUrl);
-        out.push({ name, url: resolvedUrl, kind: "manifest" });
+        out.push({ name, url: resolvedUrl, kind: "manifest", integrity });
       }
     }
   } catch {
@@ -1642,7 +1652,16 @@ async function loadManifest(
       hints,
     });
   }
-  const raw = await ctx.fetchJson(source.url);
+  const rawText = await ctx.fetchText(source.url);
+  if (source.integrity) {
+    assertManifestIntegrity({
+      sourceName: source.name,
+      sourceUrl: source.url,
+      integrity: source.integrity,
+      manifestText: rawText,
+    });
+  }
+  const raw = parseJsonLenient(rawText);
   return parseManifest(source, raw);
 }
 

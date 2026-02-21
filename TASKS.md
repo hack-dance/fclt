@@ -211,11 +211,13 @@ The original v0.2 plan is complete. The remaining work is follow-on roadmap/hard
 - Add strict source gating for remote install/update (`--strict-source-trust`) ✅
 
 ### B-003: Deeper consolidation coverage
-**Status:** In Progress
+**Status:** Done (expanded coverage)
 
 - Expand automated tests for interactive consolidate conflict flows
 - Add additional filesystem edge-case coverage (permissions, symlink edge cases)
 - Added non-interactive `--auto` consolidate coverage for `--from` + standalone MCP config copy ✅
+- Added conflict-decision unit coverage for non-auto (interactive) resolution paths ✅
+- Added filesystem resilience tests for unreadable skill files and symlink-loop inputs ✅
 
 ### B-004: Lint-policy hardening
 **Status:** In Progress
@@ -226,6 +228,8 @@ The original v0.2 plan is complete. The remaining work is follow-on roadmap/hard
 - Added warning-level trial for `performance/useTopLevelRegex` to surface legacy hotspots
 - Split org trust logic into dedicated module (`src/trust-list.ts`)
 - Cleared current `performance/useTopLevelRegex` hotspots across active modules/tests ✅
+- Split consolidation conflict decision flow into `src/consolidate-conflict-action.ts` ✅
+- Split remote manifest integrity checks into `src/remote-manifest-integrity.ts` ✅
 
 ---
 

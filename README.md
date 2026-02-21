@@ -369,7 +369,8 @@ Optional custom indices can be configured in `~/.facult/indices.json`:
   "indices": [
     {
       "name": "my-index",
-      "url": "/absolute/path/to/index.json"
+      "url": "/absolute/path/to/index.json",
+      "integrity": "sha256:<manifest-sha256-hex>"
     },
     {
       "name": "corp-smithery",
@@ -385,11 +386,20 @@ Optional custom indices can be configured in `~/.facult/indices.json`:
 }
 ```
 
+For manifest-backed custom indices, `integrity` is optional but recommended. If set, facult verifies the fetched manifest bytes before parsing.
+
+Compute a digest:
+
+```bash
+shasum -a 256 /absolute/path/to/index.json
+```
+
 ## Notes
 
 - Scan state stores file paths and small summaries only; it does not persist raw MCP JSON bodies.
 - Static audit output redacts obvious token formats in findings evidence, but you should still treat audit output as potentially sensitive.
 - Source trust policy state is stored at `~/.facult/trust/sources.json`.
+- Integrity pinning applies to custom `manifest` sources configured in `~/.facult/indices.json`.
 
 ## Current Scope
 
