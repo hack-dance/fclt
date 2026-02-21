@@ -56,3 +56,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # tests
 .tmp-tests/
+
+# internal planning/docs (local only)
+_internal/
