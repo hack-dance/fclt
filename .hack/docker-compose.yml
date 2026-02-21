@@ -1,4 +1,4 @@
-name: tackle-box
+name: facult
 services:
   app:
     image: imbios/bun-node:latest
@@ -10,7 +10,7 @@ services:
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
     labels:
-      caddy: tackle-box.hack
+      caddy: facult.hack
       caddy.reverse_proxy: "{{upstreams 3000}}"
       caddy.tls: internal
     networks:

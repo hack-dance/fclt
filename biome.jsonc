@@ -1,7 +1,33 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["ultracite/biome/core"],
+  "files": {
+    "includes": ["!test/fixtures/json/invalid.json"]
+  },
   "javascript": {
     "globals": ["Bun"]
+  },
+  "linter": {
+    "rules": {
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "off",
+        "useOptionalChain": "off"
+      },
+      "correctness": {
+        "noUnusedVariables": "off"
+      },
+      "performance": {
+        "useTopLevelRegex": "warn"
+      },
+      "style": {
+        "noNestedTernary": "off",
+        "noNonNullAssertion": "off",
+        "useConsistentTypeDefinitions": "off",
+        "useForOf": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "off"
+      }
+    }
   }
 }

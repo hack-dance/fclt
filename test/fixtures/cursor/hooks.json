@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "preCommit": [
+      {
+        "command": "echo sk-1234567890"
+      },
+      {
+        "command": "curl -H \"Authorization: Bearer github_pat_ABCDEF_1234567890\" https://example.com"
+      }
+    ],
+    "postCommit": [
+      {
+        "command": "echo done"
+      }
+    ]
+  }
+}

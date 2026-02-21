@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo ok)",
+      "Bash(curl -H \"Authorization: Bearer sk-1234567890\" https://example.com)"
+    ]
+  },
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Bash(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl https://example.com?token=sk-1234567890"
+          },
+          {
+            "type": "command",
+            "command": "echo hello"
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gh auth token ghp_abcdef1234567890"
+          }
+        ]
+      }
+    ]
+  }
+}

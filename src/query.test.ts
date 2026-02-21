@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FacultIndex, SkillEntry } from "./index-builder";
@@ -18,6 +19,24 @@ async function makeTempHome(): Promise<string> {
   return dir;
 }
 
+function trustChecksum(payload: Record<string, unknown>): string {
+  function sortValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((v) => sortValue(v));
+    }
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      out[key] = sortValue((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  const stable = JSON.stringify(sortValue(payload));
+  return createHash("sha256").update(stable).digest("hex");
+}
+
 afterEach(async () => {
   if (tempHome) {
     try {
@@ -35,8 +54,8 @@ describe("query filters", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    const tbRoot = join(tempHome, "agents", ".tb");
-    await mkdir(tbRoot, { recursive: true });
+    const rootDir = join(tempHome, "agents", ".facult");
+    await mkdir(rootDir, { recursive: true });
 
     const skills: Record<string, SkillEntry> = {
       alpha: {
@@ -70,9 +89,9 @@ describe("query filters", () => {
       snippets: {},
     };
 
-    await Bun.write(join(tbRoot, "index.json"), JSON.stringify(index));
+    await Bun.write(join(rootDir, "index.json"), JSON.stringify(index));
 
-    const loaded = await loadIndex({ rootDir: tbRoot });
+    const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     expect(Object.keys(loaded.skills)).toEqual(["alpha", "beta"]);
 
     expect(filterSkills(loaded.skills, { enabledFor: "cursor" })).toHaveLength(
@@ -87,5 +106,138 @@ describe("query filters", () => {
     expect(
       filterSkills(loaded.skills, { text: "alpha" }).map((s) => s.name)
     ).toEqual(["alpha"]);
+  });
+
+  it("applies checksum-verified org trust list with local override precedence", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, "agents", ".facult");
+    await mkdir(rootDir, { recursive: true });
+
+    const index: FacultIndex = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      skills: {
+        alpha: {
+          name: "alpha",
+          path: "/tmp/alpha",
+          description: "Alpha skill",
+          tags: [],
+        } as SkillEntry,
+        beta: {
+          name: "beta",
+          path: "/tmp/beta",
+          description: "Beta skill",
+          tags: [],
+          trusted: false,
+          trustedBy: "user",
+        } as SkillEntry & { trusted?: boolean; trustedBy?: string },
+      },
+      mcp: {
+        servers: {
+          github: {
+            name: "github",
+            path: "/tmp/mcp.json",
+            definition: { command: "node" },
+          },
+        },
+      },
+      agents: {},
+      snippets: {},
+    };
+
+    await Bun.write(join(rootDir, "index.json"), JSON.stringify(index));
+
+    const trustPayload = {
+      version: 1,
+      issuer: "acme-sec",
+      generatedAt: "2026-02-21T10:00:00.000Z",
+      skills: ["alpha", "beta"],
+      mcp: ["github"],
+    };
+    const orgTrust = {
+      ...trustPayload,
+      checksum: `sha256:${trustChecksum(trustPayload)}`,
+    };
+
+    const trustDir = join(tempHome, ".facult", "trust");
+    await mkdir(trustDir, { recursive: true });
+    await Bun.write(
+      join(trustDir, "org-list.json"),
+      `${JSON.stringify(orgTrust, null, 2)}\n`
+    );
+
+    const loaded = await loadIndex({ rootDir, homeDir: tempHome });
+    const alpha = loaded.skills.alpha as SkillEntry & {
+      trusted?: boolean;
+      trustedBy?: string;
+      trustedAt?: string;
+    };
+    const beta = loaded.skills.beta as SkillEntry & {
+      trusted?: boolean;
+      trustedBy?: string;
+    };
+    const github = loaded.mcp.servers.github as {
+      trusted?: boolean;
+      trustedBy?: string;
+    };
+
+    expect(alpha.trusted).toBe(true);
+    expect(alpha.trustedBy).toBe("org:acme-sec");
+    expect(alpha.trustedAt).toBe("2026-02-21T10:00:00.000Z");
+
+    // Local explicit untrust remains authoritative.
+    expect(beta.trusted).toBe(false);
+    expect(beta.trustedBy).toBe("user");
+
+    expect(github.trusted).toBe(true);
+    expect(github.trustedBy).toBe("org:acme-sec");
+  });
+
+  it("ignores org trust list when checksum is invalid", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, "agents", ".facult");
+    await mkdir(rootDir, { recursive: true });
+
+    const index: FacultIndex = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      skills: {
+        alpha: {
+          name: "alpha",
+          path: "/tmp/alpha",
+          description: "Alpha skill",
+          tags: [],
+        } as SkillEntry,
+      },
+      mcp: { servers: {} },
+      agents: {},
+      snippets: {},
+    };
+    await Bun.write(join(rootDir, "index.json"), JSON.stringify(index));
+
+    const trustDir = join(tempHome, ".facult", "trust");
+    await mkdir(trustDir, { recursive: true });
+    await Bun.write(
+      join(trustDir, "org-list.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          issuer: "acme-sec",
+          skills: ["alpha"],
+          mcp: [],
+          checksum: "sha256:deadbeef",
+        },
+        null,
+        2
+      )
+    );
+
+    const loaded = await loadIndex({ rootDir, homeDir: tempHome });
+    const alpha = loaded.skills.alpha as SkillEntry & { trusted?: boolean };
+    expect(alpha.trusted).toBeUndefined();
   });
 });

@@ -13,6 +13,7 @@ import {
   normalizeJson,
   normalizeText,
 } from "./conflicts";
+import { facultRootDir } from "./paths";
 import { type McpConfig, type ScanResult, scan } from "./scan";
 import type {
   CanonicalMcpRegistry,
@@ -58,8 +59,8 @@ type McpConsolidatedObject = CanonicalMcpRegistry;
 
 const CONSOLIDATED_VERSION = 1;
 
-function homePath(...parts: string[]): string {
-  return join(homedir(), ...parts);
+function homePath(home: string, ...parts: string[]): string {
+  return join(home, ...parts);
 }
 
 function formatDate(d: Date | null): string {
@@ -186,8 +187,8 @@ async function diffPreview({
   await rm(dir, { recursive: true, force: true });
 }
 
-async function loadState(): Promise<ConsolidatedState> {
-  const p = homePath(".facult", "consolidated.json");
+async function loadState(home: string): Promise<ConsolidatedState> {
+  const p = homePath(home, ".facult", "consolidated.json");
   if (!(await fileExists(p))) {
     return {
       version: CONSOLIDATED_VERSION,
@@ -219,8 +220,8 @@ async function loadState(): Promise<ConsolidatedState> {
   }
 }
 
-async function saveState(state: ConsolidatedState) {
-  const stateDir = homePath(".facult");
+async function saveState(home: string, state: ConsolidatedState) {
+  const stateDir = homePath(home, ".facult");
   await ensureDir(stateDir);
   const outPath = join(stateDir, "consolidated.json");
   await Bun.write(outPath, `${JSON.stringify(state, null, 2)}\n`);
@@ -635,11 +636,13 @@ async function handleSingleSkillLocation({
   force: boolean;
   autoMode: AutoMode | undefined;
 }): Promise<void> {
-  const ok = await confirm({
-    message: `Copy ${name} from ${loc.entryDir} (modified ${formatDate(loc.modified)})?`,
-  });
-  if (isCancel(ok) || !ok) {
-    return;
+  if (!autoMode) {
+    const ok = await confirm({
+      message: `Copy ${name} from ${loc.entryDir} (modified ${formatDate(loc.modified)})?`,
+    });
+    if (isCancel(ok) || !ok) {
+      return;
+    }
   }
   await resolveSkillConflictAndCopy({
     name,
@@ -1120,11 +1123,13 @@ async function handleSingleMcpServerLocation({
   state: ConsolidatedState;
   autoMode: AutoMode | undefined;
 }): Promise<void> {
-  const ok = await confirm({
-    message: `Add MCP server "${serverName}" from ${loc.configPath} (modified ${formatDate(loc.modified)})?`,
-  });
-  if (isCancel(ok) || !ok) {
-    return;
+  if (!autoMode) {
+    const ok = await confirm({
+      message: `Add MCP server "${serverName}" from ${loc.configPath} (modified ${formatDate(loc.modified)})?`,
+    });
+    if (isCancel(ok) || !ok) {
+      return;
+    }
   }
   await resolveMcpServerConflictAndMerge({
     serverName,
@@ -1325,11 +1330,13 @@ async function consolidateMcpConfigFiles(
       continue;
     }
     const dest = join(mcpDir, basename(config.configPath));
-    const ok = await confirm({
-      message: `Copy MCP config ${config.configPath} (modified ${formatDate(config.modified)})?`,
-    });
-    if (isCancel(ok) || !ok) {
-      continue;
+    if (!autoMode) {
+      const ok = await confirm({
+        message: `Copy MCP config ${config.configPath} (modified ${formatDate(config.modified)})?`,
+      });
+      if (isCancel(ok) || !ok) {
+        continue;
+      }
     }
     await resolveMcpConfigConflictAndCopy({
       config,
@@ -1424,41 +1431,193 @@ function parseAutoMode(argv: string[]): AutoMode | undefined {
   return undefined;
 }
 
-export async function consolidateCommand(argv: string[]) {
-  const force = argv.includes("--force");
-  const autoMode = parseAutoMode(argv);
-  intro("facult consolidate");
+function parsePositiveIntFlag(
+  argv: string[],
+  i: number,
+  flag: string
+): { value: number; advance: number } {
+  const arg = argv[i];
+  if (arg === flag) {
+    const next = argv[i + 1];
+    if (!next) {
+      throw new Error(`${flag} requires a number`);
+    }
+    const n = Number(next);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`Invalid ${flag} value: ${next}`);
+    }
+    return { value: Math.floor(n), advance: 1 };
+  }
+  const raw = arg?.slice(`${flag}=`.length) ?? "";
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Invalid ${flag} value: ${raw}`);
+  }
+  return { value: Math.floor(n), advance: 0 };
+}
 
-  const res = await scan(argv);
-  const state = await loadState();
-
-  const targets = {
-    skills: homePath("agents", ".tb", "skills"),
-    mcp: homePath("agents", ".tb", "mcp"),
-    agents: homePath("agents", ".tb", "agents"),
+function parseConsolidateScanOptions(argv: string[]): {
+  includeConfigFrom: boolean;
+  includeGitHooks: boolean;
+  from: string[];
+  fromOptions: {
+    ignoreDirNames: string[];
+    noDefaultIgnore: boolean;
+    maxVisits?: number;
+    maxResults?: number;
   };
+} {
+  const noConfigFrom = argv.includes("--no-config-from");
+  const includeGitHooks = argv.includes("--include-git-hooks");
+  const from: string[] = [];
+  const fromIgnore: string[] = [];
+  let fromNoDefaultIgnore = false;
+  let fromMaxVisits: number | undefined;
+  let fromMaxResults: number | undefined;
 
-  await ensureDir(targets.skills);
-  await ensureDir(targets.mcp);
-  await ensureDir(targets.agents);
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) {
+      continue;
+    }
 
-  await consolidateSkills(
-    res,
-    state,
-    { skills: targets.skills },
-    force,
-    autoMode
-  );
-  await consolidateMcpServers(
-    res,
-    state,
-    { mcp: targets.mcp },
-    force,
-    autoMode
-  );
+    if (arg === "--from") {
+      const next = argv[i + 1];
+      if (!next) {
+        throw new Error("--from requires a path");
+      }
+      from.push(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--from=")) {
+      const value = arg.slice("--from=".length);
+      if (!value) {
+        throw new Error("--from requires a path");
+      }
+      from.push(value);
+      continue;
+    }
 
-  await saveState(state);
-  outro(
-    `Consolidation complete. State saved to ${homePath(".facult", "consolidated.json")}`
-  );
+    if (arg === "--from-ignore") {
+      const next = argv[i + 1];
+      if (!next) {
+        throw new Error("--from-ignore requires a directory name");
+      }
+      fromIgnore.push(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--from-ignore=")) {
+      const value = arg.slice("--from-ignore=".length);
+      if (!value) {
+        throw new Error("--from-ignore requires a directory name");
+      }
+      fromIgnore.push(value);
+      continue;
+    }
+
+    if (arg === "--from-no-default-ignore") {
+      fromNoDefaultIgnore = true;
+      continue;
+    }
+
+    if (arg === "--from-max-visits" || arg.startsWith("--from-max-visits=")) {
+      const parsed = parsePositiveIntFlag(argv, i, "--from-max-visits");
+      fromMaxVisits = parsed.value;
+      i += parsed.advance;
+      continue;
+    }
+
+    if (arg === "--from-max-results" || arg.startsWith("--from-max-results=")) {
+      const parsed = parsePositiveIntFlag(argv, i, "--from-max-results");
+      fromMaxResults = parsed.value;
+      i += parsed.advance;
+    }
+  }
+
+  return {
+    includeConfigFrom: !noConfigFrom,
+    includeGitHooks,
+    from,
+    fromOptions: {
+      ignoreDirNames: fromIgnore,
+      noDefaultIgnore: fromNoDefaultIgnore,
+      maxVisits: fromMaxVisits,
+      maxResults: fromMaxResults,
+    },
+  };
+}
+
+export async function consolidateCommand(
+  argv: string[],
+  ctx: { homeDir?: string; rootDir?: string; cwd?: string } = {}
+) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult consolidate — deduplicate and copy skills + MCP configs into the canonical store
+
+Usage:
+  facult consolidate [--force] [--auto <keep-newest|keep-current|keep-incoming>] [scan options]
+
+Options:
+  --force                 Re-copy items already consolidated
+  --auto                  Auto-resolve conflicts (non-interactive)
+  --no-config-from        Disable scanFrom roots from ~/.facult/config.json
+  --from                  Add scan root (repeatable): --from ~/dev
+  --include-git-hooks     Include .git/hooks and .husky hooks in --from scans
+  --from-ignore           Ignore directory basename in --from scans (repeatable)
+  --from-no-default-ignore  Disable default ignore list for --from scans
+  --from-max-visits       Max directories visited per --from root
+  --from-max-results      Max discovered paths per --from root
+`);
+    return;
+  }
+  try {
+    const force = argv.includes("--force");
+    const autoMode = parseAutoMode(argv);
+    const scanOptions = parseConsolidateScanOptions(argv);
+    const home = ctx.homeDir ?? homedir();
+    const rootDir = ctx.rootDir ?? facultRootDir(home);
+    intro("facult consolidate");
+
+    const res = await scan([], {
+      ...scanOptions,
+      homeDir: home,
+      cwd: ctx.cwd,
+    });
+    const state = await loadState(home);
+
+    const targets = {
+      skills: join(rootDir, "skills"),
+      mcp: join(rootDir, "mcp"),
+      agents: join(rootDir, "agents"),
+    };
+
+    await ensureDir(targets.skills);
+    await ensureDir(targets.mcp);
+    await ensureDir(targets.agents);
+
+    await consolidateSkills(
+      res,
+      state,
+      { skills: targets.skills },
+      force,
+      autoMode
+    );
+    await consolidateMcpServers(
+      res,
+      state,
+      { mcp: targets.mcp },
+      force,
+      autoMode
+    );
+
+    await saveState(home, state);
+    outro(
+      `Consolidation complete. State saved to ${homePath(home, ".facult", "consolidated.json")}`
+    );
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
 }

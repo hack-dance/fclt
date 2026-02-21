@@ -10,6 +10,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { getAdapter } from "./adapters";
+import { facultRootDir } from "./paths";
 
 export interface ManagedToolState {
   tool: string;
@@ -33,14 +34,14 @@ export interface ToolPaths {
 
 export interface ManageOptions {
   homeDir?: string;
-  tbRoot?: string;
+  rootDir?: string;
   toolPaths?: Record<string, ToolPaths>;
   now?: () => Date;
 }
 
 export interface SyncOptions {
   homeDir?: string;
-  tbRoot?: string;
+  rootDir?: string;
   tool?: string;
   dryRun?: boolean;
 }
@@ -292,13 +293,13 @@ function skillNamesFromIndex(
 }
 
 async function loadEnabledSkillNames({
-  tbRoot,
+  rootDir,
   tool,
 }: {
-  tbRoot: string;
+  rootDir: string;
   tool: string;
 }): Promise<string[]> {
-  const indexPath = join(tbRoot, "index.json");
+  const indexPath = join(rootDir, "index.json");
   if (await fileExists(indexPath)) {
     try {
       const txt = await Bun.file(indexPath).text();
@@ -311,7 +312,7 @@ async function loadEnabledSkillNames({
       // fallthrough to directory listing
     }
   }
-  return await listSkillDirs(join(tbRoot, "skills"));
+  return await listSkillDirs(join(rootDir, "skills"));
 }
 
 function extractServersObject(parsed: unknown): Record<string, unknown> | null {
@@ -377,12 +378,12 @@ function filterServersForTool(
   return out;
 }
 
-async function loadCanonicalServers(tbRoot: string): Promise<{
+async function loadCanonicalServers(rootDir: string): Promise<{
   servers: Record<string, unknown>;
   sourcePath: string | null;
 }> {
-  const serversPath = join(tbRoot, "mcp", "servers.json");
-  const mcpPath = join(tbRoot, "mcp", "mcp.json");
+  const serversPath = join(rootDir, "mcp", "servers.json");
+  const mcpPath = join(rootDir, "mcp", "mcp.json");
 
   const preferred = (await fileExists(serversPath)) ? serversPath : mcpPath;
   if (!(await fileExists(preferred))) {
@@ -405,17 +406,17 @@ async function ensureEmptyDir(p: string) {
 
 async function createSkillSymlinks({
   toolSkillsDir,
-  tbRoot,
+  rootDir,
   tool,
 }: {
   toolSkillsDir: string;
-  tbRoot: string;
+  rootDir: string;
   tool: string;
 }) {
   await ensureDir(toolSkillsDir);
-  const skillNames = await loadEnabledSkillNames({ tbRoot, tool });
+  const skillNames = await loadEnabledSkillNames({ rootDir, tool });
   for (const name of skillNames) {
-    const target = join(tbRoot, "skills", name);
+    const target = join(rootDir, "skills", name);
     if (!(await fileExists(target))) {
       continue;
     }
@@ -435,14 +436,14 @@ async function createSkillSymlinks({
 
 async function planSkillSymlinkChanges({
   toolSkillsDir,
-  tbRoot,
+  rootDir,
   tool,
 }: {
   toolSkillsDir: string;
-  tbRoot: string;
+  rootDir: string;
   tool: string;
 }): Promise<{ add: string[]; remove: string[] }> {
-  const desired = await loadEnabledSkillNames({ tbRoot, tool });
+  const desired = await loadEnabledSkillNames({ rootDir, tool });
   const desiredSet = new Set(desired);
   const existing = await readdir(toolSkillsDir, { withFileTypes: true }).catch(
     () => [] as import("node:fs").Dirent[]
@@ -457,7 +458,7 @@ async function planSkillSymlinkChanges({
       continue;
     }
     const linkPath = join(toolSkillsDir, entry.name);
-    const target = join(tbRoot, "skills", entry.name);
+    const target = join(rootDir, "skills", entry.name);
     try {
       const st = await lstat(linkPath);
       if (!st.isSymbolicLink()) {
@@ -479,7 +480,7 @@ async function planSkillSymlinkChanges({
     if (existing.find((entry) => entry.name === name)) {
       continue;
     }
-    const target = join(tbRoot, "skills", name);
+    const target = join(rootDir, "skills", name);
     if (await fileExists(target)) {
       add.push(name);
     }
@@ -493,16 +494,16 @@ async function planSkillSymlinkChanges({
 
 async function syncSkillSymlinks({
   toolSkillsDir,
-  tbRoot,
+  rootDir,
   tool,
   dryRun,
 }: {
   toolSkillsDir: string;
-  tbRoot: string;
+  rootDir: string;
   tool: string;
   dryRun?: boolean;
 }): Promise<{ add: string[]; remove: string[] }> {
-  const plan = await planSkillSymlinkChanges({ toolSkillsDir, tbRoot, tool });
+  const plan = await planSkillSymlinkChanges({ toolSkillsDir, rootDir, tool });
   if (dryRun) {
     return plan;
   }
@@ -513,7 +514,7 @@ async function syncSkillSymlinks({
     await rm(linkPath, { recursive: true, force: true });
   }
   for (const name of plan.add) {
-    const target = join(tbRoot, "skills", name);
+    const target = join(rootDir, "skills", name);
     if (!(await fileExists(target))) {
       continue;
     }
@@ -525,14 +526,14 @@ async function syncSkillSymlinks({
 
 async function planMcpWrite({
   mcpConfigPath,
-  tbRoot,
+  rootDir,
   tool,
 }: {
   mcpConfigPath: string;
-  tbRoot: string;
+  rootDir: string;
   tool: string;
 }): Promise<{ needsWrite: boolean; contents: string }> {
-  const { servers } = await loadCanonicalServers(tbRoot);
+  const { servers } = await loadCanonicalServers(rootDir);
   const filtered = filterServersForTool(servers, tool);
   const contents = `${JSON.stringify({ mcpServers: filtered }, null, 2)}\n`;
 
@@ -549,16 +550,16 @@ async function planMcpWrite({
 
 async function syncMcpConfig({
   mcpConfigPath,
-  tbRoot,
+  rootDir,
   tool,
   dryRun,
 }: {
   mcpConfigPath: string;
-  tbRoot: string;
+  rootDir: string;
   tool: string;
   dryRun?: boolean;
 }): Promise<{ needsWrite: boolean }> {
-  const plan = await planMcpWrite({ mcpConfigPath, tbRoot, tool });
+  const plan = await planMcpWrite({ mcpConfigPath, rootDir, tool });
   if (dryRun) {
     return { needsWrite: plan.needsWrite };
   }
@@ -571,14 +572,14 @@ async function syncMcpConfig({
 
 async function writeToolMcpConfig({
   mcpConfigPath,
-  tbRoot,
+  rootDir,
   tool,
 }: {
   mcpConfigPath: string;
-  tbRoot: string;
+  rootDir: string;
   tool: string;
 }) {
-  const { servers } = await loadCanonicalServers(tbRoot);
+  const { servers } = await loadCanonicalServers(rootDir);
   const filtered = filterServersForTool(servers, tool);
   await ensureDir(dirname(mcpConfigPath));
   await Bun.write(
@@ -589,7 +590,7 @@ async function writeToolMcpConfig({
 
 export async function manageTool(tool: string, opts: ManageOptions = {}) {
   const home = opts.homeDir ?? homedir();
-  const tbRoot = opts.tbRoot ?? join(home, "agents", ".tb");
+  const rootDir = opts.rootDir ?? facultRootDir(home);
   const state = await loadManagedState(home);
 
   if (state.tools[tool]) {
@@ -612,7 +613,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     await ensureEmptyDir(toolPaths.skillsDir);
     await createSkillSymlinks({
       toolSkillsDir: toolPaths.skillsDir,
-      tbRoot,
+      rootDir,
       tool,
     });
   }
@@ -620,7 +621,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   if (toolPaths.mcpConfig) {
     await writeToolMcpConfig({
       mcpConfigPath: toolPaths.mcpConfig,
-      tbRoot,
+      rootDir,
       tool,
     });
   }
@@ -696,7 +697,14 @@ export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
     });
   }
 
-  delete state.tools[tool];
+  const nextTools: ManagedState["tools"] = {};
+  for (const [name, config] of Object.entries(state.tools)) {
+    if (name === tool) {
+      continue;
+    }
+    nextTools[name] = config;
+  }
+  state.tools = nextTools;
   await saveManagedState(state, home);
 }
 
@@ -739,18 +747,18 @@ function logSyncDryRun({
 async function syncManagedToolEntry({
   tool,
   entry,
-  tbRoot,
+  rootDir,
   dryRun,
 }: {
   tool: string;
   entry: ManagedToolState;
-  tbRoot: string;
+  rootDir: string;
   dryRun?: boolean;
 }) {
   const skillPlan = entry.skillsDir
     ? await syncSkillSymlinks({
         toolSkillsDir: entry.skillsDir,
-        tbRoot,
+        rootDir,
         tool,
         dryRun,
       })
@@ -759,7 +767,7 @@ async function syncManagedToolEntry({
   const mcpPlan = entry.mcpConfig
     ? await syncMcpConfig({
         mcpConfigPath: entry.mcpConfig,
-        tbRoot,
+        rootDir,
         tool,
         dryRun,
       })
@@ -774,7 +782,7 @@ async function syncManagedToolEntry({
 
 export async function syncManagedTools(opts: SyncOptions = {}) {
   const home = opts.homeDir ?? homedir();
-  const tbRoot = opts.tbRoot ?? join(home, "agents", ".tb");
+  const rootDir = opts.rootDir ?? facultRootDir(home);
   const state = await loadManagedState(home);
   const tools = opts.tool ? [opts.tool] : Object.keys(state.tools).sort();
 
@@ -790,13 +798,21 @@ export async function syncManagedTools(opts: SyncOptions = {}) {
     await syncManagedToolEntry({
       tool,
       entry,
-      tbRoot,
+      rootDir,
       dryRun: opts.dryRun,
     });
   }
 }
 
 export async function manageCommand(argv: string[]) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult manage — enter managed mode for a tool (backup + symlinks + MCP generation)
+
+Usage:
+  facult manage <tool>
+`);
+    return;
+  }
   const tool = argv[0];
   if (!tool) {
     console.error("manage requires a tool name");
@@ -813,6 +829,14 @@ export async function manageCommand(argv: string[]) {
 }
 
 export async function unmanageCommand(argv: string[]) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult unmanage — exit managed mode for a tool (restore backups)
+
+Usage:
+  facult unmanage <tool>
+`);
+    return;
+  }
   const tool = argv[0];
   if (!tool) {
     console.error("unmanage requires a tool name");
@@ -828,7 +852,15 @@ export async function unmanageCommand(argv: string[]) {
   }
 }
 
-export async function managedCommand() {
+export async function managedCommand(argv: string[] = []) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult managed — list tools currently in managed mode
+
+Usage:
+  facult managed
+`);
+    return;
+  }
   const tools = await listManagedTools();
   if (!tools.length) {
     console.log("No managed tools.");
@@ -840,6 +872,17 @@ export async function managedCommand() {
 }
 
 export async function syncCommand(argv: string[]) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult sync — sync managed tools with canonical state
+
+Usage:
+  facult sync [tool] [--dry-run]
+
+Options:
+  --dry-run   Show what would change
+`);
+    return;
+  }
   const tool = argv.find((arg) => !arg.startsWith("-"));
   const dryRun = argv.includes("--dry-run");
   try {

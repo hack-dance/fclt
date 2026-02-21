@@ -28,19 +28,19 @@ describe("managed state", () => {
 
   it("writes managed.json after managing", async () => {
     const home = await createTempDir();
-    const tbRoot = join(home, "agents", ".tb");
-    const skillsRoot = join(tbRoot, "skills", "alpha");
+    const rootDir = join(home, "agents", ".facult");
+    const skillsRoot = join(rootDir, "skills", "alpha");
     await mkdir(skillsRoot, { recursive: true });
     await Bun.write(join(skillsRoot, "SKILL.md"), "# Alpha\n");
 
-    const serversPath = join(tbRoot, "mcp", "servers.json");
+    const serversPath = join(rootDir, "mcp", "servers.json");
     await writeJson(serversPath, {
       servers: { test: { command: "node", args: ["server.js"] } },
     });
 
     await manageTool("cursor", {
       homeDir: home,
-      tbRoot,
+      rootDir,
       toolPaths: {
         cursor: {
           tool: "cursor",
@@ -60,12 +60,12 @@ describe("managed state", () => {
 describe("manage/unmanage", () => {
   it("backs up, symlinks, and restores", async () => {
     const home = await createTempDir();
-    const tbRoot = join(home, "agents", ".tb");
-    const skill = join(tbRoot, "skills", "alpha");
+    const rootDir = join(home, "agents", ".facult");
+    const skill = join(rootDir, "skills", "alpha");
     await mkdir(skill, { recursive: true });
     await Bun.write(join(skill, "SKILL.md"), "# Alpha\n");
 
-    const indexPath = join(tbRoot, "index.json");
+    const indexPath = join(rootDir, "index.json");
     await writeJson(indexPath, {
       skills: {
         alpha: {
@@ -76,7 +76,7 @@ describe("manage/unmanage", () => {
       },
     });
 
-    const serversPath = join(tbRoot, "mcp", "servers.json");
+    const serversPath = join(rootDir, "mcp", "servers.json");
     await writeJson(serversPath, {
       servers: {
         alpha: { command: "node", args: ["server.js"], enabledFor: ["cursor"] },
@@ -93,7 +93,7 @@ describe("manage/unmanage", () => {
 
     await manageTool("cursor", {
       homeDir: home,
-      tbRoot,
+      rootDir,
       toolPaths: {
         cursor: {
           tool: "cursor",

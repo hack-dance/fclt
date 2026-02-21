@@ -1,6 +1,6 @@
 import { mkdir, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
+import { facultRootDir } from "./paths";
 import { lastModified } from "./util/skills";
 
 export interface SkillEntry {
@@ -9,6 +9,12 @@ export interface SkillEntry {
   description: string;
   tags: string[];
   lastModifiedAt?: string;
+  enabledFor?: string[];
+  trusted?: boolean;
+  trustedAt?: string;
+  trustedBy?: string;
+  auditStatus?: "pending" | "passed" | "flagged";
+  lastAuditAt?: string;
 }
 
 export interface McpEntry {
@@ -17,6 +23,12 @@ export interface McpEntry {
   lastModifiedAt?: string;
   /** The raw server definition from servers.json (lossless). */
   definition: unknown;
+  enabledFor?: string[];
+  trusted?: boolean;
+  trustedAt?: string;
+  trustedBy?: string;
+  auditStatus?: "pending" | "passed" | "flagged";
+  lastAuditAt?: string;
 }
 
 export interface AgentEntry {
@@ -42,6 +54,56 @@ export interface FacultIndex {
 
 function isSafePathString(p: string): boolean {
   return !p.includes("\0");
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function parseAuditStatus(
+  raw: unknown
+): "pending" | "passed" | "flagged" | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const v = raw.trim().toLowerCase();
+  if (v === "pending" || v === "passed" || v === "flagged") {
+    return v;
+  }
+  return null;
+}
+
+function extractIndexMeta(entry: unknown): {
+  enabledFor?: string[];
+  trusted?: boolean;
+  trustedAt?: string;
+  trustedBy?: string;
+  auditStatus?: "pending" | "passed" | "flagged";
+  lastAuditAt?: string;
+} {
+  if (!isPlainObject(entry)) {
+    return {};
+  }
+  const obj = entry as Record<string, unknown>;
+  const enabledFor = Array.isArray(obj.enabledFor)
+    ? obj.enabledFor.map((t) => String(t))
+    : undefined;
+  const trusted = typeof obj.trusted === "boolean" ? obj.trusted : undefined;
+  const trustedAt =
+    typeof obj.trustedAt === "string" ? obj.trustedAt : undefined;
+  const trustedBy =
+    typeof obj.trustedBy === "string" ? obj.trustedBy : undefined;
+  const auditStatus = parseAuditStatus(obj.auditStatus) ?? undefined;
+  const lastAuditAt =
+    typeof obj.lastAuditAt === "string" ? obj.lastAuditAt : undefined;
+  return {
+    enabledFor,
+    trusted,
+    trustedAt,
+    trustedBy,
+    auditStatus,
+    lastAuditAt,
+  };
 }
 
 function stripQuotes(s: string): string {
@@ -262,7 +324,8 @@ async function listSubdirs(dir: string): Promise<string[]> {
 }
 
 async function indexSkills(
-  skillsDir: string
+  skillsDir: string,
+  previous?: Record<string, unknown>
 ): Promise<Record<string, SkillEntry>> {
   const out: Record<string, SkillEntry> = {};
   const dirs = await listSubdirs(skillsDir);
@@ -278,12 +341,21 @@ async function indexSkills(
       const { description, tags } = parseSkillMarkdown(md);
       const name = basename(d);
 
+      const prev = previous?.[name];
+      const meta = extractIndexMeta(prev);
+
       out[name] = {
         name,
         path: d,
         description,
         tags,
         lastModifiedAt: await statIsoTime(skillMd),
+        enabledFor: meta.enabledFor,
+        trusted: meta.trusted ?? false,
+        trustedAt: meta.trustedAt,
+        trustedBy: meta.trustedBy,
+        auditStatus: meta.auditStatus ?? "pending",
+        lastAuditAt: meta.lastAuditAt,
       };
     } catch {
       // Ignore missing/invalid skill entries.
@@ -293,17 +365,18 @@ async function indexSkills(
 }
 
 async function indexMcpServers(
-  serversJsonPath: string
+  mcpConfigPath: string,
+  previous?: Record<string, unknown>
 ): Promise<Record<string, McpEntry>> {
   const out: Record<string, McpEntry> = {};
 
   try {
-    const st = await Bun.file(serversJsonPath).stat();
+    const st = await Bun.file(mcpConfigPath).stat();
     if (!st.isFile()) {
       return out;
     }
 
-    const data = (await readJsonSafe(serversJsonPath)) as Record<
+    const data = (await readJsonSafe(mcpConfigPath)) as Record<
       string,
       unknown
     > | null;
@@ -323,13 +396,21 @@ async function indexMcpServers(
       return out;
     }
 
-    const lm = await statIsoTime(serversJsonPath);
+    const lm = await statIsoTime(mcpConfigPath);
     for (const name of Object.keys(serversObj).sort()) {
+      const prev = previous?.[name];
+      const meta = extractIndexMeta(prev);
       out[name] = {
         name,
-        path: serversJsonPath,
+        path: mcpConfigPath,
         lastModifiedAt: lm,
         definition: serversObj[name],
+        enabledFor: meta.enabledFor,
+        trusted: meta.trusted ?? false,
+        trustedAt: meta.trustedAt,
+        trustedBy: meta.trustedBy,
+        auditStatus: meta.auditStatus ?? "pending",
+        lastAuditAt: meta.lastAuditAt,
       };
     }
   } catch {
@@ -359,9 +440,25 @@ async function indexSnippets(
   snippetsDir: string
 ): Promise<Record<string, SnippetEntry>> {
   const out: Record<string, SnippetEntry> = {};
-  const files = await listDirFiles(snippetsDir);
-  for (const p of files) {
-    const name = basename(p);
+  try {
+    const st = await Bun.file(snippetsDir).stat();
+    if (!st.isDirectory()) {
+      return out;
+    }
+  } catch {
+    return out;
+  }
+  // Snippets live under snippets/global/** and snippets/projects/**.
+  // Index all files under snippets/ so names don't collide across scopes.
+  const glob = new Bun.Glob("**/*");
+  const files: string[] = [];
+  for await (const rel of glob.scan({ cwd: snippetsDir, onlyFiles: true })) {
+    files.push(join(snippetsDir, rel));
+  }
+
+  for (const p of files.sort()) {
+    const rel = relative(snippetsDir, p);
+    const name = rel || basename(p);
     out[name] = {
       name,
       path: p,
@@ -371,24 +468,39 @@ async function indexSnippets(
   return out;
 }
 
-export function tackleboxRootDir(home: string = homedir()): string {
-  return join(home, "agents", ".tb");
-}
-
 export async function buildIndex(opts?: {
   force?: boolean;
-  /** Override the default ~/agents/.tb root (useful for tests). */
+  /** Override the default canonical root dir (useful for tests). */
   rootDir?: string;
 }): Promise<{ index: FacultIndex; outputPath: string }> {
   const force = Boolean(opts?.force);
 
-  const tbRoot = opts?.rootDir ?? tackleboxRootDir();
-  const skillsDir = join(tbRoot, "skills");
-  const agentsDir = join(tbRoot, "agents");
-  const snippetsDir = join(tbRoot, "snippets");
-  const serversJsonPath = join(tbRoot, "mcp", "servers.json");
+  const rootDir = opts?.rootDir ?? facultRootDir();
+  const skillsDir = join(rootDir, "skills");
+  const agentsDir = join(rootDir, "agents");
+  const snippetsDir = join(rootDir, "snippets");
+  const serversJsonPath = join(rootDir, "mcp", "servers.json");
+  const mcpJsonPath = join(rootDir, "mcp", "mcp.json");
+  const canonicalMcpPath = (await Bun.file(serversJsonPath).exists())
+    ? serversJsonPath
+    : mcpJsonPath;
 
-  const outputPath = join(tbRoot, "index.json");
+  const outputPath = join(rootDir, "index.json");
+
+  let previousIndex: Record<string, unknown> | null = null;
+  if (!force) {
+    try {
+      const existing = Bun.file(outputPath);
+      if (await existing.exists()) {
+        previousIndex = JSON.parse(await existing.text()) as Record<
+          string,
+          unknown
+        >;
+      }
+    } catch {
+      previousIndex = null;
+    }
+  }
 
   if (force) {
     try {
@@ -398,9 +510,21 @@ export async function buildIndex(opts?: {
     }
   }
 
+  const prevSkills = isPlainObject(previousIndex?.skills)
+    ? (previousIndex?.skills as Record<string, unknown>)
+    : undefined;
+  const prevMcpMap =
+    isPlainObject(previousIndex?.mcp) &&
+    isPlainObject((previousIndex.mcp as Record<string, unknown>).servers)
+      ? ((previousIndex.mcp as Record<string, unknown>).servers as Record<
+          string,
+          unknown
+        >)
+      : undefined;
+
   const [skills, servers, agents, snippets] = await Promise.all([
-    indexSkills(skillsDir),
-    indexMcpServers(serversJsonPath),
+    indexSkills(skillsDir, prevSkills),
+    indexMcpServers(canonicalMcpPath, prevMcpMap),
     indexAgents(agentsDir),
     indexSnippets(snippetsDir),
   ]);
@@ -414,13 +538,24 @@ export async function buildIndex(opts?: {
     snippets,
   };
 
-  await mkdir(tbRoot, { recursive: true });
+  await mkdir(rootDir, { recursive: true });
   await Bun.write(outputPath, `${JSON.stringify(index, null, 2)}\n`);
 
   return { index, outputPath };
 }
 
 export async function indexCommand(argv: string[]) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult index — rebuild index.json under the canonical store
+
+Usage:
+  facult index [--force]
+
+Options:
+  --force   Rebuild index from scratch (ignore existing metadata)
+`);
+    return;
+  }
   const force = argv.includes("--force");
   const { outputPath } = await buildIndex({ force });
   console.log(`Index written to ${outputPath}`);

@@ -7,7 +7,8 @@ import type {
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
-import { tackleboxRootDir } from "./index-builder";
+import { facultRootDir } from "./paths";
+import { applyOrgTrustList } from "./trust-list";
 
 export interface QueryFilters {
   /** Only include entries enabled for this tool name. */
@@ -16,6 +17,8 @@ export interface QueryFilters {
   untrusted?: boolean;
   /** Only include entries flagged by audit. */
   flagged?: boolean;
+  /** Only include entries pending audit. */
+  pending?: boolean;
   /** Only include entries with all of these tags. */
   tags?: string[];
   /** Full-text search query (case-insensitive). */
@@ -63,6 +66,15 @@ function matchesFlagged(entry: IndexEntry, flagged?: boolean): boolean {
   return normalizeText(entry.auditStatus ?? "") === "flagged";
 }
 
+function matchesPending(entry: IndexEntry, pending?: boolean): boolean {
+  if (!pending) {
+    return true;
+  }
+  const status = normalizeText(entry.auditStatus ?? "");
+  // Treat missing auditStatus as pending for backward compatibility.
+  return !status || status === "pending";
+}
+
 function matchesTags(entry: IndexEntry, tags?: string[]): boolean {
   if (!tags || tags.length === 0) {
     return true;
@@ -87,35 +99,36 @@ function matchesText(entry: IndexEntry, text?: string): boolean {
   return terms.every((term) => haystack.includes(term.toLowerCase()));
 }
 
-/**
- * Return the canonical tacklebox root directory (defaults to ~/agents/.tb).
- */
-export function tackleboxRootDirPath(home: string = homedir()): string {
-  return tackleboxRootDir(home);
+/** Return the canonical facult root directory. */
+export function facultRootDirPath(home: string = homedir()): string {
+  return facultRootDir(home);
 }
 
 /**
- * Return the path to the tacklebox index.json file.
+ * Return the path to the facult index.json file.
  */
-export function tackleboxIndexPath(home: string = homedir()): string {
-  return join(tackleboxRootDir(home), "index.json");
+export function facultIndexPath(home: string = homedir()): string {
+  return join(facultRootDir(home), "index.json");
 }
 
 /**
- * Load the tacklebox index.json into memory.
+ * Load the facult index.json into memory.
  */
 export async function loadIndex(opts?: {
-  /** Override the default ~/agents/.tb root (useful for tests). */
+  /** Override the default canonical root dir (useful for tests). */
   rootDir?: string;
+  /** Override home directory for org trust-list loading (useful for tests). */
+  homeDir?: string;
 }): Promise<FacultIndex> {
-  const root = opts?.rootDir ?? tackleboxRootDir();
+  const root = opts?.rootDir ?? facultRootDir();
   const indexPath = join(root, "index.json");
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
   }
   const raw = await file.text();
-  return JSON.parse(raw) as FacultIndex;
+  const parsed = JSON.parse(raw) as FacultIndex;
+  return await applyOrgTrustList(parsed, { homeDir: opts?.homeDir });
 }
 
 /**
@@ -166,6 +179,7 @@ function filterEntries<T extends IndexEntry>(
     .filter((entry) => matchesEnabledFor(entry, filters?.enabledFor))
     .filter((entry) => matchesUntrusted(entry, filters?.untrusted))
     .filter((entry) => matchesFlagged(entry, filters?.flagged))
+    .filter((entry) => matchesPending(entry, filters?.pending))
     .filter((entry) => matchesTags(entry, filters?.tags))
     .filter((entry) => matchesText(entry, filters?.text))
     .sort((a, b) => a.name.localeCompare(b.name));

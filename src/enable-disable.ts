@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FacultIndex } from "./index-builder";
 import { loadManagedState, syncManagedTools } from "./manage";
+import { facultRootDir } from "./paths";
 
 type EntryKind = "skills" | "mcp";
 
@@ -51,15 +52,17 @@ function computeNextEnabledFor({
 }): string[] {
   const base = Array.isArray(current)
     ? current.map((t) => String(t))
-    : [...allTools];
+    : mode === "disable"
+      ? [...allTools]
+      : [];
   if (mode === "enable") {
     return uniqueSorted([...base, ...targetTools]);
   }
   return uniqueSorted(base.filter((tool) => !targetTools.includes(tool)));
 }
 
-async function loadIndex(tbRoot: string): Promise<FacultIndex> {
-  const indexPath = join(tbRoot, "index.json");
+async function loadIndex(rootDir: string): Promise<FacultIndex> {
+  const indexPath = join(rootDir, "index.json");
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
@@ -68,8 +71,8 @@ async function loadIndex(tbRoot: string): Promise<FacultIndex> {
   return JSON.parse(raw) as FacultIndex;
 }
 
-async function writeIndex(tbRoot: string, index: FacultIndex) {
-  const indexPath = join(tbRoot, "index.json");
+async function writeIndex(rootDir: string, index: FacultIndex) {
+  const indexPath = join(rootDir, "index.json");
   await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
@@ -119,13 +122,13 @@ function extractServersObject(parsed: Record<string, unknown>): {
 }
 
 async function updateCanonicalServers({
-  tbRoot,
+  rootDir,
   updates,
   allTools,
   targetTools,
   mode,
 }: {
-  tbRoot: string;
+  rootDir: string;
   updates: string[];
   allTools: string[];
   targetTools: string[];
@@ -135,8 +138,8 @@ async function updateCanonicalServers({
     return;
   }
 
-  const serversPath = join(tbRoot, "mcp", "servers.json");
-  const mcpPath = join(tbRoot, "mcp", "mcp.json");
+  const serversPath = join(rootDir, "mcp", "servers.json");
+  const mcpPath = join(rootDir, "mcp", "mcp.json");
   let sourcePath: string | null = null;
 
   if (await Bun.file(serversPath).exists()) {
@@ -176,16 +179,16 @@ export async function applyEnableDisable({
   mode,
   tools,
   homeDir,
-  tbRoot,
+  rootDir,
 }: {
   names: string[];
   mode: CommandMode;
   tools?: string[];
   homeDir?: string;
-  tbRoot?: string;
+  rootDir?: string;
 }) {
   const home = homeDir ?? homedir();
-  const root = tbRoot ?? join(home, "agents", ".tb");
+  const root = rootDir ?? facultRootDir(home);
   const managedState = await loadManagedState(home);
   const managedTools = Object.keys(managedState.tools).sort();
   const targetTools =
@@ -241,7 +244,7 @@ export async function applyEnableDisable({
   await writeIndex(root, index);
 
   await updateCanonicalServers({
-    tbRoot: root,
+    rootDir: root,
     updates: mcpUpdates,
     allTools,
     targetTools,
@@ -253,7 +256,7 @@ export async function applyEnableDisable({
     for (const tool of toolsToSync) {
       await syncManagedTools({
         homeDir: home,
-        tbRoot: root,
+        rootDir: root,
         tool,
         dryRun: false,
       });
@@ -300,6 +303,18 @@ function parseEnableDisableArgs(argv: string[]): {
 }
 
 export async function enableCommand(argv: string[]) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult enable — enable skills or MCP servers for tools
+
+Usage:
+  facult enable <name> [moreNames...] [--for <tool1,tool2,...>]
+  facult enable mcp:<name> [--for <tools>]
+
+Options:
+  --for   Comma-separated list of tools (defaults to all managed tools)
+`);
+    return;
+  }
   try {
     const { names, tools } = parseEnableDisableArgs(argv);
     await applyEnableDisable({ names, tools, mode: "enable" });
@@ -311,6 +326,18 @@ export async function enableCommand(argv: string[]) {
 }
 
 export async function disableCommand(argv: string[]) {
+  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+    console.log(`facult disable — disable skills or MCP servers for tools
+
+Usage:
+  facult disable <name> [moreNames...] [--for <tool1,tool2,...>]
+  facult disable mcp:<name> [--for <tools>]
+
+Options:
+  --for   Comma-separated list of tools (defaults to all managed tools)
+`);
+    return;
+  }
   try {
     const { names, tools } = parseEnableDisableArgs(argv);
     await applyEnableDisable({ names, tools, mode: "disable" });
