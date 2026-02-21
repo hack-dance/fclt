@@ -309,10 +309,11 @@ Default install path is `~/.facult/bin/facult`. You can pass a custom target dir
 
 Release behavior:
 1. Every push to `main` runs full checks.
-2. When `NPM_TOKEN` is configured, `semantic-release` publishes the single `facult` npm package and creates a GitHub release/tag.
-3. The `release-assets` workflow runs on `release.published`, builds platform binaries, and attaches them to that GitHub release.
-4. Published release assets include platform binaries, `facult-install.sh`, and `SHA256SUMS`.
-5. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.facult/runtime/<version>/<platform-arch>/`, and runs it.
+2. `semantic-release` creates the version/tag and GitHub release (npm publish is disabled in this phase).
+3. The `release-assets` workflow runs on `release.published`, builds platform binaries, and uploads them to that release.
+4. npm publish runs only after binary asset upload succeeds (`publish-npm` depends on `publish-assets`).
+5. Published release assets include platform binaries, `facult-install.sh`, and `SHA256SUMS`.
+6. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.facult/runtime/<version>/<platform-arch>/`, and runs it.
 
 Current prebuilt binary targets:
 - `darwin-x64`

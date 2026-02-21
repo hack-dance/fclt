@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build-assets:
@@ -34,6 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -82,6 +85,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -108,3 +113,71 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/release-assets/*
+
+  publish-npm:
+    runs-on: ubuntu-latest
+    needs: publish-assets
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.11.0"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "1.3.9"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate release tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "Tag version ($VERSION) does not match package.json version ($PACKAGE_VERSION)."
+            exit 1
+          fi
+
+      - name: Ensure NPM_TOKEN is configured
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NPM_TOKEN:-}" ]]; then
+            echo "NPM_TOKEN secret is required for npm publish."
+            exit 1
+          fi
+
+      - name: Skip publish if version already exists on npm
+        id: npm-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          if npm view "facult@${VERSION}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "facult@${VERSION} already exists on npm; skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.npm-check.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+          HUSKY: "0"
+        run: npm publish --access public --provenance
