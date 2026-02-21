@@ -222,6 +222,7 @@ The original v0.2 plan is complete. The remaining work is follow-on roadmap/hard
 - Added non-interactive `--auto` consolidate coverage for `--from` + standalone MCP config copy ✅
 - Added conflict-decision unit coverage for non-auto (interactive) resolution paths ✅
 - Added filesystem resilience tests for unreadable skill files and symlink-loop inputs ✅
+- Added deterministic non-interactive source selection for duplicate skill/MCP inputs when `--auto` is set ✅
 
 ### B-004: Lint-policy hardening
 **Status:** In Progress

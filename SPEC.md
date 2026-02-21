@@ -48,6 +48,9 @@ facult index                      # Build canonical index
 facult list / facult show         # Query canonical index
 facult manage / unmanage / sync   # Managed-mode workflows
 facult enable / disable           # Per-tool entry enablement
+facult search / install / update  # Remote catalog workflows
+facult sources / verify-source    # Source trust + verification
+facult templates                  # DX scaffolding templates
 facult snippets ...               # Marker snippet workflows
 ```
 

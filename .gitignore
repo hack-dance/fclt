@@ -44,5 +44,15 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .cursor/
 .claude/
 
+# locally managed facult canonical artifacts (can include secrets)
+.codex/config.toml
+.codex/index.json
+.codex/mcp/
+.codex/skills/*
+!.codex/skills/hack-cli/
+!.codex/skills/hack-cli/SKILL.md
+!.codex/skills/hack-tickets/
+!.codex/skills/hack-tickets/SKILL.md
+
 # tests
 .tmp-tests/

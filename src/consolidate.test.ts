@@ -98,6 +98,105 @@ describe("consolidate command", () => {
     expect(consolidated).toContain("# my-skill");
   });
 
+  it("auto-selects among duplicate skill sources in non-interactive mode", async () => {
+    const { rootDir, fromRoot } = await makeTempEnv();
+    const fromRoot2 = join(tempDir!, "from-2");
+    await mkdir(fromRoot2, { recursive: true });
+
+    const skillA = join(fromRoot, "shared-skill");
+    const skillB = join(fromRoot2, "shared-skill");
+    await mkdir(skillA, { recursive: true });
+    await mkdir(skillB, { recursive: true });
+    await Bun.write(join(skillA, "SKILL.md"), "# older\n");
+    await Bun.write(join(skillB, "SKILL.md"), "# newer\n");
+
+    const older = new Date("2024-01-01T00:00:00.000Z");
+    const newer = new Date("2025-01-01T00:00:00.000Z");
+    await utimes(skillA, older, older);
+    await utimes(skillB, newer, newer);
+
+    await withMutedConsole(async () => {
+      await consolidateCommand(
+        [
+          "--auto",
+          "keep-newest",
+          "--no-config-from",
+          "--from",
+          fromRoot,
+          "--from",
+          fromRoot2,
+        ],
+        {
+          homeDir: process.env.HOME,
+          rootDir,
+          cwd: process.cwd(),
+        }
+      );
+    });
+
+    const consolidated = await readFile(
+      join(rootDir, "skills", "shared-skill", "SKILL.md"),
+      "utf8"
+    );
+    expect(consolidated).toContain("# newer");
+  });
+
+  it("auto-selects among duplicate MCP server sources in non-interactive mode", async () => {
+    const { rootDir, fromRoot } = await makeTempEnv();
+    const fromRoot2 = join(tempDir!, "from-2");
+    await mkdir(fromRoot2, { recursive: true });
+
+    const mcpA = join(fromRoot, "mcp.json");
+    const mcpB = join(fromRoot2, "mcp.json");
+    await Bun.write(
+      mcpA,
+      JSON.stringify(
+        { servers: { reviewer: { transport: "stdio", command: "old" } } },
+        null,
+        2
+      )
+    );
+    await Bun.write(
+      mcpB,
+      JSON.stringify(
+        { servers: { reviewer: { transport: "stdio", command: "new" } } },
+        null,
+        2
+      )
+    );
+
+    const older = new Date("2024-01-01T00:00:00.000Z");
+    const newer = new Date("2025-01-01T00:00:00.000Z");
+    await utimes(mcpA, older, older);
+    await utimes(mcpB, newer, newer);
+
+    await withMutedConsole(async () => {
+      await consolidateCommand(
+        [
+          "--auto",
+          "keep-newest",
+          "--no-config-from",
+          "--from",
+          fromRoot,
+          "--from",
+          fromRoot2,
+        ],
+        {
+          homeDir: process.env.HOME,
+          rootDir,
+          cwd: process.cwd(),
+        }
+      );
+    });
+
+    const merged = JSON.parse(
+      await readFile(join(rootDir, "mcp", "mcp.json"), "utf8")
+    ) as {
+      mcpServers?: Record<string, { command?: string }>;
+    };
+    expect(merged.mcpServers?.reviewer?.command).toBe("new");
+  });
+
   it("copies standalone MCP config files in --auto mode without interactive confirmation", async () => {
     const { rootDir, fromRoot } = await makeTempEnv();
     await Bun.write(

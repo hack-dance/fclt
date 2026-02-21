@@ -6,6 +6,7 @@ import {
   type AutoDecision,
   type AutoMode,
   contentHash,
+  decideAuto,
   mcpServerHash,
   normalizeJson,
   normalizeText,
@@ -334,6 +335,29 @@ function mcpChoiceValue(loc: { sourceId: string; configPath: string }) {
   return `${loc.sourceId}:${loc.configPath}`;
 }
 
+function chooseByAutoMode<T extends { modified: Date | null }>(
+  locs: T[],
+  autoMode: AutoMode
+): T | null {
+  const first = locs[0];
+  if (!first) {
+    return null;
+  }
+
+  let chosen = first;
+  for (const loc of locs.slice(1)) {
+    const decision = decideAuto(
+      autoMode,
+      { modified: chosen.modified },
+      { modified: loc.modified }
+    );
+    if (decision === "keep-incoming") {
+      chosen = loc;
+    }
+  }
+  return chosen;
+}
+
 async function promptViewSkillContents(locs: SkillLocation[]) {
   const choice = await select({
     message: "View SKILL.md from which location?",
@@ -625,6 +649,23 @@ async function handleMultipleSkillLocations({
   force: boolean;
   autoMode: AutoMode | undefined;
 }): Promise<void> {
+  if (autoMode) {
+    const chosen = chooseByAutoMode(locs, autoMode);
+    if (!chosen) {
+      return;
+    }
+    await resolveSkillConflictAndCopy({
+      name,
+      sourceDir: chosen.entryDir,
+      dest,
+      state,
+      force,
+      autoMode,
+      incomingModified: chosen.modified,
+    });
+    return;
+  }
+
   while (true) {
     const selection = await select({
       message: `Choose source for skill "${name}"`,
@@ -1112,6 +1153,22 @@ async function handleMultipleMcpServerLocations({
   state: ConsolidatedState;
   autoMode: AutoMode | undefined;
 }): Promise<void> {
+  if (autoMode) {
+    const chosen = chooseByAutoMode(locs, autoMode);
+    if (!chosen) {
+      return;
+    }
+    await resolveMcpServerConflictAndMerge({
+      serverName,
+      loc: chosen,
+      consolidatedPath,
+      consolidatedObj,
+      state,
+      autoMode,
+    });
+    return;
+  }
+
   while (true) {
     const selection = await select({
       message: `Choose source for MCP server "${serverName}"`,
