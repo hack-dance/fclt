@@ -304,13 +304,12 @@ Default install path is `~/.facult/bin/facult`. You can pass a custom target dir
 
 - CI workflow: `.github/workflows/ci.yml`
 - Release workflow: `.github/workflows/release.yml`
-- Release assets workflow: `.github/workflows/release-assets.yml`
 - Semantic-release config: `.releaserc.json`
 
 Release behavior:
 1. Every push to `main` runs full checks.
 2. `semantic-release` creates the version/tag and GitHub release (npm publish is disabled in this phase).
-3. The `release-assets` workflow runs on `release.published`, builds platform binaries, and uploads them to that release.
+3. The same release workflow then builds platform binaries and uploads them to that GitHub release.
 4. npm publish runs only after binary asset upload succeeds (`publish-npm` depends on `publish-assets`).
 5. Published release assets include platform binaries, `facult-install.sh`, and `SHA256SUMS`.
 6. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.facult/runtime/<version>/<platform-arch>/`, and runs it.
