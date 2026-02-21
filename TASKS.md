@@ -209,6 +209,8 @@ The original v0.2 plan is complete. The remaining work is follow-on roadmap/hard
 - Keep per-user trust annotations as local override ✅
 - Add source-level trust policy management (`facult sources ...`) ✅
 - Add strict source gating for remote install/update (`--strict-source-trust`) ✅
+- Add custom-manifest integrity pinning (`indices.json` checksum/integrity) ✅
+- Add custom-manifest Ed25519 signature verification (`indices.json` signature policy) ✅
 
 ### B-003: Deeper consolidation coverage
 **Status:** Done (expanded coverage)

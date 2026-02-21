@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import {
 const BLOCKED_BY_POLICY_RE = /blocked by policy/i;
 const INTEGRITY_CHECK_FAILED_RE = /integrity check failed/i;
 const REQUIRES_REVIEW_RE = /requires review/i;
+const SIGNATURE_CHECK_FAILED_RE = /signature check failed/i;
 
 let tempDir: string | null = null;
 const originalCwd = process.cwd();
@@ -317,6 +319,159 @@ describe("remote search/install/update", () => {
         cwd: home,
       })
     ).rejects.toThrow(INTEGRITY_CHECK_FAILED_RE);
+  });
+
+  it("verifies ed25519-signed manifest sources before install", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const publicKeyPem = publicKey
+      .export({ type: "spki", format: "pem" })
+      .toString();
+    const publicKeyPath = join(home, "index-signing.pub");
+    await writeFile(publicKeyPath, publicKeyPem);
+
+    const indexPath = join(home, "signed-index.json");
+    const manifest = {
+      items: [
+        {
+          id: "signed-skill",
+          type: "skill",
+          version: "1.0.0",
+          skill: {
+            name: "signed-skill",
+            files: {
+              "SKILL.md": "# signed-skill\n",
+            },
+          },
+        },
+      ],
+    };
+    const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+    await writeFile(indexPath, manifestText);
+    const signature = sign(
+      null,
+      Buffer.from(manifestText),
+      privateKey
+    ).toString("base64");
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          indices: [
+            {
+              name: "signed-local",
+              url: indexPath,
+              signature: {
+                algorithm: "ed25519",
+                value: signature,
+                publicKeyPath,
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await installRemoteItem({
+      ref: "signed-local:signed-skill",
+      homeDir: home,
+      rootDir: root,
+      cwd: home,
+    });
+
+    expect(
+      await Bun.file(join(root, "skills", "signed-skill", "SKILL.md")).exists()
+    ).toBe(true);
+  });
+
+  it("rejects installs when pinned manifest signature does not match", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const publicKeyPem = publicKey
+      .export({ type: "spki", format: "pem" })
+      .toString();
+    const publicKeyPath = join(home, "index-signing.pub");
+    await writeFile(publicKeyPath, publicKeyPem);
+
+    const indexPath = join(home, "signed-index.json");
+    const initialManifest = {
+      items: [
+        {
+          id: "signed-skill",
+          type: "skill",
+          version: "1.0.0",
+          skill: {
+            name: "signed-skill",
+            files: {
+              "SKILL.md": "# signed-skill\n",
+            },
+          },
+        },
+      ],
+    };
+    const initialText = `${JSON.stringify(initialManifest, null, 2)}\n`;
+    const signature = sign(null, Buffer.from(initialText), privateKey).toString(
+      "base64"
+    );
+
+    const tamperedManifest = {
+      items: [
+        {
+          id: "signed-skill",
+          type: "skill",
+          version: "9.9.9",
+          skill: {
+            name: "signed-skill",
+            files: {
+              "SKILL.md": "# tampered\n",
+            },
+          },
+        },
+      ],
+    };
+    await writeFile(
+      indexPath,
+      `${JSON.stringify(tamperedManifest, null, 2)}\n`
+    );
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          indices: [
+            {
+              name: "signed-local",
+              url: indexPath,
+              signature: {
+                algorithm: "ed25519",
+                value: signature,
+                publicKeyPath,
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await expect(
+      installRemoteItem({
+        ref: "signed-local:signed-skill",
+        homeDir: home,
+        rootDir: root,
+        cwd: home,
+      })
+    ).rejects.toThrow(SIGNATURE_CHECK_FAILED_RE);
   });
 
   it("supports smithery alias search/install without local index config", async () => {

@@ -5,8 +5,11 @@ import { buildIndex } from "./index-builder";
 import { facultRootDir, facultStateDir } from "./paths";
 import {
   assertManifestIntegrity,
+  assertManifestSignature,
   type ManifestIntegrity,
+  type ManifestSignature,
   parseManifestIntegrity,
+  parseManifestSignature,
 } from "./remote-manifest-integrity";
 import {
   assertSourceAllowed,
@@ -107,6 +110,7 @@ interface IndexSource {
   url: string;
   kind: IndexSourceKind;
   integrity?: ManifestIntegrity;
+  signature?: ManifestSignature;
 }
 
 interface LoadManifestHints {
@@ -1563,6 +1567,16 @@ async function readIndexSources(
         const integrity = parseManifestIntegrity(
           entry.integrity ?? entry.checksum
         );
+        const signature = parseManifestSignature(
+          isPlainObject(entry.signature)
+            ? entry.signature
+            : {
+                algorithm: entry.signatureAlgorithm,
+                value: entry.signature ?? entry.sig,
+                publicKey: entry.publicKey,
+                publicKeyPath: entry.publicKeyPath ?? entry.keyPath,
+              }
+        );
 
         if (!name) {
           continue;
@@ -1574,6 +1588,7 @@ async function readIndexSources(
             kind: providerDefault.kind,
             url: rawUrl || providerDefault.url,
             integrity,
+            signature,
           });
           continue;
         }
@@ -1589,7 +1604,13 @@ async function readIndexSources(
           isAbsolute(rawUrl)
             ? rawUrl
             : resolve(cwd, rawUrl);
-        out.push({ name, url: resolvedUrl, kind: "manifest", integrity });
+        out.push({
+          name,
+          url: resolvedUrl,
+          kind: "manifest",
+          integrity,
+          signature,
+        });
       }
     }
   } catch {
@@ -1615,6 +1636,7 @@ function resolveKnownIndexSource(name: string): IndexSource | null {
 async function loadManifest(
   source: IndexSource,
   ctx: Required<Pick<RemoteCommandContext, "cwd">> & {
+    homeDir: string;
     fetchJson: (url: string) => Promise<unknown>;
     fetchText: (url: string) => Promise<string>;
   },
@@ -1659,6 +1681,16 @@ async function loadManifest(
       sourceUrl: source.url,
       integrity: source.integrity,
       manifestText: rawText,
+    });
+  }
+  if (source.signature) {
+    await assertManifestSignature({
+      sourceName: source.name,
+      sourceUrl: source.url,
+      signature: source.signature,
+      manifestText: rawText,
+      cwd: ctx.cwd,
+      homeDir: ctx.homeDir,
     });
   }
   const raw = parseJsonLenient(rawText);
@@ -2152,6 +2184,7 @@ async function resolveIndexSourcesAndManifests(args: {
       const manifest = await loadManifest(
         source,
         {
+          homeDir: args.homeDir,
           cwd: args.cwd,
           fetchJson: args.fetchJson,
           fetchText: args.fetchText,
@@ -2357,7 +2390,7 @@ export async function checkRemoteUpdates(args?: {
       try {
         manifest = await loadManifest(
           source,
-          { cwd, fetchJson, fetchText },
+          { homeDir: home, cwd, fetchJson, fetchText },
           { itemId: entry.itemId }
         );
       } catch {

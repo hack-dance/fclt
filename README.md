@@ -370,7 +370,12 @@ Optional custom indices can be configured in `~/.facult/indices.json`:
     {
       "name": "my-index",
       "url": "/absolute/path/to/index.json",
-      "integrity": "sha256:<manifest-sha256-hex>"
+      "integrity": "sha256:<manifest-sha256-hex>",
+      "signature": {
+        "algorithm": "ed25519",
+        "value": "<base64-signature-over-raw-manifest-bytes>",
+        "publicKeyPath": "~/.facult/trust/keys/index-signing.pub"
+      }
     },
     {
       "name": "corp-smithery",
@@ -386,7 +391,10 @@ Optional custom indices can be configured in `~/.facult/indices.json`:
 }
 ```
 
-For manifest-backed custom indices, `integrity` is optional but recommended. If set, facult verifies the fetched manifest bytes before parsing.
+For manifest-backed custom indices, `integrity` and `signature` are optional but recommended. If set, facult verifies them before parsing.
+
+- `integrity`: SHA-256 digest pin (`sha256:<hex>` or `sha256-<base64>`) over raw manifest bytes.
+- `signature`: Ed25519 detached signature over raw manifest bytes. Provide either `publicKey` (PEM or base64 DER) or `publicKeyPath`.
 
 Compute a digest:
 
@@ -399,7 +407,7 @@ shasum -a 256 /absolute/path/to/index.json
 - Scan state stores file paths and small summaries only; it does not persist raw MCP JSON bodies.
 - Static audit output redacts obvious token formats in findings evidence, but you should still treat audit output as potentially sensitive.
 - Source trust policy state is stored at `~/.facult/trust/sources.json`.
-- Integrity pinning applies to custom `manifest` sources configured in `~/.facult/indices.json`.
+- Integrity/signature pinning applies to custom `manifest` sources configured in `~/.facult/indices.json`.
 
 ## Current Scope
 
