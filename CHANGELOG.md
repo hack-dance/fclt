@@ -1,3 +1,9 @@
+## [1.0.3](https://github.com/hack-dance/facult/compare/v1.0.2...v1.0.3) (2026-02-21)
+
+### Bug Fixes
+
+* **release:** publish public-only installer changes ([7683690](https://github.com/hack-dance/facult/commit/7683690a207e7bca0dd78d87a48ae32678901adf))
+
 ## [1.0.2](https://github.com/hack-dance/facult/compare/v1.0.1...v1.0.2) (2026-02-21)
 
 ### Bug Fixes

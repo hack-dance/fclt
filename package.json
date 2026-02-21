@@ -1,6 +1,6 @@
 {
   "name": "facult",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Manage coding-agent skills and MCP configs across tools.",
   "type": "module",
   "license": "MIT",
