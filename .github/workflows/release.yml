@@ -136,6 +136,16 @@ jobs:
       - name: Build binary
         run: bun run build
 
+      - name: Verify binary (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./dist/facult --help
+
+      - name: Verify binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./dist/facult.exe --help
+
       - name: Prepare asset (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -235,6 +245,26 @@ jobs:
             echo "Tag version ($VERSION) does not match package.json version ($PACKAGE_VERSION)."
             exit 1
           fi
+
+      - name: Smoke test npm bootstrap launcher against release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOME="$(mktemp -d)"
+          export HOME
+          node ./bin/facult.cjs --help
+
+      - name: Smoke test release install script against release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP_HOME="$(mktemp -d)"
+          TMP_BIN="$(mktemp -d)"
+          FACULT_VERSION="${{ needs.semantic-release.outputs.version }}" \
+          FACULT_INSTALL_DIR="$TMP_BIN" \
+          HOME="$TMP_HOME" \
+          bash ./scripts/install.sh
+          "$TMP_BIN/facult" --help
 
       - name: Ensure NPM_TOKEN is configured
         shell: bash
