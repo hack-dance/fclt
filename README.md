@@ -265,6 +265,43 @@ Default source aliases:
 
 Custom remote sources can be defined in `~/.facult/indices.json` (manifest URL, optional integrity, optional signature keys/signature verification settings).
 
+## Local Install Modes
+
+For local CLI setup (outside npm global install), use:
+
+```bash
+bun run install:dev
+bun run install:bin
+bun run install:status
+```
+
+Default install path is `~/.facult/bin/facult`. You can pass a custom target dir via `--dir=/path`.
+
+## CI and Release Automation
+
+- CI workflow: `.github/workflows/ci.yml`
+- Release workflow: `.github/workflows/release.yml`
+- Semantic-release config: `.releaserc.json`
+
+Release behavior:
+1. every push to `main` runs release checks
+2. publish only runs when `NPM_TOKEN` is configured
+3. semantic-release updates changelog/version, creates a GitHub release, and publishes to npm
+4. `test:ci` exports `FACULT_TEST_SKIP_LOCAL=1` so local-only tests can self-skip in CI
+
+Required secrets for publish:
+- `NPM_TOKEN`
+
+Local semantic-release dry-runs require a supported Node runtime (`>=24.10`).
+
+Recommended one-time bootstrap before first auto release:
+```bash
+git tag v0.0.0
+git push origin v0.0.0
+```
+
+This makes the first semantic-release increment land at `0.0.1` for patch-level changes.
+
 ## Commit Hygiene
 
 Some MCP config files can contain secrets. Keep local generated artifacts and secret-bearing config files ignored and out of commits.
@@ -272,10 +309,18 @@ Some MCP config files can contain secrets. Keep local generated artifacts and se
 ## Local Development
 
 ```bash
+bun run install:status
+bun run install:dev
+bun run install:bin
+bun run build
+bun run build:verify
 bun run type-check
+bun run test:ci
 bun test
 bun run check
 bun run fix
+bun run pack:dry-run
+bun run release:dry-run
 ```
 
 ## FAQ

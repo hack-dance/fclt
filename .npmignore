@@ -1,0 +1,16 @@
+.github/
+.hack/
+.husky/
+.vscode/
+.codex/
+.cursor/
+.claude/
+.tmp-tests/
+_internal/
+test/
+scripts/
+src/**/*.test.ts
+src/**/fixtures/
+biome.jsonc
+tsconfig.json
+bun.lock
