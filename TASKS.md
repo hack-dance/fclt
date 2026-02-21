@@ -8,7 +8,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-001: Canonical schema enhancements
 **Effort:** 1–2 days  
-**Status:** Todo
+**Status:** Done
 
 - Add `vendorExtensions` field to MCP server schema for unknown/tool-specific fields
 - Add `provenance` field tracking original source, path, import date
@@ -18,10 +18,10 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-002: Index builder implementation
 **Effort:** 2 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/index-builder.ts`
-- Scan `~/agents/.tb/` directory structure
+- Scan `~/agents/.facult/` directory structure
 - Parse SKILL.md frontmatter/description extraction
 - Parse `servers.json` for MCP entries
 - Build and write `index.json`
@@ -29,7 +29,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-003: Query engine and list/show commands
 **Effort:** 1–2 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/query.ts`
 - Filter by type, tags, enabled-for, audit status
@@ -44,7 +44,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-004: Consolidation conflict workflow
 **Effort:** 2–3 days  
-**Status:** Todo
+**Status:** Done
 
 - Implement content normalization (trim, line endings, whitespace)
 - Add content hashing for comparison
@@ -55,7 +55,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-005: Managed mode implementation
 **Effort:** 2–3 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/manage.ts`
 - Implement backup flow: `skills/` → `skills.bak/`, `mcp.json` → `mcp.json.bak`
@@ -66,7 +66,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-006: Enable/disable and sync commands
 **Effort:** 2 days  
-**Status:** Todo
+**Status:** Done
 
 - Add `facult enable <name> --for <tools>` command
 - Add `facult disable <name> --for <tools>` command
@@ -80,7 +80,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-007: Adapter architecture
 **Effort:** 2 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/adapters/` directory structure
 - Define `ToolAdapter` interface in `src/adapters/types.ts`
@@ -89,7 +89,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-008: Tool adapters (Cursor, Claude, Codex, Clawdbot)
 **Effort:** 3–4 days  
-**Status:** Todo
+**Status:** Done
 
 - Cursor adapter (v1, v2 if needed)
 - Claude CLI adapter
@@ -104,7 +104,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-009: Snippet marker validation
 **Effort:** 1 day  
-**Status:** Todo
+**Status:** Done
 
 - Regex validation for marker names (alphanumeric, slashes for scoping)
 - Prevent path traversal (`../`) in marker names
@@ -113,10 +113,10 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-010: Snippet sync implementation
 **Effort:** 2 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/snippets.ts`
-- Scan files for `<!-- tb:NAME -->...<!-- /tb:NAME -->` markers
+- Scan files for `<!-- fclty:NAME -->...<!-- /fclty:NAME -->` markers
 - Look up snippets (project-level first, then global)
 - Replace block content, preserve markers
 - Add `facult snippets list|show|create|edit|sync` commands
@@ -128,7 +128,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-011: Static audit implementation
 **Effort:** 2–3 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/audit/static.ts`
 - Pattern matching rules for:
@@ -143,7 +143,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-012: Agent-assisted audit
 **Effort:** 2–3 days  
-**Status:** Todo
+**Status:** Done
 
 - Create `src/audit/agent.ts`
 - Format prompt with full content (default) or summary
@@ -155,13 +155,13 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-013: Trust system
 **Effort:** 1–2 days  
-**Status:** Todo
+**Status:** Done
 
 - Add `trusted` and `auditStatus` fields to index
 - Implement `facult trust <name>` and `untrust <name>`
 - Add `--untrusted` and `--flagged` filters to list
 - Trust annotation in UI (does not skip audit, only annotates)
-- Placeholder for future org trust lists (signed/checksummed)
+- Add checksum-verified org trust overlay with local override precedence
 
 ---
 
@@ -169,7 +169,7 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-014: Update README and help text
 **Effort:** 1 day  
-**Status:** Todo
+**Status:** Done
 
 - Update README.md with full command reference
 - Add inline help for all commands
@@ -178,12 +178,54 @@ Generated from Council Deliberation (2026-01-29)
 
 ### T-015: Test fixtures and edge cases
 **Effort:** 2 days  
-**Status:** Todo
+**Status:** Done
 
 - Create test fixtures for each tool format
 - Test version detection edge cases
 - Test symlink edge cases (loops, permissions)
 - Test consolidation conflict scenarios
+
+---
+
+## Post-v0.2 Backlog
+
+The original v0.2 plan is complete. The remaining work is follow-on roadmap/hardening:
+
+### B-001: Remote indices (Phase 7)
+**Status:** Done (baseline adapters complete)
+
+- Add `facult search <query>` ✅
+- Add `facult install <index:item>` ✅
+- Add `facult update [--apply]` ✅
+- Track provenance metadata for remotely installed assets ✅
+- Expand integrations for hosted/public registries (beyond builtin + configured JSON manifests) ✅ (smithery + glama aliases)
+- Add additional provider adapters (skills.sh, clawhub) ✅
+- Continue improving provider-native install depth (optional hardening)
+
+### B-002: Trust model extensions
+**Status:** Done (extended)
+
+- Add org-level trust lists (signed/checksummed) ✅
+- Keep per-user trust annotations as local override ✅
+- Add source-level trust policy management (`facult sources ...`) ✅
+- Add strict source gating for remote install/update (`--strict-source-trust`) ✅
+
+### B-003: Deeper consolidation coverage
+**Status:** In Progress
+
+- Expand automated tests for interactive consolidate conflict flows
+- Add additional filesystem edge-case coverage (permissions, symlink edge cases)
+- Added non-interactive `--auto` consolidate coverage for `--from` + standalone MCP config copy ✅
+
+### B-004: Lint-policy hardening
+**Status:** In Progress
+
+- Incrementally re-enable stricter lint rules where practical
+- Break down high-complexity command modules into smaller units
+- Recently re-enabled: `performance/noDelete`
+- Added warning-level trial for `performance/useTopLevelRegex` to surface legacy hotspots
+- Split org trust logic into dedicated module (`src/trust-list.ts`)
+- Cleared current `performance/useTopLevelRegex` hotspots across active modules/tests ✅
 
 ---
 

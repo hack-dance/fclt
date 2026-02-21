@@ -2,8 +2,14 @@
 
 **Version:** 0.2.0-draft  
 **Date:** 2026-01-29  
-**Status:** Design Phase  
+**Status:** Mixed (implemented + roadmap)  
 **Authors:** Dimitri Kennedy-Kavouras, Hacksworth
+
+---
+
+> [!NOTE]
+> This file includes both shipped behavior and forward-looking design.
+> For the currently implemented CLI surface, use `README.md` and `facult --help` as the source of truth.
 
 ---
 
@@ -22,21 +28,27 @@
 
 ## Current State
 
-### Completed (v0.1)
+### Implemented Baseline (v0.2)
 - **Scanning:** Discovers agent configs from Cursor, Claude Desktop, Claude CLI, Clawdbot, Codex, Gemini, Windsurf, VS Code
 - **Discovery:** Finds skills (by SKILL.md) and MCP configs (JSON)
-- **Consolidation:** Interactive clacks-based flow to copy items to `~/agents/.tb/`
+- **Consolidation:** Interactive clacks-based flow to copy items to `~/agents/.facult/`
 - **Deduplication:** Shows duplicates with last-modified dates, inline preview
 - **State tracking:** `~/.facult/sources.json`, `consolidated.json`
+- **Audits:** Static + agent-assisted audit flows with optional interactive wizard + quarantine
+- **Managed mode:** Per-tool manage/unmanage/sync + enable/disable by `enabledFor`
+- **Snippets:** Marker-based snippet sync (`fclty:name`) with project/global resolution
 
 ### Commands Available
 ```bash
-facult scan              # Discover all sources
-facult scan --json       # JSON output
-facult scan --tui        # Interactive TUI
-facult scan --show-duplicates
-facult consolidate       # Interactive consolidation
-facult consolidate --force
+facult scan                       # Discover local sources
+facult audit                      # Interactive audit wizard
+facult audit --non-interactive    # Static/agent audits for CI/scripts
+facult consolidate                # Interactive consolidation
+facult index                      # Build canonical index
+facult list / facult show         # Query canonical index
+facult manage / unmanage / sync   # Managed-mode workflows
+facult enable / disable           # Per-tool entry enablement
+facult snippets ...               # Marker snippet workflows
 ```
 
 ---
@@ -46,7 +58,7 @@ facult consolidate --force
 ### Directory Structure
 
 ```
-~/agents/.tb/                    # Central facult home
+~/agents/.facult/                # Central facult home
 ├── skills/                      # Consolidated skills (each is a directory with SKILL.md)
 │   ├── github/
 │   │   └── SKILL.md
@@ -89,7 +101,7 @@ interface FacultIndex {
   skills: {
     [name: string]: {
       name: string;
-      path: string;                    // ~/agents/.tb/skills/<name>
+      path: string;                    // ~/agents/.facult/skills/<name>
       description?: string;            // Extracted from SKILL.md
       source: string;                  // Original source (clawdbot, cursor, etc.)
       sourceVersion?: string;
@@ -167,7 +179,7 @@ facult show mcp:filesystem    # Show MCP server
 ### Implementation
 
 1. **Index builder** (`src/index-builder.ts`):
-   - Scan `~/agents/.tb/` directory structure
+   - Scan `~/agents/.facult/` directory structure
    - Parse SKILL.md for description extraction
    - Parse servers.json for MCP entries
    - Build and write index.json
@@ -223,8 +235,8 @@ facult sync --dry-run         # Show what would change
 For granular enable/disable, use per-skill symlinks:
 
 ```bash
-# ~/.cursor/skills/github → ~/agents/.tb/skills/github
-# ~/.cursor/skills/weather → ~/agents/.tb/skills/weather
+# ~/.cursor/skills/github → ~/agents/.facult/skills/github
+# ~/.cursor/skills/weather → ~/agents/.facult/skills/weather
 # (no symlink for disabled skills)
 ```
 
@@ -304,10 +316,10 @@ Reusable config blocks that sync across files.
 
 ### Snippet Format
 
-Snippets are markdown files in `~/agents/.tb/snippets/`:
+Snippets are markdown files in `~/agents/.facult/snippets/`:
 
 ```markdown
-<!-- ~/agents/.tb/snippets/global/codingstyle.md -->
+<!-- ~/agents/.facult/snippets/global/codingstyle.md -->
 ## Coding Style
 
 - Use TypeScript strict mode
@@ -323,12 +335,12 @@ Reference snippets with HTML comment markers:
 ```markdown
 # CLAUDE.md
 
-<!-- tb:codingstyle -->
+<!-- fclty:codingstyle -->
 ## Coding Style
 
 - Use TypeScript strict mode
 ... (content managed by facult)
-<!-- /tb:codingstyle -->
+<!-- /fclty:codingstyle -->
 
 ## Project-Specific
 
@@ -350,7 +362,7 @@ facult snippets sync CLAUDE.md          # Sync specific file
 
 ### Sync Algorithm
 
-1. Find all files with `<!-- tb:NAME -->` markers
+1. Find all files with `<!-- fclty:NAME -->` markers
 2. For each marker:
    - Look up snippet (project-level first, then global)
    - Replace content between markers with snippet content
@@ -359,9 +371,9 @@ facult snippets sync CLAUDE.md          # Sync specific file
 
 ### Inheritance
 
-- `<!-- tb:codingstyle -->` → looks for `projects/<current>/codingstyle.md`, falls back to `global/codingstyle.md`
-- `<!-- tb:global/codingstyle -->` → explicitly use global
-- `<!-- tb:myproject/context -->` → explicitly use project-specific
+- `<!-- fclty:codingstyle -->` → looks for `projects/<current>/codingstyle.md`, falls back to `global/codingstyle.md`
+- `<!-- fclty:global/codingstyle -->` → explicitly use global
+- `<!-- fclty:myproject/context -->` → explicitly use project-specific
 
 ---
 
@@ -434,6 +446,12 @@ facult list --untrusted                 # Show untrusted items
 facult list --flagged                   # Show items with audit findings
 ```
 
+Org trust list overlay (checksum-verified, optional):
+- File: `~/.facult/trust/org-list.json`
+- Expected keys: `version`, `issuer`, `generatedAt`, `skills[]`, `mcp[]`, `checksum`
+- `checksum` is SHA-256 over canonical payload (`version`, `issuer?`, `generatedAt?`, `skills`, `mcp`)
+- Local explicit trust/untrust in canonical `index.json` takes precedence over org overlay
+
 ### Audit Results
 
 ```typescript
@@ -456,32 +474,49 @@ interface AuditResult {
 
 ---
 
-## Phase 7: Remote Indices (Future)
+## Phase 7: Remote Indices (Implemented Baseline + Expansion)
 
 ### Goal
-Pull skills and MCP servers from public indices.
+Pull skills and MCP servers from indices, with a builtin index for offline DX.
 
 ### Supported Indices
 
-| Index | Type | Auth |
-|-------|------|------|
-| skills.sh | Skills | None |
-| clawdhub.com | Skills | API key (optional) |
-| glama.ai | MCP | None |
-| smithery.ai | MCP | None |
+| Index | Type | Status | Auth |
+|-------|------|--------|------|
+| facult | Templates (skill/agent/mcp/snippet) | Implemented | None |
+| smithery | MCP | Implemented (builtin alias) | None |
+| glama | MCP | Implemented (builtin alias) | None |
+| skills.sh | Skills | Implemented (builtin alias, source fallback) | None |
+| clawhub | Skills | Implemented (builtin alias, versioned file fetch) | API key (optional) |
 
-### Commands
+### Commands (Shipped)
 
 ```bash
-facult search weather                   # Search all indices
-facult search weather --index clawdhub  # Specific index
+facult search weather                    # Search all indices
+facult search github --index smithery    # Specific index
 
-facult install clawdhub:weather         # Install from index
-facult install smithery:filesystem      # Install MCP
+facult install facult:skill-template     # Install template item
+facult install smithery:github           # Install MCP from provider alias
+facult install glama:systeminit/si       # Install MCP scaffold from metadata
+facult install skills.sh:acme/deploy-skill
+facult install clawhub:release-checklist
+facult install smithery:github --strict-source-trust
 
-facult update                           # Check for updates
-facult update --apply                   # Apply updates
+facult update                            # Check for updates
+facult update --apply                    # Apply updates
+facult update --apply --strict-source-trust
+
+facult sources list                      # List source trust policy
+facult sources trust smithery            # Mark source trusted
+facult sources block skills.sh           # Block source installs/updates
 ```
+
+Current implementation includes:
+- Builtin `facult` index with production-ready templates (skills, agent instructions, MCP, snippets)
+- Builtin provider aliases for `smithery`, `glama`, `skills.sh`, and `clawhub`
+- Optional custom index config via `~/.facult/indices.json`
+- Install provenance tracking under `<FACULT_ROOT_DIR>/remote/installed.json`
+- Source trust policy state at `~/.facult/trust/sources.json` (`facult=trusted`, others default `review`)
 
 ### Provenance
 
@@ -489,10 +524,10 @@ Track where each item came from:
 
 ```json
 {
-  "name": "weather",
-  "source": "clawdhub",
-  "sourceUrl": "https://clawdhub.com/skills/weather",
-  "version": "1.2.0",
+  "name": "github",
+  "source": "smithery",
+  "sourceUrl": "https://smithery.ai/servers/github",
+  "version": "1.2.3",
   "installedAt": "2026-01-29T...",
   "pinned": false
 }
@@ -563,9 +598,11 @@ facult
 │   └── [name]
 ├── trust <name>
 ├── untrust <name>
-├── search <query>            # Future: remote indices
-├── install <ref>             # Future: install from index
-└── update                    # Future: check for updates
+├── search <query>            # Remote index search
+├── install <ref>             # Install from index (--strict-source-trust)
+├── update                    # Check/apply index updates (--strict-source-trust)
+├── sources                   # Source trust policy management
+└── templates                 # DX scaffolding templates
 ```
 
 ---
@@ -600,7 +637,7 @@ facult
 
 2. **Conflict resolution during consolidate:** When same skill exists with different content, how aggressive should auto-merge be?
 
-3. **Snippet marker format:** HTML comments (`<!-- tb:x -->`) vs custom (`<tb.x>`) vs frontmatter-style?
+3. **Snippet marker format:** HTML comments (`<!-- fclty:x -->`) vs custom (`<fclty.x>`) vs frontmatter-style?
 
 4. **Agent audit prompt design:** How much context to include? Full content vs summaries?
 
@@ -680,6 +717,6 @@ facult show flagged-skill
 # Trust or remove
 facult trust flagged-skill
 # or
-rm ~/agents/.tb/skills/flagged-skill
+rm ~/agents/.facult/skills/flagged-skill
 facult index
 ```
