@@ -73,7 +73,7 @@ describe("snippets CLI", () => {
 
     expect(out.errors).toEqual([]);
     expect(out.logs.join("\n")).toContain("HELLO");
-    expect(process.exitCode).toBeUndefined();
+    expect(process.exitCode ?? 0).toBe(0);
   });
 
   it("sync accepts explicit file paths that start with '-'", async () => {
