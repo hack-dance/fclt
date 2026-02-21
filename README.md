@@ -17,7 +17,7 @@ Think of it as:
 - package manager interface for skill/MCP catalogs
 - sync layer that applies your chosen setup to each tool
 
-## Recommended 5-Minute Setup
+## Quick Start
 
 ### 1. Install facult
 
