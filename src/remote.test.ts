@@ -9,11 +9,14 @@ import {
   searchRemoteItems,
   sourcesCommand,
   templatesCommand,
+  verifySourceCommand,
 } from "./remote";
 
 const BLOCKED_BY_POLICY_RE = /blocked by policy/i;
 const INTEGRITY_CHECK_FAILED_RE = /integrity check failed/i;
+const MULTIPLE_SIGNATURE_KEYS_RE = /multiple configured keys/i;
 const REQUIRES_REVIEW_RE = /requires review/i;
+const REVOKED_SIGNATURE_KEY_RE = /is revoked/i;
 const SIGNATURE_CHECK_FAILED_RE = /signature check failed/i;
 
 let tempDir: string | null = null;
@@ -472,6 +475,225 @@ describe("remote search/install/update", () => {
         cwd: home,
       })
     ).rejects.toThrow(SIGNATURE_CHECK_FAILED_RE);
+  });
+
+  it("supports keyId selection when multiple signature keys are configured", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const keyA = generateKeyPairSync("ed25519");
+    const keyB = generateKeyPairSync("ed25519");
+    const keyAPath = join(home, "index-signing-a.pub");
+    const keyBPath = join(home, "index-signing-b.pub");
+    await writeFile(
+      keyAPath,
+      keyA.publicKey.export({ type: "spki", format: "pem" }).toString()
+    );
+    await writeFile(
+      keyBPath,
+      keyB.publicKey.export({ type: "spki", format: "pem" }).toString()
+    );
+
+    const indexPath = join(home, "signed-index.json");
+    const manifest = {
+      items: [
+        {
+          id: "keyid-skill",
+          type: "skill",
+          version: "1.0.0",
+          skill: {
+            name: "keyid-skill",
+            files: { "SKILL.md": "# keyid-skill\n" },
+          },
+        },
+      ],
+    };
+    const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+    await writeFile(indexPath, manifestText);
+    const signature = sign(
+      null,
+      Buffer.from(manifestText),
+      keyB.privateKey
+    ).toString("base64");
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          signatureKeys: [
+            { id: "a", publicKeyPath: keyAPath, status: "active" },
+            { id: "b", publicKeyPath: keyBPath, status: "active" },
+          ],
+          indices: [
+            {
+              name: "signed-local",
+              url: indexPath,
+              signature: {
+                algorithm: "ed25519",
+                value: signature,
+                keyId: "b",
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await installRemoteItem({
+      ref: "signed-local:keyid-skill",
+      homeDir: home,
+      rootDir: root,
+      cwd: home,
+    });
+
+    expect(
+      await Bun.file(join(root, "skills", "keyid-skill", "SKILL.md")).exists()
+    ).toBe(true);
+  });
+
+  it("rejects signature verification when multiple keys are configured without keyId", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const keyA = generateKeyPairSync("ed25519");
+    const keyB = generateKeyPairSync("ed25519");
+    const keyAPath = join(home, "index-signing-a.pub");
+    const keyBPath = join(home, "index-signing-b.pub");
+    await writeFile(
+      keyAPath,
+      keyA.publicKey.export({ type: "spki", format: "pem" }).toString()
+    );
+    await writeFile(
+      keyBPath,
+      keyB.publicKey.export({ type: "spki", format: "pem" }).toString()
+    );
+
+    const indexPath = join(home, "signed-index.json");
+    const manifest = {
+      items: [
+        {
+          id: "ambiguous-skill",
+          type: "skill",
+          version: "1.0.0",
+          skill: {
+            name: "ambiguous-skill",
+            files: { "SKILL.md": "# ambiguous-skill\n" },
+          },
+        },
+      ],
+    };
+    const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+    await writeFile(indexPath, manifestText);
+    const signature = sign(
+      null,
+      Buffer.from(manifestText),
+      keyB.privateKey
+    ).toString("base64");
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          signatureKeys: [
+            { id: "a", publicKeyPath: keyAPath, status: "active" },
+            { id: "b", publicKeyPath: keyBPath, status: "active" },
+          ],
+          indices: [
+            {
+              name: "signed-local",
+              url: indexPath,
+              signature: {
+                algorithm: "ed25519",
+                value: signature,
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await expect(
+      installRemoteItem({
+        ref: "signed-local:ambiguous-skill",
+        homeDir: home,
+        rootDir: root,
+        cwd: home,
+      })
+    ).rejects.toThrow(MULTIPLE_SIGNATURE_KEYS_RE);
+  });
+
+  it("rejects signature verification when referenced keyId is revoked", async () => {
+    const { home, root } = await makeTempRoot();
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+
+    const key = generateKeyPairSync("ed25519");
+    const keyPath = join(home, "index-signing-revoked.pub");
+    await writeFile(
+      keyPath,
+      key.publicKey.export({ type: "spki", format: "pem" }).toString()
+    );
+
+    const indexPath = join(home, "signed-index.json");
+    const manifest = {
+      items: [
+        {
+          id: "revoked-skill",
+          type: "skill",
+          version: "1.0.0",
+          skill: {
+            name: "revoked-skill",
+            files: { "SKILL.md": "# revoked-skill\n" },
+          },
+        },
+      ],
+    };
+    const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+    await writeFile(indexPath, manifestText);
+    const signature = sign(
+      null,
+      Buffer.from(manifestText),
+      key.privateKey
+    ).toString("base64");
+
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          signatureKeys: [
+            { id: "team-key", publicKeyPath: keyPath, status: "revoked" },
+          ],
+          indices: [
+            {
+              name: "signed-local",
+              url: indexPath,
+              signature: {
+                algorithm: "ed25519",
+                value: signature,
+                keyId: "team-key",
+              },
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await expect(
+      installRemoteItem({
+        ref: "signed-local:revoked-skill",
+        homeDir: home,
+        rootDir: root,
+        cwd: home,
+      })
+    ).rejects.toThrow(REVOKED_SIGNATURE_KEY_RE);
   });
 
   it("supports smithery alias search/install without local index config", async () => {
@@ -952,5 +1174,127 @@ describe("sources command", () => {
     const builtin = parsed.find((row) => row.source === "facult");
     expect(builtin?.level).toBe("trusted");
     expect(builtin?.explicit).toBe(false);
+  });
+});
+
+describe("verify-source command", () => {
+  it("reports trust and integrity checks for manifest sources", async () => {
+    const { home } = await makeTempRoot();
+    process.chdir(home);
+
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+    const indexPath = join(home, "local-index.json");
+    const manifestText = `${JSON.stringify(
+      {
+        items: [
+          {
+            id: "verify-skill",
+            type: "skill",
+            version: "1.0.0",
+            skill: {
+              name: "verify-skill",
+              files: { "SKILL.md": "# verify\n" },
+            },
+          },
+        ],
+      },
+      null,
+      2
+    )}\n`;
+    await writeFile(indexPath, manifestText);
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          indices: [
+            {
+              name: "local",
+              url: indexPath,
+              integrity: `sha256:${sha256Hex(manifestText)}`,
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    await withMutedConsole(async () => {
+      await sourcesCommand(["trust", "local"], { homeDir: home, cwd: home });
+    });
+
+    const { logs, errors } = await withCapturedConsole(async () => {
+      await verifySourceCommand(["local", "--json"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+    expect(errors.length).toBe(0);
+    const report = JSON.parse(logs.join("\n")) as {
+      source: { name: string; kind: string };
+      trust: { level: string; explicit: boolean };
+      checks: {
+        fetch: string;
+        parse: string;
+        integrity: string;
+        signature: string;
+        items: number;
+      };
+      error?: string;
+    };
+    expect(report.source.name).toBe("local");
+    expect(report.source.kind).toBe("manifest");
+    expect(report.trust.level).toBe("trusted");
+    expect(report.trust.explicit).toBe(true);
+    expect(report.checks.fetch).toBe("passed");
+    expect(report.checks.parse).toBe("passed");
+    expect(report.checks.integrity).toBe("passed");
+    expect(report.checks.signature).toBe("not-configured");
+    expect(report.checks.items).toBe(1);
+    expect(report.error).toBeUndefined();
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("returns a failing status when verification checks fail", async () => {
+    const { home } = await makeTempRoot();
+    process.chdir(home);
+
+    const stateDir = join(home, ".facult");
+    await mkdir(stateDir, { recursive: true });
+    const indexPath = join(home, "local-index.json");
+    await writeFile(indexPath, `${JSON.stringify({ items: [] }, null, 2)}\n`);
+    await writeFile(
+      join(stateDir, "indices.json"),
+      `${JSON.stringify(
+        {
+          indices: [
+            {
+              name: "local",
+              url: indexPath,
+              integrity:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            },
+          ],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    const { logs, errors } = await withCapturedConsole(async () => {
+      await verifySourceCommand(["local", "--json"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+    expect(errors.length).toBe(0);
+    const report = JSON.parse(logs.join("\n")) as {
+      checks: { integrity: string };
+      error?: string;
+    };
+    expect(report.checks.integrity).toBe("failed");
+    expect(report.error).toMatch(INTEGRITY_CHECK_FAILED_RE);
+    expect(process.exitCode).toBe(1);
   });
 });

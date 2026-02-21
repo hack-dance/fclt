@@ -34,6 +34,7 @@ import {
   sourcesCommand,
   templatesCommand,
   updateCommand,
+  verifySourceCommand,
 } from "./remote";
 import { scanCommand } from "./scan";
 import { snippetsCommand } from "./snippets-cli";
@@ -76,6 +77,7 @@ Usage:
   facult search <query> [--index <name>] [--limit <n>]
   facult install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust]
   facult update [--apply] [--strict-source-trust]
+  facult verify-source <name> [--json]
   facult sources <cmd> [args...]
   facult templates <cmd> [args...]
   facult snippets <cmd> [args...]
@@ -101,6 +103,7 @@ Commands:
   search       Search remote indices (builtin + provider aliases + configured)
   install      Install an item from a remote index
   update       Check/apply updates for remotely installed items
+  verify-source  Verify source trust and manifest integrity/signature status
   sources      Manage source trust policy for remote indices
   templates    Scaffold DX-first templates (skills/instructions/MCP/snippets)
   snippets     Sync reusable snippet blocks into config files
@@ -548,6 +551,9 @@ async function main(argv: string[]) {
       return;
     case "update":
       await updateCommand(rest);
+      return;
+    case "verify-source":
+      await verifySourceCommand(rest);
       return;
     case "templates":
       await templatesCommand(rest);

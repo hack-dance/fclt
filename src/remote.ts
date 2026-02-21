@@ -2,20 +2,35 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildIndex } from "./index-builder";
-import { facultRootDir, facultStateDir } from "./paths";
+import { facultRootDir } from "./paths";
 import {
   assertManifestIntegrity,
   assertManifestSignature,
-  type ManifestIntegrity,
-  type ManifestSignature,
-  parseManifestIntegrity,
-  parseManifestSignature,
 } from "./remote-manifest-integrity";
+import { loadProviderManifest } from "./remote-providers";
 import {
   assertSourceAllowed,
   evaluateSourceTrust,
   sourcesCommand as runSourcesCommand,
 } from "./remote-source-policy";
+import { readIndexSources, resolveKnownIndexSource } from "./remote-sources";
+import {
+  BUILTIN_INDEX_NAME,
+  BUILTIN_INDEX_URL,
+  CLAWHUB_INDEX_NAME,
+  GLAMA_INDEX_NAME,
+  type IndexSource,
+  type LoadManifestHints,
+  type RemoteAgentItem,
+  type RemoteIndexItem,
+  type RemoteIndexManifest,
+  type RemoteItemType,
+  type RemoteMcpItem,
+  type RemoteSkillItem,
+  type RemoteSnippetItem,
+  SKILLS_SH_INDEX_NAME,
+  SMITHERY_INDEX_NAME,
+} from "./remote-types";
 import { validateSnippetMarkerName } from "./snippets";
 import { loadSourceTrustState, type SourceTrustLevel } from "./source-trust";
 import { parseJsonLenient } from "./util/json";
@@ -23,100 +38,7 @@ import { parseJsonLenient } from "./util/json";
 const REMOTE_STATE_VERSION = 1;
 const VERSION_TOKEN_RE = /[A-Za-z]+|[0-9]+/g;
 const QUERY_SPLIT_RE = /\s+/;
-const TRAILING_SLASH_RE = /\/+$/;
-const LEADING_AT_RE = /^@/;
-const GITHUB_SOURCE_RE =
-  /^https?:\/\/github\.com\/([^/]+)\/([^/#?]+)(?:\/tree\/([^/#?]+)(?:\/(.*))?)?/i;
-const REPO_DOT_GIT_SUFFIX_RE = /\.git$/i;
-const LEADING_SLASH_RE = /^\/+/;
-const OWNER_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MD_EXT_RE = /\.md$/i;
-
-type RemoteItemType = "skill" | "mcp" | "agent" | "snippet";
-
-interface RemoteSkillPayload {
-  name: string;
-  files: Record<string, string>;
-}
-
-interface RemoteMcpPayload {
-  name: string;
-  definition: Record<string, unknown>;
-}
-
-interface RemoteAgentPayload {
-  fileName: string;
-  content: string;
-}
-
-interface RemoteSnippetPayload {
-  marker: string;
-  content: string;
-}
-
-interface RemoteIndexItemBase {
-  id: string;
-  type: RemoteItemType;
-  title?: string;
-  description?: string;
-  version?: string;
-  tags?: string[];
-  sourceUrl?: string;
-}
-
-interface RemoteSkillItem extends RemoteIndexItemBase {
-  type: "skill";
-  skill: RemoteSkillPayload;
-}
-
-interface RemoteMcpItem extends RemoteIndexItemBase {
-  type: "mcp";
-  mcp: RemoteMcpPayload;
-}
-
-interface RemoteAgentItem extends RemoteIndexItemBase {
-  type: "agent";
-  agent: RemoteAgentPayload;
-}
-
-interface RemoteSnippetItem extends RemoteIndexItemBase {
-  type: "snippet";
-  snippet: RemoteSnippetPayload;
-}
-
-type RemoteIndexItem =
-  | RemoteSkillItem
-  | RemoteMcpItem
-  | RemoteAgentItem
-  | RemoteSnippetItem;
-
-interface RemoteIndexManifest {
-  name: string;
-  url: string;
-  updatedAt?: string;
-  items: RemoteIndexItem[];
-}
-
-type IndexSourceKind =
-  | "builtin"
-  | "manifest"
-  | "smithery"
-  | "glama"
-  | "skills-sh"
-  | "clawhub";
-
-interface IndexSource {
-  name: string;
-  url: string;
-  kind: IndexSourceKind;
-  integrity?: ManifestIntegrity;
-  signature?: ManifestSignature;
-}
-
-interface LoadManifestHints {
-  query?: string;
-  itemId?: string;
-}
 
 interface InstalledRemoteItem {
   ref: string;
@@ -182,49 +104,34 @@ interface UpdateReport {
   applied: InstallResult[];
 }
 
-const BUILTIN_INDEX_NAME = "facult";
-const BUILTIN_INDEX_URL = "builtin://facult";
-const SMITHERY_INDEX_NAME = "smithery";
-const GLAMA_INDEX_NAME = "glama";
-const SKILLS_SH_INDEX_NAME = "skills.sh";
-const CLAWHUB_INDEX_NAME = "clawhub";
-const SMITHERY_API_BASE = "https://api.smithery.ai";
-const GLAMA_API_BASE = "https://glama.ai/api/mcp/v1";
-const SKILLS_SH_WEB_BASE = "https://skills.sh";
-const CLAWHUB_API_BASE = "https://wry-manatee-359.convex.site/api/v1";
+type VerifyCheckStatus =
+  | "passed"
+  | "failed"
+  | "not-configured"
+  | "not-applicable";
 
-const KNOWN_PROVIDER_SOURCES: Record<string, IndexSource> = {
-  [SMITHERY_INDEX_NAME]: {
-    name: SMITHERY_INDEX_NAME,
-    url: SMITHERY_API_BASE,
-    kind: "smithery",
-  },
-  [GLAMA_INDEX_NAME]: {
-    name: GLAMA_INDEX_NAME,
-    url: GLAMA_API_BASE,
-    kind: "glama",
-  },
-  [SKILLS_SH_INDEX_NAME]: {
-    name: SKILLS_SH_INDEX_NAME,
-    url: SKILLS_SH_WEB_BASE,
-    kind: "skills-sh",
-  },
-  [CLAWHUB_INDEX_NAME]: {
-    name: CLAWHUB_INDEX_NAME,
-    url: CLAWHUB_API_BASE,
-    kind: "clawhub",
-  },
-  "skills-sh": {
-    name: SKILLS_SH_INDEX_NAME,
-    url: SKILLS_SH_WEB_BASE,
-    kind: "skills-sh",
-  },
-  "clawhub.ai": {
-    name: CLAWHUB_INDEX_NAME,
-    url: CLAWHUB_API_BASE,
-    kind: "clawhub",
-  },
-};
+interface VerifySourceReport {
+  checkedAt: string;
+  source: {
+    name: string;
+    url: string;
+    kind: IndexSource["kind"];
+  };
+  trust: {
+    level: SourceTrustLevel;
+    explicit: boolean;
+    note?: string;
+    updatedAt?: string;
+  };
+  checks: {
+    fetch: VerifyCheckStatus;
+    parse: VerifyCheckStatus;
+    integrity: VerifyCheckStatus;
+    signature: VerifyCheckStatus;
+    items: number;
+  };
+  error?: string;
+}
 
 const BUILTIN_MANIFEST: RemoteIndexManifest = {
   name: BUILTIN_INDEX_NAME,
@@ -700,939 +607,6 @@ function parseManifest(source: IndexSource, raw: unknown): RemoteIndexManifest {
   };
 }
 
-function trimTrailingSlash(v: string): string {
-  return v.replace(TRAILING_SLASH_RE, "");
-}
-
-function buildUrl(base: string, path: string): string {
-  const normalizedBase = trimTrailingSlash(base);
-  if (!path) {
-    return normalizedBase;
-  }
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${normalizedBase}${normalizedPath}`;
-}
-
-function encodeRefPath(ref: string): string {
-  return ref
-    .split("/")
-    .filter(Boolean)
-    .map((part) => encodeURIComponent(part))
-    .join("/");
-}
-
-function normalizedItemRef(raw: string): string {
-  return raw.trim().replace(LEADING_AT_RE, "");
-}
-
-function mcpNameFromRef(ref: string): string {
-  const parts = ref.split("/").filter(Boolean);
-  if (!parts.length) {
-    return ref;
-  }
-  return parts.at(-1) ?? ref;
-}
-
-function schemaRequiredEnv(
-  rawSchema: unknown
-): Record<string, string> | undefined {
-  if (!isPlainObject(rawSchema)) {
-    return undefined;
-  }
-  const schema = rawSchema as Record<string, unknown>;
-  const required = Array.isArray(schema.required)
-    ? schema.required
-        .filter((v): v is string => typeof v === "string")
-        .map((v) => v.trim())
-        .filter(Boolean)
-    : [];
-  if (!required.length) {
-    return undefined;
-  }
-  const properties = isPlainObject(schema.properties)
-    ? (schema.properties as Record<string, unknown>)
-    : {};
-  const env: Record<string, string> = {};
-  for (const name of uniqueSorted(required)) {
-    const prop = properties[name];
-    if (
-      isPlainObject(prop) &&
-      typeof (prop as Record<string, unknown>).default === "string"
-    ) {
-      const defaultValue = (prop as Record<string, unknown>).default as string;
-      env[name] = defaultValue;
-      continue;
-    }
-    env[name] = "<set-me>";
-  }
-  return Object.keys(env).length ? env : undefined;
-}
-
-function buildPlaceholderMcpDefinition(
-  env?: Record<string, string>
-): Record<string, unknown> {
-  const definition: Record<string, unknown> = {
-    transport: "stdio",
-    command: "<set-command>",
-    args: ["<set-args>"],
-  };
-  if (env && Object.keys(env).length) {
-    definition.env = env;
-  }
-  return definition;
-}
-
-function smitherySearchItemToRemoteItem(raw: unknown): RemoteMcpItem | null {
-  if (!isPlainObject(raw)) {
-    return null;
-  }
-  const obj = raw as Record<string, unknown>;
-  const qualifiedNameRaw =
-    typeof obj.qualifiedName === "string" ? obj.qualifiedName : "";
-  const id = normalizedItemRef(qualifiedNameRaw);
-  if (!id) {
-    return null;
-  }
-  const title =
-    typeof obj.displayName === "string" ? obj.displayName : mcpNameFromRef(id);
-  const description =
-    typeof obj.description === "string" ? obj.description : undefined;
-  const sourceUrl = typeof obj.homepage === "string" ? obj.homepage : undefined;
-  const tags = uniqueSorted(
-    [
-      "mcp",
-      "smithery",
-      obj.verified === true ? "verified" : "",
-      obj.remote === true ? "remote-capable" : "",
-    ].filter(Boolean)
-  );
-  return {
-    id,
-    type: "mcp",
-    title,
-    description,
-    sourceUrl,
-    tags,
-    mcp: {
-      name: mcpNameFromRef(id),
-      definition: buildPlaceholderMcpDefinition(),
-    },
-  };
-}
-
-function smitheryDetailToRemoteItem(
-  raw: unknown,
-  itemIdHint?: string
-): RemoteMcpItem | null {
-  if (!isPlainObject(raw)) {
-    return null;
-  }
-  const obj = raw as Record<string, unknown>;
-  const qualifiedNameRaw =
-    typeof obj.qualifiedName === "string" ? obj.qualifiedName : "";
-  const id = normalizedItemRef(qualifiedNameRaw || itemIdHint || "");
-  if (!id) {
-    return null;
-  }
-
-  const tags = uniqueSorted(
-    [
-      "mcp",
-      "smithery",
-      obj.remote === true ? "remote-capable" : "",
-      Array.isArray(obj.tools) ? "has-tools" : "",
-    ].filter(Boolean)
-  );
-
-  const connections = Array.isArray(obj.connections) ? obj.connections : [];
-  let deploymentUrl =
-    typeof obj.deploymentUrl === "string" ? obj.deploymentUrl.trim() : "";
-  let envSchema: unknown;
-  for (const conn of connections) {
-    if (!isPlainObject(conn)) {
-      continue;
-    }
-    const connType = typeof conn.type === "string" ? conn.type : "";
-    const connDeploymentUrl =
-      typeof conn.deploymentUrl === "string" ? conn.deploymentUrl : "";
-    if (!deploymentUrl && connDeploymentUrl) {
-      deploymentUrl = connDeploymentUrl;
-    }
-    if (!envSchema && connType === "http") {
-      envSchema = conn.configSchema;
-    }
-  }
-  const requiredEnv = schemaRequiredEnv(envSchema);
-
-  let definition: Record<string, unknown> =
-    buildPlaceholderMcpDefinition(requiredEnv);
-  if (deploymentUrl) {
-    const normalizedDeployment = trimTrailingSlash(deploymentUrl);
-    const mcpUrl = normalizedDeployment.endsWith("/mcp")
-      ? normalizedDeployment
-      : `${normalizedDeployment}/mcp`;
-    definition = {
-      transport: "http",
-      url: mcpUrl,
-    };
-    if (requiredEnv && Object.keys(requiredEnv).length) {
-      definition.env = requiredEnv;
-    }
-  }
-
-  const title =
-    typeof obj.displayName === "string" ? obj.displayName : mcpNameFromRef(id);
-  const description =
-    typeof obj.description === "string" ? obj.description : undefined;
-  const sourceUrl = typeof obj.homepage === "string" ? obj.homepage : undefined;
-  const version =
-    typeof obj.version === "string"
-      ? obj.version
-      : typeof obj.updatedAt === "string"
-        ? obj.updatedAt
-        : undefined;
-
-  return {
-    id,
-    type: "mcp",
-    title,
-    description,
-    version,
-    sourceUrl,
-    tags,
-    mcp: {
-      name: mcpNameFromRef(id),
-      definition,
-    },
-  };
-}
-
-async function loadSmitheryManifest(args: {
-  source: IndexSource;
-  fetchJson: (url: string) => Promise<unknown>;
-  hints?: LoadManifestHints;
-}): Promise<RemoteIndexManifest> {
-  const baseManifest: RemoteIndexManifest = {
-    name: args.source.name,
-    url: args.source.url,
-    items: [],
-  };
-  const itemId = args.hints?.itemId?.trim();
-  if (itemId) {
-    const detailUrl = buildUrl(
-      args.source.url,
-      `/servers/${encodeRefPath(normalizedItemRef(itemId))}`
-    );
-    const raw = await args.fetchJson(detailUrl);
-    const item = smitheryDetailToRemoteItem(raw, itemId);
-    if (!item) {
-      return baseManifest;
-    }
-    return {
-      ...baseManifest,
-      items: [item],
-    };
-  }
-
-  const q = args.hints?.query?.trim() ?? "";
-  const searchUrl = new URL(buildUrl(args.source.url, "/servers"));
-  searchUrl.searchParams.set("pageSize", "50");
-  if (q) {
-    searchUrl.searchParams.set("q", q);
-  }
-
-  const raw = await args.fetchJson(searchUrl.toString());
-  if (!isPlainObject(raw)) {
-    return baseManifest;
-  }
-  const obj = raw as Record<string, unknown>;
-  const servers = Array.isArray(obj.servers) ? obj.servers : [];
-  const items = servers
-    .map(smitherySearchItemToRemoteItem)
-    .filter((v): v is RemoteMcpItem => !!v);
-  return {
-    ...baseManifest,
-    items,
-  };
-}
-
-function glamaServerToRemoteItem(
-  raw: unknown,
-  itemIdHint?: string
-): RemoteMcpItem | null {
-  if (!isPlainObject(raw)) {
-    return null;
-  }
-  const obj = raw as Record<string, unknown>;
-  const namespace =
-    typeof obj.namespace === "string" ? obj.namespace.trim() : "";
-  const slug = typeof obj.slug === "string" ? obj.slug.trim() : "";
-  const fallbackId = typeof obj.id === "string" ? obj.id.trim() : "";
-  const id =
-    itemIdHint?.trim() ||
-    (namespace && slug ? `${namespace}/${slug}` : fallbackId);
-  if (!id) {
-    return null;
-  }
-
-  const attributes = Array.isArray(obj.attributes)
-    ? obj.attributes
-        .filter((v): v is string => typeof v === "string")
-        .map((v) => v.trim())
-        .filter(Boolean)
-    : [];
-  const tags = uniqueSorted(["mcp", "glama", ...attributes]);
-  const requiredEnv = schemaRequiredEnv(obj.environmentVariablesJsonSchema);
-  const definition = buildPlaceholderMcpDefinition(requiredEnv);
-  const title = typeof obj.name === "string" ? obj.name : mcpNameFromRef(id);
-  const description =
-    typeof obj.description === "string" ? obj.description : undefined;
-
-  let sourceUrl = typeof obj.url === "string" ? obj.url : undefined;
-  if (!sourceUrl && isPlainObject(obj.repository)) {
-    const repo = obj.repository as Record<string, unknown>;
-    sourceUrl = typeof repo.url === "string" ? repo.url : undefined;
-  }
-
-  const version =
-    typeof obj.version === "string"
-      ? obj.version
-      : typeof obj.updatedAt === "string"
-        ? obj.updatedAt
-        : undefined;
-
-  return {
-    id,
-    type: "mcp",
-    title,
-    description,
-    version,
-    sourceUrl,
-    tags,
-    mcp: {
-      name: mcpNameFromRef(id),
-      definition,
-    },
-  };
-}
-
-async function loadGlamaManifest(args: {
-  source: IndexSource;
-  fetchJson: (url: string) => Promise<unknown>;
-  hints?: LoadManifestHints;
-}): Promise<RemoteIndexManifest> {
-  const baseManifest: RemoteIndexManifest = {
-    name: args.source.name,
-    url: args.source.url,
-    items: [],
-  };
-  const itemId = args.hints?.itemId?.trim();
-  if (itemId) {
-    const detailUrl = buildUrl(
-      args.source.url,
-      `/servers/${encodeRefPath(itemId)}`
-    );
-    const raw = await args.fetchJson(detailUrl);
-    const item = glamaServerToRemoteItem(raw, itemId);
-    if (!item) {
-      return baseManifest;
-    }
-    return {
-      ...baseManifest,
-      items: [item],
-    };
-  }
-
-  const q = args.hints?.query?.trim() ?? "";
-  const searchUrl = new URL(buildUrl(args.source.url, "/servers"));
-  searchUrl.searchParams.set("first", "50");
-  if (q) {
-    searchUrl.searchParams.set("search", q);
-  }
-  const raw = await args.fetchJson(searchUrl.toString());
-  if (!isPlainObject(raw)) {
-    return baseManifest;
-  }
-  const obj = raw as Record<string, unknown>;
-  const servers = Array.isArray(obj.servers) ? obj.servers : [];
-  const items = servers
-    .map((server) => glamaServerToRemoteItem(server))
-    .filter((v): v is RemoteMcpItem => !!v);
-  return {
-    ...baseManifest,
-    items,
-  };
-}
-
-interface SkillsShEntry {
-  id: string;
-  title: string;
-  description?: string;
-  sourceUrl?: string;
-}
-
-const SKILLS_SH_ENTRY_RE =
-  /"source":"([^"]+)","skillId":"([^"]+)","name":"([^"]+)"(?:,"description":"([^"]*)")?/g;
-
-function decodeJsonStringLiteral(raw: string): string {
-  try {
-    return JSON.parse(`"${raw}"`) as string;
-  } catch {
-    return raw;
-  }
-}
-
-function skillNameFromId(id: string): string {
-  const base = id.split("/").filter(Boolean).at(-1) ?? id;
-  return base
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function parseSkillsShEntries(html: string): SkillsShEntry[] {
-  const normalizedHtml = html.replaceAll('\\"', '"').replaceAll("\\/", "/");
-  const out: SkillsShEntry[] = [];
-  for (const match of normalizedHtml.matchAll(SKILLS_SH_ENTRY_RE)) {
-    const rawSource = match[1] ?? "";
-    const rawSkillId = match[2] ?? "";
-    const rawName = match[3] ?? "";
-    const rawDescription = match[4] ?? "";
-
-    const sourceUrl = decodeJsonStringLiteral(rawSource).trim();
-    const skillId = decodeJsonStringLiteral(rawSkillId).trim();
-    const name = decodeJsonStringLiteral(rawName).trim();
-    const description = decodeJsonStringLiteral(rawDescription).trim();
-
-    const id = normalizedItemRef(skillId || sourceUrl);
-    if (!id) {
-      continue;
-    }
-    out.push({
-      id,
-      title: name || skillNameFromId(id),
-      description: description || undefined,
-      sourceUrl: sourceUrl || undefined,
-    });
-  }
-
-  const dedup = new Map<string, SkillsShEntry>();
-  for (const entry of out) {
-    dedup.set(entry.id, entry);
-  }
-  return Array.from(dedup.values()).sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function githubSourceParts(sourceUrl: string): {
-  owner: string;
-  repo: string;
-  branch?: string;
-  pathPrefix?: string;
-} | null {
-  const m = sourceUrl.match(GITHUB_SOURCE_RE);
-  if (!m) {
-    return null;
-  }
-  const owner = m[1]?.trim();
-  const repo = (m[2] ?? "").trim().replace(REPO_DOT_GIT_SUFFIX_RE, "");
-  const branch = m[3]?.trim() || undefined;
-  const pathPrefix = m[4]?.trim().replace(LEADING_SLASH_RE, "") || undefined;
-  if (!(owner && repo)) {
-    return null;
-  }
-  return { owner, repo, branch, pathPrefix };
-}
-
-function buildSkillsShRawCandidates(entry: SkillsShEntry): string[] {
-  const urls: string[] = [];
-  if (
-    entry.sourceUrl &&
-    entry.sourceUrl.includes("raw.githubusercontent.com") &&
-    entry.sourceUrl.endsWith(".md")
-  ) {
-    urls.push(entry.sourceUrl);
-  }
-
-  if (entry.sourceUrl) {
-    const gh = githubSourceParts(entry.sourceUrl);
-    if (gh) {
-      const path = gh.pathPrefix ? `${gh.pathPrefix}/SKILL.md` : "SKILL.md";
-      if (gh.branch) {
-        urls.push(
-          `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${gh.branch}/${path}`
-        );
-      }
-      urls.push(
-        `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/main/${path}`
-      );
-      urls.push(
-        `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/master/${path}`
-      );
-    }
-  }
-
-  const idMatch = entry.id.match(OWNER_REPO_RE);
-  if (idMatch) {
-    const [owner = "", repo = ""] = entry.id.split("/", 2);
-    if (!(owner && repo)) {
-      return uniqueSorted(urls);
-    }
-    urls.push(
-      `https://raw.githubusercontent.com/${owner}/${repo}/main/SKILL.md`
-    );
-    urls.push(
-      `https://raw.githubusercontent.com/${owner}/${repo}/master/SKILL.md`
-    );
-  }
-
-  return uniqueSorted(urls);
-}
-
-function skillItemFromEntry(args: {
-  entry: SkillsShEntry;
-  content?: string;
-}): RemoteSkillItem {
-  const skillName = skillNameFromId(args.entry.id) || "skill";
-  const tags = uniqueSorted(["skill", "skills.sh"]);
-  const content =
-    args.content?.trim() ||
-    `# ${args.entry.title || "{{name}}"}\n\n${
-      args.entry.description ?? "Imported from skills.sh."
-    }\n`;
-  return {
-    id: args.entry.id,
-    type: "skill",
-    title: args.entry.title,
-    description: args.entry.description,
-    sourceUrl: args.entry.sourceUrl,
-    tags,
-    skill: {
-      name: skillName,
-      files: {
-        "SKILL.md": content,
-      },
-    },
-  };
-}
-
-async function loadSkillsShManifest(args: {
-  source: IndexSource;
-  fetchText: (url: string) => Promise<string>;
-  hints?: LoadManifestHints;
-}): Promise<RemoteIndexManifest> {
-  const baseManifest: RemoteIndexManifest = {
-    name: args.source.name,
-    url: args.source.url,
-    items: [],
-  };
-
-  const itemId = args.hints?.itemId?.trim();
-  const q = (itemId || args.hints?.query || "").trim();
-  const searchUrl = new URL(buildUrl(args.source.url, "/"));
-  if (q) {
-    searchUrl.searchParams.set("q", q);
-  }
-  const html = await args.fetchText(searchUrl.toString());
-  const entries = parseSkillsShEntries(html);
-
-  if (itemId) {
-    const targetId = normalizedItemRef(itemId);
-    const matched =
-      entries.find((entry) => entry.id === targetId) ??
-      entries.find((entry) => entry.id.includes(targetId)) ??
-      (() => {
-        const fallback: SkillsShEntry = {
-          id: targetId,
-          title: skillNameFromId(targetId) || targetId,
-          sourceUrl: targetId.match(OWNER_REPO_RE)
-            ? `https://github.com/${targetId}`
-            : undefined,
-        };
-        return fallback;
-      })();
-
-    let content: string | undefined;
-    for (const candidate of buildSkillsShRawCandidates(matched)) {
-      try {
-        const txt = await args.fetchText(candidate);
-        if (txt.trim()) {
-          content = txt;
-          break;
-        }
-      } catch {
-        // Try next source candidate.
-      }
-    }
-
-    return {
-      ...baseManifest,
-      items: [skillItemFromEntry({ entry: matched, content })],
-    };
-  }
-
-  return {
-    ...baseManifest,
-    items: entries.map((entry) => skillItemFromEntry({ entry })),
-  };
-}
-
-function clawhubVersionValue(raw: Record<string, unknown>): string | undefined {
-  if (typeof raw.version === "string" && raw.version.trim()) {
-    return raw.version.trim();
-  }
-  const latest = raw.latestVersion;
-  if (typeof latest === "string" && latest.trim()) {
-    return latest.trim();
-  }
-  if (isPlainObject(latest)) {
-    const latestObj = latest as Record<string, unknown>;
-    if (typeof latestObj.version === "string" && latestObj.version.trim()) {
-      return latestObj.version.trim();
-    }
-    if (typeof latestObj.id === "string" && latestObj.id.trim()) {
-      return latestObj.id.trim();
-    }
-  }
-  return undefined;
-}
-
-function clawhubEntryToRemoteSkillItem(
-  raw: unknown,
-  itemIdHint?: string
-): RemoteSkillItem | null {
-  if (!isPlainObject(raw)) {
-    return null;
-  }
-  const obj = raw as Record<string, unknown>;
-  const slug = typeof obj.slug === "string" ? obj.slug.trim() : "";
-  const id = normalizedItemRef(itemIdHint || slug);
-  if (!id) {
-    return null;
-  }
-
-  const title =
-    typeof obj.name === "string" && obj.name.trim()
-      ? obj.name
-      : skillNameFromId(id);
-  const description =
-    typeof obj.description === "string" ? obj.description : undefined;
-  const sourceUrl =
-    typeof obj.sourceUrl === "string"
-      ? obj.sourceUrl
-      : typeof obj.repositoryUrl === "string"
-        ? obj.repositoryUrl
-        : undefined;
-  const categories = Array.isArray(obj.categories)
-    ? obj.categories
-        .filter((v): v is string => typeof v === "string")
-        .map((v) => v.trim())
-        .filter(Boolean)
-    : [];
-
-  return {
-    id,
-    type: "skill",
-    title,
-    description,
-    version: clawhubVersionValue(obj),
-    sourceUrl,
-    tags: uniqueSorted(["skill", "clawhub", ...categories]),
-    skill: {
-      name: skillNameFromId(id) || id,
-      files: {
-        "SKILL.md": "# {{name}}\n",
-      },
-    },
-  };
-}
-
-function extractClawhubFilePaths(raw: unknown): string[] {
-  if (!isPlainObject(raw)) {
-    return [];
-  }
-  const obj = raw as Record<string, unknown>;
-  const candidates: unknown[] = [];
-  candidates.push(obj.files);
-  candidates.push(obj.filePaths);
-  candidates.push(obj.paths);
-
-  const out: string[] = [];
-  for (const candidate of candidates) {
-    if (!Array.isArray(candidate)) {
-      continue;
-    }
-    for (const entry of candidate) {
-      if (typeof entry === "string") {
-        out.push(entry);
-        continue;
-      }
-      if (isPlainObject(entry)) {
-        const path =
-          typeof entry.path === "string"
-            ? entry.path
-            : typeof entry.filePath === "string"
-              ? entry.filePath
-              : "";
-        if (path) {
-          out.push(path);
-        }
-      }
-    }
-  }
-
-  return uniqueSorted(
-    out
-      .map((path) => path.trim())
-      .filter(Boolean)
-      .map((path) => path.replace(LEADING_SLASH_RE, ""))
-  );
-}
-
-async function loadClawhubManifest(args: {
-  source: IndexSource;
-  fetchJson: (url: string) => Promise<unknown>;
-  fetchText: (url: string) => Promise<string>;
-  hints?: LoadManifestHints;
-}): Promise<RemoteIndexManifest> {
-  const baseManifest: RemoteIndexManifest = {
-    name: args.source.name,
-    url: args.source.url,
-    items: [],
-  };
-  const itemId = args.hints?.itemId?.trim();
-  if (itemId) {
-    const detailUrl = buildUrl(
-      args.source.url,
-      `/skills/${encodeURIComponent(normalizedItemRef(itemId))}`
-    );
-    const detailRaw = await args.fetchJson(detailUrl);
-    const detailItem = clawhubEntryToRemoteSkillItem(detailRaw, itemId);
-    if (!detailItem) {
-      return baseManifest;
-    }
-
-    const detailObj = isPlainObject(detailRaw)
-      ? (detailRaw as Record<string, unknown>)
-      : {};
-    const version = detailItem.version;
-    const fallbackPaths = ["SKILL.md"];
-    let filePaths = fallbackPaths;
-    if (version) {
-      try {
-        const versionUrl = buildUrl(
-          args.source.url,
-          `/skills/${encodeURIComponent(detailItem.id)}/versions/${encodeURIComponent(version)}`
-        );
-        const versionRaw = await args.fetchJson(versionUrl);
-        const extracted = extractClawhubFilePaths(versionRaw);
-        if (extracted.length) {
-          filePaths = extracted;
-        }
-      } catch {
-        // Keep fallback file list.
-      }
-    } else {
-      const extracted = extractClawhubFilePaths(detailObj);
-      if (extracted.length) {
-        filePaths = extracted;
-      }
-    }
-
-    const files: Record<string, string> = {};
-    for (const path of filePaths) {
-      if (!isSafeRelativePath(path)) {
-        continue;
-      }
-      const fileUrl = new URL(
-        buildUrl(
-          args.source.url,
-          `/skills/${encodeURIComponent(detailItem.id)}/file`
-        )
-      );
-      fileUrl.searchParams.set("path", path);
-      if (version) {
-        fileUrl.searchParams.set("version", version);
-      }
-      try {
-        const text = await args.fetchText(fileUrl.toString());
-        if (text.trim()) {
-          files[path] = text;
-        }
-      } catch {
-        try {
-          const raw = await args.fetchJson(fileUrl.toString());
-          if (typeof raw === "string" && raw.trim()) {
-            files[path] = raw;
-            continue;
-          }
-          if (isPlainObject(raw)) {
-            const obj = raw as Record<string, unknown>;
-            const content =
-              typeof obj.content === "string"
-                ? obj.content
-                : typeof obj.text === "string"
-                  ? obj.text
-                  : "";
-            if (content.trim()) {
-              files[path] = content;
-            }
-          }
-        } catch {
-          // Ignore missing file and continue.
-        }
-      }
-    }
-
-    if (!Object.keys(files).length) {
-      files["SKILL.md"] = `# ${detailItem.title ?? "{{name}}"}\n`;
-    }
-
-    return {
-      ...baseManifest,
-      items: [
-        {
-          ...detailItem,
-          skill: {
-            name: detailItem.skill.name,
-            files,
-          },
-        },
-      ],
-    };
-  }
-
-  const q = args.hints?.query?.trim() ?? "";
-  const searchUrl = new URL(buildUrl(args.source.url, "/skills"));
-  searchUrl.searchParams.set("limit", "50");
-  if (q) {
-    searchUrl.searchParams.set("query", q);
-    searchUrl.searchParams.set("q", q);
-  }
-  const raw = await args.fetchJson(searchUrl.toString());
-  const list = Array.isArray(raw)
-    ? raw
-    : isPlainObject(raw)
-      ? Array.isArray((raw as Record<string, unknown>).items)
-        ? ((raw as Record<string, unknown>).items as unknown[])
-        : Array.isArray((raw as Record<string, unknown>).skills)
-          ? ((raw as Record<string, unknown>).skills as unknown[])
-          : []
-      : [];
-
-  const items = list
-    .map((entry) => clawhubEntryToRemoteSkillItem(entry))
-    .filter((v): v is RemoteSkillItem => !!v);
-  return {
-    ...baseManifest,
-    items,
-  };
-}
-
-async function readIndexSources(
-  home: string,
-  cwd: string
-): Promise<IndexSource[]> {
-  const out: IndexSource[] = [
-    { name: BUILTIN_INDEX_NAME, url: BUILTIN_INDEX_URL, kind: "builtin" },
-  ];
-  const configPath = join(facultStateDir(home), "indices.json");
-  if (!(await fileExists(configPath))) {
-    return out;
-  }
-  try {
-    const parsed = parseJsonLenient(await readFile(configPath, "utf8"));
-    if (!isPlainObject(parsed)) {
-      return out;
-    }
-    const candidateLists: unknown[] = [];
-    const obj = parsed as Record<string, unknown>;
-    candidateLists.push(obj.indices);
-    candidateLists.push(obj.sources);
-    for (const list of candidateLists) {
-      if (!Array.isArray(list)) {
-        continue;
-      }
-      for (const entry of list) {
-        if (!isPlainObject(entry)) {
-          continue;
-        }
-        const name = typeof entry.name === "string" ? entry.name.trim() : "";
-        const provider =
-          typeof entry.provider === "string" ? entry.provider.trim() : "";
-        const providerDefault = provider
-          ? KNOWN_PROVIDER_SOURCES[provider]
-          : undefined;
-        const rawUrl = typeof entry.url === "string" ? entry.url.trim() : "";
-        const integrity = parseManifestIntegrity(
-          entry.integrity ?? entry.checksum
-        );
-        const signature = parseManifestSignature(
-          isPlainObject(entry.signature)
-            ? entry.signature
-            : {
-                algorithm: entry.signatureAlgorithm,
-                value: entry.signature ?? entry.sig,
-                publicKey: entry.publicKey,
-                publicKeyPath: entry.publicKeyPath ?? entry.keyPath,
-              }
-        );
-
-        if (!name) {
-          continue;
-        }
-
-        if (providerDefault) {
-          out.push({
-            name,
-            kind: providerDefault.kind,
-            url: rawUrl || providerDefault.url,
-            integrity,
-            signature,
-          });
-          continue;
-        }
-
-        if (!rawUrl) {
-          continue;
-        }
-
-        const resolvedUrl =
-          rawUrl.startsWith("http://") ||
-          rawUrl.startsWith("https://") ||
-          rawUrl.startsWith("file://") ||
-          isAbsolute(rawUrl)
-            ? rawUrl
-            : resolve(cwd, rawUrl);
-        out.push({
-          name,
-          url: resolvedUrl,
-          kind: "manifest",
-          integrity,
-          signature,
-        });
-      }
-    }
-  } catch {
-    // Ignore malformed index config and keep builtin defaults.
-  }
-  const dedup = new Map<string, IndexSource>();
-  for (const source of out) {
-    dedup.set(source.name, source);
-  }
-  return Array.from(dedup.values()).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  );
-}
-
-function resolveKnownIndexSource(name: string): IndexSource | null {
-  const source = KNOWN_PROVIDER_SOURCES[name];
-  if (!source) {
-    return null;
-  }
-  return { ...source };
-}
-
 async function loadManifest(
   source: IndexSource,
   ctx: Required<Pick<RemoteCommandContext, "cwd">> & {
@@ -1645,29 +619,8 @@ async function loadManifest(
   if (source.kind === "builtin") {
     return BUILTIN_MANIFEST;
   }
-  if (source.kind === "smithery") {
-    return await loadSmitheryManifest({
-      source,
-      fetchJson: ctx.fetchJson,
-      hints,
-    });
-  }
-  if (source.kind === "glama") {
-    return await loadGlamaManifest({
-      source,
-      fetchJson: ctx.fetchJson,
-      hints,
-    });
-  }
-  if (source.kind === "skills-sh") {
-    return await loadSkillsShManifest({
-      source,
-      fetchText: ctx.fetchText,
-      hints,
-    });
-  }
-  if (source.kind === "clawhub") {
-    return await loadClawhubManifest({
+  if (source.kind !== "manifest") {
+    return await loadProviderManifest({
       source,
       fetchJson: ctx.fetchJson,
       fetchText: ctx.fetchText,
@@ -1688,6 +641,7 @@ async function loadManifest(
       sourceName: source.name,
       sourceUrl: source.url,
       signature: source.signature,
+      signatureKeys: source.signatureKeys,
       manifestText: rawText,
       cwd: ctx.cwd,
       homeDir: ctx.homeDir,
@@ -2455,6 +1409,131 @@ export async function checkRemoteUpdates(args?: {
   return { checkedAt: nowIso(args?.now), checks, applied };
 }
 
+async function verifySource(args: {
+  sourceName: string;
+  homeDir?: string;
+  cwd?: string;
+  now?: () => Date;
+  fetchJson?: (url: string) => Promise<unknown>;
+  fetchText?: (url: string) => Promise<string>;
+}): Promise<VerifySourceReport> {
+  const home = args.homeDir ?? homedir();
+  const cwd = args.cwd ?? process.cwd();
+  const fetchJson =
+    args.fetchJson ?? (async (url: string) => await defaultFetchJson(url, cwd));
+  const fetchText =
+    args.fetchText ?? (async (url: string) => await defaultFetchText(url, cwd));
+  const configured = await readIndexSources(home, cwd);
+  const source =
+    configured.find((candidate) => candidate.name === args.sourceName) ??
+    resolveKnownIndexSource(args.sourceName);
+  if (!source) {
+    throw new Error(`Source not found: ${args.sourceName}`);
+  }
+
+  const trustState = await loadSourceTrustState({ homeDir: home });
+  const trust = evaluateSourceTrust({
+    sourceName: source.name,
+    trustState,
+  });
+
+  const report: VerifySourceReport = {
+    checkedAt: nowIso(args.now),
+    source: {
+      name: source.name,
+      url: source.url,
+      kind: source.kind,
+    },
+    trust,
+    checks: {
+      fetch: "not-applicable",
+      parse: "not-applicable",
+      integrity: "not-applicable",
+      signature: "not-applicable",
+      items: 0,
+    },
+  };
+
+  try {
+    if (source.kind === "builtin") {
+      report.checks.parse = "passed";
+      report.checks.items = BUILTIN_MANIFEST.items.length;
+      return report;
+    }
+
+    if (source.kind === "manifest") {
+      const rawText = await fetchText(source.url);
+      report.checks.fetch = "passed";
+
+      if (source.integrity) {
+        assertManifestIntegrity({
+          sourceName: source.name,
+          sourceUrl: source.url,
+          integrity: source.integrity,
+          manifestText: rawText,
+        });
+        report.checks.integrity = "passed";
+      } else {
+        report.checks.integrity = "not-configured";
+      }
+
+      if (source.signature) {
+        await assertManifestSignature({
+          sourceName: source.name,
+          sourceUrl: source.url,
+          signature: source.signature,
+          signatureKeys: source.signatureKeys,
+          manifestText: rawText,
+          cwd,
+          homeDir: home,
+        });
+        report.checks.signature = "passed";
+      } else {
+        report.checks.signature = "not-configured";
+      }
+
+      const parsed = parseJsonLenient(rawText);
+      const manifest = parseManifest(source, parsed);
+      report.checks.parse = "passed";
+      report.checks.items = manifest.items.length;
+      return report;
+    }
+
+    const manifest = await loadProviderManifest({
+      source,
+      fetchJson,
+      fetchText,
+      hints: {},
+    });
+    report.checks.fetch = "passed";
+    report.checks.parse = "passed";
+    report.checks.items = manifest.items.length;
+    return report;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    report.error = message;
+    if (report.checks.fetch === "not-applicable") {
+      report.checks.fetch = "failed";
+    }
+    if (report.checks.parse === "not-applicable") {
+      report.checks.parse = "failed";
+    }
+    if (
+      report.checks.integrity === "not-applicable" &&
+      source.kind === "manifest"
+    ) {
+      report.checks.integrity = source.integrity ? "failed" : "not-configured";
+    }
+    if (
+      report.checks.signature === "not-applicable" &&
+      source.kind === "manifest"
+    ) {
+      report.checks.signature = source.signature ? "failed" : "not-configured";
+    }
+    return report;
+  }
+}
+
 function printSearchHelp() {
   console.log(`facult search — search configured remote indices
 
@@ -2509,6 +1588,19 @@ Usage:
 
 Notes:
   - Templates are powered by the builtin remote index (${BUILTIN_INDEX_NAME}).
+`);
+}
+
+function printVerifySourceHelp() {
+  console.log(`facult verify-source — verify source trust/integrity/signature status
+
+Usage:
+  facult verify-source <name> [--json]
+
+Examples:
+  facult verify-source facult
+  facult verify-source smithery
+  facult verify-source local-index --json
 `);
 }
 
@@ -2703,6 +1795,61 @@ export async function updateCommand(
     }
     if (apply) {
       console.log(`Applied ${report.applied.length} updates.`);
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
+}
+
+export async function verifySourceCommand(
+  argv: string[],
+  ctx: RemoteCommandContext = {}
+) {
+  if (
+    !argv.length ||
+    argv.includes("--help") ||
+    argv.includes("-h") ||
+    argv[0] === "help"
+  ) {
+    printVerifySourceHelp();
+    return;
+  }
+
+  const sourceName = argv.find((arg) => arg && !arg.startsWith("-"));
+  if (!sourceName) {
+    console.error("verify-source requires a source name");
+    process.exitCode = 1;
+    return;
+  }
+  const json = argv.includes("--json");
+
+  try {
+    const report = await verifySource({
+      sourceName,
+      homeDir: ctx.homeDir,
+      cwd: ctx.cwd,
+      now: ctx.now,
+      fetchJson: ctx.fetchJson,
+      fetchText: ctx.fetchText,
+    });
+    if (json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      const trustOrigin = report.trust.explicit ? "explicit" : "default";
+      console.log(
+        `${report.source.name}\t${report.source.kind}\t${report.source.url}`
+      );
+      console.log(
+        `trust=${report.trust.level} (${trustOrigin})\tfetch=${report.checks.fetch}\tparse=${report.checks.parse}\tintegrity=${report.checks.integrity}\tsignature=${report.checks.signature}\titems=${report.checks.items}`
+      );
+      if (report.error) {
+        console.log(`error: ${report.error}`);
+      }
+    }
+
+    if (report.error) {
+      process.exitCode = 1;
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

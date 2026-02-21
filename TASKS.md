@@ -211,6 +211,8 @@ The original v0.2 plan is complete. The remaining work is follow-on roadmap/hard
 - Add strict source gating for remote install/update (`--strict-source-trust`) ✅
 - Add custom-manifest integrity pinning (`indices.json` checksum/integrity) ✅
 - Add custom-manifest Ed25519 signature verification (`indices.json` signature policy) ✅
+- Add key-id + multi-key signature trust policy (rotation/revocation support) ✅
+- Add `verify-source` diagnostics command for source trust/integrity/signature checks ✅
 
 ### B-003: Deeper consolidation coverage
 **Status:** Done (expanded coverage)

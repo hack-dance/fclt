@@ -144,6 +144,7 @@ Command groups:
 - Canonical store: `consolidate`, `index`, `list`, `show`
 - Enablement + managed-mode: `trust`, `untrust`, `enable`, `disable`, `manage`, `unmanage`, `managed`, `sync`
 - Remote indices: `search`, `install`, `update`
+- Source verification: `verify-source`
 - DX scaffolding: `templates`
 - Snippets: `snippets ...`
 - Debug: `adapters`
@@ -341,6 +342,7 @@ facult search release --index clawhub
 facult install clawhub:release-checklist
 facult sources list
 facult sources trust smithery --note "reviewed by security"
+facult verify-source smithery
 facult update
 facult update --apply
 facult update --apply --strict-source-trust
@@ -374,6 +376,7 @@ Optional custom indices can be configured in `~/.facult/indices.json`:
       "signature": {
         "algorithm": "ed25519",
         "value": "<base64-signature-over-raw-manifest-bytes>",
+        "keyId": "team-2026-q1",
         "publicKeyPath": "~/.facult/trust/keys/index-signing.pub"
       }
     },
@@ -395,6 +398,26 @@ For manifest-backed custom indices, `integrity` and `signature` are optional but
 
 - `integrity`: SHA-256 digest pin (`sha256:<hex>` or `sha256-<base64>`) over raw manifest bytes.
 - `signature`: Ed25519 detached signature over raw manifest bytes. Provide either `publicKey` (PEM or base64 DER) or `publicKeyPath`.
+- `signatureKeys`: Optional keyring for rotation/revocation. Use `signature.keyId` to select a key when multiple are configured.
+
+Keyring example:
+
+```json
+{
+  "signatureKeys": [
+    {
+      "id": "team-2026-q1",
+      "status": "active",
+      "publicKeyPath": "~/.facult/trust/keys/team-2026-q1.pub"
+    },
+    {
+      "id": "team-2025-q4",
+      "status": "retired",
+      "publicKeyPath": "~/.facult/trust/keys/team-2025-q4.pub"
+    }
+  ]
+}
+```
 
 Compute a digest:
 
