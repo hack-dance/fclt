@@ -9,6 +9,22 @@ REQUESTED_VERSION="${FACULT_VERSION:-latest}"
 DOWNLOAD_RETRIES="${FACULT_DOWNLOAD_RETRIES:-12}"
 DOWNLOAD_RETRY_DELAY_SECONDS="${FACULT_DOWNLOAD_RETRY_DELAY_SECONDS:-5}"
 
+resolve_github_token() {
+  if [[ -n "${FACULT_GITHUB_TOKEN:-}" ]]; then
+    echo "$FACULT_GITHUB_TOKEN"
+    return
+  fi
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    echo "$GITHUB_TOKEN"
+    return
+  fi
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    echo "$GH_TOKEN"
+    return
+  fi
+  echo ""
+}
+
 detect_platform() {
   local os
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -41,7 +57,7 @@ detect_arch() {
 resolve_tag() {
   if [[ "$REQUESTED_VERSION" == "latest" ]]; then
     local latest_url
-    latest_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest")"
+    latest_url="$(curl "${CURL_AUTH_ARGS[@]}" -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest")"
     basename "$latest_url"
     return
   fi
@@ -52,6 +68,12 @@ resolve_tag() {
     echo "v${REQUESTED_VERSION}"
   fi
 }
+
+GITHUB_AUTH_TOKEN="$(resolve_github_token)"
+CURL_AUTH_ARGS=()
+if [[ -n "$GITHUB_AUTH_TOKEN" ]]; then
+  CURL_AUTH_ARGS=(-H "Authorization: Bearer ${GITHUB_AUTH_TOKEN}")
+fi
 
 PLATFORM="$(detect_platform)"
 ARCH="$(detect_arch "$PLATFORM")"
@@ -67,7 +89,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 echo "Downloading ${ASSET_NAME} from ${TAG}..."
 attempt=1
 while true; do
-  if curl -fsSL "$ASSET_URL" -o "$TMP_FILE"; then
+  if curl "${CURL_AUTH_ARGS[@]}" -fsSL "$ASSET_URL" -o "$TMP_FILE"; then
     break
   fi
   if [[ "$attempt" -ge "$DOWNLOAD_RETRIES" ]]; then

@@ -37,6 +37,7 @@ async function main() {
   );
   const binaryName = resolved.platform === "windows" ? "facult.exe" : "facult";
   const binaryPath = path.join(installDir, binaryName);
+  const githubToken = resolveGitHubToken();
 
   if (!(await fileExists(binaryPath))) {
     const tag = `v${version}`;
@@ -49,6 +50,7 @@ async function main() {
       await downloadWithRetry(url, tmpPath, {
         attempts: DOWNLOAD_RETRIES,
         delayMs: DOWNLOAD_RETRY_DELAY_MS,
+        token: githubToken,
       });
       if (resolved.platform !== "windows") {
         await fsp.chmod(tmpPath, 0o755);
@@ -147,15 +149,48 @@ function detectPackageManager() {
   return "npm";
 }
 
-async function download(url, destinationPath) {
+function resolveGitHubToken() {
+  const tokenCandidates = [
+    process.env.FACULT_GITHUB_TOKEN,
+    process.env.GITHUB_TOKEN,
+    process.env.GH_TOKEN,
+  ];
+  for (const candidate of tokenCandidates) {
+    const token = String(candidate || "").trim();
+    if (token) {
+      return token;
+    }
+  }
+  return "";
+}
+
+function buildRequestHeaders(url, token) {
+  const headers = {
+    "user-agent": "facult-installer",
+    accept: "application/octet-stream",
+  };
+  if (!token) {
+    return headers;
+  }
+
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    if (hostname === "github.com" || hostname === "api.github.com") {
+      headers.authorization = `Bearer ${token}`;
+    }
+  } catch {
+    // Keep default headers if URL parsing fails.
+  }
+
+  return headers;
+}
+
+async function download(url, destinationPath, options = {}) {
   await new Promise((resolve, reject) => {
     const request = https.get(
       url,
       {
-        headers: {
-          "user-agent": "facult-installer",
-          accept: "application/octet-stream",
-        },
+        headers: buildRequestHeaders(url, options.token),
       },
       (response) => {
         if (
@@ -165,7 +200,7 @@ async function download(url, destinationPath) {
           response.headers.location
         ) {
           response.resume();
-          download(response.headers.location, destinationPath)
+          download(response.headers.location, destinationPath, options)
             .then(resolve)
             .catch(reject);
           return;
@@ -205,7 +240,7 @@ async function downloadWithRetry(url, destinationPath, options) {
   for (let attempt = 1; attempt <= options.attempts; attempt += 1) {
     try {
       await safeUnlink(destinationPath);
-      await download(url, destinationPath);
+      await download(url, destinationPath, { token: options.token });
       return;
     } catch (error) {
       lastError = error;

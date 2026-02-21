@@ -252,6 +252,7 @@ jobs:
           set -euo pipefail
           HOME="$(mktemp -d)"
           export HOME
+          export FACULT_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}"
           node ./bin/facult.cjs --help
 
       - name: Smoke test release install script against release asset
@@ -262,6 +263,7 @@ jobs:
           TMP_BIN="$(mktemp -d)"
           FACULT_VERSION="${{ needs.semantic-release.outputs.version }}" \
           FACULT_INSTALL_DIR="$TMP_BIN" \
+          FACULT_GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           HOME="$TMP_HOME" \
           bash ./scripts/install.sh
           "$TMP_BIN/facult" --help

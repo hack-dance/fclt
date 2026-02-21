@@ -43,6 +43,12 @@ Direct binary install from GitHub Releases (macOS/Linux):
 curl -fsSL https://github.com/hack-dance/facult/releases/latest/download/facult-install.sh | bash
 ```
 
+If release assets are private, set a token first:
+
+```bash
+export FACULT_GITHUB_TOKEN="<github-token>"
+```
+
 Windows and manual installs can download the correct binary from each release page:
 `facult-<version>-<platform>-<arch>`.
 
@@ -242,6 +248,15 @@ facult <command> --help
 1. `FACULT_ROOT_DIR`
 2. `~/.facult/config.json` (`rootDir`)
 3. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
+
+### Runtime env vars
+
+- `FACULT_ROOT_DIR`: override canonical store location
+- `FACULT_GITHUB_TOKEN`: auth token for private GitHub release asset downloads
+- `GITHUB_TOKEN` / `GH_TOKEN`: fallback tokens for release asset downloads
+- `FACULT_VERSION`: version selector for `scripts/install.sh` (`latest` by default)
+- `FACULT_INSTALL_DIR`: install target dir for `scripts/install.sh` (`~/.facult/bin` by default)
+- `FACULT_INSTALL_PM`: force package manager detection for npm bootstrap launcher (`npm` or `bun`)
 
 ### State and report files
 
