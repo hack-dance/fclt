@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/hack-dance/facult/compare/v1.0.0...v1.0.1) (2026-02-21)
+
+### Bug Fixes
+
+* **release:** enable npm provenance publish ([7d31397](https://github.com/hack-dance/facult/commit/7d31397733149fe4f07d824e78c1a08afed28ac8))
+
 ## 1.0.0 (2026-02-21)
 
 ### Features
