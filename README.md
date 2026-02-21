@@ -1,6 +1,6 @@
 # facult
 
-`facult` is a Bun CLI for managing coding-agent skills and MCP configs across tools.
+`facult` is a CLI for managing coding-agent skills and MCP configs across tools.
 
 It helps you:
 - discover what is installed on your machine
@@ -8,7 +8,7 @@ It helps you:
 - review trust/security before installing remote content
 - enable a curated skill set across Codex, Cursor, and Claude
 
-## What facult Is (In Simple Terms)
+## What facult Is
 
 If your agent setup feels scattered (`~/.codex`, `~/.agents`, tool-specific MCP JSON/TOML), `facult` gives you one place to manage it safely.
 
@@ -19,39 +19,25 @@ Think of it as:
 
 ## Recommended 5-Minute Setup
 
-### 1) Install facult locally
+### 1. Install facult
+
+Global install:
 
 ```bash
-bun install
-bun link
+npm install -g facult
+# or
+bun add -g facult
 facult --help
 ```
 
-### 2) (Optional, Recommended) Wire all agent tools globally
-
-If you use `hack`, this sets up Codex/Cursor/Claude integrations in one place:
+One-off usage without installing globally:
 
 ```bash
-hack setup codex --global
-hack setup cursor --global
-hack setup claude --global
-hack setup mcp --global --all
+npx facult --help
+bunx facult --help
 ```
 
-### 3) Choose your canonical store location
-
-Use one of these modes:
-
-- Global (recommended for daily use across all repos):
-```bash
-export FACULT_ROOT_DIR="$HOME/agents/.facult"
-```
-- Project-local (recommended for dogfooding or isolated repo configs):
-```bash
-export FACULT_ROOT_DIR="$PWD/.codex"
-```
-
-### 4) Import existing skills/configs
+### 2. Import existing skills/configs
 
 ```bash
 facult consolidate --auto keep-current --from ~/.codex/skills --from ~/.agents/skills
@@ -60,7 +46,9 @@ facult index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-### 5) Inspect what you have
+Default canonical store: `~/agents/.facult`. You can change it later with `FACULT_ROOT_DIR` or `~/.facult/config.json`.
+
+### 3. Inspect what you have
 
 ```bash
 facult list skills
@@ -69,7 +57,7 @@ facult show requesting-code-review
 facult show mcp:github
 ```
 
-### 6) Enable managed mode for your tools
+### 4. Enable managed mode for your tools
 
 ```bash
 facult manage codex
@@ -82,7 +70,7 @@ facult sync
 
 At this point, your selected skills are actively synced to all managed tools.
 
-### 7) Turn on source trust + strict install flow
+### 5. Turn on source trust and strict install flow
 
 ```bash
 facult sources list
@@ -120,7 +108,7 @@ facult sources block <source>
 facult verify-source <source>
 ```
 
-## Security Model (Practical)
+## Security Model
 
 `facult` separates two trust layers:
 
@@ -143,7 +131,7 @@ facult audit --non-interactive --severity high
 
 Both modes support the same commands.
 
-## Command Groups (Top-Level)
+## Command Groups
 
 - Inventory: `scan`
 - Audits: `audit`
@@ -198,10 +186,9 @@ Supported keys:
 
 You can add custom manifest sources in `~/.facult/indices.json` with optional integrity/signature verification.
 
-## Notes for This Repo
+## Commit Hygiene
 
-This repository may contain local managed artifacts under `.codex/` during dogfooding.
-Some files can contain secrets from local MCP configs. Keep these ignored and out of commits.
+Some MCP config files can contain secrets. Keep local generated artifacts and secret-bearing config files ignored and out of commits.
 
 ## Local Development
 
