@@ -80,68 +80,132 @@ facult sources trust skills.sh --note "reviewed"
 facult install skills.sh:code-review --as code-review-skills-sh --strict-source-trust
 ```
 
-## Day-to-Day Commands
+## Use facult from your agents
+
+`facult` is CLI-first. The practical setup is:
+1. Install `facult` globally so any agent runtime can execute it.
+2. Put allowed `facult` workflows in your agent instructions/skills.
+3. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `facult`.
 
 ```bash
-# Inventory / audit
-facult scan
-facult audit --non-interactive --severity high
+# Scaffold reusable templates in the canonical store
+facult templates init agents
+facult templates init claude
+facult templates init skill facult-manager
 
-# Browse and inspect
-facult list skills
-facult list mcp
+# Enable that skill for managed tools
+facult manage codex
+facult manage cursor
+facult manage claude
+facult enable facult-manager --for codex,cursor,claude
+facult sync
+```
+
+Optional MCP scaffold:
+
+```bash
+facult templates init mcp facult-cli
+facult enable mcp:facult-cli --for codex,cursor,claude
+facult sync
+```
+
+Note: `templates init mcp ...` is a scaffold, not a running server by itself.
+
+## Security and Trust
+
+`facult` has two trust layers:
+- Item trust: `facult trust <name>` / `facult untrust <name>`
+- Source trust: `facult sources ...` with levels `trusted`, `review`, `blocked`
+
+`facult` also supports two audit modes:
+
+1. Interactive audit workflow:
+```bash
+facult audit
+```
+2. Static audit rules (deterministic pattern checks):
+```bash
+facult audit --non-interactive --severity high
+facult audit --non-interactive mcp:github --severity medium --json
+```
+3. Agent-based audit (Claude/Codex review pass):
+```bash
+facult audit --non-interactive --with claude --max-items 50
+facult audit --non-interactive --with codex --max-items all --json
+```
+
+Recommended security flow:
+1. `facult verify-source <source>`
+2. `facult sources trust <source>` only after review
+3. use `--strict-source-trust` for `install`/`update`
+4. run both static and agent audits on a schedule
+
+## Comprehensive Reference
+
+### Capability categories
+
+- Inventory: discover local skills, MCP configs, hooks, and instruction files
+- Management: consolidate, index, manage/unmanage tools, enable/disable entries
+- Security: static audit, agent audit, item trust, source trust, source verification
+- Distribution: search/install/update from catalogs and verified manifests
+- DX: scaffold templates and sync snippets into instruction/config files
+
+### Command categories
+
+- Inventory and discovery
+```bash
+facult scan [--from <path>] [--json] [--show-duplicates]
+facult list [skills|mcp|agents|snippets] [--enabled-for <tool>] [--untrusted] [--flagged] [--pending]
 facult show <name>
-facult show mcp:<name>
-
-# Search/install/update remote assets
-facult search review --index skills.sh
-facult install skills.sh:code-review --as code-review
-facult update --apply --strict-source-trust
-
-# Trust and policy
-facult trust <name>
-facult untrust <name>
-facult sources list
-facult sources trust <source>
-facult sources review <source>
-facult sources block <source>
-facult verify-source <source>
+facult show mcp:<name> [--show-secrets]
 ```
 
-## Security Model
-
-`facult` separates two trust layers:
-
-- Item trust (`facult trust/untrust <name>`): metadata on a specific skill/MCP entry
-- Source trust (`facult sources ...`): policy for entire remote sources (`trusted|review|blocked`)
-
-Recommended policy:
-1. Verify source (`facult verify-source <source>`) before first install
-2. Mark approved sources as `trusted`
-3. Use `--strict-source-trust` for install/update in CI and shared environments
-4. Run periodic audit:
+- Canonical store and migration
 ```bash
-facult audit --non-interactive --severity high
+facult consolidate [--auto keep-current|keep-incoming|keep-newest] [--from <path> ...]
+facult index [--force]
+facult migrate [--from <path>] [--dry-run] [--move] [--write-config]
 ```
 
-## Global vs Project Mode
+- Managed mode and rollout
+```bash
+facult manage <tool>
+facult unmanage <tool>
+facult managed
+facult enable <name> [--for <tool1,tool2,...>]
+facult enable mcp:<name> [--for <tool1,tool2,...>]
+facult disable <name> [--for <tool1,tool2,...>]
+facult sync [tool] [--dry-run]
+```
 
-- Global mode (`FACULT_ROOT_DIR=$HOME/agents/.facult`): one canonical store reused everywhere.
-- Project mode (`FACULT_ROOT_DIR=$PWD/.codex`): isolated setup per repo.
+- Remote catalogs and policies
+```bash
+facult search <query> [--index <name>] [--limit <n>]
+facult install <index:item> [--as <name>] [--force] [--strict-source-trust]
+facult update [--apply] [--strict-source-trust]
+facult verify-source <name> [--json]
+facult sources list
+facult sources trust <source> [--note <text>]
+facult sources review <source> [--note <text>]
+facult sources block <source> [--note <text>]
+facult sources clear <source>
+```
 
-Both modes support the same commands.
+- Templates and snippets
+```bash
+facult templates list
+facult templates init skill <name>
+facult templates init mcp <name>
+facult templates init snippet <marker>
+facult templates init agents
+facult templates init claude
 
-## Command Groups
-
-- Inventory: `scan`
-- Audits: `audit`
-- Canonical store: `consolidate`, `index`, `list`, `show`, `migrate`
-- Managed mode: `manage`, `unmanage`, `managed`, `enable`, `disable`, `sync`
-- Trust/policy: `trust`, `untrust`, `sources`, `verify-source`
-- Remote catalogs: `search`, `install`, `update`
-- DX scaffolding: `templates`
-- Snippets: `snippets`
-- Debug info: `adapters`
+facult snippets list
+facult snippets show <marker>
+facult snippets create <marker>
+facult snippets edit <marker>
+facult snippets sync [--dry-run] [file...]
+```
 
 For full flags and exact usage:
 ```bash
@@ -149,26 +213,26 @@ facult --help
 facult <command> --help
 ```
 
-## State, Paths, and Files
+### Root resolution
 
-### Root resolution order
-
+`facult` resolves the canonical root in this order:
 1. `FACULT_ROOT_DIR`
 2. `~/.facult/config.json` (`rootDir`)
-3. default root (`~/agents/.facult`, with legacy detection)
+3. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
 
-### State directory (`~/.facult/`)
+### State and report files
 
-- `sources.json` (last scan)
+Under `~/.facult/`:
+- `sources.json` (latest inventory scan state)
 - `consolidated.json` (consolidation state)
-- `managed.json` (managed tools)
-- `audit/static-latest.json`
-- `audit/agent-latest.json`
-- `trust/sources.json` (source trust policy)
+- `managed.json` (managed tool state)
+- `audit/static-latest.json` (latest static audit report)
+- `audit/agent-latest.json` (latest agent audit report)
+- `trust/sources.json` (source trust policy state)
 
-### Optional config (`~/.facult/config.json`)
+### Config reference
 
-Supported keys:
+`~/.facult/config.json` supports:
 - `rootDir`
 - `scanFrom`
 - `scanFromIgnore`
@@ -176,15 +240,30 @@ Supported keys:
 - `scanFromMaxVisits`
 - `scanFromMaxResults`
 
-## Remote Sources Available by Default
+`scanFrom*` settings are used by `scan`/`audit` unless `--no-config-from` is passed.
 
-- `facult` (built-in templates)
-- `smithery` (MCP provider alias)
-- `glama` (MCP provider alias)
-- `skills.sh` (skills catalog alias)
-- `clawhub` (skills catalog alias)
+Example:
+```json
+{
+  "rootDir": "~/agents/.facult",
+  "scanFrom": ["~/dev", "~/work"],
+  "scanFromIgnore": ["vendor", ".venv"],
+  "scanFromNoDefaultIgnore": false,
+  "scanFromMaxVisits": 20000,
+  "scanFromMaxResults": 5000
+}
+```
 
-You can add custom manifest sources in `~/.facult/indices.json` with optional integrity/signature verification.
+### Source aliases and custom indices
+
+Default source aliases:
+- `facult` (builtin templates)
+- `smithery`
+- `glama`
+- `skills.sh`
+- `clawhub`
+
+Custom remote sources can be defined in `~/.facult/indices.json` (manifest URL, optional integrity, optional signature keys/signature verification settings).
 
 ## Commit Hygiene
 
