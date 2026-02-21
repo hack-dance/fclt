@@ -37,6 +37,7 @@ import {
   verifySourceCommand,
 } from "./remote";
 import { scanCommand } from "./scan";
+import { selfUpdateCommand } from "./self-update";
 import { snippetsCommand } from "./snippets-cli";
 import { trustCommand, untrustCommand } from "./trust";
 import { parseJsonLenient } from "./util/json";
@@ -77,6 +78,8 @@ Usage:
   facult search <query> [--index <name>] [--limit <n>]
   facult install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust]
   facult update [--apply] [--strict-source-trust]
+  facult update --self [--version <x.y.z|latest>] [--dry-run]
+  facult self-update [--version <x.y.z|latest>] [--dry-run]
   facult verify-source <name> [--json]
   facult sources <cmd> [args...]
   facult templates <cmd> [args...]
@@ -103,6 +106,7 @@ Commands:
   search       Search remote indices (builtin + provider aliases + configured)
   install      Install an item from a remote index
   update       Check/apply updates for remotely installed items
+  self-update  Update facult itself based on install method
   verify-source  Verify source trust and manifest integrity/signature status
   sources      Manage source trust policy for remote indices
   templates    Scaffold DX-first templates (skills/instructions/MCP/snippets)
@@ -133,6 +137,7 @@ Options:
   --as                Install/scaffold target name override
   --limit             Max results for search
   --apply             Apply updates (update command)
+  --self              (update) run self-update flow instead of remote item updates
   --strict-source-trust  Enforce trust-only remote install/update actions
   --show-secrets      (show) Print raw secret values (unsafe)
 `);
@@ -550,7 +555,14 @@ async function main(argv: string[]) {
       await installCommand(rest);
       return;
     case "update":
+      if (rest.includes("--self")) {
+        await selfUpdateCommand(rest.filter((arg) => arg !== "--self"));
+        return;
+      }
       await updateCommand(rest);
+      return;
+    case "self-update":
+      await selfUpdateCommand(rest);
       return;
     case "verify-source":
       await verifySourceCommand(rest);

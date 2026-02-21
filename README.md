@@ -21,7 +21,7 @@ Think of it as:
 
 ### 1. Install facult
 
-Global install:
+Recommended global install:
 
 ```bash
 npm install -g facult
@@ -30,11 +30,34 @@ bun add -g facult
 facult --help
 ```
 
-One-off usage without installing globally:
+One-off usage without global install:
 
 ```bash
 npx facult --help
 bunx facult --help
+```
+
+Direct binary install from GitHub Releases (macOS/Linux):
+
+```bash
+curl -fsSL https://github.com/hack-dance/facult/releases/latest/download/facult-install.sh | bash
+```
+
+Windows and manual installs can download the correct binary from each release page:
+`facult-<version>-<platform>-<arch>`.
+
+Update later with:
+
+```bash
+facult self-update
+# or
+facult update --self
+```
+
+Pin to a specific version:
+
+```bash
+facult self-update --version 0.0.1
 ```
 
 ### 2. Import existing skills/configs
@@ -281,13 +304,26 @@ Default install path is `~/.facult/bin/facult`. You can pass a custom target dir
 
 - CI workflow: `.github/workflows/ci.yml`
 - Release workflow: `.github/workflows/release.yml`
+- Release assets workflow: `.github/workflows/release-assets.yml`
 - Semantic-release config: `.releaserc.json`
 
 Release behavior:
-1. every push to `main` runs release checks
-2. publish only runs when `NPM_TOKEN` is configured
-3. semantic-release updates changelog/version, creates a GitHub release, and publishes to npm
-4. `test:ci` exports `FACULT_TEST_SKIP_LOCAL=1` so local-only tests can self-skip in CI
+1. Every push to `main` runs full checks.
+2. When `NPM_TOKEN` is configured, `semantic-release` publishes the single `facult` npm package and creates a GitHub release/tag.
+3. The `release-assets` workflow runs on `release.published`, builds platform binaries, and attaches them to that GitHub release.
+4. Published release assets include platform binaries, `facult-install.sh`, and `SHA256SUMS`.
+5. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.facult/runtime/<version>/<platform-arch>/`, and runs it.
+
+Current prebuilt binary targets:
+- `darwin-x64`
+- `darwin-arm64`
+- `linux-x64`
+- `windows-x64`
+
+Self-update behavior:
+1. npm/bun global install: updates via package manager (`npm install -g facult@...` or `bun add -g facult@...`).
+2. Direct binary install (release script/local binary path): downloads and replaces the binary in place.
+3. Use `facult self-update` (or `facult update --self`).
 
 Required secrets for publish:
 - `NPM_TOKEN`

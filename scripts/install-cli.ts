@@ -66,6 +66,7 @@ async function main(parsed: ParseOk): Promise<number> {
   await mkdir(installDir, { recursive: true });
 
   const targetPath = resolve(installDir, CLI_NAME);
+  const packageVersion = await readPackageVersion(repoRoot);
   let desired: DesiredInstall;
   try {
     desired = await desiredInstall({
@@ -103,6 +104,12 @@ async function main(parsed: ParseOk): Promise<number> {
   }
 
   await applyInstall(desired);
+  await writeInstallState({
+    home,
+    method: parsed.mode === "dev" ? "script-dev" : "script-bin",
+    packageVersion,
+    binaryPath: desired.kind === "symlink" ? desired.linkTarget : targetPath,
+  });
   printSuccess({ mode: parsed.mode, installDir, targetPath });
   return 0;
 }
@@ -281,4 +288,39 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function readPackageVersion(
+  repoRoot: string
+): Promise<string | undefined> {
+  try {
+    const pkg = (await Bun.file(resolve(repoRoot, "package.json")).json()) as {
+      version?: string;
+    };
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeInstallState(args: {
+  home: string;
+  method: "script-dev" | "script-bin";
+  packageVersion?: string;
+  binaryPath?: string;
+}) {
+  const dir = resolve(args.home, ".facult");
+  await mkdir(dir, { recursive: true });
+  const payload = {
+    version: 1,
+    method: args.method,
+    packageVersion: args.packageVersion,
+    binaryPath: args.binaryPath,
+    source: "local-script",
+    installedAt: new Date().toISOString(),
+  };
+  await Bun.write(
+    resolve(dir, "install.json"),
+    `${JSON.stringify(payload, null, 2)}\n`
+  );
 }
