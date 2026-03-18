@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FacultIndex } from "./index-builder";
+import { facultAiIndexPath } from "./paths";
 import { applyTrust } from "./trust";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -68,7 +69,7 @@ describe("trust/untrust", () => {
     };
 
     await Bun.write(
-      join(rootDir, "index.json"),
+      facultAiIndexPath(tempHome),
       JSON.stringify(index, null, 2)
     );
 
@@ -79,7 +80,7 @@ describe("trust/untrust", () => {
     });
 
     const trusted = JSON.parse(
-      await Bun.file(join(rootDir, "index.json")).text()
+      await Bun.file(facultAiIndexPath(tempHome)).text()
     ) as FacultIndex;
     expect((trusted.skills.alpha as any).trusted).toBe(true);
     expect(typeof (trusted.skills.alpha as any).trustedAt).toBe("string");
@@ -92,7 +93,7 @@ describe("trust/untrust", () => {
     });
 
     const untrusted = JSON.parse(
-      await Bun.file(join(rootDir, "index.json")).text()
+      await Bun.file(facultAiIndexPath(tempHome)).text()
     ) as FacultIndex;
     expect((untrusted.skills.alpha as any).trusted).toBe(false);
     expect((untrusted.skills.alpha as any).trustedAt).toBeUndefined();

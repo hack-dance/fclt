@@ -1106,7 +1106,11 @@ async function installParsedItem(args: {
     updatedAt: nowIso(args.now),
     items: dedup.sort((a, b) => a.ref.localeCompare(b.ref)),
   });
-  await buildIndex({ rootDir: args.rootDir, force: false });
+  await buildIndex({
+    rootDir: args.rootDir,
+    homeDir: args.homeDir,
+    force: false,
+  });
   return result;
 }
 

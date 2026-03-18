@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FacultIndex } from "../index-builder";
+import { facultAiIndexPath } from "../paths";
 import type { AuditItemResult } from "./types";
 import { updateIndexFromAuditReport } from "./update-index";
 
@@ -71,7 +72,7 @@ describe("audit index updates", () => {
     };
 
     await Bun.write(
-      join(rootDir, "index.json"),
+      facultAiIndexPath(tempHome),
       JSON.stringify(index, null, 2)
     );
 
@@ -107,7 +108,7 @@ describe("audit index updates", () => {
     expect(updated.updated).toBe(true);
 
     const next = JSON.parse(
-      await Bun.file(join(rootDir, "index.json")).text()
+      await Bun.file(facultAiIndexPath(tempHome)).text()
     ) as FacultIndex;
     expect((next.skills.alpha as any).auditStatus).toBe("flagged");
     expect((next.skills.alpha as any).lastAuditAt).toBe(ts);
@@ -142,7 +143,7 @@ describe("audit index updates", () => {
     };
 
     await Bun.write(
-      join(rootDir, "index.json"),
+      facultAiIndexPath(tempHome),
       JSON.stringify(index, null, 2)
     );
 
@@ -170,7 +171,7 @@ describe("audit index updates", () => {
     });
 
     const next = JSON.parse(
-      await Bun.file(join(rootDir, "index.json")).text()
+      await Bun.file(facultAiIndexPath(tempHome)).text()
     ) as FacultIndex;
     expect((next.skills.alpha as any).auditStatus).toBe("pending");
   });

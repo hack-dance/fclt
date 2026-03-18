@@ -230,6 +230,12 @@ export interface SyncResult {
   errors: string[];
 }
 
+export interface RenderSnippetTextResult {
+  text: string;
+  changes: SyncChange[];
+  errors: string[];
+}
+
 function isSafePathString(p: string): boolean {
   // Protect filesystem APIs from null-byte paths.
   return !p.includes("\0");
@@ -562,6 +568,106 @@ export async function syncFile(args: {
   }
 
   return { filePath, dryRun, changed: true, changes, errors: [] };
+}
+
+export async function renderSnippetText(args: {
+  text: string;
+  project?: string | null;
+  filePath?: string;
+  rootDir?: string;
+}): Promise<RenderSnippetTextResult> {
+  const rootDir = args.rootDir ?? facultRootDir();
+  const text = args.text;
+  const filePath = args.filePath;
+  const errors: string[] = [];
+  const changes: SyncChange[] = [];
+
+  if (!hasMarkers(text)) {
+    return { text, changes, errors };
+  }
+
+  const found = findMarkersInText(text, filePath);
+  if (found.errors.length) {
+    return {
+      text,
+      changes,
+      errors: found.errors,
+    };
+  }
+
+  let lastEnd = -1;
+  for (const p of found.pairs) {
+    if (p.open.start < lastEnd) {
+      const location = filePath
+        ? `${filePath}:${p.open.line}`
+        : `line ${p.open.line}`;
+      errors.push(
+        `${location}: snippet markers may not be nested or overlapping (found ${p.name})`
+      );
+    }
+    lastEnd = p.close.end;
+  }
+  if (errors.length) {
+    return { text, changes, errors };
+  }
+
+  type Replacement = { start: number; end: number; next: string };
+  const replacements: Replacement[] = [];
+
+  for (const pair of found.pairs) {
+    const marker = pair.name;
+    const existing = text.slice(pair.contentStart, pair.contentEnd);
+    const existingNorm = normalizeSnippetBody(existing);
+
+    const snippet = await findSnippet({
+      marker,
+      project: args.project ?? null,
+      rootDir,
+    });
+
+    if (!snippet) {
+      changes.push({ marker, status: "not-found" });
+      continue;
+    }
+
+    const snippetNorm = normalizeSnippetBody(snippet.content);
+    if (existingNorm === snippetNorm) {
+      changes.push({
+        marker,
+        status: "unchanged",
+        snippetPath: snippet.path,
+        lines: countLines(snippetNorm),
+      });
+      continue;
+    }
+
+    replacements.push({
+      start: pair.contentStart,
+      end: pair.contentEnd,
+      next: formatSnippetInjection(snippet.content),
+    });
+    changes.push({
+      marker,
+      status: "updated",
+      snippetPath: snippet.path,
+      lines: countLines(snippetNorm),
+    });
+  }
+
+  if (replacements.length === 0) {
+    return { text, changes, errors };
+  }
+
+  let updated = text;
+  for (const r of replacements.sort((a, b) => b.start - a.start)) {
+    updated = updated.slice(0, r.start) + r.next + updated.slice(r.end);
+  }
+
+  return {
+    text: updated,
+    changes,
+    errors,
+  };
 }
 
 export async function syncAll(args?: {

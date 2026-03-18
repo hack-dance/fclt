@@ -3,7 +3,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndex, parseSkillMarkdown } from "./index-builder";
-import { facultRootDir } from "./paths";
+import { facultAiIndexPath, facultRootDir } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
@@ -95,7 +95,7 @@ describe("buildIndex", () => {
 
     const { index, outputPath } = await buildIndex({ rootDir });
 
-    expect(outputPath).toBe(join(rootDir, "index.json"));
+    expect(outputPath).toBe(facultAiIndexPath(tempHome));
     expect(index.version).toBe(1);
     expect(index.skills["my-skill"]?.description).toBe("My skill");
     expect(index.mcp.servers["my-server"]?.definition).toEqual({

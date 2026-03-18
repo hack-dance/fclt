@@ -1,0 +1,74 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { facultAiIndexPath, facultAiStateDir, facultRootDir } from "./paths";
+
+const ORIGINAL_HOME = process.env.HOME;
+let tempHome: string | null = null;
+
+async function makeTempHome(): Promise<string> {
+  const base = join(process.cwd(), ".tmp-tests");
+  await mkdir(base, { recursive: true });
+  const dir = join(
+    base,
+    `home-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+afterEach(async () => {
+  if (tempHome) {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+  tempHome = null;
+  process.env.HOME = ORIGINAL_HOME;
+  process.env.FACULT_ROOT_DIR = undefined;
+});
+
+describe("paths", () => {
+  it("prefers ~/.ai as the canonical root when present", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    await mkdir(join(tempHome, ".ai", "rules"), { recursive: true });
+
+    expect(facultRootDir(tempHome)).toBe(join(tempHome, ".ai"));
+  });
+
+  it("falls back to legacy ~/agents/.facult when ~/.ai is absent", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    await mkdir(join(tempHome, "agents", ".facult", "skills"), {
+      recursive: true,
+    });
+
+    expect(facultRootDir(tempHome)).toBe(join(tempHome, "agents", ".facult"));
+  });
+
+  it("ignores a legacy configured root when ~/.ai is present", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    await mkdir(join(tempHome, ".ai", "agents"), { recursive: true });
+    await mkdir(join(tempHome, ".facult"), { recursive: true });
+    await writeFile(
+      join(tempHome, ".facult", "config.json"),
+      `${JSON.stringify({ rootDir: join(tempHome, "agents", ".facult") }, null, 2)}\n`,
+      "utf8"
+    );
+
+    expect(facultRootDir(tempHome)).toBe(join(tempHome, ".ai"));
+  });
+
+  it("uses ~/.facult/ai for generated index state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    expect(facultAiStateDir(tempHome)).toBe(join(tempHome, ".facult", "ai"));
+    expect(facultAiIndexPath(tempHome)).toBe(
+      join(tempHome, ".facult", "ai", "index.json")
+    );
+  });
+});

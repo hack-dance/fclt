@@ -21,6 +21,7 @@ export interface CanonicalSkill {
 export interface AdapterDefaultPaths {
   mcp?: string;
   skills?: string | string[];
+  agents?: string | string[];
   config?: string;
 }
 

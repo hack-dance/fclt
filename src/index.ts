@@ -3,7 +3,9 @@
 import { join } from "node:path";
 import { getAllAdapters } from "./adapters";
 import { auditCommand } from "./audit";
+import { autosyncCommand } from "./autosync";
 import { consolidateCommand } from "./consolidate";
+import { doctorCommand } from "./doctor";
 import { disableCommand, enableCommand } from "./enable-disable";
 import type {
   AgentEntry,
@@ -61,6 +63,7 @@ Usage:
   facult audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
   facult audit --non-interactive [name|mcp:<name>] --with <claude|codex> [--from <path>] [--max-items <n|all>] [--json]
   facult migrate [--from <path>] [--dry-run] [--move] [--write-config]
+  facult doctor [--repair]
   facult consolidate [--force] [--auto <mode>] [scan options]
   facult index [--force]
   facult list [skills|mcp|agents|snippets] [--enabled-for TOOL] [--untrusted] [--flagged] [--pending] [--json]
@@ -75,6 +78,7 @@ Usage:
   facult enable <name> [moreNames...] [--for <tools>]
   facult disable <name> [moreNames...] [--for <tools>]
   facult sync [tool] [--dry-run]
+  facult autosync <cmd> [args...]
   facult search <query> [--index <name>] [--limit <n>]
   facult install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust]
   facult update [--apply] [--strict-source-trust]
@@ -89,7 +93,8 @@ Usage:
 Commands:
   scan         Scan common config locations (Cursor, Claude, Claude Desktop, etc.)
   audit        Security audits (interactive by default; use --non-interactive for scripts)
-  migrate      Copy/move a legacy canonical store to ~/agents/.facult
+  migrate      Copy/move a legacy canonical store to the current canonical root
+  doctor       Inspect and repair local facult state
   consolidate  Deduplicate and copy skills + MCP configs (interactive or --auto)
   index        Build a queryable index from the canonical store (see FACULT_ROOT_DIR)
   list         List indexed skills, MCP servers, agents, or snippets
@@ -103,6 +108,7 @@ Commands:
   enable       Enable skills or MCP servers for tools
   disable      Disable skills or MCP servers for tools
   sync         Sync managed tools with canonical configs
+  autosync     Install/manage a background autosync service
   search       Search remote indices (builtin + provider aliases + configured)
   install      Install an item from a remote index
   update       Check/apply updates for remotely installed items
@@ -509,6 +515,9 @@ async function main(argv: string[]) {
     case "migrate":
       await migrateCommand(rest);
       return;
+    case "doctor":
+      await doctorCommand(rest);
+      return;
     case "consolidate":
       await consolidateCommand(rest);
       return;
@@ -547,6 +556,9 @@ async function main(argv: string[]) {
       return;
     case "sync":
       await syncCommand(rest);
+      return;
+    case "autosync":
+      await autosyncCommand(rest);
       return;
     case "search":
       await searchCommand(rest);

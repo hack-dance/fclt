@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { applyEnableDisable } from "./enable-disable";
 import type { FacultIndex } from "./index-builder";
 import { type ManagedState, saveManagedState } from "./manage";
+import { facultAiIndexPath } from "./paths";
 
 async function createTempDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "facult-enable-"));
@@ -24,7 +25,7 @@ describe("enable/disable", () => {
     await mkdir(alphaDir, { recursive: true });
     await Bun.write(join(alphaDir, "SKILL.md"), "# Alpha\n");
 
-    const indexPath = join(rootDir, "index.json");
+    const indexPath = facultAiIndexPath(home);
     const index: FacultIndex = {
       version: 1,
       updatedAt: new Date().toISOString(),
@@ -149,7 +150,7 @@ describe("enable/disable", () => {
     await mkdir(alphaDir, { recursive: true });
     await Bun.write(join(alphaDir, "SKILL.md"), "# Alpha\n");
 
-    const indexPath = join(rootDir, "index.json");
+    const indexPath = facultAiIndexPath(home);
     const index: FacultIndex = {
       version: 1,
       updatedAt: new Date().toISOString(),

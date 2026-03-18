@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { ensureAiIndexPath } from "../ai-state";
 import type { FacultIndex } from "../index-builder";
-import { facultRootDir } from "../paths";
+import { facultAiIndexPath, facultRootDir } from "../paths";
 import type { AuditItemResult, Severity } from "./types";
 import { SEVERITY_ORDER } from "./types";
 
@@ -33,8 +33,12 @@ function computeAuditStatus(
   return worst >= SEVERITY_ORDER.high ? "flagged" : "passed";
 }
 
-async function loadIndex(rootDir: string): Promise<FacultIndex | null> {
-  const indexPath = join(rootDir, "index.json");
+async function loadIndex(homeDir: string): Promise<FacultIndex | null> {
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir,
+    rootDir: facultRootDir(homeDir),
+    repair: true,
+  });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     return null;
@@ -46,8 +50,8 @@ async function loadIndex(rootDir: string): Promise<FacultIndex | null> {
   }
 }
 
-async function writeIndex(rootDir: string, index: FacultIndex) {
-  const indexPath = join(rootDir, "index.json");
+async function writeIndex(homeDir: string, index: FacultIndex) {
+  const indexPath = facultAiIndexPath(homeDir);
   await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
@@ -57,9 +61,7 @@ export async function updateIndexFromAuditReport(opts: {
   results: AuditItemResult[];
 }): Promise<{ updated: boolean; reason?: string }> {
   const home = opts.homeDir ?? homedir();
-  const rootDir = facultRootDir(home);
-
-  const loaded = await loadIndex(rootDir);
+  const loaded = await loadIndex(home);
   if (!loaded) {
     return { updated: false, reason: "index-missing" };
   }
@@ -110,6 +112,6 @@ export async function updateIndexFromAuditReport(opts: {
   }
 
   index.updatedAt = new Date().toISOString();
-  await writeIndex(rootDir, index);
+  await writeIndex(home, index);
   return { updated: true };
 }

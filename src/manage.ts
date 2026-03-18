@@ -8,8 +8,15 @@ import {
   symlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { getAdapter } from "./adapters";
+import { renderCanonicalText } from "./agents";
+import { ensureAiIndexPath } from "./ai-state";
+import {
+  syncToolConfig,
+  syncToolGlobalDocs,
+  syncToolRules,
+} from "./global-docs";
 import { facultRootDir } from "./paths";
 
 export interface ManagedToolState {
@@ -17,8 +24,19 @@ export interface ManagedToolState {
   managedAt: string;
   skillsDir?: string;
   mcpConfig?: string;
+  agentsDir?: string;
+  toolHome?: string;
+  globalAgentsPath?: string;
+  globalAgentsOverridePath?: string;
+  rulesDir?: string;
+  toolConfig?: string;
   skillsBackup?: string | null;
   mcpBackup?: string | null;
+  agentsBackup?: string | null;
+  globalAgentsBackup?: string | null;
+  globalAgentsOverrideBackup?: string | null;
+  rulesBackup?: string | null;
+  toolConfigBackup?: string | null;
 }
 
 export interface ManagedState {
@@ -30,6 +48,10 @@ export interface ToolPaths {
   tool: string;
   skillsDir?: string;
   mcpConfig?: string;
+  agentsDir?: string;
+  toolHome?: string;
+  rulesDir?: string;
+  toolConfig?: string;
 }
 
 export interface ManageOptions {
@@ -90,6 +112,10 @@ function defaultToolPaths(home: string): Record<string, ToolPaths> {
       tool: "codex",
       skillsDir: homePath(home, ".codex", "skills"),
       mcpConfig: homePath(home, ".codex", "mcp.json"),
+      agentsDir: homePath(home, ".codex", "agents"),
+      toolHome: homePath(home, ".codex"),
+      rulesDir: homePath(home, ".codex", "rules"),
+      toolConfig: homePath(home, ".codex", "config.toml"),
     },
     claude: {
       tool: "claude",
@@ -130,13 +156,18 @@ function defaultToolPaths(home: string): Record<string, ToolPaths> {
     }
     const paths = adapter.getDefaultPaths();
     const rawSkills = paths?.skills;
+    const rawAgents = paths?.agents;
     const skillsDir = Array.isArray(rawSkills)
       ? rawSkills[0]
       : (rawSkills ?? undefined);
+    const agentsDir = Array.isArray(rawAgents)
+      ? rawAgents[0]
+      : (rawAgents ?? undefined);
 
     return {
       tool,
       skillsDir: skillsDir ? expandHomePath(skillsDir, home) : undefined,
+      agentsDir: agentsDir ? expandHomePath(agentsDir, home) : undefined,
       mcpConfig: paths?.mcp ? expandHomePath(paths.mcp, home) : undefined,
     };
   };
@@ -255,6 +286,154 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+async function readTextIfExists(p: string): Promise<string | null> {
+  if (!(await fileExists(p))) {
+    return null;
+  }
+  return await Bun.file(p).text();
+}
+
+async function loadCanonicalAgents(
+  rootDir: string
+): Promise<{ name: string; sourcePath: string; raw: string }[]> {
+  const agentsRoot = homePath(rootDir, "agents");
+  const entries = await readdir(agentsRoot, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  const out: { name: string; sourcePath: string; raw: string }[] = [];
+
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) {
+      continue;
+    }
+    const sourcePath = entry.isDirectory()
+      ? homePath(agentsRoot, entry.name, "agent.toml")
+      : entry.isFile() && entry.name.endsWith(".toml")
+        ? homePath(agentsRoot, entry.name)
+        : null;
+    if (!sourcePath) {
+      continue;
+    }
+    const raw = await readTextIfExists(sourcePath);
+    if (raw == null) {
+      continue;
+    }
+    const name = entry.isDirectory()
+      ? entry.name
+      : basename(entry.name, ".toml");
+    out.push({
+      name,
+      sourcePath,
+      raw,
+    });
+  }
+
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function planAgentFileChanges({
+  agentsDir,
+  homeDir,
+  rootDir,
+  tool,
+}: {
+  agentsDir: string;
+  homeDir: string;
+  rootDir: string;
+  tool: string;
+}): Promise<{
+  add: string[];
+  remove: string[];
+  contents: Map<string, string>;
+}> {
+  const agents = await loadCanonicalAgents(rootDir);
+  const contents = new Map<string, string>();
+  const desiredPaths = new Set<string>();
+
+  for (const agent of agents) {
+    const target = homePath(agentsDir, `${agent.name}.toml`);
+    const rendered = await renderCanonicalText(agent.raw, {
+      homeDir,
+      rootDir,
+      targetTool: tool,
+      targetPath: target,
+    });
+    desiredPaths.add(target);
+    contents.set(target, rendered);
+  }
+
+  const existing = await readdir(agentsDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  const add = new Set<string>();
+  const remove = new Set<string>();
+
+  for (const entry of existing) {
+    if (!(entry.isFile() && entry.name.endsWith(".toml"))) {
+      continue;
+    }
+    const p = homePath(agentsDir, entry.name);
+    if (!desiredPaths.has(p)) {
+      remove.add(p);
+      continue;
+    }
+    const desired = contents.get(p);
+    const current = await readTextIfExists(p);
+    if (desired != null && current !== desired) {
+      add.add(p);
+    }
+  }
+
+  for (const p of desiredPaths) {
+    const current = await readTextIfExists(p);
+    const desired = contents.get(p);
+    if (desired != null && current !== desired) {
+      add.add(p);
+    }
+  }
+
+  return {
+    add: Array.from(add).sort(),
+    remove: Array.from(remove).sort(),
+    contents,
+  };
+}
+
+async function syncAgentFiles({
+  agentsDir,
+  homeDir,
+  rootDir,
+  tool,
+  dryRun,
+}: {
+  agentsDir: string;
+  homeDir: string;
+  rootDir: string;
+  tool: string;
+  dryRun?: boolean;
+}): Promise<{ add: string[]; remove: string[] }> {
+  const plan = await planAgentFileChanges({
+    agentsDir,
+    homeDir,
+    rootDir,
+    tool,
+  });
+  if (dryRun) {
+    return { add: plan.add, remove: plan.remove };
+  }
+  await ensureDir(agentsDir);
+  for (const p of plan.remove) {
+    await rm(p, { force: true });
+  }
+  for (const p of plan.add) {
+    const desired = plan.contents.get(p);
+    if (desired != null) {
+      await Bun.write(p, desired.endsWith("\n") ? desired : `${desired}\n`);
+    }
+  }
+  return { add: plan.add, remove: plan.remove };
+}
+
 async function listSkillDirs(skillsRoot: string): Promise<string[]> {
   try {
     const entries = await readdir(skillsRoot, { withFileTypes: true });
@@ -293,13 +472,19 @@ function skillNamesFromIndex(
 }
 
 async function loadEnabledSkillNames({
+  homeDir,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   rootDir: string;
   tool: string;
 }): Promise<string[]> {
-  const indexPath = join(rootDir, "index.json");
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir,
+    rootDir,
+    repair: true,
+  });
   if (await fileExists(indexPath)) {
     try {
       const txt = await Bun.file(indexPath).text();
@@ -405,16 +590,22 @@ async function ensureEmptyDir(p: string) {
 }
 
 async function createSkillSymlinks({
+  homeDir,
   toolSkillsDir,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
 }) {
   await ensureDir(toolSkillsDir);
-  const skillNames = await loadEnabledSkillNames({ rootDir, tool });
+  const skillNames = await loadEnabledSkillNames({
+    homeDir,
+    rootDir,
+    tool,
+  });
   for (const name of skillNames) {
     const target = join(rootDir, "skills", name);
     if (!(await fileExists(target))) {
@@ -435,15 +626,17 @@ async function createSkillSymlinks({
 }
 
 async function planSkillSymlinkChanges({
+  homeDir,
   toolSkillsDir,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
 }): Promise<{ add: string[]; remove: string[] }> {
-  const desired = await loadEnabledSkillNames({ rootDir, tool });
+  const desired = await loadEnabledSkillNames({ homeDir, rootDir, tool });
   const desiredSet = new Set(desired);
   const existing = await readdir(toolSkillsDir, { withFileTypes: true }).catch(
     () => [] as import("node:fs").Dirent[]
@@ -493,17 +686,24 @@ async function planSkillSymlinkChanges({
 }
 
 async function syncSkillSymlinks({
+  homeDir,
   toolSkillsDir,
   rootDir,
   tool,
   dryRun,
 }: {
+  homeDir: string;
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
   dryRun?: boolean;
 }): Promise<{ add: string[]; remove: string[] }> {
-  const plan = await planSkillSymlinkChanges({ toolSkillsDir, rootDir, tool });
+  const plan = await planSkillSymlinkChanges({
+    homeDir,
+    toolSkillsDir,
+    rootDir,
+    tool,
+  });
   if (dryRun) {
     return plan;
   }
@@ -601,6 +801,33 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   if (!toolPaths) {
     throw new Error(`Unknown tool: ${tool}`);
   }
+  const globalDocsPreview = toolPaths.toolHome
+    ? await syncToolGlobalDocs({
+        homeDir: home,
+        rootDir,
+        tool,
+        toolHome: toolPaths.toolHome,
+        dryRun: true,
+      })
+    : null;
+  const rulesPreview = toolPaths.rulesDir
+    ? await syncToolRules({
+        homeDir: home,
+        rootDir,
+        tool,
+        rulesDir: toolPaths.rulesDir,
+        dryRun: true,
+      })
+    : null;
+  const toolConfigPreview = toolPaths.toolConfig
+    ? await syncToolConfig({
+        homeDir: home,
+        rootDir,
+        tool,
+        toolConfigPath: toolPaths.toolConfig,
+        dryRun: true,
+      })
+    : null;
 
   const skillsBackup = toolPaths.skillsDir
     ? await backupPath(toolPaths.skillsDir, opts.now)
@@ -608,14 +835,47 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   const mcpBackup = toolPaths.mcpConfig
     ? await backupPath(toolPaths.mcpConfig, opts.now)
     : null;
+  const agentsBackup = toolPaths.agentsDir
+    ? await backupPath(toolPaths.agentsDir, opts.now)
+    : null;
+  const globalAgentsBackup =
+    toolPaths.toolHome &&
+    globalDocsPreview?.managedTargets.includes(
+      join(toolPaths.toolHome, "AGENTS.md")
+    )
+      ? await backupPath(join(toolPaths.toolHome, "AGENTS.md"), opts.now)
+      : null;
+  const globalAgentsOverrideBackup =
+    toolPaths.toolHome &&
+    globalDocsPreview?.managedTargets.includes(
+      join(toolPaths.toolHome, "AGENTS.override.md")
+    )
+      ? await backupPath(
+          join(toolPaths.toolHome, "AGENTS.override.md"),
+          opts.now
+        )
+      : null;
+  const rulesBackup =
+    toolPaths.rulesDir && rulesPreview?.managedRulesDir
+      ? await backupPath(toolPaths.rulesDir, opts.now)
+      : null;
+  const toolConfigBackup =
+    toolPaths.toolConfig && toolConfigPreview?.managedConfig
+      ? await backupPath(toolPaths.toolConfig, opts.now)
+      : null;
 
   if (toolPaths.skillsDir) {
     await ensureEmptyDir(toolPaths.skillsDir);
     await createSkillSymlinks({
+      homeDir: home,
       toolSkillsDir: toolPaths.skillsDir,
       rootDir,
       tool,
     });
+  }
+
+  if (toolPaths.agentsDir) {
+    await ensureEmptyDir(toolPaths.agentsDir);
   }
 
   if (toolPaths.mcpConfig) {
@@ -626,13 +886,76 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     });
   }
 
+  if (toolPaths.agentsDir) {
+    await syncAgentFiles({
+      agentsDir: toolPaths.agentsDir,
+      homeDir: home,
+      rootDir,
+      tool,
+    });
+  }
+
+  if (toolPaths.toolHome && globalDocsPreview) {
+    await ensureDir(toolPaths.toolHome);
+    await syncToolGlobalDocs({
+      homeDir: home,
+      rootDir,
+      tool,
+      toolHome: toolPaths.toolHome,
+    });
+  }
+
+  if (toolPaths.rulesDir && rulesPreview?.managedRulesDir) {
+    await ensureEmptyDir(toolPaths.rulesDir);
+    await syncToolRules({
+      homeDir: home,
+      rootDir,
+      tool,
+      rulesDir: toolPaths.rulesDir,
+      previouslyManaged: true,
+    });
+  }
+
+  if (toolPaths.toolConfig && toolConfigPreview?.managedConfig) {
+    await syncToolConfig({
+      homeDir: home,
+      rootDir,
+      tool,
+      toolConfigPath: toolPaths.toolConfig,
+      existingConfigPath: toolConfigBackup ?? undefined,
+    });
+  }
+
   state.tools[tool] = {
     tool,
     managedAt: nowIso(opts.now),
     skillsDir: toolPaths.skillsDir,
     mcpConfig: toolPaths.mcpConfig,
+    agentsDir: toolPaths.agentsDir,
+    toolHome: globalDocsPreview?.managedTargets.length
+      ? toolPaths.toolHome
+      : undefined,
+    globalAgentsPath: globalDocsPreview?.managedTargets.includes(
+      join(toolPaths.toolHome ?? "", "AGENTS.md")
+    )
+      ? join(toolPaths.toolHome ?? "", "AGENTS.md")
+      : undefined,
+    globalAgentsOverridePath: globalDocsPreview?.managedTargets.includes(
+      join(toolPaths.toolHome ?? "", "AGENTS.override.md")
+    )
+      ? join(toolPaths.toolHome ?? "", "AGENTS.override.md")
+      : undefined,
+    rulesDir: rulesPreview?.managedRulesDir ? toolPaths.rulesDir : undefined,
+    toolConfig: toolConfigPreview?.managedConfig
+      ? toolPaths.toolConfig
+      : undefined,
     skillsBackup,
     mcpBackup,
+    agentsBackup,
+    globalAgentsBackup,
+    globalAgentsOverrideBackup,
+    rulesBackup,
+    toolConfigBackup,
   };
 
   await saveManagedState(state, home);
@@ -697,6 +1020,41 @@ export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
     });
   }
 
+  if (entry.agentsDir) {
+    await restoreBackup({
+      original: entry.agentsDir,
+      backup: entry.agentsBackup ?? null,
+    });
+  }
+
+  if (entry.globalAgentsPath) {
+    await restoreBackup({
+      original: entry.globalAgentsPath,
+      backup: entry.globalAgentsBackup ?? null,
+    });
+  }
+
+  if (entry.globalAgentsOverridePath) {
+    await restoreBackup({
+      original: entry.globalAgentsOverridePath,
+      backup: entry.globalAgentsOverrideBackup ?? null,
+    });
+  }
+
+  if (entry.rulesDir) {
+    await restoreBackup({
+      original: entry.rulesDir,
+      backup: entry.rulesBackup ?? null,
+    });
+  }
+
+  if (entry.toolConfig) {
+    await restoreBackup({
+      original: entry.toolConfig,
+      backup: entry.toolConfigBackup ?? null,
+    });
+  }
+
   const nextTools: ManagedState["tools"] = {};
   for (const [name, config] of Object.entries(state.tools)) {
     if (name === tool) {
@@ -715,16 +1073,122 @@ export async function listManagedTools(
   return Object.keys(state.tools).sort();
 }
 
+async function canonicalAgentsExist(rootDir: string): Promise<boolean> {
+  try {
+    const agents = await loadCanonicalAgents(rootDir);
+    return agents.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function repairManagedToolEntry(args: {
+  homeDir: string;
+  rootDir: string;
+  tool: string;
+  entry: ManagedToolState;
+}): Promise<{ entry: ManagedToolState; changed: boolean }> {
+  const { homeDir, rootDir, tool } = args;
+  const toolPaths = await resolveToolPaths(tool, homeDir);
+  if (!toolPaths) {
+    return { entry: args.entry, changed: false };
+  }
+
+  const next: ManagedToolState = { ...args.entry };
+  let changed = false;
+
+  if (
+    !next.agentsDir &&
+    toolPaths.agentsDir &&
+    (await canonicalAgentsExist(rootDir))
+  ) {
+    next.agentsBackup = await backupPath(toolPaths.agentsDir);
+    next.agentsDir = toolPaths.agentsDir;
+    changed = true;
+  }
+
+  if (toolPaths.toolHome && !next.toolHome) {
+    const preview = await syncToolGlobalDocs({
+      homeDir,
+      rootDir,
+      tool,
+      toolHome: toolPaths.toolHome,
+      dryRun: true,
+    });
+    if (preview.managedTargets.length > 0) {
+      next.toolHome = toolPaths.toolHome;
+      const agentsPath = join(toolPaths.toolHome, "AGENTS.md");
+      const overridePath = join(toolPaths.toolHome, "AGENTS.override.md");
+      if (
+        preview.managedTargets.includes(agentsPath) &&
+        !next.globalAgentsPath
+      ) {
+        next.globalAgentsBackup = await backupPath(agentsPath);
+        next.globalAgentsPath = agentsPath;
+        changed = true;
+      }
+      if (
+        preview.managedTargets.includes(overridePath) &&
+        !next.globalAgentsOverridePath
+      ) {
+        next.globalAgentsOverrideBackup = await backupPath(overridePath);
+        next.globalAgentsOverridePath = overridePath;
+        changed = true;
+      }
+    }
+  }
+
+  if (!next.rulesDir && toolPaths.rulesDir) {
+    const preview = await syncToolRules({
+      homeDir,
+      rootDir,
+      tool,
+      rulesDir: toolPaths.rulesDir,
+      dryRun: true,
+    });
+    if (preview.managedRulesDir) {
+      next.rulesBackup = await backupPath(toolPaths.rulesDir);
+      next.rulesDir = toolPaths.rulesDir;
+      changed = true;
+    }
+  }
+
+  if (!next.toolConfig && toolPaths.toolConfig) {
+    const preview = await syncToolConfig({
+      homeDir,
+      rootDir,
+      tool,
+      toolConfigPath: toolPaths.toolConfig,
+      dryRun: true,
+    });
+    if (preview.managedConfig) {
+      next.toolConfigBackup = await backupPath(toolPaths.toolConfig);
+      next.toolConfig = toolPaths.toolConfig;
+      changed = true;
+    }
+  }
+
+  return { entry: next, changed };
+}
+
 function logSyncDryRun({
   tool,
   entry,
   skillPlan,
   mcpPlan,
+  agentPlan,
+  globalDocsPlan,
+  rulesPlan,
+  configPlan,
 }: {
   tool: string;
   entry: ManagedToolState;
   skillPlan: { add: string[]; remove: string[] };
   mcpPlan: { needsWrite: boolean };
+  agentPlan: { add: string[]; remove: string[] };
+  globalDocsPlan: { write: string[]; remove: string[] };
+  rulesPlan: { write: string[]; remove: string[] };
+  configPlan: { write: boolean; remove: boolean; targetPath: string };
 }) {
   for (const name of skillPlan.add) {
     console.log(`${tool}: would add skill ${name}`);
@@ -732,12 +1196,44 @@ function logSyncDryRun({
   for (const name of skillPlan.remove) {
     console.log(`${tool}: would remove skill ${name}`);
   }
+  for (const p of agentPlan.add) {
+    console.log(`${tool}: would write agent ${p}`);
+  }
+  for (const p of agentPlan.remove) {
+    console.log(`${tool}: would remove agent ${p}`);
+  }
+  for (const p of globalDocsPlan.write) {
+    console.log(`${tool}: would write global doc ${p}`);
+  }
+  for (const p of globalDocsPlan.remove) {
+    console.log(`${tool}: would remove global doc ${p}`);
+  }
+  for (const p of rulesPlan.write) {
+    console.log(`${tool}: would write rule ${p}`);
+  }
+  for (const p of rulesPlan.remove) {
+    console.log(`${tool}: would remove rule ${p}`);
+  }
+  if (configPlan.write) {
+    console.log(`${tool}: would write tool config ${configPlan.targetPath}`);
+  }
+  if (configPlan.remove) {
+    console.log(`${tool}: would remove tool config ${configPlan.targetPath}`);
+  }
   if (mcpPlan.needsWrite && entry.mcpConfig) {
     console.log(`${tool}: would update mcp config ${entry.mcpConfig}`);
   }
   if (
     skillPlan.add.length === 0 &&
     skillPlan.remove.length === 0 &&
+    agentPlan.add.length === 0 &&
+    agentPlan.remove.length === 0 &&
+    globalDocsPlan.write.length === 0 &&
+    globalDocsPlan.remove.length === 0 &&
+    rulesPlan.write.length === 0 &&
+    rulesPlan.remove.length === 0 &&
+    !configPlan.write &&
+    !configPlan.remove &&
     !mcpPlan.needsWrite
   ) {
     console.log(`${tool}: no changes`);
@@ -745,11 +1241,13 @@ function logSyncDryRun({
 }
 
 async function syncManagedToolEntry({
+  homeDir,
   tool,
   entry,
   rootDir,
   dryRun,
 }: {
+  homeDir: string;
   tool: string;
   entry: ManagedToolState;
   rootDir: string;
@@ -757,7 +1255,18 @@ async function syncManagedToolEntry({
 }) {
   const skillPlan = entry.skillsDir
     ? await syncSkillSymlinks({
+        homeDir,
         toolSkillsDir: entry.skillsDir,
+        rootDir,
+        tool,
+        dryRun,
+      })
+    : { add: [], remove: [] };
+
+  const agentPlan = entry.agentsDir
+    ? await syncAgentFiles({
+        agentsDir: entry.agentsDir,
+        homeDir,
         rootDir,
         tool,
         dryRun,
@@ -773,8 +1282,60 @@ async function syncManagedToolEntry({
       })
     : { needsWrite: false };
 
+  const globalDocsPlan = entry.toolHome
+    ? await syncToolGlobalDocs({
+        homeDir,
+        rootDir,
+        tool,
+        toolHome: entry.toolHome,
+        previouslyManagedTargets: [
+          entry.globalAgentsPath,
+          entry.globalAgentsOverridePath,
+        ].filter((value): value is string => Boolean(value)),
+        dryRun,
+      })
+    : { write: [], remove: [], contents: new Map(), managedTargets: [] };
+
+  const rulesPlan = entry.rulesDir
+    ? await syncToolRules({
+        homeDir,
+        rootDir,
+        tool,
+        rulesDir: entry.rulesDir,
+        previouslyManaged: true,
+        dryRun,
+      })
+    : { write: [], remove: [], contents: new Map(), managedRulesDir: false };
+
+  const configPlan = entry.toolConfig
+    ? await syncToolConfig({
+        homeDir,
+        rootDir,
+        tool,
+        toolConfigPath: entry.toolConfig,
+        existingConfigPath: entry.toolConfigBackup ?? undefined,
+        previouslyManaged: true,
+        dryRun,
+      })
+    : {
+        write: false,
+        remove: false,
+        contents: null,
+        managedConfig: false,
+        targetPath: "",
+      };
+
   if (dryRun) {
-    logSyncDryRun({ tool, entry, skillPlan, mcpPlan });
+    logSyncDryRun({
+      tool,
+      entry,
+      skillPlan,
+      mcpPlan,
+      agentPlan,
+      globalDocsPlan,
+      rulesPlan,
+      configPlan,
+    });
   } else {
     console.log(`${tool} synced`);
   }
@@ -790,12 +1351,36 @@ export async function syncManagedTools(opts: SyncOptions = {}) {
     throw new Error("No managed tools to sync.");
   }
 
+  if (!opts.dryRun) {
+    let changed = false;
+    for (const tool of tools) {
+      const entry = state.tools[tool];
+      if (!entry) {
+        throw new Error(`${tool} is not managed`);
+      }
+      const repaired = await repairManagedToolEntry({
+        homeDir: home,
+        rootDir,
+        tool,
+        entry,
+      });
+      if (repaired.changed) {
+        state.tools[tool] = repaired.entry;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await saveManagedState(state, home);
+    }
+  }
+
   for (const tool of tools) {
     const entry = state.tools[tool];
     if (!entry) {
       throw new Error(`${tool} is not managed`);
     }
     await syncManagedToolEntry({
+      homeDir: home,
       tool,
       entry,
       rootDir,

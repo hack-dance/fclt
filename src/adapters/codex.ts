@@ -11,6 +11,7 @@ export const codexAdapter: ToolAdapter = {
   getDefaultPaths: () => ({
     mcp: "~/.codex/mcp.json",
     skills: "~/.codex/skills",
+    agents: "~/.codex/agents",
     config: "~/.config/openai/codex.json",
   }),
   parseMcp: (config) => parseMcpConfig(config),

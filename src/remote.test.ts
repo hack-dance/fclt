@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { facultAiIndexPath } from "./paths";
 import {
   checkRemoteUpdates,
   installRemoteItem,
@@ -136,7 +137,7 @@ describe("remote search/install/update", () => {
     expect(servers.servers.github?.command).toBe("node");
 
     const index = JSON.parse(
-      await readFile(join(root, "index.json"), "utf8")
+      await readFile(facultAiIndexPath(home), "utf8")
     ) as {
       skills: Record<string, unknown>;
       mcp: { servers: Record<string, unknown> };

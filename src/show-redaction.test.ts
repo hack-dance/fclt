@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { facultAiIndexPath } from "./paths";
 
 async function writeJson(p: string, data: unknown) {
   await mkdir(dirname(p), { recursive: true });
@@ -17,7 +18,7 @@ test("show redacts MCP secrets by default (use --show-secrets to bypass)", async
 
   await mkdir(join(rootDir, "mcp"), { recursive: true });
 
-  await writeJson(join(rootDir, "index.json"), {
+  await writeJson(facultAiIndexPath(dir), {
     version: 1,
     updatedAt: new Date().toISOString(),
     skills: {},
@@ -48,7 +49,7 @@ test("show redacts MCP secrets by default (use --show-secrets to bypass)", async
     },
   });
 
-  const baseEnv = { ...process.env, FACULT_ROOT_DIR: rootDir };
+  const baseEnv = { ...process.env, HOME: dir, FACULT_ROOT_DIR: rootDir };
 
   {
     const proc = Bun.spawn(

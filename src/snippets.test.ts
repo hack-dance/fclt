@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   findSnippet,
   listSnippets,
+  renderSnippetText,
   syncFile,
   validateSnippetMarkerName,
   validateSnippetMarkersInText,
@@ -221,5 +222,34 @@ describe("snippets sync", () => {
 
     const listed = await listSnippets({ rootDir: root });
     expect(listed.map((s) => s.marker)).toEqual(["global/a", "myproj/b"]);
+  });
+
+  it("renderSnippetText renders markers in-memory without writing a file", async () => {
+    const root = await makeTempRoot();
+    await mkdir(join(root, "snippets", "global"), { recursive: true });
+    await Bun.write(
+      join(root, "snippets", "global", "workflow.md"),
+      "GLOBAL\n"
+    );
+
+    const rendered = await renderSnippetText({
+      text: [
+        "# Title",
+        "<!-- fclty:workflow -->",
+        "OLD",
+        "<!-- /fclty:workflow -->",
+      ].join("\n"),
+      rootDir: root,
+    });
+
+    expect(rendered.errors).toEqual([]);
+    expect(rendered.text).toContain(
+      "<!-- fclty:workflow -->\nGLOBAL\n<!-- /fclty:workflow -->"
+    );
+    expect(
+      rendered.changes.some(
+        (change) => change.marker === "workflow" && change.status === "updated"
+      )
+    ).toBe(true);
   });
 });

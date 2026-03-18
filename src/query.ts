@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { ensureAiIndexPath } from "./ai-state";
 import type {
   AgentEntry,
   FacultIndex,
@@ -7,7 +7,7 @@ import type {
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
-import { facultRootDir } from "./paths";
+import { facultAiIndexPath, facultRootDir } from "./paths";
 import { applyOrgTrustList } from "./trust-list";
 
 export interface QueryFilters {
@@ -108,7 +108,7 @@ export function facultRootDirPath(home: string = homedir()): string {
  * Return the path to the facult index.json file.
  */
 export function facultIndexPath(home: string = homedir()): string {
-  return join(facultRootDir(home), "index.json");
+  return facultAiIndexPath(home);
 }
 
 /**
@@ -120,15 +120,24 @@ export async function loadIndex(opts?: {
   /** Override home directory for org trust-list loading (useful for tests). */
   homeDir?: string;
 }): Promise<FacultIndex> {
-  const root = opts?.rootDir ?? facultRootDir();
-  const indexPath = join(root, "index.json");
+  const homeDir = opts?.homeDir;
+  const resolvedHome = homeDir ?? process.env.HOME;
+  if (!resolvedHome) {
+    throw new Error("HOME is not set.");
+  }
+  const rootDir = opts?.rootDir ?? facultRootDir(resolvedHome);
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir: resolvedHome,
+    rootDir,
+    repair: true,
+  });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
   }
   const raw = await file.text();
   const parsed = JSON.parse(raw) as FacultIndex;
-  return await applyOrgTrustList(parsed, { homeDir: opts?.homeDir });
+  return await applyOrgTrustList(parsed, { homeDir: resolvedHome });
 }
 
 /**

@@ -15,13 +15,14 @@
   </a>
 </div>
 
-`facult` is a CLI for managing coding-agent skills and MCP configs across tools.
+`facult` is a CLI for managing coding-agent configuration across tools.
 
 It helps you:
 - discover what is installed on your machine
 - consolidate everything into one canonical store
 - review trust/security before installing remote content
-- enable a curated skill set across Codex, Cursor, and Claude
+- sync managed outputs into Codex, Cursor, and Claude
+- manage a git-backed personal AI store under `~/.ai`
 
 ## What facult Is
 
@@ -31,6 +32,7 @@ Think of it as:
 - inventory + auditing for agent assets
 - package manager interface for skill/MCP catalogs
 - sync layer that applies your chosen setup to each tool
+- canonical source manager for global AI instructions, agents, snippets, tool configs, and rules
 
 ## Quick Start
 
@@ -94,7 +96,7 @@ facult index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-Default canonical store: `~/agents/.facult`. You can change it later with `FACULT_ROOT_DIR` or `~/.facult/config.json`.
+Canonical source root: `~/.ai`. Generated state remains under `~/.facult`.
 
 ### 4. Inspect what you have
 
@@ -118,7 +120,21 @@ facult sync
 
 At this point, your selected skills are actively synced to all managed tools.
 
-### 6. Turn on source trust and strict install flow
+### 6. Turn on background autosync
+
+```bash
+facult autosync install --git-remote origin --git-branch main --git-interval-minutes 60
+facult autosync status
+```
+
+This installs a per-user macOS LaunchAgent that:
+- watches `~/.ai` for local changes and syncs managed tool outputs automatically
+- tracks dirty state for the canonical repo
+- runs a slower git autosync loop that batches changes, auto-commits them, rebases on the configured remote branch, and pushes on success
+
+If the repo hits a rebase conflict, remote autosync stops and reports the blocked state, but local tool sync continues.
+
+### 7. Turn on source trust and strict install flow
 
 ```bash
 facult sources list
@@ -159,6 +175,94 @@ facult sync
 
 Note: `templates init mcp ...` is a scaffold, not a running server by itself.
 
+## The `~/.ai` Model
+
+`facult` now treats `~/.ai` as the canonical, git-backed source of truth for personal AI configuration.
+
+Typical layout:
+
+```text
+~/.ai/
+  AGENTS.global.md
+  AGENTS.override.global.md
+  config.toml
+  config.local.toml
+  instructions/
+  snippets/
+  agents/
+  skills/
+  mcp/
+  templates/
+  tools/
+    codex/
+      config.toml
+      rules/
+  projects/
+    <slug>/
+      config.toml
+      config.local.toml
+      snippets/
+      instructions/
+```
+
+Important split:
+- `~/.ai` is canonical source
+- `~/.facult` is generated state, trust state, managed tool state, autosync state, and caches
+- tool homes such as `~/.codex` are rendered outputs
+
+### Canonical conventions
+
+- Use `instructions/` for reusable markdown documents
+- Use `snippets/` for composable partial blocks injected into markdown templates
+- Use `tools/codex/rules/*.rules` for actual Codex approval-policy rules
+- Use logical refs such as `@ai/instructions/WRITING.md` in tracked source
+- Use config-backed refs in prompts where you want stable named references such as `${refs.writing_rule}`
+
+### Config and env layering
+
+Canonical render context is layered explicitly:
+1. built-ins injected by `facult`
+2. `~/.ai/config.toml`
+3. `~/.ai/config.local.toml`
+4. `~/.ai/projects/<slug>/config.toml`
+5. `~/.ai/projects/<slug>/config.local.toml`
+6. explicit runtime overrides
+
+Built-ins currently include:
+- `AI_ROOT`
+- `HOME`
+- `PROJECT_ROOT`
+- `PROJECT_SLUG`
+- `TARGET_TOOL`
+- `TARGET_PATH`
+
+Recommended split:
+- `config.toml`: tracked, portable, non-secret refs/defaults
+- `config.local.toml`: ignored, machine-local paths and secrets
+
+### Snippets
+
+Snippets use HTML comment markers:
+
+```md
+<!-- fclty:global/codex/baseline -->
+<!-- /fclty:global/codex/baseline -->
+```
+
+Resolution rules:
+- unscoped marker `codingstyle` prefers `snippets/projects/<project>/codingstyle.md`, then falls back to `snippets/global/codingstyle.md`
+- explicit marker `global/codex/baseline` resolves directly to `snippets/global/codex/baseline.md`
+
+Commands:
+
+```bash
+facult snippets list
+facult snippets show global/codex/baseline
+facult snippets sync [--dry-run] [file...]
+```
+
+Snippets are already used during global Codex `AGENTS.md` rendering.
+
 ## Security and Trust
 
 `facult` has two trust layers:
@@ -193,10 +297,11 @@ Recommended security flow:
 ### Capability categories
 
 - Inventory: discover local skills, MCP configs, hooks, and instruction files
-- Management: consolidate, index, manage/unmanage tools, enable/disable entries
+- Management: consolidate, index, manage/unmanage tools, enable/disable entries, manage canonical AI config
 - Security: static audit, agent audit, item trust, source trust, source verification
 - Distribution: search/install/update from catalogs and verified manifests
 - DX: scaffold templates and sync snippets into instruction/config files
+- Automation: background autosync for local tool propagation and canonical repo git sync
 
 ### Command categories
 
@@ -224,6 +329,10 @@ facult enable <name> [--for <tool1,tool2,...>]
 facult enable mcp:<name> [--for <tool1,tool2,...>]
 facult disable <name> [--for <tool1,tool2,...>]
 facult sync [tool] [--dry-run]
+facult autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
+facult autosync status [tool]
+facult autosync restart [tool]
+facult autosync uninstall [tool]
 ```
 
 - Remote catalogs and policies
@@ -266,7 +375,8 @@ facult <command> --help
 `facult` resolves the canonical root in this order:
 1. `FACULT_ROOT_DIR`
 2. `~/.facult/config.json` (`rootDir`)
-3. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
+3. `~/.ai`
+4. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
 
 ### Runtime env vars
 
@@ -281,9 +391,13 @@ Under `~/.facult/`:
 - `sources.json` (latest inventory scan state)
 - `consolidated.json` (consolidation state)
 - `managed.json` (managed tool state)
+- `ai/index.json` (generated canonical AI inventory)
 - `audit/static-latest.json` (latest static audit report)
 - `audit/agent-latest.json` (latest agent audit report)
 - `trust/sources.json` (source trust policy state)
+- `autosync/services/*.json` (autosync service configs)
+- `autosync/state/*.json` (autosync runtime state)
+- `autosync/logs/*` (autosync service logs)
 
 ### Config reference
 
@@ -300,7 +414,7 @@ Under `~/.facult/`:
 Example:
 ```json
 {
-  "rootDir": "~/agents/.facult",
+  "rootDir": "~/.ai",
   "scanFrom": ["~/dev", "~/work"],
   "scanFromIgnore": ["vendor", ".venv"],
   "scanFromNoDefaultIgnore": false,
@@ -331,6 +445,42 @@ bun run install:status
 ```
 
 Default install path is `~/.facult/bin/facult`. You can pass a custom target dir via `--dir=/path`.
+
+## Autosync
+
+`facult autosync` is the background propagation layer for managed installs.
+
+Current v1 behavior:
+- macOS LaunchAgent-backed
+- immediate local managed-tool sync on `~/.ai` file changes
+- periodic git autosync for the canonical repo
+- automatic autosync commits with source-tagged commit messages such as:
+  - `chore(facult-autosync): sync canonical ai changes from <host> [service:all]`
+
+Recommended usage:
+
+```bash
+facult autosync install
+facult autosync status
+```
+
+Tool-scoped service:
+
+```bash
+facult autosync install codex
+```
+
+One-shot runner for verification/debugging:
+
+```bash
+facult autosync run --service all --once
+```
+
+Remote git policy:
+- do not sync on every file event
+- mark the canonical repo dirty on local changes
+- on the configured timer, fetch, auto-commit local canonical changes if needed, pull `--rebase`, then push
+- if rebase conflicts occur, remote autosync is blocked and reported, but local managed-tool sync keeps running
 
 ## CI and Release Automation
 
@@ -398,3 +548,18 @@ bun run release:dry-run
 Not as a first-party `facult mcp serve` runtime.
 
 `facult` currently focuses on inventory, trust/audit, install/update, and managed sync of skills/MCP configs.
+
+### Does facult now manage global AI config, not just skills and MCP?
+
+Yes. The core model now includes:
+- canonical personal AI source in `~/.ai`
+- rendered managed outputs in tool homes such as `~/.codex`
+- global instruction docs such as `AGENTS.global.md`
+- tool-native configs such as `~/.codex/config.toml`
+- tool-native rule files such as `~/.codex/rules/*.rules`
+
+### Do I still need to run `facult sync` manually?
+
+If autosync is not installed, yes.
+
+If autosync is installed, local changes under `~/.ai` propagate automatically to managed tools. Manual `facult sync` is still useful for explicit repair, dry-runs, and non-daemon workflows.

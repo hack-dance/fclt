@@ -43,6 +43,11 @@ function isSafePathString(p: string): boolean {
   return !p.includes("\0");
 }
 
+function defaultHomeDir(): string {
+  const fromEnv = process.env.HOME?.trim();
+  return fromEnv || homedir();
+}
+
 function expandHomePath(p: string, home: string): string {
   if (p === "~") {
     return home;
@@ -74,13 +79,22 @@ function fileExists(p: string): boolean {
   }
 }
 
+function legacyPreferredRoot(home: string): string {
+  return join(home, "agents", ".facult");
+}
+
+function isLegacyConfiguredRoot(root: string, home: string): boolean {
+  return resolve(root) === resolve(legacyPreferredRoot(home));
+}
+
 function looksLikeFacultRoot(root: string): boolean {
   if (!dirExists(root)) {
     return false;
   }
   // Heuristic: treat as a facult store if it contains something we'd create.
   return (
-    fileExists(join(root, "index.json")) ||
+    dirExists(join(root, "rules")) ||
+    dirExists(join(root, "agents")) ||
     dirExists(join(root, "skills")) ||
     dirExists(join(root, "mcp")) ||
     dirExists(join(root, "snippets"))
@@ -117,16 +131,24 @@ function detectLegacyStoreUnderAgents(home: string): string | null {
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-export function facultStateDir(home: string = homedir()): string {
+export function facultStateDir(home: string = defaultHomeDir()): string {
   return join(home, ".facult");
 }
 
-export function facultConfigPath(home: string = homedir()): string {
+export function facultAiStateDir(home: string = defaultHomeDir()): string {
+  return join(facultStateDir(home), "ai");
+}
+
+export function facultAiIndexPath(home: string = defaultHomeDir()): string {
+  return join(facultAiStateDir(home), "index.json");
+}
+
+export function facultConfigPath(home: string = defaultHomeDir()): string {
   return join(facultStateDir(home), "config.json");
 }
 
 export function readFacultConfig(
-  home: string = homedir()
+  home: string = defaultHomeDir()
 ): FacultConfig | null {
   const p = facultConfigPath(home);
   if (!(isSafePathString(p) && fileExists(p))) {
@@ -203,32 +225,42 @@ export function readFacultConfig(
  * Precedence:
  * 1) `FACULT_ROOT_DIR` env var
  * 2) `~/.facult/config.json` { "rootDir": "..." }
- * 3) `~/agents/.facult` (if it looks like a store)
- * 4) a legacy store under `~/agents/` (if it looks like a store)
- * 5) default: `~/agents/.facult`
+ * 3) `~/.ai` (if it looks like a store)
+ * 4) `~/agents/.facult` (if it looks like a store)
+ * 5) a legacy store under `~/agents/` (if it looks like a store)
+ * 6) default: `~/.ai`
  */
-export function facultRootDir(home: string = homedir()): string {
+export function facultRootDir(home: string = defaultHomeDir()): string {
   const envRoot = process.env.FACULT_ROOT_DIR?.trim();
+  const preferred = join(home, ".ai");
+
   if (envRoot) {
     const resolved = resolvePath(envRoot, home);
-    return isSafePathString(resolved)
-      ? resolved
-      : join(home, "agents", ".facult");
+    return isSafePathString(resolved) ? resolved : preferred;
   }
 
   const cfg = readFacultConfig(home);
   const cfgRoot = cfg?.rootDir?.trim();
   if (cfgRoot) {
     const resolved = resolvePath(cfgRoot, home);
-    return isSafePathString(resolved)
-      ? resolved
-      : join(home, "agents", ".facult");
+    if (!isSafePathString(resolved)) {
+      return preferred;
+    }
+    if (
+      isLegacyConfiguredRoot(resolved, home) &&
+      looksLikeFacultRoot(preferred)
+    ) {
+      return preferred;
+    }
+    return resolved;
   }
-
-  const preferred = join(home, "agents", ".facult");
 
   if (looksLikeFacultRoot(preferred)) {
     return preferred;
+  }
+  const legacyPreferred = legacyPreferredRoot(home);
+  if (looksLikeFacultRoot(legacyPreferred)) {
+    return legacyPreferred;
   }
   const legacy = detectLegacyStoreUnderAgents(home);
   if (legacy) {

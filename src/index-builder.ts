@@ -1,6 +1,6 @@
 import { mkdir, readdir } from "node:fs/promises";
-import { basename, join, relative } from "node:path";
-import { facultRootDir } from "./paths";
+import { basename, dirname, join, relative } from "node:path";
+import { facultAiIndexPath, facultRootDir } from "./paths";
 import { lastModified } from "./util/skills";
 
 export interface SkillEntry {
@@ -472,6 +472,8 @@ export async function buildIndex(opts?: {
   force?: boolean;
   /** Override the default canonical root dir (useful for tests). */
   rootDir?: string;
+  /** Override home directory for generated state placement (useful for tests). */
+  homeDir?: string;
 }): Promise<{ index: FacultIndex; outputPath: string }> {
   const force = Boolean(opts?.force);
 
@@ -485,7 +487,7 @@ export async function buildIndex(opts?: {
     ? serversJsonPath
     : mcpJsonPath;
 
-  const outputPath = join(rootDir, "index.json");
+  const outputPath = facultAiIndexPath(opts?.homeDir);
 
   let previousIndex: Record<string, unknown> | null = null;
   if (!force) {
@@ -538,7 +540,7 @@ export async function buildIndex(opts?: {
     snippets,
   };
 
-  await mkdir(rootDir, { recursive: true });
+  await mkdir(dirname(outputPath), { recursive: true });
   await Bun.write(outputPath, `${JSON.stringify(index, null, 2)}\n`);
 
   return { index, outputPath };
@@ -546,7 +548,7 @@ export async function buildIndex(opts?: {
 
 export async function indexCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`facult index — rebuild index.json under the canonical store
+    console.log(`facult index — rebuild the generated index for the canonical store
 
 Usage:
   facult index [--force]

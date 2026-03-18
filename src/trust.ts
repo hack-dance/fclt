@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { ensureAiIndexPath } from "./ai-state";
 import type { FacultIndex } from "./index-builder";
-import { facultRootDir } from "./paths";
+import { facultAiIndexPath, facultRootDir } from "./paths";
 
 type TrustMode = "trust" | "untrust";
 
@@ -27,8 +27,12 @@ function parseEntryName(raw: string): { kind: "skill" | "mcp"; name: string } {
   return { kind: "skill", name: raw };
 }
 
-async function loadIndex(rootDir: string): Promise<FacultIndex> {
-  const indexPath = join(rootDir, "index.json");
+async function loadIndex(homeDir: string): Promise<FacultIndex> {
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir,
+    rootDir: facultRootDir(homeDir),
+    repair: true,
+  });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
@@ -37,8 +41,8 @@ async function loadIndex(rootDir: string): Promise<FacultIndex> {
   return JSON.parse(raw) as FacultIndex;
 }
 
-async function writeIndex(rootDir: string, index: FacultIndex) {
-  const indexPath = join(rootDir, "index.json");
+async function writeIndex(homeDir: string, index: FacultIndex) {
+  const indexPath = facultAiIndexPath(homeDir);
   await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
@@ -68,20 +72,17 @@ export async function applyTrust({
   names,
   mode,
   homeDir,
-  rootDir,
 }: {
   names: string[];
   mode: TrustMode;
   homeDir?: string;
-  rootDir?: string;
 }) {
   if (!names.length) {
     throw new Error("At least one name is required.");
   }
   const home = homeDir ?? homedir();
-  const root = rootDir ?? facultRootDir(home);
 
-  const index = ensureIndexStructure(await loadIndex(root));
+  const index = ensureIndexStructure(await loadIndex(home));
   const now = new Date().toISOString();
 
   const missing: string[] = [];
@@ -109,7 +110,7 @@ export async function applyTrust({
   }
 
   index.updatedAt = new Date().toISOString();
-  await writeIndex(root, index);
+  await writeIndex(home, index);
 }
 
 function parseNamesFromArgv(argv: string[]): string[] {

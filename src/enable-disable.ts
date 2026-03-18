@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ensureAiIndexPath } from "./ai-state";
 import type { FacultIndex } from "./index-builder";
 import { loadManagedState, syncManagedTools } from "./manage";
-import { facultRootDir } from "./paths";
+import { facultAiIndexPath, facultRootDir } from "./paths";
 
 type EntryKind = "skills" | "mcp";
 
@@ -61,8 +62,12 @@ function computeNextEnabledFor({
   return uniqueSorted(base.filter((tool) => !targetTools.includes(tool)));
 }
 
-async function loadIndex(rootDir: string): Promise<FacultIndex> {
-  const indexPath = join(rootDir, "index.json");
+async function loadIndex(homeDir: string): Promise<FacultIndex> {
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir,
+    rootDir: facultRootDir(homeDir),
+    repair: true,
+  });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
@@ -71,8 +76,8 @@ async function loadIndex(rootDir: string): Promise<FacultIndex> {
   return JSON.parse(raw) as FacultIndex;
 }
 
-async function writeIndex(rootDir: string, index: FacultIndex) {
-  const indexPath = join(rootDir, "index.json");
+async function writeIndex(homeDir: string, index: FacultIndex) {
+  const indexPath = facultAiIndexPath(homeDir);
   await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
@@ -200,7 +205,7 @@ export async function applyEnableDisable({
 
   const allTools = managedTools.length ? managedTools : targetTools;
 
-  const index = ensureIndexStructure(await loadIndex(root));
+  const index = ensureIndexStructure(await loadIndex(home));
   const missing: string[] = [];
   const mcpUpdates: string[] = [];
 
@@ -241,7 +246,7 @@ export async function applyEnableDisable({
   }
 
   index.updatedAt = new Date().toISOString();
-  await writeIndex(root, index);
+  await writeIndex(home, index);
 
   await updateCanonicalServers({
     rootDir: root,

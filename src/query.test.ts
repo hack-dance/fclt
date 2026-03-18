@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FacultIndex, SkillEntry } from "./index-builder";
+import { facultAiIndexPath } from "./paths";
 import { filterSkills, loadIndex } from "./query";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -89,7 +90,7 @@ describe("query filters", () => {
       snippets: {},
     };
 
-    await Bun.write(join(rootDir, "index.json"), JSON.stringify(index));
+    await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
 
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     expect(Object.keys(loaded.skills)).toEqual(["alpha", "beta"]);
@@ -147,7 +148,7 @@ describe("query filters", () => {
       snippets: {},
     };
 
-    await Bun.write(join(rootDir, "index.json"), JSON.stringify(index));
+    await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
 
     const trustPayload = {
       version: 1,
@@ -217,7 +218,7 @@ describe("query filters", () => {
       agents: {},
       snippets: {},
     };
-    await Bun.write(join(rootDir, "index.json"), JSON.stringify(index));
+    await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
 
     const trustDir = join(tempHome, ".facult", "trust");
     await mkdir(trustDir, { recursive: true });
@@ -239,5 +240,38 @@ describe("query filters", () => {
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     const alpha = loaded.skills.alpha as SkillEntry & { trusted?: boolean };
     expect(alpha.trusted).toBeUndefined();
+  });
+
+  it("repairs a legacy root index into generated ai state on read", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, "agents", ".facult");
+    await mkdir(rootDir, { recursive: true });
+
+    const legacyIndex: FacultIndex = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      skills: {
+        alpha: {
+          name: "alpha",
+          path: "/tmp/alpha",
+          description: "Alpha skill",
+          tags: [],
+        } as SkillEntry,
+      },
+      mcp: { servers: {} },
+      agents: {},
+      snippets: {},
+    };
+
+    await Bun.write(join(rootDir, "index.json"), JSON.stringify(legacyIndex));
+    const loaded = await loadIndex({ rootDir, homeDir: tempHome });
+    expect(Object.keys(loaded.skills)).toEqual(["alpha"]);
+
+    const repaired = JSON.parse(
+      await Bun.file(facultAiIndexPath(tempHome)).text()
+    ) as FacultIndex;
+    expect(Object.keys(repaired.skills)).toEqual(["alpha"]);
   });
 });
