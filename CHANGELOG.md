@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/hack-dance/facult/compare/v1.0.3...v1.1.0) (2026-03-18)
+
+### Features
+
+* add ai sync and autosync management ([0748679](https://github.com/hack-dance/facult/commit/0748679a4edab1c2685ac97ebc5f36c3b268a15a))
+
 ## [1.0.3](https://github.com/hack-dance/facult/compare/v1.0.2...v1.0.3) (2026-02-21)
 
 ### Bug Fixes
