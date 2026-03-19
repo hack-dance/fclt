@@ -1,3 +1,9 @@
+## [2.1.2](https://github.com/hack-dance/fclt/compare/v2.1.1...v2.1.2) (2026-03-19)
+
+### Bug Fixes
+
+* tighten default writeback and evolution guidance ([0948241](https://github.com/hack-dance/fclt/commit/09482412e4434526f4b288ca1d0fcd20f882297b))
+
 ## [2.1.1](https://github.com/hack-dance/fclt/compare/v2.1.0...v2.1.1) (2026-03-19)
 
 ### Bug Fixes
