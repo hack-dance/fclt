@@ -1,12 +1,15 @@
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { renderCanonicalText } from "./agents";
+import { builtinSyncDefaultsEnabled, facultBuiltinPackRoot } from "./builtin";
+import { projectRootFromAiRoot } from "./paths";
 import { renderSnippetText } from "./snippets";
 
 export interface GlobalDocPlan {
   write: string[];
   remove: string[];
   contents: Map<string, string>;
+  sources: Map<string, string>;
   managedTargets: string[];
 }
 
@@ -14,6 +17,7 @@ export interface RulesPlan {
   write: string[];
   remove: string[];
   contents: Map<string, string>;
+  sources: Map<string, string>;
   managedRulesDir: boolean;
 }
 
@@ -22,12 +26,18 @@ export interface ToolConfigPlan {
   write: boolean;
   remove: boolean;
   contents: string | null;
+  sourcePath?: string;
   managedConfig: boolean;
 }
 
 interface SourceTarget {
   sourcePath: string;
   targetPath: string;
+}
+
+interface GlobalDocTargetPaths {
+  primary: string;
+  override?: string;
 }
 
 const TOML_BARE_KEY_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -151,28 +161,51 @@ async function listGlobalDocSources(args: {
   toolHome: string;
 }): Promise<SourceTarget[]> {
   const { rootDir, tool, toolHome } = args;
-  if (tool !== "codex") {
-    return [];
-  }
+  const targets = globalDocTargetPaths(tool, toolHome);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(rootDir);
 
   const candidates: SourceTarget[] = [];
   const base = join(rootDir, "AGENTS.global.md");
   if (await fileExists(base)) {
     candidates.push({
       sourcePath: base,
-      targetPath: join(toolHome, "AGENTS.md"),
+      targetPath: targets.primary,
     });
+  } else if (useBuiltinDefaults) {
+    const builtinBase = join(facultBuiltinPackRoot(), "AGENTS.global.md");
+    if (await fileExists(builtinBase)) {
+      candidates.push({
+        sourcePath: builtinBase,
+        targetPath: targets.primary,
+      });
+    }
   }
 
   const override = join(rootDir, "AGENTS.override.global.md");
-  if (await fileExists(override)) {
+  if (targets.override && (await fileExists(override))) {
     candidates.push({
       sourcePath: override,
-      targetPath: join(toolHome, "AGENTS.override.md"),
+      targetPath: targets.override,
     });
   }
 
   return candidates;
+}
+
+export function globalDocTargetPaths(
+  tool: string,
+  toolHome: string
+): GlobalDocTargetPaths {
+  if (tool === "claude") {
+    return {
+      primary: join(toolHome, "CLAUDE.md"),
+    };
+  }
+
+  return {
+    primary: join(toolHome, "AGENTS.md"),
+    override: join(toolHome, "AGENTS.override.md"),
+  };
 }
 
 async function renderSourceTarget(args: {
@@ -194,6 +227,7 @@ async function renderSourceTarget(args: {
   return await renderCanonicalText(withSnippets.text, {
     homeDir: args.homeDir,
     rootDir: args.rootDir,
+    projectRoot: projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
     targetTool: args.tool,
     targetPath: args.targetPath,
   });
@@ -208,6 +242,7 @@ export async function planToolGlobalDocsSync(args: {
 }): Promise<GlobalDocPlan> {
   const docs = await listGlobalDocSources(args);
   const contents = new Map<string, string>();
+  const sources = new Map<string, string>();
   const managedTargets = docs.map((doc) => doc.targetPath).sort();
 
   for (const doc of docs) {
@@ -219,6 +254,7 @@ export async function planToolGlobalDocsSync(args: {
       tool: args.tool,
     });
     contents.set(doc.targetPath, rendered);
+    sources.set(doc.targetPath, doc.sourcePath);
   }
 
   const write: string[] = [];
@@ -238,6 +274,7 @@ export async function planToolGlobalDocsSync(args: {
     write: write.sort(),
     remove,
     contents,
+    sources,
     managedTargets,
   };
 }
@@ -301,6 +338,7 @@ export async function planToolRulesSync(args: {
 }): Promise<RulesPlan> {
   const rules = await listToolRules(args);
   const contents = new Map<string, string>();
+  const sources = new Map<string, string>();
 
   for (const rule of rules) {
     const targetPath = join(args.rulesDir, rule.targetPath);
@@ -308,10 +346,13 @@ export async function planToolRulesSync(args: {
     const rendered = await renderCanonicalText(raw, {
       homeDir: args.homeDir,
       rootDir: args.rootDir,
+      projectRoot:
+        projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
       targetTool: args.tool,
       targetPath,
     });
     contents.set(targetPath, rendered);
+    sources.set(targetPath, rule.sourcePath);
   }
 
   const write: string[] = [];
@@ -342,6 +383,7 @@ export async function planToolRulesSync(args: {
     write: write.sort(),
     remove: remove.sort(),
     contents,
+    sources,
     managedRulesDir: rules.length > 0,
   };
 }
@@ -390,6 +432,7 @@ export async function planToolConfigSync(args: {
       write: false,
       remove: false,
       contents: null,
+      sourcePath,
       managedConfig: false,
     };
   }
@@ -419,6 +462,7 @@ export async function planToolConfigSync(args: {
     write: current !== `${nextContents}\n`,
     remove: false,
     contents: nextContents,
+    sourcePath,
     managedConfig: true,
   };
 }

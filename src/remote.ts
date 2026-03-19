@@ -1,6 +1,7 @@
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildIndex } from "./index-builder";
 import { facultRootDir } from "./paths";
 import {
@@ -318,6 +319,100 @@ function renderTemplate(text: string, values: Record<string, string>): string {
     out = out.replaceAll(`{{${k}}}`, v);
   }
   return out;
+}
+
+function builtinPackRoot(packName: string): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, "..", "assets", "packs", packName);
+}
+
+async function pathExists(pathValue: string): Promise<boolean> {
+  try {
+    await Bun.file(pathValue).stat();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listFilesRecursive(rootDir: string): Promise<string[]> {
+  const out: string[] = [];
+  const stack = [rootDir];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+    const entries = await readdir(current, { withFileTypes: true }).catch(
+      () => [] as import("node:fs").Dirent[]
+    );
+    for (const entry of entries) {
+      const fullPath = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile()) {
+        out.push(fullPath);
+      }
+    }
+  }
+  return out.sort();
+}
+
+async function scaffoldBuiltinProjectAiPack(args: {
+  cwd?: string;
+  homeDir?: string;
+  dryRun?: boolean;
+  force?: boolean;
+}): Promise<InstallResult> {
+  const cwd = resolve(args.cwd ?? process.cwd());
+  const rootDir = join(cwd, ".ai");
+  const packRoot = builtinPackRoot("facult-operating-model");
+  const files = await listFilesRecursive(packRoot);
+  const changedPaths: string[] = [];
+
+  for (const sourcePath of files) {
+    const relPath = relative(packRoot, sourcePath);
+    if (!relPath || relPath.startsWith("..")) {
+      continue;
+    }
+    const targetPath = join(rootDir, relPath);
+    const exists = await pathExists(targetPath);
+    if (exists && !args.force) {
+      continue;
+    }
+    changedPaths.push(targetPath);
+    if (!args.dryRun) {
+      await mkdir(dirname(targetPath), { recursive: true });
+      await Bun.write(targetPath, await Bun.file(sourcePath).text());
+    }
+  }
+
+  const configPath = join(rootDir, "config.toml");
+  if (!(await pathExists(configPath)) || args.force) {
+    changedPaths.push(configPath);
+    if (!args.dryRun) {
+      await mkdir(dirname(configPath), { recursive: true });
+      await Bun.write(configPath, "version = 1\n");
+    }
+  }
+
+  if (!args.dryRun) {
+    await buildIndex({
+      homeDir: args.homeDir,
+      rootDir,
+      force: false,
+    });
+  }
+
+  return {
+    ref: `${BUILTIN_INDEX_NAME}:facult-operating-model`,
+    type: "skill",
+    installedAs: "project-ai",
+    path: rootDir,
+    sourceTrustLevel: "trusted",
+    dryRun: Boolean(args.dryRun),
+    changedPaths: uniqueSorted(changedPaths),
+  };
 }
 
 function compareVersions(a: string, b: string): number {
@@ -1589,6 +1684,7 @@ Usage:
   facult templates init snippet <marker> [--force] [--dry-run]
   facult templates init agents [--force] [--dry-run]
   facult templates init claude [--force] [--dry-run]
+  facult templates init project-ai [--force] [--dry-run]
 
 Notes:
   - Templates are powered by the builtin remote index (${BUILTIN_INDEX_NAME}).
@@ -1872,13 +1968,23 @@ export async function templatesCommand(
   }
   if (sub === "list") {
     const json = rest.includes("--json");
-    const rows = BUILTIN_MANIFEST.items.map((item) => ({
-      id: item.id,
-      type: item.type,
-      title: item.title ?? "",
-      description: item.description ?? "",
-      version: item.version ?? "",
-    }));
+    const rows = [
+      ...BUILTIN_MANIFEST.items.map((item) => ({
+        id: item.id,
+        type: item.type,
+        title: item.title ?? "",
+        description: item.description ?? "",
+        version: item.version ?? "",
+      })),
+      {
+        id: "project-ai",
+        type: "pack",
+        title: "Project AI Pack",
+        description:
+          "Seed a repo-local .ai with the built-in Facult operating-model pack.",
+        version: "1.0.0",
+      },
+    ];
     if (json) {
       console.log(JSON.stringify(rows, null, 2));
       return;
@@ -1897,7 +2003,7 @@ export async function templatesCommand(
   const [kind, ...args] = rest;
   if (!kind) {
     console.error(
-      "templates init requires a kind (skill|mcp|snippet|agents|claude)"
+      "templates init requires a kind (skill|mcp|snippet|agents|claude|project-ai)"
     );
     process.exitCode = 2;
     return;
@@ -1906,6 +2012,31 @@ export async function templatesCommand(
   const force = args.includes("--force");
   const json = args.includes("--json");
   const positional = args.filter((a) => a && !a.startsWith("-"));
+
+  if (kind === "project-ai") {
+    try {
+      const result = await scaffoldBuiltinProjectAiPack({
+        cwd: ctx.cwd,
+        homeDir: ctx.homeDir,
+        dryRun,
+        force,
+      });
+      if (json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const action = dryRun ? "Would scaffold" : "Scaffolded";
+      console.log(`${action} ${kind} template as ${result.installedAs}`);
+      for (const path of result.changedPaths) {
+        console.log(`  - ${path}`);
+      }
+      return;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   let ref = "";
   let as: string | undefined;

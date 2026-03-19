@@ -66,6 +66,7 @@ describe("trust/untrust", () => {
       },
       agents: {},
       snippets: {},
+      instructions: {},
     };
 
     await Bun.write(

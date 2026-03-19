@@ -56,6 +56,7 @@ describe("enable/disable", () => {
       },
       agents: {},
       snippets: {},
+      instructions: {},
     };
     await mkdir(rootDir, { recursive: true });
     await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
@@ -178,6 +179,7 @@ describe("enable/disable", () => {
       },
       agents: {},
       snippets: {},
+      instructions: {},
     };
     await mkdir(rootDir, { recursive: true });
     await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);

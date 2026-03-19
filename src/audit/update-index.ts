@@ -17,6 +17,7 @@ function ensureIndexStructure(index: FacultIndex): FacultIndex {
     mcp: index.mcp ?? { servers: {} },
     agents: index.agents ?? {},
     snippets: index.snippets ?? {},
+    instructions: index.instructions ?? {},
   };
 }
 

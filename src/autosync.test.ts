@@ -84,6 +84,19 @@ describe("autosync invocation", () => {
     expect(plist).toContain("<string>--service</string>");
     expect(plist).toContain("<string>/Users/test/.ai</string>");
   });
+
+  it("names project-scoped services distinctly and points launchd at the project root", () => {
+    const spec = buildLaunchAgentSpec({
+      homeDir: "/Users/test",
+      serviceName: "codex-facult",
+      rootDir: "/Users/test/dev/facult/.ai",
+      invocation: ["/Users/test/.facult/bin/facult"],
+    });
+    const plist = buildLaunchAgentPlist(spec);
+
+    expect(spec.label).toBe("com.facult.autosync.codex-facult");
+    expect(plist).toContain("<string>/Users/test/dev/facult/.ai</string>");
+  });
 });
 
 describe("git autosync", () => {

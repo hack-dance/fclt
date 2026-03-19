@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderAiRefs, renderCanonicalText } from "./agents";
+import { renderAiRefs, renderCanonicalText, renderProjectRefs } from "./agents";
 
 const DOLLAR = "$";
 
@@ -38,6 +38,17 @@ describe("renderAiRefs", () => {
       "Use @aix/rules/WRITING.md, literal @ai, and email@example.com as-is.";
 
     expect(renderAiRefs(input, "/Users/hack/.ai")).toBe(input);
+  });
+
+  it("renders project refs to repo-local .ai paths", () => {
+    const rendered = renderProjectRefs(
+      "Read @project/instructions/WRITING.md before editing.",
+      "/Users/hack/dev/facult"
+    );
+
+    expect(rendered).toBe(
+      "Read /Users/hack/dev/facult/.ai/instructions/WRITING.md before editing."
+    );
   });
 });
 
@@ -106,6 +117,28 @@ describe("renderCanonicalText", () => {
 
     expect(rendered).toBe(
       `Root ${rootDir} Home ${home} Tool codex Path ${join(home, ".codex", "agents", "alpha.toml")}.`
+    );
+  });
+
+  it("renders project refs after interpolation", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[refs]\nwriting_rule = "@project/instructions/WRITING.md"\n'
+    );
+
+    const rendered = await renderCanonicalText(`Read ${REFS_WRITING_RULE}.`, {
+      homeDir: home,
+      rootDir,
+      projectRoot,
+    });
+
+    expect(rendered).toBe(
+      `Read ${join(projectRoot, ".ai", "instructions", "WRITING.md")}.`
     );
   });
 });

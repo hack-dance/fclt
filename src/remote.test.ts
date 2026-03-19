@@ -1125,6 +1125,51 @@ describe("templates command", () => {
     );
     expect(process.exitCode).toBe(0);
   });
+
+  it("scaffolds the builtin project-ai pack into a repo-local .ai", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    await mkdir(repoDir, { recursive: true });
+    process.chdir(repoDir);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "project-ai"], {
+        homeDir: home,
+        cwd: repoDir,
+      });
+    });
+
+    expect(
+      await Bun.file(
+        join(
+          repoDir,
+          ".ai",
+          "skills",
+          "project-operating-layer-design",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(
+        join(repoDir, ".ai", "instructions", "PROJECT_CAPABILITY.md")
+      ).exists()
+    ).toBe(true);
+    const evolutionText = await Bun.file(
+      join(repoDir, ".ai", "instructions", "EVOLUTION.md")
+    ).text();
+    expect(evolutionText).toContain("facult ai writeback add");
+    expect(evolutionText).toContain("Current supported proposal kinds");
+
+    const skillText = await Bun.file(
+      join(repoDir, ".ai", "skills", "capability-evolution", "SKILL.md")
+    ).text();
+    expect(skillText).toContain("Proposal Kind Selection");
+    expect(skillText).toContain("facult ai evolve draft EV-00001 --append");
+    expect(
+      await Bun.file(join(repoDir, ".facult", "ai", "index.json")).exists()
+    ).toBe(true);
+  });
 });
 
 describe("sources command", () => {

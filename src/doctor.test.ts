@@ -27,6 +27,7 @@ test("doctor --repair migrates a legacy root index into generated ai state", asy
           mcp: { servers: {} },
           agents: {},
           snippets: {},
+          instructions: {},
         },
         null,
         2

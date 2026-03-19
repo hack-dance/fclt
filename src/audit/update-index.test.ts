@@ -69,6 +69,7 @@ describe("audit index updates", () => {
       },
       agents: {},
       snippets: {},
+      instructions: {},
     };
 
     await Bun.write(
@@ -140,6 +141,7 @@ describe("audit index updates", () => {
       mcp: { servers: {} },
       agents: {},
       snippets: {},
+      instructions: {},
     };
 
     await Bun.write(

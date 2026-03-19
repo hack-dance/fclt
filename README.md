@@ -15,14 +15,16 @@
   </a>
 </div>
 
-`facult` is a CLI for managing coding-agent configuration across tools.
+`facult` is a CLI for managing canonical AI capability across tools, users, and projects.
 
 It helps you:
 - discover what is installed on your machine
 - consolidate everything into one canonical store
 - review trust/security before installing remote content
 - sync managed outputs into Codex, Cursor, and Claude
-- manage a git-backed personal AI store under `~/.ai`
+- manage a git-backed AI store under `~/.ai` and repo-local `.ai/`
+- model relationships between instructions, snippets, agents, skills, and rendered tool outputs
+- preserve learning through writeback and evolve canonical assets over time
 
 ## What facult Is
 
@@ -32,7 +34,126 @@ Think of it as:
 - inventory + auditing for agent assets
 - package manager interface for skill/MCP catalogs
 - sync layer that applies your chosen setup to each tool
-- canonical source manager for global AI instructions, agents, snippets, tool configs, and rules
+- canonical source manager for global and project AI instructions, snippets, agents, skills, tool configs, and rules
+- a local capability graph for discovering what exists and what depends on what
+- a writeback/evolution loop for turning repeated friction into durable improvements
+
+## What facult Does
+
+`facult` is not just a skill manager.
+
+It provides five connected layers:
+
+1. Canonical source
+   - global capability in `~/.ai`
+   - project capability in `<repo>/.ai`
+   - optional built-in Facult capability packs for bootstrap and defaults
+2. Discovery
+   - inventory across skills, agents, snippets, instructions, MCP, and rendered surfaces
+   - merged views across builtin, global, and project provenance
+   - explicit dependency graph queries
+3. Sync
+   - managed tool outputs for Codex, Claude, Cursor, and other file-backed surfaces
+   - rendered docs, agents, skills, MCP, config, and rules
+4. Automation
+   - background autosync for local propagation
+   - optional git autosync for the canonical store
+5. Evolution
+   - writeback capture
+   - proposal drafting and review
+   - controlled apply back into canonical assets
+
+## Default Operating Model
+
+`facult` ships with a built-in Facult operating-model pack. That pack includes default:
+
+- instructions for evolution, integration, and project capability
+- specialist agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
+- skills such as `capability-evolution` and `project-operating-layer-design`
+
+When managed sync is enabled, these built-in assets are available by default even if you never copy them into `~/.ai`.
+
+That means:
+- builtin skills sync into managed tool skill directories by default
+- builtin agents sync into tool agent directories when the tool supports agents
+- if you do not author your own `AGENTS.global.md`, `facult` renders a builtin global baseline doc into tool-native global docs
+
+This is intentionally virtual at the canonical level:
+- builtin defaults remain part of the packaged tool
+- your personal `~/.ai` stays clean unless you explicitly vendor or override something
+- the live tool output on disk still contains the rendered defaults, so users and agents can read them directly
+
+In practice, this means you do not need to drive writeback and evolution through the CLI alone. The default skills, agents, and global docs are meant to make that operating model available automatically.
+
+If you want to disable the builtin default layer for a specific global or project canonical root:
+
+```toml
+version = 1
+
+[builtin]
+sync_defaults = false
+```
+
+Put that in `config.toml` or `config.local.toml` under the active canonical root.
+
+## Core Concepts
+
+### Canonical vs rendered
+
+`facult` separates source-of-truth from tool-native output.
+
+- canonical source lives in `~/.ai` or `<repo>/.ai`
+- rendered outputs live in tool homes like `~/.codex`, `<repo>/.codex`, `~/.claude`, or `~/.cursor`
+- generated state lives in `~/.facult` or `<repo>/.facult`
+
+This keeps authored capability portable and reviewable while still producing the exact files each tool expects.
+
+### Global vs project capability
+
+Use global `~/.ai` for reusable personal defaults:
+- cross-project instructions
+- reusable specialist agents
+- shared skills
+- default tool config and rules
+
+Use project `.ai/` for repo-owned capability:
+- project-specific instructions and snippets
+- local architecture/testing doctrine
+- project agents and skills that should travel with the codebase
+- repo-local rendered outputs for teammates
+
+Project capability is allowed to extend or shadow global capability in merged views, but it does not silently mutate the global source of truth.
+
+### The capability graph
+
+`facult` builds a generated graph of explicit relationships between canonical assets and rendered outputs.
+
+That graph tracks things like:
+- snippet markers
+- `@ai/...` and `@project/...` refs
+- `${refs.*}` symbolic refs
+- rendered-target edges from canonical source to live tool files
+
+This makes it possible to answer:
+- what capability do I already have?
+- what instructions or snippets does this agent depend on?
+- what rendered files change if I update this canonical asset?
+- what project asset is shadowing a global asset?
+
+### Writeback and evolution
+
+`facult` treats repeated failures, weak loops, missing context, and reusable patterns as signal worth preserving.
+
+Writeback is the act of recording that signal in a structured way.
+Evolution is the act of grouping that signal into reviewable proposals and applying it back into canonical assets.
+
+This matters because otherwise the same problems repeat in chat without ever improving the actual operating layer. With `facult`, you can:
+- record a weak verification pattern
+- group repeated writebacks around an instruction or agent
+- draft a proposal to tighten that canonical asset
+- review and apply the change in a controlled way
+
+The result is that your AI system can get better over time without hiding mutations in tool-specific state or losing the reasoning behind a change.
 
 ## Quick Start
 
@@ -96,21 +217,57 @@ facult index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-Canonical source root: `~/.ai`. Generated state remains under `~/.facult`.
+Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-local work. Generated state lives next to the active canonical root:
+- global: `~/.facult`
+- project: `<repo>/.facult`
+
+### 3b. Bootstrap a repo-local `.ai`
+
+```bash
+cd /path/to/repo
+bunx facult templates init project-ai
+bunx facult index
+```
+
+This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes a merged project index/graph under `<repo>/.facult/ai/`.
 
 ### 4. Inspect what you have
 
 ```bash
 facult list skills
+facult list instructions
 facult list mcp
 facult show requesting-code-review
+facult show instruction:WRITING
 facult show mcp:github
+facult find verification
+facult graph show instruction:WRITING
+facult graph deps AGENTS.global.md
+facult graph dependents @ai/instructions/WRITING.md
+facult ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
+facult ai evolve propose
+facult ai evolve draft EV-00001
+facult ai evolve accept EV-00001
+facult ai evolve apply EV-00001
+```
+
+Context controls:
+
+```bash
+facult list instructions --global
+facult list instructions --project
+facult find verification --scope merged --source project
+facult sync codex --project
+facult autosync status --global
+facult list agents --root /path/to/repo/.ai
 ```
 
 ### 5. Enable managed mode for your tools
 
 ```bash
-facult manage codex
+facult manage codex --dry-run
+facult manage codex --adopt-existing
+facult sync codex --builtin-conflicts overwrite
 facult manage cursor
 facult manage claude
 
@@ -119,6 +276,9 @@ facult sync
 ```
 
 At this point, your selected skills are actively synced to all managed tools.
+If you run these commands from inside a repo that has `<repo>/.ai`, `facult` targets the project-local canonical store and repo-local tool outputs by default.
+On first entry to managed mode, use `--dry-run` first if the live tool already has local content. `facult` will show what it would adopt into the active canonical store across skills, agents, docs, rules, config, and MCP, plus any conflicts. Then rerun with `--adopt-existing`; if names or files collide, add `--existing-conflicts keep-canonical` or `--existing-conflicts keep-existing`.
+For builtin-backed rendered defaults, `facult` now tracks the last managed render hash. If a user edits the generated target locally, normal sync warns and preserves that local edit instead of silently overwriting it. To replace the local edit with the latest packaged builtin default, rerun sync with `--builtin-conflicts overwrite`.
 
 ### 6. Turn on background autosync
 
@@ -127,8 +287,8 @@ facult autosync install --git-remote origin --git-branch main --git-interval-min
 facult autosync status
 ```
 
-This installs a per-user macOS LaunchAgent that:
-- watches `~/.ai` for local changes and syncs managed tool outputs automatically
+This installs a macOS LaunchAgent that:
+- watches the active canonical root (`~/.ai` or `<repo>/.ai`) for local changes and syncs managed tool outputs automatically
 - tracks dirty state for the canonical repo
 - runs a slower git autosync loop that batches changes, auto-commits them, rebases on the configured remote branch, and pushes on success
 
@@ -175,9 +335,9 @@ facult sync
 
 Note: `templates init mcp ...` is a scaffold, not a running server by itself.
 
-## The `~/.ai` Model
+## The `.ai` Model
 
-`facult` now treats `~/.ai` as the canonical, git-backed source of truth for personal AI configuration.
+`facult` treats both `~/.ai` and `<repo>/.ai` as canonical AI stores. The global store is for personal reusable capability; the project store is for repo-owned capability that should travel with the codebase.
 
 Typical layout:
 
@@ -197,18 +357,42 @@ Typical layout:
     codex/
       config.toml
       rules/
-  projects/
-    <slug>/
-      config.toml
-      config.local.toml
-      snippets/
-      instructions/
+<repo>/
+  .ai/
+    config.toml
+    instructions/
+    snippets/
+    agents/
+    skills/
+    tools/
+  .facult/
+    ai/
+      index.json
+      graph.json
+  .codex/
+  .claude/
 ```
 
 Important split:
-- `~/.ai` is canonical source
-- `~/.facult` is generated state, trust state, managed tool state, autosync state, and caches
-- tool homes such as `~/.codex` are rendered outputs
+- `.ai/` is canonical source
+- `.facult/` is generated state, trust state, managed tool state, autosync state, and caches
+- tool homes such as `.codex/` and `.claude/` are rendered outputs
+- the generated capability graph lives at `.facult/ai/graph.json`
+
+### Asset types
+
+The canonical store can contain several distinct asset classes:
+
+- `instructions/`: reusable doctrine and deeper conceptual guidance
+- `snippets/`: small composable blocks that can be inserted into rendered markdown
+- `agents/`: role-specific agent manifests
+- `skills/`: workflow-specific capability folders
+- `mcp/`: canonical MCP server definitions
+- `tools/<tool>/config.toml`: canonical tool config
+- `tools/<tool>/rules/*.rules`: canonical tool rules
+- global docs such as `AGENTS.global.md` and `AGENTS.override.global.md`
+
+Not every asset syncs directly to a tool. Some exist primarily to support rendered outputs or to be discovered and reused by other canonical assets.
 
 ### Canonical conventions
 
@@ -216,6 +400,8 @@ Important split:
 - Use `snippets/` for composable partial blocks injected into markdown templates
 - Use `tools/codex/rules/*.rules` for actual Codex approval-policy rules
 - Use logical refs such as `@ai/instructions/WRITING.md` in tracked source
+- Use `@builtin/facult-operating-model/...` for packaged Facult defaults
+- Use `@project/...` when a tracked ref must resolve inside a repo-local `.ai`
 - Use config-backed refs in prompts where you want stable named references such as `${refs.writing_rule}`
 
 ### Config and env layering
@@ -239,6 +425,8 @@ Built-ins currently include:
 Recommended split:
 - `config.toml`: tracked, portable, non-secret refs/defaults
 - `config.local.toml`: ignored, machine-local paths and secrets
+- `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
+- `facult sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
 
 ### Snippets
 
@@ -262,6 +450,92 @@ facult snippets sync [--dry-run] [file...]
 ```
 
 Snippets are already used during global Codex `AGENTS.md` rendering.
+
+### Graph inspection
+
+The generated graph in `.facult/ai/graph.json` is queryable directly:
+
+```bash
+facult graph show instruction:WRITING
+facult graph deps AGENTS.global.md
+facult graph dependents @project/instructions/TESTING.md
+```
+
+This is the explicit dependency layer for:
+- snippet markers like `<!-- fclty:... -->`
+- config-backed refs like `${refs.*}`
+- canonical refs like `@ai/...`
+- project refs like `@project/...`
+- rendered outputs such as managed agents, docs, MCP configs, tool configs, and tool rules
+
+### Writeback and evolution
+
+`facult` also has a local writeback/evolution substrate built on top of the graph:
+
+```bash
+facult ai writeback add \
+  --kind weak_verification \
+  --summary "Verification guidance did not distinguish shallow checks from meaningful proof." \
+  --asset instruction:VERIFICATION \
+  --tag verification \
+  --tag false-positive
+
+facult ai writeback list
+facult ai writeback show WB-00001
+facult ai writeback group --by asset
+facult ai writeback summarize --by kind
+facult ai evolve propose
+facult ai evolve list
+facult ai evolve show EV-00001
+facult ai evolve draft EV-00001
+facult ai evolve review EV-00001
+facult ai evolve accept EV-00001
+facult ai evolve reject EV-00001 --reason "Needs a tighter draft"
+facult ai evolve supersede EV-00001 --by EV-00002
+facult ai evolve apply EV-00001
+facult ai evolve promote EV-00003 --to global --project
+```
+
+Runtime state stays generated and local:
+- global writeback state: `~/.facult/ai/global/...`
+- project writeback state: `~/.facult/ai/projects/<slug>/...`
+
+That split is intentional:
+- canonical source remains in `~/.ai` or `<repo>/.ai`
+- writeback queues, journals, and proposal records stay outside the canonical git-backed tree by default
+
+Use writeback when:
+- a task exposed a weak or misleading verification loop
+- an instruction or agent was missing key context
+- a pattern proved reusable enough to become doctrine
+- a project-local pattern deserves promotion toward global capability
+
+Do not think of writeback as “taking notes.” Think of it as preserving signal that should change the system, not just the current conversation.
+
+For many users, the normal entrypoint is not the CLI directly. The builtin operating-model layer is designed so synced agents, skills, and global docs can push the system toward writeback and evolution by default, while the `facult ai ...` commands remain the explicit operator surface when you want direct control.
+
+Current apply semantics are intentionally policy-bound:
+- targets are resolved through the generated graph when possible and fall back to canonical ref resolution for missing assets
+- apply is limited to markdown canonical assets
+- proposals must be drafted before they can be applied; higher-risk proposals still require explicit acceptance
+- supported proposal kinds currently include `create_instruction`, `update_instruction`, `create_agent`, `update_agent`, `update_asset`, `create_asset`, `extract_snippet`, `add_skill`, and `promote_asset`
+- low-risk project-scoped additive proposals such as `create_instruction` can be applied directly after drafting, while global and higher-risk proposals still require review/acceptance
+
+Current review/draft semantics:
+- `writeback group` and `writeback summarize` expose recurring patterns across `asset`, `kind`, and `domain` without mutating canonical assets
+- drafted proposals emit both a human-readable markdown draft and a patch artifact under generated state
+- rerunning `evolve draft <id> --append ...` revises the draft and records draft history
+- `evolve promote --to global` creates a new high-risk global proposal from a project-scoped proposal; that promoted proposal can then be drafted, reviewed, and applied into `~/.ai`
+
+### Scope and source selection
+
+Most inventory and sync commands support explicit canonical-root selection:
+
+- `--global` to force `~/.ai`
+- `--project` to force the nearest repo-local `.ai`
+- `--root /path/to/.ai` to point at a specific canonical root
+- `--scope merged|global|project` for discovery views
+- `--source builtin|global|project` to filter provenance in list/find/show/graph flows
 
 ## Security and Trust
 
@@ -308,9 +582,11 @@ Recommended security flow:
 - Inventory and discovery
 ```bash
 facult scan [--from <path>] [--json] [--show-duplicates]
-facult list [skills|mcp|agents|snippets] [--enabled-for <tool>] [--untrusted] [--flagged] [--pending]
+facult list [skills|mcp|agents|snippets|instructions] [--enabled-for <tool>] [--untrusted] [--flagged] [--pending]
 facult show <name>
+facult show instruction:<name>
 facult show mcp:<name> [--show-secrets]
+facult find <query> [--json]
 ```
 
 - Canonical store and migration
@@ -322,13 +598,13 @@ facult migrate [--from <path>] [--dry-run] [--move] [--write-config]
 
 - Managed mode and rollout
 ```bash
-facult manage <tool>
+facult manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing]
 facult unmanage <tool>
 facult managed
 facult enable <name> [--for <tool1,tool2,...>]
 facult enable mcp:<name> [--for <tool1,tool2,...>]
 facult disable <name> [--for <tool1,tool2,...>]
-facult sync [tool] [--dry-run]
+facult sync [tool] [--dry-run] [--builtin-conflicts overwrite]
 facult autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
 facult autosync status [tool]
 facult autosync restart [tool]
@@ -351,6 +627,7 @@ facult sources clear <source>
 - Templates and snippets
 ```bash
 facult templates list
+facult templates init project-ai
 facult templates init skill <name>
 facult templates init mcp <name>
 facult templates init snippet <marker>
@@ -374,9 +651,10 @@ facult <command> --help
 
 `facult` resolves the canonical root in this order:
 1. `FACULT_ROOT_DIR`
-2. `~/.facult/config.json` (`rootDir`)
-3. `~/.ai`
-4. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
+2. nearest project `.ai` from the current working directory for CLI-facing commands
+3. `~/.facult/config.json` (`rootDir`)
+4. `~/.ai`
+5. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
 
 ### Runtime env vars
 
@@ -452,7 +730,7 @@ Default install path is `~/.facult/bin/facult`. You can pass a custom target dir
 
 Current v1 behavior:
 - macOS LaunchAgent-backed
-- immediate local managed-tool sync on `~/.ai` file changes
+- immediate local managed-tool sync on the configured canonical root
 - periodic git autosync for the canonical repo
 - automatic autosync commits with source-tagged commit messages such as:
   - `chore(facult-autosync): sync canonical ai changes from <host> [service:all]`
@@ -462,6 +740,14 @@ Recommended usage:
 ```bash
 facult autosync install
 facult autosync status
+```
+
+Project-local usage:
+
+```bash
+cd /path/to/repo
+facult autosync install codex
+facult autosync status codex
 ```
 
 Tool-scoped service:
@@ -554,7 +840,7 @@ Not as a first-party `facult mcp serve` runtime.
 Yes. The core model now includes:
 - canonical personal AI source in `~/.ai`
 - rendered managed outputs in tool homes such as `~/.codex`
-- global instruction docs such as `AGENTS.global.md`
+- global instruction docs such as `AGENTS.global.md`, rendered by default into `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and `~/.cursor/AGENTS.md`
 - tool-native configs such as `~/.codex/config.toml`
 - tool-native rule files such as `~/.codex/rules/*.rules`
 

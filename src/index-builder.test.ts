@@ -3,10 +3,16 @@ import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndex, parseSkillMarkdown } from "./index-builder";
-import { facultAiIndexPath, facultRootDir } from "./paths";
+import {
+  facultAiGraphPath,
+  facultAiIndexPath,
+  facultGeneratedStateDir,
+  facultRootDir,
+} from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
+const DOLLAR = "$";
 
 function fixturePath(rel: string): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -70,7 +76,7 @@ describe("parseSkillMarkdown", () => {
 });
 
 describe("buildIndex", () => {
-  it("indexes skills, mcp servers, agents, and snippets under the canonical root", async () => {
+  it("indexes skills, mcp servers, agents, snippets, and instructions under the canonical root", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
@@ -93,6 +99,12 @@ describe("buildIndex", () => {
     await mkdir(join(rootDir, "snippets"), { recursive: true });
     await Bun.write(join(rootDir, "snippets", "snippet.md"), "hello\n");
 
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "instructions", "FEEDBACK_LOOPS.md"),
+      "---\ndescription: Feedback loop doctrine\ntags: [feedback, loops]\n---\n\nUse short loops.\n"
+    );
+
     const { index, outputPath } = await buildIndex({ rootDir });
 
     expect(outputPath).toBe(facultAiIndexPath(tempHome));
@@ -107,11 +119,25 @@ describe("buildIndex", () => {
     expect(index.snippets["snippet.md"]?.path).toBe(
       join(rootDir, "snippets", "snippet.md")
     );
+    expect(index.instructions.FEEDBACK_LOOPS?.path).toBe(
+      join(rootDir, "instructions", "FEEDBACK_LOOPS.md")
+    );
+    expect(index.instructions.FEEDBACK_LOOPS?.description).toBe(
+      "Feedback loop doctrine"
+    );
+    expect(index.instructions.FEEDBACK_LOOPS?.tags).toEqual([
+      "feedback",
+      "loops",
+    ]);
 
     const written = JSON.parse(
       await Bun.file(outputPath).text()
     ) as typeof index;
     expect(written.skills["my-skill"]?.tags).toEqual(["x"]);
+    expect(written.instructions.FEEDBACK_LOOPS?.tags).toEqual([
+      "feedback",
+      "loops",
+    ]);
   });
 
   it("preserves enabledFor/trust/audit metadata when rebuilding an existing index", async () => {
@@ -152,5 +178,246 @@ describe("buildIndex", () => {
     expect(rebuilt.mcp.servers["my-server"].enabledFor).toEqual(["cursor"]);
     expect(rebuilt.mcp.servers["my-server"].trusted).toBe(true);
     expect(rebuilt.mcp.servers["my-server"].auditStatus).toBe("passed");
+  });
+
+  it("builds a project-scoped merged index and graph with builtin, global, and project provenance", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const globalRoot = join(tempHome, ".ai");
+    await mkdir(join(globalRoot, "instructions"), { recursive: true });
+    await Bun.write(
+      join(globalRoot, "instructions", "SHARED.md"),
+      "---\ndescription: Global shared instruction\ntags: [global]\n---\n\nGlobal guidance.\n"
+    );
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await mkdir(join(rootDir, "snippets", "global", "core"), {
+      recursive: true,
+    });
+    await mkdir(join(rootDir, "agents", "argument-editor"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "instructions", "SHARED.md"),
+      "---\ndescription: Project shared instruction\ntags: [project]\n---\n\nProject guidance.\n"
+    );
+    await Bun.write(
+      join(rootDir, "snippets", "global", "core", "checks.md"),
+      "---\ndescription: Checks snippet\ntags: [checks]\n---\n\nRun the concrete checks before finishing.\n"
+    );
+    await Bun.write(
+      join(rootDir, "agents", "argument-editor", "agent.toml"),
+      [
+        'name = "argument-editor"',
+        'description = "Editorial reviewer."',
+        "",
+        'developer_instructions = """',
+        "Read the project instructions before reviewing.",
+        '"""',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[refs]\nshared = "@project/instructions/SHARED.md"\n'
+    );
+    await Bun.write(
+      join(rootDir, "AGENTS.global.md"),
+      [
+        "<!-- fclty:global/core/checks -->",
+        "<!-- /fclty:global/core/checks -->",
+        "",
+        `Read ${DOLLAR}{refs.shared}.`,
+      ].join("\n")
+    );
+    await mkdir(join(rootDir, "tools", "codex", "rules"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "tools", "codex", "config.toml"),
+      'approval_policy = "never"\n'
+    );
+    await Bun.write(
+      join(rootDir, "tools", "codex", "rules", "default.rules"),
+      'prefix_rule(pattern = ["gh"], decision = "prompt")\n'
+    );
+    await mkdir(facultGeneratedStateDir({ home: tempHome, rootDir }), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(
+        facultGeneratedStateDir({ home: tempHome, rootDir }),
+        "managed.json"
+      ),
+      JSON.stringify(
+        {
+          version: 1,
+          tools: {
+            codex: {
+              tool: "codex",
+              managedAt: "2026-03-18T00:00:00.000Z",
+              agentsDir: join(projectRoot, ".codex", "agents"),
+              toolHome: join(projectRoot, ".codex"),
+              globalAgentsPath: join(projectRoot, ".codex", "AGENTS.md"),
+              mcpConfig: join(projectRoot, ".codex", "mcp.json"),
+              rulesDir: join(projectRoot, ".codex", "rules"),
+              toolConfig: join(projectRoot, ".codex", "config.toml"),
+            },
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const { index, outputPath, graph, graphPath } = await buildIndex({
+      rootDir,
+      homeDir: tempHome,
+    });
+
+    expect(outputPath).toBe(facultAiIndexPath(tempHome, rootDir));
+    expect(graphPath).toBe(facultAiGraphPath(tempHome, rootDir));
+    expect(index.instructions.SHARED?.path).toBe(
+      join(rootDir, "instructions", "SHARED.md")
+    );
+    expect(index.instructions.SHARED?.sourceKind).toBe("project");
+    expect(index.instructions.SHARED?.projectSlug).toBe("repo");
+    expect(index.agents["argument-editor"]?.projectSlug).toBe("repo");
+    expect(index.instructions.INTEGRATION?.sourceKind).toBe("builtin");
+    expect(index.instructions.INTEGRATION?.path).toContain(
+      join("assets", "packs", "facult-operating-model", "instructions")
+    );
+
+    const docNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "doc" &&
+        node.name === "AGENTS.global.md" &&
+        node.sourceKind === "project"
+    );
+    expect(docNode).toBeTruthy();
+
+    const snippetNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "snippet" &&
+        node.name === "global/core/checks.md" &&
+        node.sourceKind === "project"
+    );
+    expect(snippetNode).toBeTruthy();
+
+    const sharedInstructionNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "instruction" &&
+        node.name === "SHARED" &&
+        node.sourceKind === "project"
+    );
+    expect(sharedInstructionNode).toBeTruthy();
+    expect(sharedInstructionNode?.projectSlug).toBe("repo");
+    expect(sharedInstructionNode?.shadow).toBe(false);
+
+    const shadowedGlobalInstructionNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "instruction" &&
+        node.name === "SHARED" &&
+        node.sourceKind === "global"
+    );
+    expect(shadowedGlobalInstructionNode?.shadow).toBe(true);
+
+    const renderedAgentNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "rendered-target" &&
+        node.path ===
+          join(projectRoot, ".codex", "agents", "argument-editor.toml")
+    );
+    expect(renderedAgentNode).toBeTruthy();
+    expect(renderedAgentNode?.projectSlug).toBe("repo");
+    expect(renderedAgentNode?.shadow).toBe(true);
+
+    const renderedDocNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "rendered-target" &&
+        node.path === join(projectRoot, ".codex", "AGENTS.md")
+    );
+    expect(renderedDocNode).toBeTruthy();
+    expect(renderedDocNode?.projectSlug).toBe("repo");
+    expect(renderedDocNode?.shadow).toBe(true);
+
+    const toolConfigNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "tool-config" &&
+        node.path === join(rootDir, "tools", "codex", "config.toml")
+    );
+    expect(toolConfigNode).toBeTruthy();
+    expect(toolConfigNode?.projectSlug).toBe("repo");
+
+    const toolRuleNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "tool-rule" &&
+        node.path === join(rootDir, "tools", "codex", "rules", "default.rules")
+    );
+    expect(toolRuleNode).toBeTruthy();
+    expect(toolRuleNode?.projectSlug).toBe("repo");
+
+    const renderedConfigNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "rendered-target" &&
+        node.path === join(projectRoot, ".codex", "config.toml")
+    );
+    expect(renderedConfigNode).toBeTruthy();
+
+    const renderedRuleNode = Object.values(graph.nodes).find(
+      (node) =>
+        node.kind === "rendered-target" &&
+        node.path === join(projectRoot, ".codex", "rules", "default.rules")
+    );
+    expect(renderedRuleNode).toBeTruthy();
+
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.kind === "snippet_marker" &&
+          edge.from === docNode?.id &&
+          edge.to === snippetNode?.id
+      )
+    ).toBe(true);
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.kind === "ref_symbol" &&
+          edge.from === docNode?.id &&
+          edge.to === sharedInstructionNode?.id
+      )
+    ).toBe(true);
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.kind === "render_source" &&
+          edge.from === "agent:project:project:argument-editor" &&
+          edge.to === renderedAgentNode?.id
+      )
+    ).toBe(true);
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.kind === "render_source" &&
+          edge.from === "doc:project:project:AGENTS.global.md" &&
+          edge.to === renderedDocNode?.id
+      )
+    ).toBe(true);
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.kind === "render_source" &&
+          edge.from === "tool-config:project:project:codex/config.toml" &&
+          edge.to === renderedConfigNode?.id
+      )
+    ).toBe(true);
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.kind === "render_source" &&
+          edge.from === "tool-rule:project:project:codex/rules/default.rules" &&
+          edge.to === renderedRuleNode?.id
+      )
+    ).toBe(true);
   });
 });

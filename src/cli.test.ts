@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseListArgs } from "./index";
+import { parseFindArgs, parseListArgs } from "./index";
 
 describe("parseListArgs", () => {
   it("parses list options and filters", () => {
@@ -26,5 +26,21 @@ describe("parseListArgs", () => {
   it("defaults to skills when no type provided", () => {
     const opts = parseListArgs([]);
     expect(opts.kind).toBe("skills");
+  });
+
+  it("accepts instructions as a list type", () => {
+    const opts = parseListArgs(["instructions", "--json"]);
+    expect(opts.kind).toBe("instructions");
+    expect(opts.json).toBe(true);
+  });
+});
+
+describe("parseFindArgs", () => {
+  it("parses text query and json flag", () => {
+    const opts = parseFindArgs(["feedback", "loops", "--json"]);
+    expect(opts).toEqual({
+      text: "feedback loops",
+      json: true,
+    });
   });
 });

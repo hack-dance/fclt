@@ -1,13 +1,19 @@
 import { homedir } from "node:os";
 import { ensureAiIndexPath } from "./ai-state";
+import type { AssetScope, AssetSourceKind } from "./graph";
 import type {
   AgentEntry,
   FacultIndex,
+  InstructionEntry,
   McpEntry,
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
-import { facultAiIndexPath, facultRootDir } from "./paths";
+import {
+  facultAiIndexPath,
+  facultContextRootDir,
+  facultRootDir,
+} from "./paths";
 import { applyOrgTrustList } from "./trust-list";
 
 export interface QueryFilters {
@@ -23,6 +29,10 @@ export interface QueryFilters {
   tags?: string[];
   /** Full-text search query (case-insensitive). */
   text?: string;
+  /** Only include entries from a specific source layer. */
+  sourceKind?: AssetSourceKind;
+  /** Only include entries from a specific asset scope. */
+  scope?: AssetScope;
 }
 
 interface IndexEntry {
@@ -32,6 +42,18 @@ interface IndexEntry {
   enabledFor?: string[];
   trusted?: boolean;
   auditStatus?: string;
+  sourceKind?: AssetSourceKind;
+  scope?: AssetScope;
+}
+
+export interface CapabilityMatch {
+  kind: "skills" | "mcp" | "agents" | "snippets" | "instructions";
+  name: string;
+  path: string;
+  description?: string;
+  tags?: string[];
+  sourceKind?: string;
+  scope?: string;
 }
 
 const WHITESPACE_RE = /\s+/;
@@ -46,7 +68,7 @@ function matchesEnabledFor(entry: IndexEntry, tool?: string): boolean {
   }
   const enabledFor = entry.enabledFor;
   if (!Array.isArray(enabledFor)) {
-    return false;
+    return true;
   }
   const target = normalizeText(tool);
   return enabledFor.some((t) => normalizeText(t) === target);
@@ -99,16 +121,40 @@ function matchesText(entry: IndexEntry, text?: string): boolean {
   return terms.every((term) => haystack.includes(term.toLowerCase()));
 }
 
+function matchesSourceKind(
+  entry: IndexEntry,
+  sourceKind?: AssetSourceKind
+): boolean {
+  if (!sourceKind) {
+    return true;
+  }
+  return entry.sourceKind === sourceKind;
+}
+
+function matchesScope(entry: IndexEntry, scope?: AssetScope): boolean {
+  if (!scope) {
+    return true;
+  }
+  return entry.scope === scope;
+}
+
 /** Return the canonical facult root directory. */
 export function facultRootDirPath(home: string = homedir()): string {
   return facultRootDir(home);
+}
+
+export function facultContextRootDirPath(home: string = homedir()): string {
+  return facultContextRootDir({ home, cwd: process.cwd() });
 }
 
 /**
  * Return the path to the facult index.json file.
  */
 export function facultIndexPath(home: string = homedir()): string {
-  return facultAiIndexPath(home);
+  return facultAiIndexPath(
+    home,
+    facultContextRootDir({ home, cwd: process.cwd() })
+  );
 }
 
 /**
@@ -125,7 +171,9 @@ export async function loadIndex(opts?: {
   if (!resolvedHome) {
     throw new Error("HOME is not set.");
   }
-  const rootDir = opts?.rootDir ?? facultRootDir(resolvedHome);
+  const rootDir =
+    opts?.rootDir ??
+    facultContextRootDir({ home: resolvedHome, cwd: process.cwd() });
   const { path: indexPath } = await ensureAiIndexPath({
     homeDir: resolvedHome,
     rootDir,
@@ -180,6 +228,87 @@ export function filterSnippets(
   return filterEntries(entries, filters);
 }
 
+/**
+ * Filter instruction entries using query filters.
+ */
+export function filterInstructions(
+  entries: Record<string, InstructionEntry>,
+  filters?: QueryFilters
+): InstructionEntry[] {
+  return filterEntries(entries, filters);
+}
+
+export function findCapabilities(
+  index: FacultIndex,
+  filters: Pick<QueryFilters, "text" | "sourceKind" | "scope">
+): CapabilityMatch[] {
+  const results: CapabilityMatch[] = [];
+
+  for (const entry of filterSkills(index.skills, filters)) {
+    results.push({
+      kind: "skills",
+      name: entry.name,
+      path: entry.path,
+      description: entry.description,
+      tags: entry.tags,
+      sourceKind: entry.sourceKind,
+      scope: entry.scope,
+    });
+  }
+
+  for (const entry of filterMcp(index.mcp?.servers ?? {}, filters)) {
+    results.push({
+      kind: "mcp",
+      name: entry.name,
+      path: entry.path,
+      sourceKind: entry.sourceKind,
+      scope: entry.scope,
+    });
+  }
+
+  for (const entry of filterAgents(index.agents ?? {}, filters)) {
+    results.push({
+      kind: "agents",
+      name: entry.name,
+      path: entry.path,
+      description: entry.description,
+      sourceKind: entry.sourceKind,
+      scope: entry.scope,
+    });
+  }
+
+  for (const entry of filterSnippets(index.snippets ?? {}, filters)) {
+    results.push({
+      kind: "snippets",
+      name: entry.name,
+      path: entry.path,
+      description: entry.description,
+      tags: entry.tags,
+      sourceKind: entry.sourceKind,
+      scope: entry.scope,
+    });
+  }
+
+  for (const entry of filterInstructions(index.instructions ?? {}, filters)) {
+    results.push({
+      kind: "instructions",
+      name: entry.name,
+      path: entry.path,
+      description: entry.description,
+      tags: entry.tags,
+      sourceKind: entry.sourceKind,
+      scope: entry.scope,
+    });
+  }
+
+  return results.sort((a, b) => {
+    if (a.kind !== b.kind) {
+      return a.kind.localeCompare(b.kind);
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function filterEntries<T extends IndexEntry>(
   entries: Record<string, T>,
   filters?: QueryFilters
@@ -189,6 +318,8 @@ function filterEntries<T extends IndexEntry>(
     .filter((entry) => matchesUntrusted(entry, filters?.untrusted))
     .filter((entry) => matchesFlagged(entry, filters?.flagged))
     .filter((entry) => matchesPending(entry, filters?.pending))
+    .filter((entry) => matchesSourceKind(entry, filters?.sourceKind))
+    .filter((entry) => matchesScope(entry, filters?.scope))
     .filter((entry) => matchesTags(entry, filters?.tags))
     .filter((entry) => matchesText(entry, filters?.text))
     .sort((a, b) => a.name.localeCompare(b.name));

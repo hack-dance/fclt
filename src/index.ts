@@ -2,14 +2,28 @@
 
 import { join } from "node:path";
 import { getAllAdapters } from "./adapters";
+import { aiCommand } from "./ai";
 import { auditCommand } from "./audit";
 import { autosyncCommand } from "./autosync";
+import {
+  type CapabilityScopeMode,
+  parseCliContextArgs,
+  resolveCliContextRoot,
+} from "./cli-context";
 import { consolidateCommand } from "./consolidate";
 import { doctorCommand } from "./doctor";
 import { disableCommand, enableCommand } from "./enable-disable";
+import type { AssetScope, AssetSourceKind } from "./graph";
+import {
+  graphDependencies,
+  graphDependents,
+  loadGraph,
+  resolveGraphNode,
+} from "./graph-query";
 import type {
   AgentEntry,
   FacultIndex,
+  InstructionEntry,
   McpEntry,
   SkillEntry,
   SnippetEntry,
@@ -25,9 +39,11 @@ import { migrateCommand } from "./migrate";
 import type { QueryFilters } from "./query";
 import {
   filterAgents,
+  filterInstructions,
   filterMcp,
   filterSkills,
   filterSnippets,
+  findCapabilities,
   loadIndex,
 } from "./query";
 import {
@@ -44,13 +60,38 @@ import { snippetsCommand } from "./snippets-cli";
 import { trustCommand, untrustCommand } from "./trust";
 import { parseJsonLenient } from "./util/json";
 
-type ListKind = "skills" | "mcp" | "agents" | "snippets";
+type ListKind = "skills" | "mcp" | "agents" | "snippets" | "instructions";
 
-const LIST_KINDS: ListKind[] = ["skills", "mcp", "agents", "snippets"];
+const LIST_KINDS: ListKind[] = [
+  "skills",
+  "mcp",
+  "agents",
+  "snippets",
+  "instructions",
+];
 
 export interface ListCommandOptions {
   kind: ListKind;
   filters: QueryFilters;
+  json: boolean;
+}
+
+export interface FindCommandOptions {
+  text: string;
+  json: boolean;
+}
+
+type GraphCommandKind = "show" | "deps" | "dependents";
+
+interface ContextualCommandOptions {
+  rootArg?: string;
+  scopeMode: CapabilityScopeMode;
+  sourceKind?: AssetSourceKind;
+}
+
+interface GraphCommandOptions {
+  kind: GraphCommandKind;
+  target: string;
   json: boolean;
 }
 
@@ -66,9 +107,13 @@ Usage:
   facult doctor [--repair]
   facult consolidate [--force] [--auto <mode>] [scan options]
   facult index [--force]
-  facult list [skills|mcp|agents|snippets] [--enabled-for TOOL] [--untrusted] [--flagged] [--pending] [--json]
+  facult list [skills|mcp|agents|snippets|instructions] [--enabled-for TOOL] [--untrusted] [--flagged] [--pending] [--json]
   facult show <name>
   facult show mcp:<name> [--show-secrets]
+  facult show instruction:<name>
+  facult find <query> [--json]
+  facult graph <show|deps|dependents> <asset> [--json]
+  facult ai <writeback|evolve> [args...]
   facult adapters
   facult trust <name> [moreNames...]
   facult untrust <name> [moreNames...]
@@ -97,8 +142,11 @@ Commands:
   doctor       Inspect and repair local facult state
   consolidate  Deduplicate and copy skills + MCP configs (interactive or --auto)
   index        Build a queryable index from the canonical store (see FACULT_ROOT_DIR)
-  list         List indexed skills, MCP servers, agents, or snippets
+  list         List indexed skills, MCP servers, agents, snippets, or instructions
   show         Show a single indexed entry, including file contents
+  find         Search local indexed capabilities across asset types
+  graph        Inspect explicit capability graph nodes and dependencies
+  ai           Record, group, and evolve AI writeback into reviewable proposals
   adapters     List registered tool adapters
   trust        Mark a skill or MCP server as trusted (annotation only)
   untrust      Remove trusted annotation
@@ -146,6 +194,11 @@ Options:
   --self              (update) run self-update flow instead of remote item updates
   --strict-source-trust  Enforce trust-only remote install/update actions
   --show-secrets      (show) Print raw secret values (unsafe)
+  --root              Select a canonical .ai root explicitly
+  --global            Force the global canonical root
+  --project           Force the nearest repo-local .ai root
+  --scope             Capability view scope: merged|global|project
+  --source            Filter to builtin|global|project asset provenance
 `);
 }
 
@@ -153,13 +206,18 @@ function printListHelp() {
   console.log(`facult list — list indexed entries from the canonical store
 
 Usage:
-  facult list [skills|mcp|agents|snippets] [options]
+  facult list [skills|mcp|agents|snippets|instructions] [options]
 
 Options:
   --enabled-for TOOL  Only include entries enabled for a tool
   --untrusted         Only include entries that are not trusted
   --flagged           Only include entries flagged by audit
   --pending           Only include entries pending audit
+  --root PATH         Select a canonical .ai root explicitly
+  --global            Force the global canonical root
+  --project           Force the nearest repo-local .ai root
+  --scope SCOPE       merged|global|project (default: merged)
+  --source KIND       builtin|global|project
   --json              Print JSON array
 `);
 }
@@ -170,9 +228,49 @@ function printShowHelp() {
 Usage:
   facult show <name>
   facult show mcp:<name> [--show-secrets]
+  facult show instruction:<name>
 
 Options:
   --show-secrets      (mcp) Print raw secret values (unsafe)
+  --root PATH         Select a canonical .ai root explicitly
+  --global            Force the global canonical root
+  --project           Force the nearest repo-local .ai root
+  --scope SCOPE       merged|global|project (default: merged)
+  --source KIND       builtin|global|project
+`);
+}
+
+function printFindHelp() {
+  console.log(`facult find — search local indexed capabilities across asset types
+
+Usage:
+  facult find <query> [--json]
+
+Options:
+  --root PATH         Select a canonical .ai root explicitly
+  --global            Force the global canonical root
+  --project           Force the nearest repo-local .ai root
+  --scope SCOPE       merged|global|project (default: merged)
+  --source KIND       builtin|global|project
+  --json              Print JSON array
+`);
+}
+
+function printGraphHelp() {
+  console.log(`facult graph — inspect explicit capability graph nodes and relations
+
+Usage:
+  facult graph show <asset> [--json]
+  facult graph deps <asset> [--json]
+  facult graph dependents <asset> [--json]
+
+Options:
+  --root PATH         Select a canonical .ai root explicitly
+  --global            Force the global canonical root
+  --project           Force the nearest repo-local .ai root
+  --scope SCOPE       merged|global|project (default: merged)
+  --source KIND       builtin|global|project
+  --json              Print JSON
 `);
 }
 
@@ -247,15 +345,111 @@ export function parseListArgs(argv: string[]): ListCommandOptions {
   return { kind, filters, json };
 }
 
+export function parseFindArgs(argv: string[]): FindCommandOptions {
+  let json = false;
+  const terms: string[] = [];
+
+  for (const arg of argv) {
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+    terms.push(arg);
+  }
+
+  const text = terms.join(" ").trim();
+  if (!text) {
+    throw new Error("find requires a query");
+  }
+
+  return { text, json };
+}
+
+function parseGraphArgs(argv: string[]): GraphCommandOptions {
+  const [kind, ...rest] = argv;
+  if (!(kind === "show" || kind === "deps" || kind === "dependents")) {
+    throw new Error(`Unknown graph command: ${kind ?? "<missing>"}`);
+  }
+
+  let json = false;
+  let target: string | null = null;
+  for (const arg of rest) {
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+    if (target) {
+      throw new Error(`graph ${kind} accepts a single asset selector`);
+    }
+    target = arg;
+  }
+
+  if (!target) {
+    throw new Error(`graph ${kind} requires an asset selector`);
+  }
+
+  return { kind, target, json };
+}
+
+function scopeFilterForMode(
+  scopeMode: CapabilityScopeMode
+): AssetScope | undefined {
+  return scopeMode === "project" ? "project" : undefined;
+}
+
+function resolveContextualOptions(
+  argv: string[],
+  opts?: { allowSource?: boolean }
+): { argv: string[]; context: ContextualCommandOptions } {
+  const parsed = parseCliContextArgs(argv, {
+    allowSource: opts?.allowSource,
+  });
+  return {
+    argv: parsed.argv,
+    context: {
+      rootArg: parsed.rootArg,
+      scopeMode: parsed.scope,
+      sourceKind: parsed.sourceKind,
+    },
+  };
+}
+
 async function listCommand(argv: string[]) {
-  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+  const { argv: contextualArgv, context } = resolveContextualOptions(argv, {
+    allowSource: true,
+  });
+
+  if (
+    contextualArgv.includes("--help") ||
+    contextualArgv.includes("-h") ||
+    contextualArgv[0] === "help"
+  ) {
     printListHelp();
     return;
   }
 
   let opts: ListCommandOptions;
   try {
-    opts = parseListArgs(argv);
+    opts = parseListArgs(contextualArgv);
+    if (context.sourceKind) {
+      opts.filters.sourceKind = context.sourceKind;
+    }
+    const scopeFilter = scopeFilterForMode(context.scopeMode);
+    if (scopeFilter) {
+      opts.filters.scope = scopeFilter;
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -264,14 +458,25 @@ async function listCommand(argv: string[]) {
 
   let index: FacultIndex;
   try {
-    index = await loadIndex();
+    index = await loadIndex({
+      rootDir: resolveCliContextRoot({
+        rootArg: context.rootArg,
+        scope: context.scopeMode,
+        cwd: process.cwd(),
+      }),
+    });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return;
   }
 
-  let entries: SkillEntry[] | McpEntry[] | AgentEntry[] | SnippetEntry[] = [];
+  let entries:
+    | SkillEntry[]
+    | McpEntry[]
+    | AgentEntry[]
+    | SnippetEntry[]
+    | InstructionEntry[] = [];
 
   switch (opts.kind) {
     case "skills":
@@ -285,6 +490,9 @@ async function listCommand(argv: string[]) {
       break;
     case "snippets":
       entries = filterSnippets(index.snippets ?? {}, opts.filters);
+      break;
+    case "instructions":
+      entries = filterInstructions(index.instructions ?? {}, opts.filters);
       break;
     default:
       entries = [];
@@ -307,7 +515,7 @@ async function listCommand(argv: string[]) {
       const trustedLabel = meta.trusted === true ? "trusted" : "untrusted";
       const auditLabel = (meta.auditStatus ?? "pending").trim().toLowerCase();
       console.log(
-        `${skill.name}${desc}\t[${trustedLabel}; audit=${auditLabel}]`
+        `${skill.name}${desc}\t[${trustedLabel}; audit=${auditLabel}]${formatSourceMeta(skill)}`
       );
     } else if (opts.kind === "mcp") {
       const meta = entry as McpEntry & {
@@ -316,9 +524,11 @@ async function listCommand(argv: string[]) {
       };
       const trustedLabel = meta.trusted === true ? "trusted" : "untrusted";
       const auditLabel = (meta.auditStatus ?? "pending").trim().toLowerCase();
-      console.log(`${entry.name}\t[${trustedLabel}; audit=${auditLabel}]`);
+      console.log(
+        `${entry.name}\t[${trustedLabel}; audit=${auditLabel}]${formatSourceMeta(entry)}`
+      );
     } else {
-      console.log(entry.name);
+      console.log(`${entry.name}${formatSourceMeta(entry)}`);
     }
   }
 }
@@ -331,12 +541,81 @@ async function readEntryContents(entryPath: string): Promise<string> {
   return file.text();
 }
 
+async function findCommand(argv: string[]) {
+  const { argv: contextualArgv, context } = resolveContextualOptions(argv, {
+    allowSource: true,
+  });
+
+  if (
+    contextualArgv.includes("--help") ||
+    contextualArgv.includes("-h") ||
+    contextualArgv[0] === "help"
+  ) {
+    printFindHelp();
+    return;
+  }
+
+  let opts: FindCommandOptions;
+  try {
+    opts = parseFindArgs(contextualArgv);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return;
+  }
+
+  let index: FacultIndex;
+  try {
+    index = await loadIndex({
+      rootDir: resolveCliContextRoot({
+        rootArg: context.rootArg,
+        scope: context.scopeMode,
+        cwd: process.cwd(),
+      }),
+    });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return;
+  }
+
+  const matches = findCapabilities(index, {
+    text: opts.text,
+    sourceKind: context.sourceKind,
+    scope: scopeFilterForMode(context.scopeMode),
+  });
+  if (opts.json) {
+    console.log(`${JSON.stringify(matches, null, 2)}`);
+    return;
+  }
+
+  for (const entry of matches) {
+    const desc = entry.description ? `\t${entry.description}` : "";
+    console.log(`${entry.kind}:${entry.name}${desc}${formatSourceMeta(entry)}`);
+  }
+}
+
 const SECRET_KEY_RE = /(TOKEN|KEY|SECRET|PASSWORD|PASS|BEARER)/i;
 const SECRETY_STRING_RE =
   /\b(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g;
 
 function redactPossibleSecrets(value: string): string {
   return value.replace(SECRETY_STRING_RE, "<redacted>");
+}
+
+function formatSourceMeta(entry: {
+  sourceKind?: string;
+  scope?: string;
+}): string {
+  const source = entry.sourceKind?.trim();
+  const scope = entry.scope?.trim();
+  if (!(source || scope)) {
+    return "";
+  }
+  if (source && scope) {
+    return `\t[${source}/${scope}]`;
+  }
+  return `\t[${source ?? scope}]`;
 }
 
 function sanitizeForDisplay(value: unknown): unknown {
@@ -361,14 +640,22 @@ function sanitizeForDisplay(value: unknown): unknown {
 }
 
 async function showCommand(argv: string[]) {
-  if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
+  const { argv: contextualArgv, context } = resolveContextualOptions(argv, {
+    allowSource: true,
+  });
+
+  if (
+    contextualArgv.includes("--help") ||
+    contextualArgv.includes("-h") ||
+    contextualArgv[0] === "help"
+  ) {
     printShowHelp();
     return;
   }
 
   let showSecrets = false;
   let raw: string | null = null;
-  for (const arg of argv) {
+  for (const arg of contextualArgv) {
     if (!arg) {
       continue;
     }
@@ -396,7 +683,13 @@ async function showCommand(argv: string[]) {
 
   let index: FacultIndex;
   try {
-    index = await loadIndex();
+    index = await loadIndex({
+      rootDir: resolveCliContextRoot({
+        rootArg: context.rootArg,
+        scope: context.scopeMode,
+        cwd: process.cwd(),
+      }),
+    });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -409,25 +702,60 @@ async function showCommand(argv: string[]) {
   if (raw.startsWith("mcp:")) {
     kind = "mcp";
     name = raw.slice("mcp:".length);
+  } else if (raw.startsWith("instruction:")) {
+    kind = "instructions";
+    name = raw.slice("instruction:".length);
+  } else if (raw.startsWith("instructions:")) {
+    kind = "instructions";
+    name = raw.slice("instructions:".length);
   }
 
-  let entry: SkillEntry | McpEntry | AgentEntry | SnippetEntry | null = null;
+  let entry:
+    | SkillEntry
+    | McpEntry
+    | AgentEntry
+    | SnippetEntry
+    | InstructionEntry
+    | null = null;
   const skill = index.skills[name];
   const mcpServer = index.mcp?.servers?.[name];
   const agent = index.agents?.[name];
   const snippet = index.snippets?.[name];
+  const instruction = index.instructions?.[name];
+  const matchesContext = (candidate: {
+    sourceKind?: string;
+    scope?: string;
+  }): boolean => {
+    if (context.sourceKind && candidate.sourceKind !== context.sourceKind) {
+      return false;
+    }
+    const scopeFilter = scopeFilterForMode(context.scopeMode);
+    if (scopeFilter && candidate.scope !== scopeFilter) {
+      return false;
+    }
+    return true;
+  };
 
-  if (kind === "skills" && skill) {
+  if (kind === "skills" && skill && matchesContext(skill)) {
     entry = skill;
-  } else if (kind === "mcp" && mcpServer) {
+  } else if (kind === "mcp" && mcpServer && matchesContext(mcpServer)) {
     entry = mcpServer;
-  } else if (kind === "skills" && agent) {
+  } else if (kind === "skills" && agent && matchesContext(agent)) {
     kind = "agents";
     entry = agent;
-  } else if (kind === "skills" && snippet) {
+  } else if (kind === "skills" && snippet && matchesContext(snippet)) {
     kind = "snippets";
     entry = snippet;
-  } else if (kind === "skills" && mcpServer) {
+  } else if (
+    kind === "instructions" &&
+    instruction &&
+    matchesContext(instruction)
+  ) {
+    entry = instruction;
+  } else if (kind === "skills" && instruction && matchesContext(instruction)) {
+    kind = "instructions";
+    entry = instruction;
+  } else if (kind === "skills" && mcpServer && matchesContext(mcpServer)) {
     kind = "mcp";
     entry = mcpServer;
   }
@@ -472,6 +800,91 @@ async function showCommand(argv: string[]) {
   console.log(JSON.stringify(displayEntry, null, 2));
   console.log("\n---\n");
   console.log(displayContents);
+}
+
+async function graphCommand(argv: string[]) {
+  const { argv: contextualArgv, context } = resolveContextualOptions(argv, {
+    allowSource: true,
+  });
+
+  if (
+    contextualArgv.includes("--help") ||
+    contextualArgv.includes("-h") ||
+    contextualArgv[0] === "help"
+  ) {
+    printGraphHelp();
+    return;
+  }
+
+  let opts: GraphCommandOptions;
+  try {
+    opts = parseGraphArgs(contextualArgv);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const graph = await loadGraph({
+      rootDir: resolveCliContextRoot({
+        rootArg: context.rootArg,
+        scope: context.scopeMode,
+        cwd: process.cwd(),
+      }),
+    });
+    const node = resolveGraphNode(graph, opts.target, {
+      sourceKind: context.sourceKind,
+      scope: scopeFilterForMode(context.scopeMode),
+    });
+    if (!node) {
+      throw new Error(`Graph node not found: ${opts.target}`);
+    }
+
+    const deps = graphDependencies(graph, node.id);
+    const dependents = graphDependents(graph, node.id);
+
+    if (opts.json) {
+      if (opts.kind === "show") {
+        console.log(
+          JSON.stringify({ node, dependencies: deps, dependents }, null, 2)
+        );
+      } else if (opts.kind === "deps") {
+        console.log(JSON.stringify(deps, null, 2));
+      } else {
+        console.log(JSON.stringify(dependents, null, 2));
+      }
+      return;
+    }
+
+    if (opts.kind === "show") {
+      console.log(node.id);
+      console.log(JSON.stringify(node, null, 2));
+      console.log("\nDependencies:");
+      for (const dep of deps) {
+        console.log(
+          `- ${dep.edge.kind}\t${dep.node.id}\t(${dep.edge.locator})`
+        );
+      }
+      console.log("\nDependents:");
+      for (const dependent of dependents) {
+        console.log(
+          `- ${dependent.edge.kind}\t${dependent.node.id}\t(${dependent.edge.locator})`
+        );
+      }
+      return;
+    }
+
+    const relations = opts.kind === "deps" ? deps : dependents;
+    for (const relation of relations) {
+      console.log(
+        `${relation.edge.kind}\t${relation.node.id}\t(${relation.edge.locator})`
+      );
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
 }
 
 function adaptersCommand(argv: string[]) {
@@ -529,6 +942,15 @@ async function main(argv: string[]) {
       return;
     case "show":
       await showCommand(rest);
+      return;
+    case "find":
+      await findCommand(rest);
+      return;
+    case "graph":
+      await graphCommand(rest);
+      return;
+    case "ai":
+      await aiCommand(rest);
       return;
     case "adapters":
       await adaptersCommand(rest);

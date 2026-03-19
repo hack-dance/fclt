@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseJsonLenient } from "./util/json";
 
 export interface FacultConfig {
@@ -94,6 +94,7 @@ function looksLikeFacultRoot(root: string): boolean {
   // Heuristic: treat as a facult store if it contains something we'd create.
   return (
     dirExists(join(root, "rules")) ||
+    dirExists(join(root, "instructions")) ||
     dirExists(join(root, "agents")) ||
     dirExists(join(root, "skills")) ||
     dirExists(join(root, "mcp")) ||
@@ -135,12 +136,108 @@ export function facultStateDir(home: string = defaultHomeDir()): string {
   return join(home, ".facult");
 }
 
-export function facultAiStateDir(home: string = defaultHomeDir()): string {
-  return join(facultStateDir(home), "ai");
+export function projectRootFromAiRoot(
+  rootDir: string,
+  home: string = defaultHomeDir()
+): string | null {
+  const resolved = resolve(rootDir);
+  if (resolved === resolve(join(home, ".ai"))) {
+    return null;
+  }
+  if (resolved === resolve(legacyPreferredRoot(home))) {
+    return null;
+  }
+  return resolved.endsWith("/.ai") ? dirname(resolved) : null;
 }
 
-export function facultAiIndexPath(home: string = defaultHomeDir()): string {
-  return join(facultAiStateDir(home), "index.json");
+export function projectSlugFromAiRoot(
+  rootDir: string,
+  home: string = defaultHomeDir()
+): string | null {
+  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  if (!projectRoot) {
+    return null;
+  }
+  const base = basename(projectRoot).trim().toLowerCase();
+  const slug = base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "project";
+}
+
+export function facultGeneratedStateDir(args?: {
+  home?: string;
+  rootDir?: string;
+}): string {
+  const home = args?.home ?? defaultHomeDir();
+  const rootDir = args?.rootDir;
+  const projectRoot = rootDir ? projectRootFromAiRoot(rootDir, home) : null;
+  return projectRoot ? join(projectRoot, ".facult") : facultStateDir(home);
+}
+
+export function facultAiStateDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultGeneratedStateDir({ home, rootDir }), "ai");
+}
+
+export function facultAiIndexPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiStateDir(home, rootDir), "index.json");
+}
+
+export function facultAiGraphPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiStateDir(home, rootDir), "graph.json");
+}
+
+export function facultAiRuntimeScopeDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  const slug = rootDir ? projectSlugFromAiRoot(rootDir, home) : null;
+  return slug
+    ? join(facultStateDir(home), "ai", "projects", slug)
+    : join(facultStateDir(home), "ai", "global");
+}
+
+export function facultAiJournalPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "journal",
+    "events.jsonl"
+  );
+}
+
+export function facultAiWritebackQueuePath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "writeback",
+    "queue.jsonl"
+  );
+}
+
+export function facultAiProposalDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiRuntimeScopeDir(home, rootDir), "evolution", "proposals");
+}
+
+export function facultAiDraftDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiRuntimeScopeDir(home, rootDir), "evolution", "drafts");
 }
 
 export function facultConfigPath(home: string = defaultHomeDir()): string {
@@ -267,4 +364,39 @@ export function facultRootDir(home: string = defaultHomeDir()): string {
     return legacy;
   }
   return preferred;
+}
+
+export function findNearestProjectAiRoot(start: string): string | null {
+  let current = resolve(start);
+  while (true) {
+    const candidate = join(current, ".ai");
+    if (looksLikeFacultRoot(candidate)) {
+      return candidate;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+export function facultContextRootDir(args?: {
+  home?: string;
+  cwd?: string;
+}): string {
+  const home = args?.home ?? defaultHomeDir();
+  const envRoot = process.env.FACULT_ROOT_DIR?.trim();
+  if (envRoot) {
+    const resolved = resolvePath(envRoot, home);
+    return isSafePathString(resolved) ? resolved : join(home, ".ai");
+  }
+
+  const cwd = args?.cwd?.trim() || process.cwd();
+  const projectRoot = findNearestProjectAiRoot(cwd);
+  if (projectRoot) {
+    return projectRoot;
+  }
+
+  return facultRootDir(home);
 }

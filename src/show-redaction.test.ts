@@ -37,6 +37,7 @@ test("show redacts MCP secrets by default (use --show-secrets to bypass)", async
     },
     agents: {},
     snippets: {},
+    instructions: {},
   });
 
   await writeJson(mcpPath, {

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { facultAiIndexPath, facultAiStateDir, facultRootDir } from "./paths";
+import {
+  facultAiGraphPath,
+  facultAiIndexPath,
+  facultAiStateDir,
+  facultContextRootDir,
+  facultRootDir,
+} from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
@@ -70,5 +76,42 @@ describe("paths", () => {
     expect(facultAiIndexPath(tempHome)).toBe(
       join(tempHome, ".facult", "ai", "index.json")
     );
+  });
+
+  it("uses repo-local .facult/ai state for project roots", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+
+    expect(facultAiStateDir(tempHome, rootDir)).toBe(
+      join(projectRoot, ".facult", "ai")
+    );
+    expect(facultAiIndexPath(tempHome, rootDir)).toBe(
+      join(projectRoot, ".facult", "ai", "index.json")
+    );
+    expect(facultAiGraphPath(tempHome, rootDir)).toBe(
+      join(projectRoot, ".facult", "ai", "graph.json")
+    );
+  });
+
+  it("prefers the nearest project .ai for CLI context resolution", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    await mkdir(join(tempHome, ".ai", "instructions"), { recursive: true });
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+
+    expect(
+      facultContextRootDir({
+        home: tempHome,
+        cwd: join(projectRoot, "src"),
+      })
+    ).toBe(rootDir);
   });
 });

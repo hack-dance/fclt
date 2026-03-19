@@ -1,6 +1,9 @@
 import { join } from "node:path";
+import { facultBuiltinPackRoot } from "./builtin";
 
 const AI_REF_RE = /(?<![\w@])@ai\/([^\s"'`<>]+)/g;
+const BUILTIN_REF_RE = /(?<![\w@])@builtin\/([^\s"'`<>]+)/g;
+const PROJECT_REF_RE = /(?<![\w@])@project\/([^\s"'`<>]+)/g;
 const INTERPOLATION_RE = /\$\{([^}]+)\}/g;
 const TRAILING_PUNCTUATION_RE = /[.,;:!?)}\]]+$/;
 const MAX_RENDER_PASSES = 10;
@@ -37,6 +40,24 @@ export function renderAiRefs(input: string, canonicalRoot: string): string {
   return input.replace(AI_REF_RE, (_match, refPath: string) => {
     const { path, suffix } = trimTrailingPunctuation(refPath);
     return `${join(canonicalRoot, path)}${suffix}`;
+  });
+}
+
+export function renderBuiltinRefs(input: string): string {
+  const builtinRoot = facultBuiltinPackRoot();
+  return input.replace(BUILTIN_REF_RE, (_match, refPath: string) => {
+    const { path, suffix } = trimTrailingPunctuation(refPath);
+    const relative = path.startsWith("facult-operating-model/")
+      ? path.slice("facult-operating-model/".length)
+      : path;
+    return `${join(builtinRoot, relative)}${suffix}`;
+  });
+}
+
+export function renderProjectRefs(input: string, projectRoot: string): string {
+  return input.replace(PROJECT_REF_RE, (_match, refPath: string) => {
+    const { path, suffix } = trimTrailingPunctuation(refPath);
+    return `${join(projectRoot, ".ai", path)}${suffix}`;
   });
 }
 
@@ -169,7 +190,11 @@ export async function renderCanonicalText(
     seen.add(rendered);
 
     const interpolated = interpolateString(rendered, context);
-    const withRefs = renderAiRefs(interpolated, options.rootDir);
+    const withAiRefs = renderAiRefs(interpolated, options.rootDir);
+    const withBuiltinRefs = renderBuiltinRefs(withAiRefs);
+    const withRefs = options.projectRoot
+      ? renderProjectRefs(withBuiltinRefs, options.projectRoot)
+      : withBuiltinRefs;
     if (withRefs === rendered) {
       return withRefs;
     }

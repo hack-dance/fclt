@@ -4,7 +4,12 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FacultIndex, SkillEntry } from "./index-builder";
 import { facultAiIndexPath } from "./paths";
-import { filterSkills, loadIndex } from "./query";
+import {
+  filterInstructions,
+  filterSkills,
+  findCapabilities,
+  loadIndex,
+} from "./query";
 
 const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
@@ -88,6 +93,7 @@ describe("query filters", () => {
       mcp: { servers: {} },
       agents: {},
       snippets: {},
+      instructions: {},
     };
 
     await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
@@ -95,9 +101,9 @@ describe("query filters", () => {
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     expect(Object.keys(loaded.skills)).toEqual(["alpha", "beta"]);
 
-    expect(filterSkills(loaded.skills, { enabledFor: "cursor" })).toHaveLength(
-      1
-    );
+    expect(
+      filterSkills(loaded.skills, { enabledFor: "cursor" }).map((s) => s.name)
+    ).toEqual(["alpha", "beta"]);
     expect(
       filterSkills(loaded.skills, { untrusted: true }).map((s) => s.name)
     ).toEqual(["beta"]);
@@ -146,6 +152,7 @@ describe("query filters", () => {
       },
       agents: {},
       snippets: {},
+      instructions: {},
     };
 
     await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
@@ -217,6 +224,7 @@ describe("query filters", () => {
       mcp: { servers: {} },
       agents: {},
       snippets: {},
+      instructions: {},
     };
     await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
 
@@ -263,6 +271,7 @@ describe("query filters", () => {
       mcp: { servers: {} },
       agents: {},
       snippets: {},
+      instructions: {},
     };
 
     await Bun.write(join(rootDir, "index.json"), JSON.stringify(legacyIndex));
@@ -273,5 +282,82 @@ describe("query filters", () => {
       await Bun.file(facultAiIndexPath(tempHome)).text()
     ) as FacultIndex;
     expect(Object.keys(repaired.skills)).toEqual(["alpha"]);
+  });
+
+  it("filters instructions and finds capabilities across asset types", () => {
+    const index: FacultIndex = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      skills: {
+        "feedback-loop-setup": {
+          name: "feedback-loop-setup",
+          path: "/tmp/skill",
+          description: "Set up short feedback loops",
+          tags: ["feedback"],
+          sourceKind: "global",
+          scope: "global",
+        },
+      },
+      mcp: { servers: {} },
+      agents: {
+        "feedback-loop-designer": {
+          name: "feedback-loop-designer",
+          path: "/tmp/agent.toml",
+          description: "Design tighter feedback loops",
+          sourceKind: "project",
+          scope: "project",
+        },
+      },
+      snippets: {
+        "global/core/verification.md": {
+          name: "global/core/verification.md",
+          path: "/tmp/snippet.md",
+          description: "Verification loop snippet",
+          tags: ["verification"],
+          sourceKind: "builtin",
+          scope: "global",
+        },
+      },
+      instructions: {
+        FEEDBACK_LOOPS: {
+          name: "FEEDBACK_LOOPS",
+          path: "/tmp/FEEDBACK_LOOPS.md",
+          description: "Feedback loops doctrine",
+          tags: ["feedback", "loops"],
+          sourceKind: "project",
+          scope: "project",
+        },
+      },
+    };
+
+    expect(
+      filterInstructions(index.instructions, { text: "feedback" }).map(
+        (entry) => entry.name
+      )
+    ).toEqual(["FEEDBACK_LOOPS"]);
+
+    expect(
+      findCapabilities(index, { text: "feedback" }).map(
+        (entry) => `${entry.kind}:${entry.name}`
+      )
+    ).toEqual([
+      "agents:feedback-loop-designer",
+      "instructions:FEEDBACK_LOOPS",
+      "skills:feedback-loop-setup",
+    ]);
+
+    expect(
+      findCapabilities(index, {
+        text: "feedback",
+        sourceKind: "project",
+      }).map((entry) => `${entry.kind}:${entry.name}`)
+    ).toEqual(["agents:feedback-loop-designer", "instructions:FEEDBACK_LOOPS"]);
+
+    expect(
+      findCapabilities(index, {
+        text: "feedback",
+        scope: "project",
+      }).map((entry) => `${entry.kind}:${entry.name}`)
+    ).toEqual(["agents:feedback-loop-designer", "instructions:FEEDBACK_LOOPS"]);
   });
 });

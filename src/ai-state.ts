@@ -1,7 +1,7 @@
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildIndex } from "./index-builder";
-import { facultAiIndexPath } from "./paths";
+import { facultAiGraphPath, facultAiIndexPath } from "./paths";
 
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -24,7 +24,7 @@ export async function ensureAiIndexPath(args: {
   repaired: boolean;
   source: "generated" | "legacy" | "rebuilt" | "missing";
 }> {
-  const generatedPath = facultAiIndexPath(args.homeDir);
+  const generatedPath = facultAiIndexPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
     return { path: generatedPath, repaired: false, source: "generated" };
   }
@@ -52,4 +52,29 @@ export async function ensureAiIndexPath(args: {
   }
 
   return { path: generatedPath, repaired: false, source: "missing" };
+}
+
+export async function ensureAiGraphPath(args: {
+  homeDir: string;
+  rootDir: string;
+  repair?: boolean;
+}): Promise<{
+  path: string;
+  rebuilt: boolean;
+}> {
+  const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
+  if (await fileExists(generatedPath)) {
+    return { path: generatedPath, rebuilt: false };
+  }
+
+  if (args.repair !== false) {
+    const { graphPath } = await buildIndex({
+      rootDir: args.rootDir,
+      homeDir: args.homeDir,
+      force: false,
+    });
+    return { path: graphPath, rebuilt: true };
+  }
+
+  return { path: generatedPath, rebuilt: false };
 }

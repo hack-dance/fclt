@@ -2,8 +2,9 @@ import { watch as fsWatch } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { syncManagedTools } from "./manage";
-import { facultRootDir, facultStateDir } from "./paths";
+import { facultRootDir, facultStateDir, projectRootFromAiRoot } from "./paths";
 
 const AUTOSYNC_VERSION = 1 as const;
 const DEFAULT_DEBOUNCE_MS = 1500;
@@ -109,8 +110,30 @@ function autosyncLogsDir(home: string): string {
   return join(autosyncDir(home), "logs");
 }
 
-function autosyncServiceName(tool?: string): string {
-  return tool?.trim() ? tool.trim() : "all";
+function serviceSuffix(
+  rootDir: string | undefined,
+  home: string
+): string | null {
+  if (!rootDir) {
+    return null;
+  }
+  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  if (!projectRoot) {
+    return null;
+  }
+  const base = basename(projectRoot).trim().toLowerCase();
+  const slug = base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "project";
+}
+
+function autosyncServiceName(
+  tool?: string,
+  rootDir?: string,
+  home: string = homedir()
+): string {
+  const base = tool?.trim() ? tool.trim() : "all";
+  const suffix = serviceSuffix(rootDir, home);
+  return suffix ? `${base}-${suffix}` : base;
 }
 
 function autosyncLabel(serviceName: string): string {
@@ -318,6 +341,7 @@ function defaultAutosyncConfig(args: {
   serviceName: string;
   tool?: string;
   homeDir: string;
+  rootDir?: string;
   remote?: string;
   branch?: string;
   intervalMinutes?: number;
@@ -328,7 +352,7 @@ function defaultAutosyncConfig(args: {
     version: AUTOSYNC_VERSION,
     name: args.serviceName,
     tool: args.tool,
-    rootDir: facultRootDir(args.homeDir),
+    rootDir: args.rootDir ?? facultRootDir(args.homeDir),
     debounceMs: DEFAULT_DEBOUNCE_MS,
     git: {
       enabled: args.gitEnabled ?? true,
@@ -715,6 +739,9 @@ Options:
   --git-branch <name>           Git branch for canonical repo sync (default: main)
   --git-interval-minutes <n>    Remote git sync interval in minutes (default: 60)
   --git-disable                 Disable remote git sync for this service
+  --root <path>                 Select a canonical .ai root explicitly
+  --global                      Force the global canonical root
+  --project                     Force the nearest repo-local .ai root
   --once                        Run one local+remote sync cycle and exit
 `;
 }
@@ -722,17 +749,22 @@ Options:
 export async function installAutosyncService(args: {
   tool?: string;
   homeDir?: string;
+  rootDir?: string;
   gitRemote?: string;
   gitBranch?: string;
   gitIntervalMinutes?: number;
   gitEnabled?: boolean;
 }): Promise<AutosyncServiceConfig> {
   const home = args.homeDir ?? homedir();
-  const serviceName = autosyncServiceName(args.tool);
+  const rootDir =
+    args.rootDir ??
+    resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
+  const serviceName = autosyncServiceName(args.tool, rootDir, home);
   const config = defaultAutosyncConfig({
     serviceName,
     tool: args.tool,
     homeDir: home,
+    rootDir,
     remote: args.gitRemote,
     branch: args.gitBranch,
     intervalMinutes: args.gitIntervalMinutes,
@@ -760,9 +792,13 @@ export async function installAutosyncService(args: {
 export async function uninstallAutosyncService(args: {
   tool?: string;
   homeDir?: string;
+  rootDir?: string;
 }): Promise<void> {
   const home = args.homeDir ?? homedir();
-  const serviceName = autosyncServiceName(args.tool);
+  const rootDir =
+    args.rootDir ??
+    resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
+  const serviceName = autosyncServiceName(args.tool, rootDir, home);
   const label = autosyncLabel(serviceName);
   const domain = launchdDomain();
 
@@ -787,7 +823,9 @@ export async function repairAutosyncServices(
     if (!config) {
       continue;
     }
-    const desiredRoot = facultRootDir(homeDir);
+    const desiredRoot = projectRootFromAiRoot(config.rootDir, homeDir)
+      ? config.rootDir
+      : facultRootDir(homeDir);
     if (config.rootDir !== desiredRoot) {
       config.rootDir = desiredRoot;
       await saveAutosyncConfig(config, homeDir);
@@ -827,9 +865,13 @@ export async function repairAutosyncServices(
 export async function autosyncStatus(args: {
   tool?: string;
   homeDir?: string;
+  rootDir?: string;
 }): Promise<AutosyncStatus> {
   const home = args.homeDir ?? homedir();
-  const serviceName = autosyncServiceName(args.tool);
+  const rootDir =
+    args.rootDir ??
+    resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
+  const serviceName = autosyncServiceName(args.tool, rootDir, home);
   const config = await loadAutosyncConfig(serviceName, home);
   const state = await loadAutosyncRuntimeState(serviceName, home);
   const plistPath = autosyncPlistPath(home, serviceName);
@@ -853,8 +895,13 @@ export async function autosyncStatus(args: {
 
 export async function restartAutosyncService(args: {
   tool?: string;
+  rootDir?: string;
 }): Promise<void> {
-  const serviceName = autosyncServiceName(args.tool);
+  const home = homedir();
+  const rootDir =
+    args.rootDir ??
+    resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
+  const serviceName = autosyncServiceName(args.tool, rootDir, home);
   const label = autosyncLabel(serviceName);
   await runLaunchctl(["kickstart", "-k", `${launchdDomain()}/${label}`]);
 }
@@ -867,21 +914,37 @@ export async function autosyncCommand(argv: string[]) {
   }
 
   try {
+    const parsed = parseCliContextArgs(rest);
+    if (
+      parsed.argv.includes("--help") ||
+      parsed.argv.includes("-h") ||
+      parsed.argv[0] === "help"
+    ) {
+      console.log(autosyncHelp());
+      return;
+    }
+    const rootDir = resolveCliContextRoot({
+      rootArg: parsed.rootArg,
+      scope: parsed.scope,
+      cwd: process.cwd(),
+    });
+
     if (sub === "install") {
-      const tool = parseAutosyncPositionals(rest, [
+      const tool = parseAutosyncPositionals(parsed.argv, [
         "--git-remote",
         "--git-branch",
         "--git-interval-minutes",
       ])[0];
-      const gitRemote = parseAutosyncStringFlag(rest, "--git-remote");
-      const gitBranch = parseAutosyncStringFlag(rest, "--git-branch");
+      const gitRemote = parseAutosyncStringFlag(parsed.argv, "--git-remote");
+      const gitBranch = parseAutosyncStringFlag(parsed.argv, "--git-branch");
       const gitIntervalMinutes = parseAutosyncIntFlag(
-        rest,
+        parsed.argv,
         "--git-interval-minutes"
       );
-      const gitEnabled = !rest.includes("--git-disable");
+      const gitEnabled = !parsed.argv.includes("--git-disable");
       const config = await installAutosyncService({
         tool,
+        rootDir,
         gitRemote,
         gitBranch,
         gitIntervalMinutes,
@@ -893,16 +956,18 @@ export async function autosyncCommand(argv: string[]) {
     }
 
     if (sub === "uninstall") {
-      const tool = parseAutosyncPositionals(rest, [])[0];
-      await uninstallAutosyncService({ tool });
-      console.log(`Removed autosync service: ${autosyncServiceName(tool)}`);
+      const tool = parseAutosyncPositionals(parsed.argv, [])[0];
+      await uninstallAutosyncService({ tool, rootDir });
+      console.log(
+        `Removed autosync service: ${autosyncServiceName(tool, rootDir)}`
+      );
       return;
     }
 
     if (sub === "status") {
-      const tool = parseAutosyncPositionals(rest, [])[0];
-      const status = await autosyncStatus({ tool });
-      console.log(`Service: ${autosyncServiceName(tool)}`);
+      const tool = parseAutosyncPositionals(parsed.argv, [])[0];
+      const status = await autosyncStatus({ tool, rootDir });
+      console.log(`Service: ${autosyncServiceName(tool, rootDir)}`);
       console.log(`Plist: ${status.plistPath}`);
       console.log(`Installed: ${status.plistExists ? "yes" : "no"}`);
       console.log(`Loaded: ${status.loaded ? "yes" : "no"}`);
@@ -933,21 +998,25 @@ export async function autosyncCommand(argv: string[]) {
     }
 
     if (sub === "restart") {
-      const tool = parseAutosyncPositionals(rest, [])[0];
-      await restartAutosyncService({ tool });
-      console.log(`Restarted autosync service: ${autosyncServiceName(tool)}`);
+      const tool = parseAutosyncPositionals(parsed.argv, [])[0];
+      await restartAutosyncService({ tool, rootDir });
+      console.log(
+        `Restarted autosync service: ${autosyncServiceName(tool, rootDir)}`
+      );
       return;
     }
 
     if (sub === "run") {
-      const service = parseAutosyncStringFlag(rest, "--service");
-      const tool = parseAutosyncPositionals(rest, ["--service"])[0];
-      const serviceName = service ?? autosyncServiceName(tool);
+      const service = parseAutosyncStringFlag(parsed.argv, "--service");
+      const tool = parseAutosyncPositionals(parsed.argv, ["--service"])[0];
+      const serviceName = service ?? autosyncServiceName(tool, rootDir);
       const config = await loadAutosyncConfig(serviceName);
       if (!config) {
         throw new Error(`Autosync service not configured: ${serviceName}`);
       }
-      await runAutosyncService(config, { once: rest.includes("--once") });
+      await runAutosyncService(config, {
+        once: parsed.argv.includes("--once"),
+      });
       return;
     }
 
