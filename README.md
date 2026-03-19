@@ -104,7 +104,7 @@ Put that in `config.toml` or `config.local.toml` under the active canonical root
 
 - canonical source lives in `~/.ai` or `<repo>/.ai`
 - rendered outputs live in tool homes like `~/.codex`, `<repo>/.codex`, `~/.claude`, or `~/.cursor`
-- generated state lives in `~/.facult` or `<repo>/.facult`
+- generated Facult-owned state lives in `~/.ai/.facult` or `<repo>/.ai/.facult`
 
 This keeps authored capability portable and reviewable while still producing the exact files each tool expects.
 
@@ -217,9 +217,9 @@ facult index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-local work. Generated state lives next to the active canonical root:
-- global: `~/.facult`
-- project: `<repo>/.facult`
+Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-local work. Facult-owned generated/config/runtime state lives inside the active canonical root:
+- global: `~/.ai/.facult`
+- project: `<repo>/.ai/.facult`
 
 ### 3b. Bootstrap a repo-local `.ai`
 
@@ -229,7 +229,7 @@ bunx facult templates init project-ai
 bunx facult index
 ```
 
-This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes a merged project index/graph under `<repo>/.facult/ai/`.
+This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes a merged project index/graph under `<repo>/.ai/.facult/ai/`.
 
 ### 4. Inspect what you have
 
@@ -365,19 +365,19 @@ Typical layout:
     agents/
     skills/
     tools/
-  .facult/
-    ai/
-      index.json
-      graph.json
+    .facult/
+      ai/
+        index.json
+        graph.json
   .codex/
   .claude/
 ```
 
 Important split:
 - `.ai/` is canonical source
-- `.facult/` is generated state, trust state, managed tool state, autosync state, and caches
+- `.ai/.facult/` is Facult-owned generated state, trust state, managed tool state, autosync state, and caches
 - tool homes such as `.codex/` and `.claude/` are rendered outputs
-- the generated capability graph lives at `.facult/ai/graph.json`
+- the generated capability graph lives at `.ai/.facult/ai/graph.json`
 
 ### Asset types
 
@@ -408,11 +408,9 @@ Not every asset syncs directly to a tool. Some exist primarily to support render
 
 Canonical render context is layered explicitly:
 1. built-ins injected by `facult`
-2. `~/.ai/config.toml`
-3. `~/.ai/config.local.toml`
-4. `~/.ai/projects/<slug>/config.toml`
-5. `~/.ai/projects/<slug>/config.local.toml`
-6. explicit runtime overrides
+2. active canonical root `config.toml`
+3. active canonical root `config.local.toml`
+4. explicit runtime overrides
 
 Built-ins currently include:
 - `AI_ROOT`
@@ -423,8 +421,8 @@ Built-ins currently include:
 - `TARGET_PATH`
 
 Recommended split:
-- `config.toml`: tracked, portable, non-secret refs/defaults
-- `config.local.toml`: ignored, machine-local paths and secrets
+- `~/.ai/config.toml` or `<repo>/.ai/config.toml`: tracked, portable, non-secret refs/defaults
+- `~/.ai/config.local.toml` or `<repo>/.ai/config.local.toml`: ignored, machine-local paths and secrets
 - `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
 - `facult sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
 
@@ -453,7 +451,7 @@ Snippets are already used during global Codex `AGENTS.md` rendering.
 
 ### Graph inspection
 
-The generated graph in `.facult/ai/graph.json` is queryable directly:
+The generated graph in `.ai/.facult/ai/graph.json` is queryable directly:
 
 ```bash
 facult graph show instruction:WRITING
@@ -496,13 +494,13 @@ facult ai evolve apply EV-00001
 facult ai evolve promote EV-00003 --to global --project
 ```
 
-Runtime state stays generated and local:
-- global writeback state: `~/.facult/ai/global/...`
-- project writeback state: `~/.facult/ai/projects/<slug>/...`
+Runtime state stays generated and local inside the active canonical root:
+- global writeback state: `~/.ai/.facult/ai/global/...`
+- project writeback state: `<repo>/.ai/.facult/ai/project/...`
 
 That split is intentional:
 - canonical source remains in `~/.ai` or `<repo>/.ai`
-- writeback queues, journals, and proposal records stay outside the canonical git-backed tree by default
+- writeback queues, journals, proposal records, trust state, autosync state, and other Facult-owned runtime/config state stay inside `.ai/.facult/` rather than inside the tool homes
 
 Use writeback when:
 - a task exposed a weak or misleading verification loop
@@ -652,7 +650,7 @@ facult <command> --help
 `facult` resolves the canonical root in this order:
 1. `FACULT_ROOT_DIR`
 2. nearest project `.ai` from the current working directory for CLI-facing commands
-3. `~/.facult/config.json` (`rootDir`)
+3. `~/.ai/.facult/config.json` (`rootDir`)
 4. `~/.ai`
 5. `~/agents/.facult` (or a detected legacy store under `~/agents/`)
 
@@ -660,12 +658,12 @@ facult <command> --help
 
 - `FACULT_ROOT_DIR`: override canonical store location
 - `FACULT_VERSION`: version selector for `scripts/install.sh` (`latest` by default)
-- `FACULT_INSTALL_DIR`: install target dir for `scripts/install.sh` (`~/.facult/bin` by default)
+- `FACULT_INSTALL_DIR`: install target dir for `scripts/install.sh` (`~/.ai/.facult/bin` by default)
 - `FACULT_INSTALL_PM`: force package manager detection for npm bootstrap launcher (`npm` or `bun`)
 
 ### State and report files
 
-Under `~/.facult/`:
+Under `~/.ai/.facult/`:
 - `sources.json` (latest inventory scan state)
 - `consolidated.json` (consolidation state)
 - `managed.json` (managed tool state)
@@ -679,7 +677,7 @@ Under `~/.facult/`:
 
 ### Config reference
 
-`~/.facult/config.json` supports:
+`~/.ai/.facult/config.json` supports:
 - `rootDir`
 - `scanFrom`
 - `scanFromIgnore`
@@ -710,7 +708,7 @@ Default source aliases:
 - `skills.sh`
 - `clawhub`
 
-Custom remote sources can be defined in `~/.facult/indices.json` (manifest URL, optional integrity, optional signature keys/signature verification settings).
+Custom remote sources can be defined in `~/.ai/.facult/indices.json` (manifest URL, optional integrity, optional signature keys/signature verification settings).
 
 ## Local Install Modes
 
@@ -722,7 +720,7 @@ bun run install:bin
 bun run install:status
 ```
 
-Default install path is `~/.facult/bin/facult`. You can pass a custom target dir via `--dir=/path`.
+Default install path is `~/.ai/.facult/bin/facult`. You can pass a custom target dir via `--dir=/path`.
 
 ## Autosync
 
@@ -780,7 +778,7 @@ Release behavior:
 3. The same release workflow then builds platform binaries and uploads them to that GitHub release.
 4. npm publish runs only after binary asset upload succeeds (`publish-npm` depends on `publish-assets`).
 5. Published release assets include platform binaries, `facult-install.sh`, and `SHA256SUMS`.
-6. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.facult/runtime/<version>/<platform-arch>/`, and runs it.
+6. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.ai/.facult/runtime/<version>/<platform-arch>/`, and runs it.
 
 Current prebuilt binary targets:
 - `darwin-x64`

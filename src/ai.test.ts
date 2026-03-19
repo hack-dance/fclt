@@ -26,8 +26,6 @@ import {
   facultAiWritebackQueuePath,
 } from "./paths";
 
-const AI_ROOT_SUFFIX_RE = /\/\.ai$/;
-
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
 
@@ -44,8 +42,8 @@ async function makeTempHome(): Promise<string> {
 async function writeGraph(home: string, rootDir: string, graph: unknown) {
   const graphPath = join(
     rootDir.startsWith(join(home, ".ai"))
-      ? join(home, ".facult", "ai")
-      : join(rootDir.replace(AI_ROOT_SUFFIX_RE, ""), ".facult", "ai"),
+      ? join(home, ".ai", ".facult", "ai")
+      : join(rootDir, ".facult", "ai"),
     "graph.json"
   );
   await mkdir(dirname(graphPath), { recursive: true });
@@ -111,7 +109,7 @@ describe("ai writeback", () => {
     expect(journal).toContain('"kind":"writeback_recorded"');
   });
 
-  it("stores project-scoped runtime state under ~/.facult instead of the repo", async () => {
+  it("stores project-scoped runtime state under the repo .ai/.facult tree", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
@@ -135,11 +133,11 @@ describe("ai writeback", () => {
     expect(record.scope).toBe("project");
     expect(facultAiWritebackQueuePath(tempHome, rootDir)).toBe(
       join(
-        tempHome,
+        projectRoot,
+        ".ai",
         ".facult",
         "ai",
-        "projects",
-        "repo",
+        "project",
         "writeback",
         "queue.jsonl"
       )
@@ -234,7 +232,7 @@ describe("ai writeback", () => {
     const listed = await listProposals({ homeDir: tempHome, rootDir });
     expect(listed.map((entry) => entry.id)).toEqual(["EV-00001"]);
     expect(facultAiProposalDir(tempHome, rootDir)).toBe(
-      join(tempHome, ".facult", "ai", "global", "evolution", "proposals")
+      join(tempHome, ".ai", ".facult", "ai", "global", "evolution", "proposals")
     );
 
     const nextWritebacks = await listWritebacks({ homeDir: tempHome, rootDir });

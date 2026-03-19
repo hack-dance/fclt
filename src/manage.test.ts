@@ -429,7 +429,7 @@ describe("manage/unmanage", () => {
     );
 
     const indexRaw = await readFile(
-      join(home, ".facult", "ai", "index.json"),
+      join(home, ".ai", ".facult", "ai", "index.json"),
       "utf8"
     );
     const index = JSON.parse(indexRaw) as {
@@ -625,7 +625,8 @@ describe("manage/unmanage", () => {
       'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
     );
 
-    const indexPath = join(home, ".facult", "ai", "index.json");
+    const indexPath = join(home, ".ai", ".facult", "ai", "index.json");
+
     await writeJson(indexPath, {
       skills: {
         alpha: {
@@ -936,7 +937,7 @@ describe("syncManagedTools", () => {
     expect(rendered).toContain("Target tool: codex.");
 
     const managedRaw = await readFile(
-      join(projectRoot, ".facult", "managed.json"),
+      join(projectRoot, ".ai", ".facult", "managed.json"),
       "utf8"
     );
     expect(JSON.parse(managedRaw).tools.codex.agentsDir).toBe(

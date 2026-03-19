@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { facultConfigPath, preferredGlobalAiRoot } from "./paths";
 
 function printHelp() {
   console.log(`facult migrate — migrate a legacy canonical store to the facult path
@@ -20,14 +21,14 @@ Usage:
 
 What it does:
   - Auto-detects a legacy store under ~/agents/ (or use --from)
-  - Copies it to ~/agents/.facult (default, safe)
+  - Copies it to ~/.ai (default, safe)
   - Or moves it with --move (destructive; removes the legacy directory)
 
 Options:
   --from           Path to a legacy store root directory
   --dry-run        Print what would happen without changing anything
   --move           Rename legacy dir to the new location instead of copying
-  --write-config   Write ~/.facult/config.json to pin rootDir to ~/agents/.facult
+  --write-config   Write ~/.ai/.facult/config.json to pin rootDir to ~/.ai
 `);
 }
 
@@ -188,9 +189,8 @@ export async function migrateCommand(argv: string[]) {
   const writeConfig = argv.includes("--write-config");
 
   const home = homedir();
-  const dest = join(home, "agents", ".facult");
-  const stateDir = join(home, ".facult");
-  const configPath = join(stateDir, "config.json");
+  const dest = preferredGlobalAiRoot(home);
+  const configPath = facultConfigPath(home);
 
   let legacy: string | null = null;
   try {
@@ -264,7 +264,7 @@ export async function migrateCommand(argv: string[]) {
     if (dryRun) {
       console.log(`[dry-run] Would write ${configPath} with rootDir=${dest}`);
     } else {
-      await mkdir(stateDir, { recursive: true });
+      await mkdir(dirname(configPath), { recursive: true });
       await Bun.write(configPath, JSON.stringify({ rootDir: dest }, null, 2));
       console.log(`Wrote ${configPath}`);
     }

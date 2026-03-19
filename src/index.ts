@@ -96,7 +96,7 @@ interface GraphCommandOptions {
 }
 
 function printHelp() {
-  console.log(`facult — inspect local agent configs for skills + MCP servers
+  console.log(`facult — manage canonical AI capabilities, sync surfaces, and evolution state
 
 Usage:
   facult scan [--json] [--show-duplicates] [--tui] [--from <path>]
@@ -177,7 +177,7 @@ Options:
   --from-max-results  (scan) Max discovered paths per --from root before truncating
   --non-interactive   (audit) Run static/agent audit non-interactively (for scripts)
   --severity          Minimum severity to include in audit output (low|medium|high|critical)
-  --rules             Path to an audit rules YAML file (default: ~/.facult/audit-rules.yaml)
+  --rules             Path to an audit rules YAML file (default: ~/.ai/.facult/audit-rules.yaml)
   --with              (audit) Agent tool: claude|codex
   --max-items         (audit) Max items to send to the agent (n|all)
   --force             Re-copy items already consolidated OR rebuild index from scratch

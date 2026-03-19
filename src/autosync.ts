@@ -4,7 +4,12 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { syncManagedTools } from "./manage";
-import { facultRootDir, facultStateDir, projectRootFromAiRoot } from "./paths";
+import {
+  facultRootDir,
+  facultStateDir,
+  legacyFacultStateDirForRoot,
+  projectRootFromAiRoot,
+} from "./paths";
 
 const AUTOSYNC_VERSION = 1 as const;
 const DEFAULT_DEBOUNCE_MS = 1500;
@@ -94,20 +99,33 @@ function runDetached(context: string, promise: Promise<void>) {
   });
 }
 
-function autosyncDir(home: string): string {
-  return join(facultStateDir(home), "autosync");
+function autosyncDir(home: string, rootDir?: string): string {
+  return join(facultStateDir(home, rootDir), "autosync");
 }
 
-function autosyncServicesDir(home: string): string {
-  return join(autosyncDir(home), "services");
+function legacyAutosyncDir(home: string, rootDir?: string): string {
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  return join(legacyFacultStateDirForRoot(resolvedRoot, home), "autosync");
 }
 
-function autosyncStateDir(home: string): string {
-  return join(autosyncDir(home), "state");
+function autosyncServicesDir(home: string, rootDir?: string): string {
+  return join(autosyncDir(home, rootDir), "services");
 }
 
-function autosyncLogsDir(home: string): string {
-  return join(autosyncDir(home), "logs");
+function legacyAutosyncServicesDir(home: string, rootDir?: string): string {
+  return join(legacyAutosyncDir(home, rootDir), "services");
+}
+
+function autosyncStateDir(home: string, rootDir?: string): string {
+  return join(autosyncDir(home, rootDir), "state");
+}
+
+function legacyAutosyncStateDir(home: string, rootDir?: string): string {
+  return join(legacyAutosyncDir(home, rootDir), "state");
+}
+
+function autosyncLogsDir(home: string, rootDir?: string): string {
+  return join(autosyncDir(home, rootDir), "logs");
 }
 
 function serviceSuffix(
@@ -151,12 +169,36 @@ function autosyncPlistPath(home: string, serviceName: string): string {
   );
 }
 
-function autosyncConfigPath(home: string, serviceName: string): string {
-  return join(autosyncServicesDir(home), `${serviceName}.json`);
+function autosyncConfigPath(
+  home: string,
+  serviceName: string,
+  rootDir?: string
+): string {
+  return join(autosyncServicesDir(home, rootDir), `${serviceName}.json`);
 }
 
-function autosyncRuntimeStatePath(home: string, serviceName: string): string {
-  return join(autosyncStateDir(home), `${serviceName}.json`);
+function legacyAutosyncConfigPath(
+  home: string,
+  serviceName: string,
+  rootDir?: string
+): string {
+  return join(legacyAutosyncServicesDir(home, rootDir), `${serviceName}.json`);
+}
+
+function autosyncRuntimeStatePath(
+  home: string,
+  serviceName: string,
+  rootDir?: string
+): string {
+  return join(autosyncStateDir(home, rootDir), `${serviceName}.json`);
+}
+
+function legacyAutosyncRuntimeStatePath(
+  home: string,
+  serviceName: string,
+  rootDir?: string
+): string {
+  return join(legacyAutosyncStateDir(home, rootDir), `${serviceName}.json`);
 }
 
 function escapeXml(value: string): string {
@@ -204,7 +246,7 @@ export function buildLaunchAgentSpec(args: {
   const { homeDir, rootDir, serviceName } = args;
   const label = autosyncLabel(serviceName);
   const invocation = args.invocation ?? resolveAutosyncInvocation();
-  const logsDir = autosyncLogsDir(homeDir);
+  const logsDir = autosyncLogsDir(homeDir, rootDir);
 
   return {
     label,
@@ -281,34 +323,58 @@ async function writeJsonFile(pathValue: string, data: unknown): Promise<void> {
 
 export async function loadAutosyncConfig(
   serviceName: string,
-  homeDir: string = homedir()
+  homeDir: string = homedir(),
+  rootDir?: string
 ): Promise<AutosyncServiceConfig | null> {
-  return await readJsonFile<AutosyncServiceConfig>(
-    autosyncConfigPath(homeDir, serviceName)
-  );
+  const candidates = [
+    autosyncConfigPath(homeDir, serviceName, rootDir),
+    legacyAutosyncConfigPath(homeDir, serviceName, rootDir),
+  ];
+  for (const candidate of candidates) {
+    const config = await readJsonFile<AutosyncServiceConfig>(candidate);
+    if (config) {
+      return config;
+    }
+  }
+  return null;
 }
 
 async function saveAutosyncConfig(
   config: AutosyncServiceConfig,
   homeDir: string
 ): Promise<void> {
-  await writeJsonFile(autosyncConfigPath(homeDir, config.name), config);
+  await writeJsonFile(
+    autosyncConfigPath(homeDir, config.name, config.rootDir),
+    config
+  );
 }
 
 export async function loadAutosyncRuntimeState(
   serviceName: string,
-  homeDir: string = homedir()
+  homeDir: string = homedir(),
+  rootDir?: string
 ): Promise<AutosyncRuntimeState | null> {
-  return await readJsonFile<AutosyncRuntimeState>(
-    autosyncRuntimeStatePath(homeDir, serviceName)
-  );
+  const candidates = [
+    autosyncRuntimeStatePath(homeDir, serviceName, rootDir),
+    legacyAutosyncRuntimeStatePath(homeDir, serviceName, rootDir),
+  ];
+  for (const candidate of candidates) {
+    const state = await readJsonFile<AutosyncRuntimeState>(candidate);
+    if (state) {
+      return state;
+    }
+  }
+  return null;
 }
 
 async function saveAutosyncRuntimeState(
   state: AutosyncRuntimeState,
   homeDir: string
 ): Promise<void> {
-  await writeJsonFile(autosyncRuntimeStatePath(homeDir, state.service), state);
+  await writeJsonFile(
+    autosyncRuntimeStatePath(homeDir, state.service, state.rootDir),
+    state
+  );
 }
 
 async function runCommand(
@@ -535,7 +601,7 @@ export async function runAutosyncService(
 
   const persistState = async (patch: Partial<AutosyncRuntimeState>) => {
     const current =
-      (await loadAutosyncRuntimeState(config.name, home)) ??
+      (await loadAutosyncRuntimeState(config.name, home, config.rootDir)) ??
       ({
         version: AUTOSYNC_VERSION,
         service: config.name,
@@ -778,7 +844,7 @@ export async function installAutosyncService(args: {
   const plist = buildLaunchAgentPlist(spec);
 
   await mkdir(dirname(spec.plistPath), { recursive: true });
-  await mkdir(autosyncLogsDir(home), { recursive: true });
+  await mkdir(autosyncLogsDir(home, rootDir), { recursive: true });
   await saveAutosyncConfig(config, home);
   await writeFile(spec.plistPath, plist, "utf8");
 
@@ -804,14 +870,30 @@ export async function uninstallAutosyncService(args: {
 
   await runLaunchctl(["bootout", `${domain}/${label}`]).catch(() => null);
   await rm(autosyncPlistPath(home, serviceName), { force: true });
-  await rm(autosyncConfigPath(home, serviceName), { force: true });
+  await rm(autosyncConfigPath(home, serviceName, rootDir), { force: true });
 }
 
 export async function repairAutosyncServices(
-  homeDir: string = homedir()
+  homeDir: string = homedir(),
+  rootDir?: string
 ): Promise<boolean> {
-  const servicesDir = autosyncServicesDir(homeDir);
-  const files = await readdir(servicesDir).catch(() => [] as string[]);
+  const activeRoot = rootDir ?? facultRootDir(homeDir);
+  const serviceDirs = [
+    autosyncServicesDir(homeDir, activeRoot),
+    legacyAutosyncServicesDir(homeDir, activeRoot),
+  ];
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const dir of serviceDirs) {
+    const entries = await readdir(dir).catch(() => [] as string[]);
+    for (const entry of entries) {
+      if (seen.has(entry)) {
+        continue;
+      }
+      seen.add(entry);
+      files.push(entry);
+    }
+  }
   let changed = false;
 
   for (const entry of files) {
@@ -819,7 +901,7 @@ export async function repairAutosyncServices(
       continue;
     }
     const serviceName = basename(entry, ".json");
-    const config = await loadAutosyncConfig(serviceName, homeDir);
+    const config = await loadAutosyncConfig(serviceName, homeDir, activeRoot);
     if (!config) {
       continue;
     }
@@ -843,7 +925,9 @@ export async function repairAutosyncServices(
     );
     if (currentText !== desired) {
       await mkdir(dirname(spec.plistPath), { recursive: true });
-      await mkdir(autosyncLogsDir(homeDir), { recursive: true });
+      await mkdir(autosyncLogsDir(homeDir, config.rootDir), {
+        recursive: true,
+      });
       await writeFile(spec.plistPath, desired, "utf8");
       const domain = launchdDomain();
       await runLaunchctl(["bootout", `${domain}/${spec.label}`]).catch(
@@ -872,8 +956,8 @@ export async function autosyncStatus(args: {
     args.rootDir ??
     resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
   const serviceName = autosyncServiceName(args.tool, rootDir, home);
-  const config = await loadAutosyncConfig(serviceName, home);
-  const state = await loadAutosyncRuntimeState(serviceName, home);
+  const config = await loadAutosyncConfig(serviceName, home, rootDir);
+  const state = await loadAutosyncRuntimeState(serviceName, home, rootDir);
   const plistPath = autosyncPlistPath(home, serviceName);
   const plistExists = await pathExists(plistPath);
   const label = autosyncLabel(serviceName);

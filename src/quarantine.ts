@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { facultStateDir } from "./paths";
 
 export type QuarantineMode = "move" | "copy";
 
@@ -157,7 +158,7 @@ export async function quarantineItems(args: {
   const ts = args.timestamp ?? new Date().toISOString();
   const stamp = ts.replace(/[:.]/g, "-");
   const quarantineDir =
-    args.destDir ?? join(home, ".facult", "quarantine", stamp);
+    args.destDir ?? join(facultStateDir(home), "quarantine", stamp);
 
   const entries: QuarantineEntry[] = [];
 

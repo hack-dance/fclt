@@ -60,7 +60,7 @@ describe("query filters", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    const rootDir = join(tempHome, "agents", ".facult");
+    const rootDir = join(tempHome, ".ai");
     await mkdir(rootDir, { recursive: true });
 
     const skills: Record<string, SkillEntry> = {
@@ -96,7 +96,10 @@ describe("query filters", () => {
       instructions: {},
     };
 
-    await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
+    await Bun.write(
+      facultAiIndexPath(tempHome, rootDir),
+      JSON.stringify(index)
+    );
 
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     expect(Object.keys(loaded.skills)).toEqual(["alpha", "beta"]);
@@ -119,7 +122,7 @@ describe("query filters", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    const rootDir = join(tempHome, "agents", ".facult");
+    const rootDir = join(tempHome, ".ai");
     await mkdir(rootDir, { recursive: true });
 
     const index: FacultIndex = {
@@ -155,7 +158,10 @@ describe("query filters", () => {
       instructions: {},
     };
 
-    await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
+    await Bun.write(
+      facultAiIndexPath(tempHome, rootDir),
+      JSON.stringify(index)
+    );
 
     const trustPayload = {
       version: 1,
@@ -169,7 +175,7 @@ describe("query filters", () => {
       checksum: `sha256:${trustChecksum(trustPayload)}`,
     };
 
-    const trustDir = join(tempHome, ".facult", "trust");
+    const trustDir = join(tempHome, ".ai", ".facult", "trust");
     await mkdir(trustDir, { recursive: true });
     await Bun.write(
       join(trustDir, "org-list.json"),
@@ -207,7 +213,7 @@ describe("query filters", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    const rootDir = join(tempHome, "agents", ".facult");
+    const rootDir = join(tempHome, ".ai");
     await mkdir(rootDir, { recursive: true });
 
     const index: FacultIndex = {
@@ -226,9 +232,12 @@ describe("query filters", () => {
       snippets: {},
       instructions: {},
     };
-    await Bun.write(facultAiIndexPath(tempHome), JSON.stringify(index));
+    await Bun.write(
+      facultAiIndexPath(tempHome, rootDir),
+      JSON.stringify(index)
+    );
 
-    const trustDir = join(tempHome, ".facult", "trust");
+    const trustDir = join(tempHome, ".ai", ".facult", "trust");
     await mkdir(trustDir, { recursive: true });
     await Bun.write(
       join(trustDir, "org-list.json"),
@@ -279,7 +288,7 @@ describe("query filters", () => {
     expect(Object.keys(loaded.skills)).toEqual(["alpha"]);
 
     const repaired = JSON.parse(
-      await Bun.file(facultAiIndexPath(tempHome)).text()
+      await Bun.file(facultAiIndexPath(tempHome, rootDir)).text()
     ) as FacultIndex;
     expect(Object.keys(repaired.skills)).toEqual(["alpha"]);
   });

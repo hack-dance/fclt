@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { facultStateDir } from "./paths";
+import { facultStateDir, legacyExternalFacultStateDir } from "./paths";
 import { parseJsonLenient } from "./util/json";
 
 export type SourceTrustLevel = "trusted" | "review" | "blocked";
@@ -27,6 +27,10 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 function sourceTrustPath(home: string): string {
   return join(facultStateDir(home), "trust", "sources.json");
+}
+
+function legacySourceTrustPath(home: string): string {
+  return join(legacyExternalFacultStateDir(home), "trust", "sources.json");
 }
 
 function normalizeSourceName(name: string): string {
@@ -100,51 +104,55 @@ export async function loadSourceTrustState(opts?: {
   homeDir?: string;
 }): Promise<SourceTrustState> {
   const home = opts?.homeDir ?? homedir();
-  const path = sourceTrustPath(home);
-  try {
-    const raw = await readFile(path, "utf8");
-    const parsed = parseJsonLenient(raw);
-    if (!isPlainObject(parsed)) {
-      throw new Error("invalid");
-    }
-
-    const version =
-      typeof parsed.version === "number" && Number.isFinite(parsed.version)
-        ? Math.floor(parsed.version)
-        : SOURCE_TRUST_VERSION;
-    const updatedAt =
-      typeof parsed.updatedAt === "string"
-        ? parsed.updatedAt
-        : new Date(0).toISOString();
-    const sourcesRaw = isPlainObject(parsed.sources)
-      ? (parsed.sources as Record<string, unknown>)
-      : {};
-
-    const sources: Record<string, SourceTrustPolicy> = {};
-    for (const [name, value] of Object.entries(sourcesRaw)) {
-      const normalized = normalizeSourceName(name);
-      if (!normalized) {
-        continue;
+  const paths = [sourceTrustPath(home), legacySourceTrustPath(home)];
+  for (const path of paths) {
+    try {
+      const raw = await readFile(path, "utf8");
+      const parsed = parseJsonLenient(raw);
+      if (!isPlainObject(parsed)) {
+        throw new Error("invalid");
       }
-      const policy = parsePolicy(value);
-      if (!policy) {
-        continue;
-      }
-      sources[normalized] = policy;
-    }
 
-    return {
-      version: version === 1 ? 1 : SOURCE_TRUST_VERSION,
-      updatedAt,
-      sources,
-    };
-  } catch {
-    return {
-      version: SOURCE_TRUST_VERSION,
-      updatedAt: new Date(0).toISOString(),
-      sources: {},
-    };
+      const version =
+        typeof parsed.version === "number" && Number.isFinite(parsed.version)
+          ? Math.floor(parsed.version)
+          : SOURCE_TRUST_VERSION;
+      const updatedAt =
+        typeof parsed.updatedAt === "string"
+          ? parsed.updatedAt
+          : new Date(0).toISOString();
+      const sourcesRaw = isPlainObject(parsed.sources)
+        ? (parsed.sources as Record<string, unknown>)
+        : {};
+
+      const sources: Record<string, SourceTrustPolicy> = {};
+      for (const [name, value] of Object.entries(sourcesRaw)) {
+        const normalized = normalizeSourceName(name);
+        if (!normalized) {
+          continue;
+        }
+        const policy = parsePolicy(value);
+        if (!policy) {
+          continue;
+        }
+        sources[normalized] = policy;
+      }
+
+      return {
+        version: version === 1 ? 1 : SOURCE_TRUST_VERSION,
+        updatedAt,
+        sources,
+      };
+    } catch {
+      // Ignore unreadable or malformed trust state and continue to legacy fallbacks.
+    }
   }
+
+  return {
+    version: SOURCE_TRUST_VERSION,
+    updatedAt: new Date(0).toISOString(),
+    sources: {},
+  };
 }
 
 export async function saveSourceTrustState(args: {

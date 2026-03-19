@@ -68,17 +68,19 @@ describe("paths", () => {
     expect(facultRootDir(tempHome)).toBe(join(tempHome, ".ai"));
   });
 
-  it("uses ~/.facult/ai for generated index state", async () => {
+  it("uses ~/.ai/.facult/ai for generated index state", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    expect(facultAiStateDir(tempHome)).toBe(join(tempHome, ".facult", "ai"));
+    expect(facultAiStateDir(tempHome)).toBe(
+      join(tempHome, ".ai", ".facult", "ai")
+    );
     expect(facultAiIndexPath(tempHome)).toBe(
-      join(tempHome, ".facult", "ai", "index.json")
+      join(tempHome, ".ai", ".facult", "ai", "index.json")
     );
   });
 
-  it("uses repo-local .facult/ai state for project roots", async () => {
+  it("uses repo-local .ai/.facult/ai state for project roots", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
@@ -87,13 +89,13 @@ describe("paths", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
 
     expect(facultAiStateDir(tempHome, rootDir)).toBe(
-      join(projectRoot, ".facult", "ai")
+      join(projectRoot, ".ai", ".facult", "ai")
     );
     expect(facultAiIndexPath(tempHome, rootDir)).toBe(
-      join(projectRoot, ".facult", "ai", "index.json")
+      join(projectRoot, ".ai", ".facult", "ai", "index.json")
     );
     expect(facultAiGraphPath(tempHome, rootDir)).toBe(
-      join(projectRoot, ".facult", "ai", "graph.json")
+      join(projectRoot, ".ai", ".facult", "ai", "graph.json")
     );
   });
 

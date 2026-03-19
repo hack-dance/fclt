@@ -72,12 +72,14 @@ describe("autosync invocation", () => {
       homeDir: "/Users/test",
       serviceName: "codex",
       rootDir: "/Users/test/.ai",
-      invocation: ["/Users/test/.facult/bin/facult"],
+      invocation: ["/Users/test/.ai/.facult/bin/facult"],
     });
     const plist = buildLaunchAgentPlist(spec);
 
     expect(spec.label).toBe("com.facult.autosync.codex");
-    expect(plist).toContain("<string>/Users/test/.facult/bin/facult</string>");
+    expect(plist).toContain(
+      "<string>/Users/test/.ai/.facult/bin/facult</string>"
+    );
     expect(plist).toContain("<string>autosync</string>");
     expect(plist).toContain("<string>run</string>");
     expect(plist).toContain("<string>codex</string>");
@@ -90,7 +92,7 @@ describe("autosync invocation", () => {
       homeDir: "/Users/test",
       serviceName: "codex-facult",
       rootDir: "/Users/test/dev/facult/.ai",
-      invocation: ["/Users/test/.facult/bin/facult"],
+      invocation: ["/Users/test/.ai/.facult/bin/facult"],
     });
     const plist = buildLaunchAgentPlist(spec);
 

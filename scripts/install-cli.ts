@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 type InstallMode = "dev" | "bin";
 
 const CLI_NAME = "facult";
-const DEFAULT_INSTALL_DIR_RELATIVE = ".facult/bin";
+const DEFAULT_INSTALL_DIR_RELATIVE = ".ai/.facult/bin";
 
 interface ParseOk {
   ok: true;
@@ -147,7 +147,7 @@ function parseArgs(argv: readonly string[]): ParseOk | ParseErr {
       return {
         ok: false,
         message: [
-          "Install facult as a local global command (~/.facult/bin/facult by default).",
+          "Install facult as a local global command (~/.ai/.facult/bin/facult by default).",
           "",
           "Usage:",
           "  bun run scripts/install-cli.ts [--mode=dev|bin] [--dir=/path] [--force]",
@@ -309,7 +309,7 @@ async function writeInstallState(args: {
   packageVersion?: string;
   binaryPath?: string;
 }) {
-  const dir = resolve(args.home, ".facult");
+  const dir = resolve(args.home, ".ai", ".facult");
   await mkdir(dir, { recursive: true });
   const payload = {
     version: 1,

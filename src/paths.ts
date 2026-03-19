@@ -83,6 +83,22 @@ function legacyPreferredRoot(home: string): string {
   return join(home, "agents", ".facult");
 }
 
+export function preferredGlobalAiRoot(home: string = defaultHomeDir()): string {
+  return join(home, ".ai");
+}
+
+export function preferredGlobalFacultStateDir(
+  home: string = defaultHomeDir()
+): string {
+  return join(preferredGlobalAiRoot(home), ".facult");
+}
+
+export function legacyExternalFacultStateDir(
+  home: string = defaultHomeDir()
+): string {
+  return join(home, ".facult");
+}
+
 function isLegacyConfiguredRoot(root: string, home: string): boolean {
   return resolve(root) === resolve(legacyPreferredRoot(home));
 }
@@ -132,8 +148,42 @@ function detectLegacyStoreUnderAgents(home: string): string | null {
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
-export function facultStateDir(home: string = defaultHomeDir()): string {
-  return join(home, ".facult");
+export function legacyFacultStateDirForRoot(
+  rootDir: string,
+  home: string = defaultHomeDir()
+): string {
+  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  return projectRoot
+    ? join(projectRoot, ".facult")
+    : legacyExternalFacultStateDir(home);
+}
+
+function shouldUsePreferredGlobalStateDir(
+  rootDir: string,
+  home: string
+): boolean {
+  const resolved = resolve(rootDir);
+  if (projectRootFromAiRoot(resolved, home)) {
+    return false;
+  }
+  if (resolved === resolve(preferredGlobalAiRoot(home))) {
+    return true;
+  }
+  if (resolved === resolve(legacyPreferredRoot(home))) {
+    return true;
+  }
+  return resolved.startsWith(`${resolve(join(home, "agents"))}/`);
+}
+
+export function facultStateDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  if (shouldUsePreferredGlobalStateDir(resolvedRoot, home)) {
+    return preferredGlobalFacultStateDir(home);
+  }
+  return join(resolvedRoot, ".facult");
 }
 
 export function projectRootFromAiRoot(
@@ -168,9 +218,7 @@ export function facultGeneratedStateDir(args?: {
   rootDir?: string;
 }): string {
   const home = args?.home ?? defaultHomeDir();
-  const rootDir = args?.rootDir;
-  const projectRoot = rootDir ? projectRootFromAiRoot(rootDir, home) : null;
-  return projectRoot ? join(projectRoot, ".facult") : facultStateDir(home);
+  return facultStateDir(home, args?.rootDir);
 }
 
 export function facultAiStateDir(
@@ -198,10 +246,12 @@ export function facultAiRuntimeScopeDir(
   home: string = defaultHomeDir(),
   rootDir?: string
 ): string {
-  const slug = rootDir ? projectSlugFromAiRoot(rootDir, home) : null;
-  return slug
-    ? join(facultStateDir(home), "ai", "projects", slug)
-    : join(facultStateDir(home), "ai", "global");
+  return join(
+    facultAiStateDir(home, rootDir),
+    projectRootFromAiRoot(rootDir ?? facultRootDir(home), home)
+      ? "project"
+      : "global"
+  );
 }
 
 export function facultAiJournalPath(
@@ -241,79 +291,87 @@ export function facultAiDraftDir(
 }
 
 export function facultConfigPath(home: string = defaultHomeDir()): string {
-  return join(facultStateDir(home), "config.json");
+  return join(preferredGlobalFacultStateDir(home), "config.json");
 }
 
 export function readFacultConfig(
   home: string = defaultHomeDir()
 ): FacultConfig | null {
-  const p = facultConfigPath(home);
-  if (!(isSafePathString(p) && fileExists(p))) {
-    return null;
-  }
+  const candidates = [
+    facultConfigPath(home),
+    join(legacyExternalFacultStateDir(home), "config.json"),
+  ];
 
-  try {
-    const txt = readFileSync(p, "utf8");
-    const parsed = parseJsonLenient(txt) as unknown;
-    if (!isPlainObject(parsed)) {
-      return null;
+  for (const p of candidates) {
+    if (!(isSafePathString(p) && fileExists(p))) {
+      continue;
     }
-    const rootDir =
-      typeof parsed.rootDir === "string" ? parsed.rootDir : undefined;
 
-    const scanFromRaw = (parsed as Record<string, unknown>).scanFrom;
-    const scanFrom = Array.isArray(scanFromRaw)
-      ? scanFromRaw
-          .filter((v) => typeof v === "string")
-          .map((v) => v.trim())
-          .filter(Boolean)
-      : undefined;
+    try {
+      const txt = readFileSync(p, "utf8");
+      const parsed = parseJsonLenient(txt) as unknown;
+      if (!isPlainObject(parsed)) {
+        continue;
+      }
+      const rootDir =
+        typeof parsed.rootDir === "string" ? parsed.rootDir : undefined;
 
-    const scanFromIgnoreRaw = (parsed as Record<string, unknown>)
-      .scanFromIgnore;
-    const scanFromIgnore = Array.isArray(scanFromIgnoreRaw)
-      ? scanFromIgnoreRaw
-          .filter((v) => typeof v === "string")
-          .map((v) => v.trim())
-          .filter(Boolean)
-      : undefined;
-
-    const scanFromNoDefaultIgnore =
-      typeof (parsed as Record<string, unknown>).scanFromNoDefaultIgnore ===
-      "boolean"
-        ? ((parsed as Record<string, unknown>)
-            .scanFromNoDefaultIgnore as boolean)
+      const scanFromRaw = (parsed as Record<string, unknown>).scanFrom;
+      const scanFrom = Array.isArray(scanFromRaw)
+        ? scanFromRaw
+            .filter((v) => typeof v === "string")
+            .map((v) => v.trim())
+            .filter(Boolean)
         : undefined;
 
-    const scanFromMaxVisitsRaw = (parsed as Record<string, unknown>)
-      .scanFromMaxVisits;
-    const scanFromMaxVisits =
-      typeof scanFromMaxVisitsRaw === "number" &&
-      Number.isFinite(scanFromMaxVisitsRaw) &&
-      scanFromMaxVisitsRaw > 0
-        ? Math.floor(scanFromMaxVisitsRaw)
+      const scanFromIgnoreRaw = (parsed as Record<string, unknown>)
+        .scanFromIgnore;
+      const scanFromIgnore = Array.isArray(scanFromIgnoreRaw)
+        ? scanFromIgnoreRaw
+            .filter((v) => typeof v === "string")
+            .map((v) => v.trim())
+            .filter(Boolean)
         : undefined;
 
-    const scanFromMaxResultsRaw = (parsed as Record<string, unknown>)
-      .scanFromMaxResults;
-    const scanFromMaxResults =
-      typeof scanFromMaxResultsRaw === "number" &&
-      Number.isFinite(scanFromMaxResultsRaw) &&
-      scanFromMaxResultsRaw > 0
-        ? Math.floor(scanFromMaxResultsRaw)
-        : undefined;
+      const scanFromNoDefaultIgnore =
+        typeof (parsed as Record<string, unknown>).scanFromNoDefaultIgnore ===
+        "boolean"
+          ? ((parsed as Record<string, unknown>)
+              .scanFromNoDefaultIgnore as boolean)
+          : undefined;
 
-    return {
-      rootDir,
-      scanFrom,
-      scanFromIgnore,
-      scanFromNoDefaultIgnore,
-      scanFromMaxVisits,
-      scanFromMaxResults,
-    };
-  } catch {
-    return null;
+      const scanFromMaxVisitsRaw = (parsed as Record<string, unknown>)
+        .scanFromMaxVisits;
+      const scanFromMaxVisits =
+        typeof scanFromMaxVisitsRaw === "number" &&
+        Number.isFinite(scanFromMaxVisitsRaw) &&
+        scanFromMaxVisitsRaw > 0
+          ? Math.floor(scanFromMaxVisitsRaw)
+          : undefined;
+
+      const scanFromMaxResultsRaw = (parsed as Record<string, unknown>)
+        .scanFromMaxResults;
+      const scanFromMaxResults =
+        typeof scanFromMaxResultsRaw === "number" &&
+        Number.isFinite(scanFromMaxResultsRaw) &&
+        scanFromMaxResultsRaw > 0
+          ? Math.floor(scanFromMaxResultsRaw)
+          : undefined;
+
+      return {
+        rootDir,
+        scanFrom,
+        scanFromIgnore,
+        scanFromNoDefaultIgnore,
+        scanFromMaxVisits,
+        scanFromMaxResults,
+      };
+    } catch {
+      // Ignore invalid config files and continue to the next fallback path.
+    }
   }
+
+  return null;
 }
 
 /**
@@ -321,7 +379,7 @@ export function readFacultConfig(
  *
  * Precedence:
  * 1) `FACULT_ROOT_DIR` env var
- * 2) `~/.facult/config.json` { "rootDir": "..." }
+ * 2) `~/.ai/.facult/config.json` { "rootDir": "..." } (falls back to legacy `~/.facult/config.json`)
  * 3) `~/.ai` (if it looks like a store)
  * 4) `~/agents/.facult` (if it looks like a store)
  * 5) a legacy store under `~/agents/` (if it looks like a store)

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { facultStateDir } from "./paths";
+import { facultStateDir, legacyExternalFacultStateDir } from "./paths";
 import {
   type ManifestSignature,
   type ManifestSignatureKey,
@@ -66,13 +66,27 @@ export async function readIndexSources(
   const out: IndexSource[] = [
     { name: BUILTIN_INDEX_NAME, url: BUILTIN_INDEX_URL, kind: "builtin" },
   ];
-  const configPath = resolve(facultStateDir(home), "indices.json");
-  if (!(await fileExists(configPath))) {
+  const configPaths = [
+    resolve(facultStateDir(home), "indices.json"),
+    resolve(legacyExternalFacultStateDir(home), "indices.json"),
+  ];
+  let parsed: unknown = null;
+  for (const configPath of configPaths) {
+    if (!(await fileExists(configPath))) {
+      continue;
+    }
+    try {
+      parsed = parseJsonLenient(await readFile(configPath, "utf8"));
+      break;
+    } catch {
+      // Ignore unreadable or malformed source index files and keep trying fallbacks.
+    }
+  }
+  if (parsed == null) {
     return out;
   }
 
   try {
-    const parsed = parseJsonLenient(await readFile(configPath, "utf8"));
     if (!isPlainObject(parsed)) {
       return out;
     }

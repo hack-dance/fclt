@@ -53,10 +53,10 @@ describe("detectInstallMethod", () => {
     expect(method).toBe("release-script");
   });
 
-  it("infers release-script from ~/.facult/bin executable path", () => {
+  it("infers release-script from ~/.ai/.facult/bin executable path", () => {
     const method = detectInstallMethod(null, {
       homeDir: "/tmp/test-home",
-      executablePath: "/tmp/test-home/.facult/bin/facult",
+      executablePath: "/tmp/test-home/.ai/.facult/bin/facult",
     });
     expect(method).toBe("release-script");
   });

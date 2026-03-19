@@ -22,7 +22,7 @@ test("quarantineItems copy copies a file into quarantine and preserves original"
     items: [{ path: src }],
   });
 
-  expect(quarantineDir).toContain(join(home, ".facult", "quarantine"));
+  expect(quarantineDir).toContain(join(home, ".ai", ".facult", "quarantine"));
   expect(manifest.entries.length).toBe(1);
   expect(await exists(src)).toBe(true);
   expect(await exists(manifest.entries[0]!.quarantinedPath)).toBe(true);

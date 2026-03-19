@@ -12,7 +12,7 @@ import {
   text,
 } from "@clack/prompts";
 import { buildIndex } from "../index-builder";
-import { facultRootDir, readFacultConfig } from "../paths";
+import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
 import { type QuarantineMode, quarantineItems } from "../quarantine";
 import { type AgentAuditReport, runAgentAudit } from "./agent";
 import { runStaticAudit } from "./static";
@@ -206,7 +206,7 @@ Usage:
 
 Notes:
   - This is an interactive wizard (TTY required).
-  - Quarantine will move/copy files into ~/.facult/quarantine/<timestamp>/ and write a manifest.json.
+  - Quarantine will move/copy files into ~/.ai/.facult/quarantine/<timestamp>/ and write a manifest.json.
   - For non-interactive runs, use: facult audit --non-interactive ...
 `);
 }
@@ -228,7 +228,7 @@ export async function auditTuiCommand(argv: string[]) {
   if (cfgRoots.length) {
     note(
       `Configured scanFrom roots:\n- ${cfgRoots.join("\n- ")}`,
-      "~/.facult/config.json"
+      "~/.ai/.facult/config.json"
     );
   }
 
@@ -285,7 +285,7 @@ export async function auditTuiCommand(argv: string[]) {
             {
               value: "config",
               label: "Use configured scanFrom",
-              hint: "from ~/.facult/config.json",
+              hint: "from ~/.ai/.facult/config.json",
             },
           ]
         : []),
@@ -448,13 +448,13 @@ export async function auditTuiCommand(argv: string[]) {
   if (reports.static) {
     summaries.push(`Static: ${summarizeReportStatic(reports.static)}`);
     summaries.push(
-      `Wrote ${join(homedir(), ".facult", "audit", "static-latest.json")}`
+      `Wrote ${join(facultStateDir(homedir()), "audit", "static-latest.json")}`
     );
   }
   if (reports.agent) {
     summaries.push(`Agent: ${summarizeReportAgent(reports.agent)}`);
     summaries.push(
-      `Wrote ${join(homedir(), ".facult", "audit", "agent-latest.json")}`
+      `Wrote ${join(facultStateDir(homedir()), "audit", "agent-latest.json")}`
     );
   }
   if (summaries.length) {
@@ -524,7 +524,7 @@ export async function auditTuiCommand(argv: string[]) {
         {
           value: "quarantine",
           label: "Quarantine items",
-          hint: "move/copy to ~/.facult/quarantine",
+          hint: "move/copy to ~/.ai/.facult/quarantine",
         },
         { value: "view", label: "View item details", hint: "inspect findings" },
         { value: "exit", label: "Exit", hint: "leave files unchanged" },
@@ -617,7 +617,7 @@ export async function auditTuiCommand(argv: string[]) {
 
     const ts = new Date().toISOString();
     const stamp = ts.replace(/[:.]/g, "-");
-    const destDir = join(homedir(), ".facult", "quarantine", stamp);
+    const destDir = join(facultStateDir(homedir()), "quarantine", stamp);
 
     const plan = await quarantineItems({
       items,

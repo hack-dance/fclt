@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { readFacultConfig } from "../paths";
+import { facultStateDir, readFacultConfig } from "../paths";
 import type { ScanResult } from "../scan";
 import { scan } from "../scan";
 import {
@@ -649,7 +649,7 @@ export async function runStaticAudit(opts?: {
   const argv = opts?.argv ?? [];
   const home = opts?.homeDir ?? homedir();
   const rulesPath =
-    opts?.rulesPath ?? join(home, ".facult", "audit-rules.yaml");
+    opts?.rulesPath ?? join(facultStateDir(home), "audit-rules.yaml");
 
   const overrides = await loadRuleOverrides(rulesPath);
   const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));
@@ -1040,7 +1040,7 @@ export async function runStaticAudit(opts?: {
     },
   };
 
-  const auditDir = join(home, ".facult", "audit");
+  const auditDir = join(facultStateDir(home), "audit");
   await ensureDir(auditDir);
   await Bun.write(
     join(auditDir, "static-latest.json"),
@@ -1091,7 +1091,7 @@ function printHuman(report: StaticAuditReport) {
     `By severity: critical=${report.summary.bySeverity.critical}, high=${report.summary.bySeverity.high}, medium=${report.summary.bySeverity.medium}, low=${report.summary.bySeverity.low}`
   );
   console.log(
-    `Wrote ${join(homedir(), ".facult", "audit", "static-latest.json")}`
+    `Wrote ${join(facultStateDir(homedir()), "audit", "static-latest.json")}`
   );
 }
 

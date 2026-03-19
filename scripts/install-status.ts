@@ -4,7 +4,7 @@ import { lstat, readlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 const CLI_NAME = "facult";
-const DEFAULT_INSTALL_DIR_RELATIVE = ".facult/bin";
+const DEFAULT_INSTALL_DIR_RELATIVE = ".ai/.facult/bin";
 
 const home = (process.env.HOME ?? "").trim();
 if (!home) {

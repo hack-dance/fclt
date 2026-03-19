@@ -14,11 +14,11 @@ test("agent audit runs over discovered skills and MCP servers (with injected run
   const home = join(dir, "home");
 
   // Canonical store (test-only).
-  const skillDir = join(home, "agents", ".facult", "skills", "ok-skill");
+  const skillDir = join(home, ".ai", "skills", "ok-skill");
   await mkdir(skillDir, { recursive: true });
   await Bun.write(join(skillDir, "SKILL.md"), "Hello\\n");
 
-  const mcpDir = join(home, "agents", ".facult", "mcp");
+  const mcpDir = join(home, ".ai", "mcp");
   await mkdir(mcpDir, { recursive: true });
   await writeFile(
     join(mcpDir, "mcp.json"),
@@ -60,7 +60,7 @@ test("agent audit runs over discovered skills and MCP servers (with injected run
     report.results.some((r) => r.type === "mcp" && r.item === "test")
   ).toBe(true);
 
-  const outPath = join(home, ".facult", "audit", "agent-latest.json");
+  const outPath = join(home, ".ai", ".facult", "audit", "agent-latest.json");
   expect(await Bun.file(outPath).exists()).toBe(true);
 });
 
@@ -68,21 +68,15 @@ test("agent audit respects requested skill filter (does not audit MCP servers)",
   const dir = await mkdtemp(join(tmpdir(), "facult-agent-audit-"));
   const home = join(dir, "home");
 
-  const okSkillDir = join(home, "agents", ".facult", "skills", "ok-skill");
+  const okSkillDir = join(home, ".ai", "skills", "ok-skill");
   await mkdir(okSkillDir, { recursive: true });
   await Bun.write(join(okSkillDir, "SKILL.md"), "Hello\\n");
 
-  const otherSkillDir = join(
-    home,
-    "agents",
-    ".facult",
-    "skills",
-    "other-skill"
-  );
+  const otherSkillDir = join(home, ".ai", "skills", "other-skill");
   await mkdir(otherSkillDir, { recursive: true });
   await Bun.write(join(otherSkillDir, "SKILL.md"), "Other\\n");
 
-  const mcpDir = join(home, "agents", ".facult", "mcp");
+  const mcpDir = join(home, ".ai", "mcp");
   await mkdir(mcpDir, { recursive: true });
   await writeFile(
     join(mcpDir, "mcp.json"),
@@ -124,11 +118,11 @@ test("agent audit respects requested MCP filter (does not audit skills)", async 
   const dir = await mkdtemp(join(tmpdir(), "facult-agent-audit-"));
   const home = join(dir, "home");
 
-  const skillDir = join(home, "agents", ".facult", "skills", "ok-skill");
+  const skillDir = join(home, ".ai", "skills", "ok-skill");
   await mkdir(skillDir, { recursive: true });
   await Bun.write(join(skillDir, "SKILL.md"), "Hello\\n");
 
-  const mcpDir = join(home, "agents", ".facult", "mcp");
+  const mcpDir = join(home, ".ai", "mcp");
   await mkdir(mcpDir, { recursive: true });
   await writeFile(
     join(mcpDir, "mcp.json"),

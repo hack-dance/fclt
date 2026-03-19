@@ -1,6 +1,10 @@
 import { mkdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import {
+  legacyExternalFacultStateDir,
+  preferredGlobalFacultStateDir,
+} from "./paths";
 
 const REPO_OWNER = "hack-dance";
 const REPO_NAME = "facult";
@@ -81,13 +85,19 @@ export function parseSelfUpdateArgs(argv: string[]): ParsedArgs {
 }
 
 async function loadInstallState(home: string): Promise<InstallState | null> {
-  const path = join(home, ".facult", "install.json");
-  try {
-    const txt = await Bun.file(path).text();
-    return JSON.parse(txt) as InstallState;
-  } catch {
-    return null;
+  const paths = [
+    join(preferredGlobalFacultStateDir(home), "install.json"),
+    join(legacyExternalFacultStateDir(home), "install.json"),
+  ];
+  for (const path of paths) {
+    try {
+      const txt = await Bun.file(path).text();
+      return JSON.parse(txt) as InstallState;
+    } catch {
+      // Ignore unreadable or malformed persisted install state and try the next location.
+    }
   }
+  return null;
 }
 
 export function detectInstallMethod(
@@ -114,8 +124,16 @@ export function detectInstallMethod(
 
   const exec = context.executablePath ?? process.execPath;
   const home = context.homeDir ?? homedir();
-  const facultBin = join(home, ".facult", "bin");
-  if (exec.startsWith(facultBin + sep) && basename(exec).startsWith("facult")) {
+  const facultBins = [
+    join(preferredGlobalFacultStateDir(home), "bin"),
+    join(legacyExternalFacultStateDir(home), "bin"),
+  ];
+  if (
+    facultBins.some(
+      (facultBin) =>
+        exec.startsWith(facultBin + sep) && basename(exec).startsWith("facult")
+    )
+  ) {
     return "release-script";
   }
 
@@ -187,7 +205,7 @@ async function writeInstallState(args: {
   packageVersion?: string;
   binaryPath?: string;
 }) {
-  const dir = join(args.home, ".facult");
+  const dir = preferredGlobalFacultStateDir(args.home);
   await mkdir(dir, { recursive: true });
   const payload: InstallState = {
     version: 1,
@@ -219,7 +237,11 @@ async function selfUpdateBinary(args: {
 
   const defaultBinaryName =
     target.platform === "windows" ? "facult.exe" : "facult";
-  const fallbackPath = join(args.home, ".facult", "bin", defaultBinaryName);
+  const fallbackPath = join(
+    preferredGlobalFacultStateDir(args.home),
+    "bin",
+    defaultBinaryName
+  );
   const currentExec = process.execPath;
   const preferredPath =
     args.state?.binaryPath ||

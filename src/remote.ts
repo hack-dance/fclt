@@ -1642,7 +1642,7 @@ Usage:
 Notes:
   - Builtin index "${BUILTIN_INDEX_NAME}" is always available.
   - Builtin provider aliases: "${SMITHERY_INDEX_NAME}", "${GLAMA_INDEX_NAME}", "${SKILLS_SH_INDEX_NAME}", "${CLAWHUB_INDEX_NAME}".
-  - Optional custom indices can be configured in ~/.facult/indices.json.
+  - Optional custom indices can be configured in ~/.ai/.facult/indices.json.
 `);
 }
 

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { facultRootDir, readFacultConfig } from "./paths";
+import { facultRootDir, facultStateDir, readFacultConfig } from "./paths";
 import {
   extractCodexTomlMcpServerBlocks,
   extractCodexTomlMcpServerNames,
@@ -2130,7 +2130,7 @@ export async function scan(
   opts?: {
     cwd?: string;
     homeDir?: string;
-    /** Include scan defaults from `~/.facult/config.json` (scanFrom*). */
+    /** Include scan defaults from `~/.ai/.facult/config.json` (scanFrom*). */
     includeConfigFrom?: boolean;
     /** Include git hooks + Husky hooks in results (can be noisy). Default: false. */
     includeGitHooks?: boolean;
@@ -2225,7 +2225,7 @@ export async function scan(
 }
 
 export async function writeState(res: ScanResult) {
-  const stateDir = join(homedir(), ".facult");
+  const stateDir = facultStateDir(homedir());
   await ensureDir(stateDir);
   const outPath = join(stateDir, "sources.json");
   await Bun.write(outPath, `${JSON.stringify(res, null, 2)}\n`);
@@ -2245,7 +2245,7 @@ Options:
   --json              Print full JSON (ScanResult)
   --show-duplicates   Print duplicates for skills, MCP servers, and hook assets
   --tui               Render scan output in an interactive TUI (skills list)
-  --no-config-from    Disable default scan roots from ~/.facult/config.json (scanFrom)
+  --no-config-from    Disable default scan roots from ~/.ai/.facult/config.json (scanFrom)
   --from              Add one or more additional scan roots (repeatable): --from ~/dev
   --include-git-hooks Include git hooks (.git/hooks) and husky hooks (.husky/**) (noisy)
   --from-ignore       (scan) Ignore directories by basename under --from roots (repeatable)
@@ -2423,5 +2423,7 @@ export async function scanCommand(argv: string[]) {
     printHuman(res);
   }
 
-  console.log(`State written to ${join(homedir(), ".facult", "sources.json")}`);
+  console.log(
+    `State written to ${join(facultStateDir(homedir()), "sources.json")}`
+  );
 }

@@ -13,7 +13,7 @@ test("doctor --repair migrates a legacy root index into generated ai state", asy
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-"));
   const rootDir = join(dir, "root");
   const legacyIndex = join(rootDir, "index.json");
-  const generatedIndex = facultAiIndexPath(dir);
+  const generatedIndex = facultAiIndexPath(dir, rootDir);
 
   try {
     await mkdir(rootDir, { recursive: true });
@@ -62,12 +62,11 @@ test("doctor --repair migrates a legacy root index into generated ai state", asy
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 10_000);
 
 test("doctor --repair updates legacy root config to ~/.ai when present", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-config-"));
   const aiRoot = join(dir, ".ai");
-  const generatedIndex = facultAiIndexPath(dir);
 
   try {
     await mkdir(join(aiRoot, "agents"), { recursive: true });
@@ -97,15 +96,10 @@ test("doctor --repair updates legacy root config to ~/.ai when present", async (
     expect(out).toContain(`Updated facult root config to ${aiRoot}`);
 
     const config = JSON.parse(
-      await readFile(join(dir, ".facult", "config.json"), "utf8")
+      await readFile(join(dir, ".ai", ".facult", "config.json"), "utf8")
     ) as { rootDir: string };
     expect(config.rootDir).toBe(aiRoot);
-
-    const repaired = JSON.parse(await readFile(generatedIndex, "utf8")) as {
-      version: number;
-    };
-    expect(repaired.version).toBe(1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 10_000);

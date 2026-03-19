@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FacultIndex, McpEntry, SkillEntry } from "./index-builder";
-import { facultStateDir } from "./paths";
+import { facultStateDir, legacyExternalFacultStateDir } from "./paths";
 import { parseJsonLenient } from "./util/json";
 
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
@@ -143,16 +143,25 @@ export async function loadOrgTrustList(opts?: {
   homeDir?: string;
 }): Promise<OrgTrustList | null> {
   const home = opts?.homeDir ?? homedir();
-  const trustPath = join(facultStateDir(home), "trust", "org-list.json");
-  const file = Bun.file(trustPath);
-  if (!(await file.exists())) {
-    return null;
-  }
+  const trustPaths = [
+    join(facultStateDir(home), "trust", "org-list.json"),
+    join(legacyExternalFacultStateDir(home), "trust", "org-list.json"),
+  ];
 
-  let parsed: unknown;
-  try {
-    parsed = parseJsonLenient(await file.text());
-  } catch {
+  let parsed: unknown = null;
+  for (const trustPath of trustPaths) {
+    const file = Bun.file(trustPath);
+    if (!(await file.exists())) {
+      continue;
+    }
+    try {
+      parsed = parseJsonLenient(await file.text());
+      break;
+    } catch {
+      // Ignore unreadable or malformed org trust lists and keep trying fallbacks.
+    }
+  }
+  if (parsed == null) {
     return null;
   }
   if (!isPlainObject(parsed)) {

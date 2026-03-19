@@ -148,7 +148,7 @@ describe("remote search/install/update", () => {
 
   it("detects and applies updates from configured file-based indices", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const indexPath = join(home, "local-index.json");
@@ -217,7 +217,7 @@ describe("remote search/install/update", () => {
 
   it("verifies checksum-pinned manifest sources before install", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const indexPath = join(home, "integrity-index.json");
@@ -270,7 +270,7 @@ describe("remote search/install/update", () => {
 
   it("rejects installs when pinned manifest integrity does not match", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const indexPath = join(home, "integrity-index.json");
@@ -327,7 +327,7 @@ describe("remote search/install/update", () => {
 
   it("verifies ed25519-signed manifest sources before install", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -396,7 +396,7 @@ describe("remote search/install/update", () => {
 
   it("rejects installs when pinned manifest signature does not match", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -480,7 +480,7 @@ describe("remote search/install/update", () => {
 
   it("supports keyId selection when multiple signature keys are configured", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const keyA = generateKeyPairSync("ed25519");
@@ -557,7 +557,7 @@ describe("remote search/install/update", () => {
 
   it("rejects signature verification when multiple keys are configured without keyId", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const keyA = generateKeyPairSync("ed25519");
@@ -631,7 +631,7 @@ describe("remote search/install/update", () => {
 
   it("rejects signature verification when referenced keyId is revoked", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const key = generateKeyPairSync("ed25519");
@@ -995,7 +995,7 @@ describe("remote search/install/update", () => {
 
   it("enforces source trust policies for install and update checks", async () => {
     const { home, root } = await makeTempRoot();
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
 
     const indexPath = join(home, "local-index.json");
@@ -1167,7 +1167,9 @@ describe("templates command", () => {
     expect(skillText).toContain("Proposal Kind Selection");
     expect(skillText).toContain("facult ai evolve draft EV-00001 --append");
     expect(
-      await Bun.file(join(repoDir, ".facult", "ai", "index.json")).exists()
+      await Bun.file(
+        join(repoDir, ".ai", ".facult", "ai", "index.json")
+      ).exists()
     ).toBe(true);
   });
 });
@@ -1177,11 +1179,11 @@ describe("sources command", () => {
     const { home } = await makeTempRoot();
     process.chdir(home);
 
-    await mkdir(join(home, ".facult"), { recursive: true });
+    await mkdir(join(home, ".ai", ".facult"), { recursive: true });
     const indexPath = join(home, "local-index.json");
     await writeFile(indexPath, `${JSON.stringify({ items: [] }, null, 2)}\n`);
     await writeFile(
-      join(home, ".facult", "indices.json"),
+      join(home, ".ai", ".facult", "indices.json"),
       `${JSON.stringify(
         {
           indices: [{ name: "local", url: indexPath }],
@@ -1228,7 +1230,7 @@ describe("verify-source command", () => {
     const { home } = await makeTempRoot();
     process.chdir(home);
 
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
     const indexPath = join(home, "local-index.json");
     const manifestText = `${JSON.stringify(
@@ -1306,7 +1308,7 @@ describe("verify-source command", () => {
     const { home } = await makeTempRoot();
     process.chdir(home);
 
-    const stateDir = join(home, ".facult");
+    const stateDir = join(home, ".ai", ".facult");
     await mkdir(stateDir, { recursive: true });
     const indexPath = join(home, "local-index.json");
     await writeFile(indexPath, `${JSON.stringify({ items: [] }, null, 2)}\n`);

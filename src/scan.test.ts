@@ -10,7 +10,7 @@ function fixturePath(rel: string): string {
   return join(here, "..", "test", "fixtures", rel);
 }
 
-test("scan includeConfigFrom reads scanFrom roots from ~/.facult/config.json", async () => {
+test("scan includeConfigFrom reads scanFrom roots from ~/.ai/.facult/config.json", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-scan-"));
   const home = join(dir, "home");
   const projects = join(home, "projects");
@@ -21,7 +21,7 @@ test("scan includeConfigFrom reads scanFrom roots from ~/.facult/config.json", a
   await Bun.write(join(repo, "CLAUDE.md"), "Claude\n");
   await Bun.write(join(repo, ".cursorrules"), "Rules\n");
 
-  const cfgDir = join(home, ".facult");
+  const cfgDir = join(home, ".ai", ".facult");
   await mkdir(cfgDir, { recursive: true });
   await Bun.write(
     join(cfgDir, "config.json"),
@@ -64,7 +64,7 @@ test("scan does not read scanFrom roots when includeConfigFrom is false", async 
   await mkdir(join(repo, ".git"), { recursive: true });
   await Bun.write(join(repo, "AGENTS.md"), "Hello\n");
 
-  const cfgDir = join(home, ".facult");
+  const cfgDir = join(home, ".ai", ".facult");
   await mkdir(cfgDir, { recursive: true });
   await Bun.write(
     join(cfgDir, "config.json"),

@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_OWNER="hack-dance"
 REPO_NAME="facult"
 
-INSTALL_DIR="${FACULT_INSTALL_DIR:-$HOME/.facult/bin}"
+INSTALL_DIR="${FACULT_INSTALL_DIR:-$HOME/.ai/.facult/bin}"
 REQUESTED_VERSION="${FACULT_VERSION:-latest}"
 DOWNLOAD_RETRIES="${FACULT_DOWNLOAD_RETRIES:-12}"
 DOWNLOAD_RETRY_DELAY_SECONDS="${FACULT_DOWNLOAD_RETRY_DELAY_SECONDS:-5}"
@@ -80,8 +80,8 @@ done
 chmod +x "$TMP_FILE"
 mv "$TMP_FILE" "${INSTALL_DIR}/facult"
 
-mkdir -p "$HOME/.facult"
-cat > "$HOME/.facult/install.json" <<EOF
+mkdir -p "$HOME/.ai/.facult"
+cat > "$HOME/.ai/.facult/install.json" <<EOF
 {
   "version": 1,
   "method": "release-script",

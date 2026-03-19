@@ -12,7 +12,11 @@ import {
   normalizeText,
 } from "./conflicts";
 import { resolveConflictAction } from "./consolidate-conflict-action";
-import { facultRootDir } from "./paths";
+import {
+  facultRootDir,
+  facultStateDir,
+  legacyExternalFacultStateDir,
+} from "./paths";
 import { type McpConfig, type ScanResult, scan } from "./scan";
 import type {
   CanonicalMcpRegistry,
@@ -187,40 +191,41 @@ async function diffPreview({
 }
 
 async function loadState(home: string): Promise<ConsolidatedState> {
-  const p = homePath(home, ".facult", "consolidated.json");
-  if (!(await fileExists(p))) {
-    return {
-      version: CONSOLIDATED_VERSION,
-      skills: {},
-      mcpServers: {},
-      mcpConfigs: {},
-    };
+  const paths = [
+    join(facultStateDir(home), "consolidated.json"),
+    join(legacyExternalFacultStateDir(home), "consolidated.json"),
+  ];
+  for (const p of paths) {
+    if (!(await fileExists(p))) {
+      continue;
+    }
+    try {
+      const txt = await Bun.file(p).text();
+      const data = JSON.parse(txt) as {
+        skills?: Record<string, ConsolidatedEntry>;
+        mcpServers?: Record<string, ConsolidatedEntry>;
+        mcpConfigs?: Record<string, ConsolidatedEntry>;
+      } | null;
+      return {
+        version: CONSOLIDATED_VERSION,
+        skills: data?.skills ?? {},
+        mcpServers: data?.mcpServers ?? {},
+        mcpConfigs: data?.mcpConfigs ?? {},
+      };
+    } catch {
+      // Ignore unreadable or malformed persisted state and fall back to defaults.
+    }
   }
-  try {
-    const txt = await Bun.file(p).text();
-    const data = JSON.parse(txt) as {
-      skills?: Record<string, ConsolidatedEntry>;
-      mcpServers?: Record<string, ConsolidatedEntry>;
-      mcpConfigs?: Record<string, ConsolidatedEntry>;
-    } | null;
-    return {
-      version: CONSOLIDATED_VERSION,
-      skills: data?.skills ?? {},
-      mcpServers: data?.mcpServers ?? {},
-      mcpConfigs: data?.mcpConfigs ?? {},
-    };
-  } catch {
-    return {
-      version: CONSOLIDATED_VERSION,
-      skills: {},
-      mcpServers: {},
-      mcpConfigs: {},
-    };
-  }
+  return {
+    version: CONSOLIDATED_VERSION,
+    skills: {},
+    mcpServers: {},
+    mcpConfigs: {},
+  };
 }
 
 async function saveState(home: string, state: ConsolidatedState) {
-  const stateDir = homePath(home, ".facult");
+  const stateDir = facultStateDir(home);
   await ensureDir(stateDir);
   const outPath = join(stateDir, "consolidated.json");
   await Bun.write(outPath, `${JSON.stringify(state, null, 2)}\n`);
@@ -1576,7 +1581,7 @@ Usage:
 Options:
   --force                 Re-copy items already consolidated
   --auto                  Auto-resolve conflicts (non-interactive)
-  --no-config-from        Disable scanFrom roots from ~/.facult/config.json
+  --no-config-from        Disable scanFrom roots from ~/.ai/.facult/config.json
   --from                  Add scan root (repeatable): --from ~/dev
   --include-git-hooks     Include .git/hooks and .husky hooks in --from scans
   --from-ignore           Ignore directory basename in --from scans (repeatable)
@@ -1628,7 +1633,7 @@ Options:
 
     await saveState(home, state);
     outro(
-      `Consolidation complete. State saved to ${homePath(home, ".facult", "consolidated.json")}`
+      `Consolidation complete. State saved to ${join(facultStateDir(home), "consolidated.json")}`
     );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

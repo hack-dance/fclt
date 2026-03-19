@@ -34,6 +34,7 @@ import {
 import {
   facultGeneratedStateDir,
   facultRootDir,
+  legacyFacultStateDirForRoot,
   projectRootFromAiRoot,
 } from "./paths";
 
@@ -295,22 +296,37 @@ export function managedStatePathForRoot(
   return join(facultGeneratedStateDir({ home, rootDir }), "managed.json");
 }
 
+function legacyManagedStatePathForRoot(
+  home: string = homedir(),
+  rootDir?: string
+): string {
+  return join(
+    legacyFacultStateDirForRoot(rootDir ?? facultRootDir(home), home),
+    "managed.json"
+  );
+}
+
 export async function loadManagedState(
   home: string = homedir(),
   rootDir?: string
 ): Promise<ManagedState> {
-  const p = managedStatePathForRoot(home, rootDir);
-  if (!(await fileExists(p))) {
-    return { version: MANAGED_VERSION, tools: {} };
-  }
-  try {
-    const txt = await Bun.file(p).text();
-    const data = JSON.parse(txt) as Partial<ManagedState> | null;
-    if (data?.version === MANAGED_VERSION && data.tools) {
-      return { version: MANAGED_VERSION, tools: data.tools };
+  const candidates = [
+    managedStatePathForRoot(home, rootDir),
+    legacyManagedStatePathForRoot(home, rootDir),
+  ];
+  for (const p of candidates) {
+    if (!(await fileExists(p))) {
+      continue;
     }
-  } catch {
-    // fallthrough
+    try {
+      const txt = await Bun.file(p).text();
+      const data = JSON.parse(txt) as Partial<ManagedState> | null;
+      if (data?.version === MANAGED_VERSION && data.tools) {
+        return { version: MANAGED_VERSION, tools: data.tools };
+      }
+    } catch {
+      // fallthrough
+    }
   }
   return { version: MANAGED_VERSION, tools: {} };
 }

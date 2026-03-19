@@ -5,6 +5,7 @@ import { aiCommand } from "./ai";
 
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
+const originalRoot = process.env.FACULT_ROOT_DIR;
 const originalCwd = process.cwd();
 
 async function makeTempHome(): Promise<string> {
@@ -40,6 +41,7 @@ async function captureConsole(fn: () => Promise<void>) {
 afterEach(async () => {
   process.chdir(originalCwd);
   process.env.HOME = originalHome;
+  process.env.FACULT_ROOT_DIR = originalRoot;
   process.exitCode = 0;
   if (tempHome) {
     await rm(tempHome, { recursive: true, force: true });
@@ -52,10 +54,11 @@ describe("ai CLI", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
     const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
     await mkdir(rootDir, { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(
-      join(tempHome, ".facult", "ai", "graph.json"),
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
       `${JSON.stringify({ version: 1, generatedAt: "2026-03-18T00:00:00.000Z", nodes: {}, edges: [] }, null, 2)}\n`
     );
     process.chdir(tempHome);
@@ -85,12 +88,13 @@ describe("ai CLI", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
     const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
     const verificationPath = join(rootDir, "instructions", "VERIFICATION.md");
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(verificationPath, "# Verification\n");
     await Bun.write(
-      join(tempHome, ".facult", "ai", "graph.json"),
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
       `${JSON.stringify(
         {
           version: 1,
@@ -161,10 +165,11 @@ describe("ai CLI", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
     const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(
-      join(tempHome, ".facult", "ai", "graph.json"),
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
       `${JSON.stringify(
         {
           version: 1,
@@ -217,12 +222,13 @@ describe("ai CLI", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
     const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
     const targetPath = join(rootDir, "instructions", "VERIFICATION.md");
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(targetPath, "# Verification\n");
     await Bun.write(
-      join(tempHome, ".facult", "ai", "graph.json"),
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
       `${JSON.stringify(
         {
           version: 1,
@@ -331,10 +337,10 @@ describe("ai CLI", () => {
     const targetPath = join(rootDir, "instructions", "TESTING.md");
     await mkdir(join(globalRoot, "instructions"), { recursive: true });
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(targetPath, "# Testing\n");
     await Bun.write(
-      join(projectRoot, ".facult", "ai", "graph.json"),
+      join(projectRoot, ".ai", ".facult", "ai", "graph.json"),
       `${JSON.stringify(
         {
           version: 1,
@@ -390,10 +396,11 @@ describe("ai CLI", () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
     const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(
-      join(tempHome, ".facult", "ai", "graph.json"),
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
       `${JSON.stringify({ version: 1, generatedAt: "2026-03-18T00:00:00.000Z", nodes: {}, edges: [] }, null, 2)}\n`
     );
     process.chdir(tempHome);
@@ -440,11 +447,11 @@ describe("ai CLI", () => {
     const projectRoot = join(tempHome, "work", "repo");
     const rootDir = join(projectRoot, ".ai");
     await mkdir(rootDir, { recursive: true });
-    await mkdir(join(tempHome, ".facult", "ai", "projects", "repo"), {
+    await mkdir(join(projectRoot, ".ai", ".facult", "ai", "project"), {
       recursive: true,
     });
     await Bun.write(
-      join(tempHome, ".facult", "ai", "projects", "repo", "graph.json"),
+      join(projectRoot, ".ai", ".facult", "ai", "project", "graph.json"),
       `${JSON.stringify({ version: 1, generatedAt: "2026-03-18T00:00:00.000Z", nodes: {}, edges: [] }, null, 2)}\n`
     );
     process.chdir(projectRoot);

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
-import { facultRootDir, readFacultConfig } from "../paths";
+import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
 import type { AssetFile, ScanResult } from "../scan";
 import { scan } from "../scan";
 import {
@@ -978,7 +978,7 @@ export async function runAgentAudit(opts?: {
     },
   };
 
-  const auditDir = join(home, ".facult", "audit");
+  const auditDir = join(facultStateDir(home), "audit");
   await mkdir(auditDir, { recursive: true });
   await Bun.write(
     join(auditDir, "agent-latest.json"),
@@ -1040,7 +1040,7 @@ function printHuman(report: AgentAuditReport) {
     `By severity: critical=${report.summary.bySeverity.critical}, high=${report.summary.bySeverity.high}, medium=${report.summary.bySeverity.medium}, low=${report.summary.bySeverity.low}`
   );
   console.log(
-    `Wrote ${join(homedir(), ".facult", "audit", "agent-latest.json")}`
+    `Wrote ${join(facultStateDir(homedir()), "audit", "agent-latest.json")}`
   );
 }
 
