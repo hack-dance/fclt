@@ -1,3 +1,9 @@
+## [2.1.0](https://github.com/hack-dance/facult/compare/v2.0.1...v2.1.0) (2026-03-19)
+
+### Features
+
+* add homebrew tap publishing for fclt ([b337001](https://github.com/hack-dance/facult/commit/b3370017bc744a8ebd4966479771bd71aee0e12c))
+
 ## [2.0.1](https://github.com/hack-dance/facult/compare/v2.0.0...v2.0.1) (2026-03-19)
 
 ### Bug Fixes
