@@ -226,7 +226,10 @@ export function resolveAutosyncInvocation(
     return [exec, "run", script];
   }
 
-  if (basename(exec).startsWith("facult")) {
+  if (
+    basename(exec).startsWith("facult") ||
+    basename(exec).startsWith("fclt")
+  ) {
     return [exec];
   }
 

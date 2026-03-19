@@ -12,7 +12,7 @@ const pkg = require("../package.json");
 
 const REPO_OWNER = "hack-dance";
 const REPO_NAME = "facult";
-const PACKAGE_NAME = "fclt";
+const PACKAGE_NAME = "facult";
 const DOWNLOAD_RETRIES = 12;
 const DOWNLOAD_RETRY_DELAY_MS = 5000;
 

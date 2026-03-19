@@ -1,8 +1,8 @@
 # fclt
 
 <div align="center">
-  <a aria-label="NPM version" href="https://www.npmjs.com/package/fclt">
-    <img alt="fclt npm version" src="https://img.shields.io/npm/v/fclt.svg?style=flat-square&logo=npm&labelColor=000000&label=fclt">
+  <a aria-label="NPM version" href="https://www.npmjs.com/package/facult">
+    <img alt="facult npm version" src="https://img.shields.io/npm/v/facult.svg?style=flat-square&logo=npm&labelColor=000000&label=facult">
   </a>
   <a aria-label="CI status" href="https://github.com/hack-dance/facult/actions/workflows/ci.yml">
     <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/hack-dance/facult/ci.yml?branch=main&style=flat-square&logo=github&label=ci&labelColor=000000">
@@ -171,17 +171,18 @@ That is the core idea behind `fclt`: not just syncing skills, but growing facult
 Recommended global install:
 
 ```bash
-npm install -g fclt
+npm install -g facult
 # or
-bun add -g fclt
+bun add -g facult
 fclt --help
 ```
+
+The npm package name stays `facult` for registry compatibility. The installed command is still `fclt`.
 
 One-off usage without global install:
 
 ```bash
-npx fclt --help
-bunx fclt --help
+npx --yes -p facult fclt --help
 ```
 
 Direct binary install from GitHub Releases (macOS/Linux):
@@ -729,7 +730,7 @@ bun run install:bin
 bun run install:status
 ```
 
-Default install path is `~/.ai/.facult/bin/facult`. You can pass a custom target dir via `--dir=/path`.
+Default install path is `~/.ai/.facult/bin/fclt`. You can pass a custom target dir via `--dir=/path`.
 
 ## Autosync
 
@@ -796,7 +797,7 @@ Current prebuilt binary targets:
 - `windows-x64`
 
 Self-update behavior:
-1. npm/bun global install: updates via package manager (`npm install -g fclt@...` or `bun add -g fclt@...`).
+1. npm/bun global install: updates via package manager (`npm install -g facult@...` or `bun add -g facult@...`).
 2. Direct binary install (release script/local binary path): downloads and replaces the binary in place.
 3. Use `fclt self-update` (or `fclt update --self`).
 
