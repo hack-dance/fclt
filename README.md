@@ -15,36 +15,41 @@
   </a>
 </div>
 
-`fclt` is the primary package and CLI for managing canonical AI capability across tools, users, and projects.
+`fclt` is a CLI for building and evolving AI faculties across tools, users, and projects.
 
-`facult` remains available as a compatibility command alias during the transition.
+Most AI tooling manages files. `fclt` manages faculties: the instructions, snippets, templates, skills, agents, rules, and learning loops that should compound, improve, and survive the next session.
 
 It helps you:
-- discover what is installed on your machine
-- consolidate everything into one canonical store
-- review trust/security before installing remote content
-- sync managed outputs into Codex, Cursor, and Claude
-- manage a git-backed AI store under `~/.ai` and repo-local `.ai/`
-- model relationships between instructions, snippets, agents, skills, and rendered tool outputs
+- turn repeated friction into reusable capability
 - preserve learning through writeback and evolve canonical assets over time
+- consolidate AI behavior into one canonical store
+- compose prompts, agents, skills, and tool outputs from reusable snippets and templates
+- discover what exists, what depends on what, and what should change next
+- sync managed outputs into Codex, Cursor, and Claude
+- review trust/security before installing remote content
+- keep that operating layer in a git-backed store under `~/.ai` and repo-local `.ai/`
 
 ## What fclt Is
 
-If your agent setup feels scattered (`~/.codex`, `~/.agents`, tool-specific MCP JSON/TOML), `fclt` gives you one place to manage it safely.
+If your agent setup feels scattered, `fclt` gives it memory, structure, and a way to improve.
+
+A faculty is a reusable piece of AI behavior: an instruction, snippet, template, skill, agent, rule, or learned improvement that you want to keep around and make better.
+
+That matters because a lot of useful AI behavior is compositional. You want small reusable blocks, a clean way to assemble them into bigger prompts and operating layers, and a safe way to render the final tool-native outputs without losing the source structure.
 
 Think of it as:
-- inventory + auditing for agent assets
-- package manager interface for skill/MCP catalogs
-- sync layer that applies your chosen setup to each tool
-- canonical source manager for global and project AI instructions, snippets, agents, skills, tool configs, and rules
-- a local capability graph for discovering what exists and what depends on what
+- a canonical home for your AI faculties
+- a composition system for snippets, templates, and rendered AI behavior
+- a sync layer for projecting them into real tools
+- a discovery graph for seeing what exists and what depends on what
 - a writeback/evolution loop for turning repeated friction into durable improvements
+- an inventory and trust boundary for the assets you let into the system
 
 ## What fclt Does
 
-`fclt` is not just a skill manager.
+`fclt` is not a skills folder with a nicer CLI.
 
-It provides five connected layers:
+It works as five connected layers:
 
 1. Canonical source
    - global capability in `~/.ai`
@@ -67,7 +72,7 @@ It provides five connected layers:
 
 ## Default Operating Model
 
-`fclt` ships with a built-in Facult operating-model pack. That pack includes default:
+`fclt` ships with a built-in operating model for learning, writeback, and capability evolution. That pack includes default:
 
 - instructions for evolution, integration, and project capability
 - specialist agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
@@ -85,7 +90,7 @@ This is intentionally virtual at the canonical level:
 - your personal `~/.ai` stays clean unless you explicitly vendor or override something
 - the live tool output on disk still contains the rendered defaults, so users and agents can read them directly
 
-In practice, this means you do not need to drive writeback and evolution through the CLI alone. The default skills, agents, and global docs are meant to make that operating model available automatically.
+In practice, this means the system is meant to learn by default. The CLI is there when you want to operate it directly, but the default skills, agents, and global docs are supposed to make writeback and evolution available without ceremony.
 
 If you want to disable the builtin default layer for a specific global or project canonical root:
 
@@ -128,7 +133,7 @@ Project capability is allowed to extend or shadow global capability in merged vi
 
 ### The capability graph
 
-`facult` builds a generated graph of explicit relationships between canonical assets and rendered outputs.
+`fclt` builds a generated graph of explicit relationships between canonical assets and rendered outputs.
 
 That graph tracks things like:
 - snippet markers
@@ -144,7 +149,7 @@ This makes it possible to answer:
 
 ### Writeback and evolution
 
-`facult` treats repeated failures, weak loops, missing context, and reusable patterns as signal worth preserving.
+`fclt` treats repeated failures, weak loops, missing context, and reusable patterns as signal worth preserving.
 
 Writeback is the act of recording that signal in a structured way.
 Evolution is the act of grouping that signal into reviewable proposals and applying it back into canonical assets.
@@ -155,7 +160,9 @@ This matters because otherwise the same problems repeat in chat without ever imp
 - draft a proposal to tighten that canonical asset
 - review and apply the change in a controlled way
 
-The result is that your AI system can get better over time without hiding mutations in tool-specific state or losing the reasoning behind a change.
+The point is not just better storage. The point is that your AI setup can change shape as it learns.
+
+That is the core idea behind `fclt`: not just syncing skills, but growing faculties.
 
 ## Quick Start
 
