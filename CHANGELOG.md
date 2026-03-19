@@ -1,3 +1,9 @@
+## [2.0.1](https://github.com/hack-dance/facult/compare/v2.0.0...v2.0.1) (2026-03-19)
+
+### Bug Fixes
+
+* keep facult as the npm package for fclt ([2546c66](https://github.com/hack-dance/facult/commit/2546c665f39d32bbe34374b30a49ab5ae0966820))
+
 ## [2.0.0](https://github.com/hack-dance/facult/compare/v1.3.0...v2.0.0) (2026-03-19)
 
 ### ⚠ BREAKING CHANGES
