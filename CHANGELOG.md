@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/hack-dance/facult/compare/v1.1.0...v1.2.0) (2026-03-19)
+
+### Features
+
+* add scoped ai capability management and evolution ([31093ec](https://github.com/hack-dance/facult/commit/31093ec141450006925f996cb332d8d39d77e438))
+
 ## [1.1.0](https://github.com/hack-dance/facult/compare/v1.0.3...v1.1.0) (2026-03-18)
 
 ### Features
