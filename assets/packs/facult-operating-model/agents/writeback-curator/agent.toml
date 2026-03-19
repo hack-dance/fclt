@@ -18,4 +18,5 @@ For each recommendation, prefer returning:
 
 Do not emit low-signal noise.
 If the learning is repo-specific, keep it project-scoped by default.
+When the signal is already strong and the target is clear, prefer recommending direct writeback capture rather than abstract advice.
 """

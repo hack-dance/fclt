@@ -23,6 +23,8 @@ Do not record low-signal noise:
 - generic "could be better" commentary
 - duplicate observations with no new evidence
 
+The intended default is that agents record strong writebacks themselves when the signal is clear enough, rather than only recommending that a user do it manually later.
+
 ## Scope
 
 Choose `project` scope when the learning depends on:
@@ -69,6 +71,17 @@ fclt ai evolve apply EV-00001
 ```
 
 Use `fclt ai evolve draft <id> --append "..."` to revise a draft while preserving draft history.
+
+## Default Agent Behavior
+
+Use the smallest action that fits the signal:
+
+1. record one strong writeback when there is a clear durable learning
+2. use `writeback-curator` when the target, kind, or scope is ambiguous
+3. use `capability-evolution` or `evolution-planner` when repeated signal should become a proposal
+4. do not draft or apply proposals just because a writeback exists; require repeated evidence or a clearly missing capability
+
+Avoid creating writeback/evolution noise for one-off nits, vague preferences, or speculative ideas without evidence.
 
 ## Proposal Kinds
 

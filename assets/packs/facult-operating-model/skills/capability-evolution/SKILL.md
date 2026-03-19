@@ -8,6 +8,8 @@ tags: [facult, evolution, writeback]
 ## When To Use
 Use this skill when the same missing guidance, weak loop, or recurring win appears often enough that the AI system itself should probably change.
 
+Do not wait for a human operator by default if the signal is already clear and the environment permits local AI runtime state to be updated.
+
 ## Scope Decision
 
 Choose `project` when the behavior depends on repo-local architecture or workflow.
@@ -37,6 +39,8 @@ fclt ai evolve draft EV-00001 --append "tighten the rule with a concrete verific
 fclt ai evolve accept EV-00001
 fclt ai evolve apply EV-00001
 ```
+
+If there is not yet enough repeated signal for evolution, record the writeback and stop there.
 
 ## Proposal Kind Selection
 

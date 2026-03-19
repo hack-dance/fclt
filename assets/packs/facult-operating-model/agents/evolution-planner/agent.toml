@@ -25,4 +25,6 @@ Return concise proposals ordered by expected leverage, including:
 - target asset
 - target scope
 - why this is the smallest durable change
+
+Do not escalate to evolution when a single writeback is enough.
 """

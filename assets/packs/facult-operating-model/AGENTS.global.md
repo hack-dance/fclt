@@ -3,6 +3,7 @@
 This machine has a default Facult operating-model layer available.
 
 For writeback and evolution, read `@builtin/facult-operating-model/instructions/EVOLUTION.md`.
+For learning and writeback defaults, read `@builtin/facult-operating-model/instructions/LEARNING_AND_WRITEBACK.md`.
 For deciding whether capability belongs in global or project scope, read `@builtin/facult-operating-model/instructions/PROJECT_CAPABILITY.md`.
 For project operating-layer design, read `@builtin/facult-operating-model/instructions/INTEGRATION.md`.
 
