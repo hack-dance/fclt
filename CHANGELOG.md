@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/hack-dance/facult/compare/v1.2.1...v1.3.0) (2026-03-19)
+
+### Features
+
+* move facult state under canonical ai roots ([bdf0df4](https://github.com/hack-dance/facult/commit/bdf0df4ec9a1819b8ac092e99d496de3090049dc))
+
 ## [1.2.1](https://github.com/hack-dance/facult/compare/v1.2.0...v1.2.1) (2026-03-19)
 
 ### Bug Fixes
