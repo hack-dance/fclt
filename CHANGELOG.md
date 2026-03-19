@@ -1,3 +1,9 @@
+## [1.2.1](https://github.com/hack-dance/facult/compare/v1.2.0...v1.2.1) (2026-03-19)
+
+### Bug Fixes
+
+* preserve codex system skills during sync ([2a8bd85](https://github.com/hack-dance/facult/commit/2a8bd85aa8c3e89f62400dd64c7edf5be61e31cc))
+
 ## [1.2.0](https://github.com/hack-dance/facult/compare/v1.1.0...v1.2.0) (2026-03-19)
 
 ### Features
