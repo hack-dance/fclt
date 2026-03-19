@@ -11,7 +11,7 @@ const { spawnSync } = require("node:child_process");
 const pkg = require("../package.json");
 
 const REPO_OWNER = "hack-dance";
-const REPO_NAME = "facult";
+const REPO_NAME = "fclt";
 const PACKAGE_NAME = "facult";
 const DOWNLOAD_RETRIES = 12;
 const DOWNLOAD_RETRY_DELAY_MS = 5000;
@@ -67,7 +67,7 @@ async function main() {
           `Reason: ${message}`,
           "",
           "Try installing directly from releases:",
-          "https://github.com/hack-dance/facult/releases",
+          "https://github.com/hack-dance/fclt/releases",
         ].join("\n")
       );
       process.exit(1);

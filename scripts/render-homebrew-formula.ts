@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 const REPO_OWNER = "hack-dance";
-const REPO_NAME = "facult";
+const REPO_NAME = "fclt";
 const FORMULA_NAME = "fclt";
 const LEADING_V_RE = /^v/;
 const NEWLINE_RE = /\r?\n/;

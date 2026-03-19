@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hack-dance/facult.git"
+    "url": "git+https://github.com/hack-dance/fclt.git"
   },
-  "homepage": "https://github.com/hack-dance/facult#readme",
+  "homepage": "https://github.com/hack-dance/fclt#readme",
   "bugs": {
-    "url": "https://github.com/hack-dance/facult/issues"
+    "url": "https://github.com/hack-dance/fclt/issues"
   },
   "keywords": [
     "cli",

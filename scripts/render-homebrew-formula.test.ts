@@ -14,7 +14,7 @@ describe("renderHomebrewFormula", () => {
 
     expect(formula).toContain("class Fclt < Formula");
     expect(formula).toContain(
-      'url "https://github.com/hack-dance/facult/releases/download/v2.0.0/fclt-2.0.0-darwin-arm64"'
+      'url "https://github.com/hack-dance/fclt/releases/download/v2.0.0/fclt-2.0.0-darwin-arm64"'
     );
     expect(formula).toContain('bin.install cached_download => "fclt"');
     expect(formula).toContain('bin.install_symlink "fclt" => "facult"');

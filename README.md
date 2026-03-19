@@ -4,8 +4,11 @@
   <a aria-label="NPM version" href="https://www.npmjs.com/package/facult">
     <img alt="facult npm version" src="https://img.shields.io/npm/v/facult.svg?style=flat-square&logo=npm&labelColor=000000&label=facult">
   </a>
-  <a aria-label="CI status" href="https://github.com/hack-dance/facult/actions/workflows/ci.yml">
-    <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/hack-dance/facult/ci.yml?branch=main&style=flat-square&logo=github&label=ci&labelColor=000000">
+  <a aria-label="Homebrew tap" href="https://github.com/hack-dance/homebrew-tap">
+    <img alt="Homebrew tap" src="https://img.shields.io/badge/homebrew-hack--dance%2Ftap%2Ffclt-FBB040.svg?style=flat-square&logo=homebrew&logoColor=white&labelColor=000000">
+  </a>
+  <a aria-label="CI status" href="https://github.com/hack-dance/fclt/actions/workflows/ci.yml">
+    <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/hack-dance/fclt/ci.yml?branch=main&style=flat-square&logo=github&label=ci&labelColor=000000">
   </a>
   <a aria-label="hack.dance" href="https://hack.dance">
     <img alt="Made by hack.dance" src="https://img.shields.io/badge/MADE%20BY%20HACK.DANCE-000000.svg?style=flat-square&labelColor=000000">
@@ -196,7 +199,7 @@ npx --yes -p facult fclt --help
 Direct binary install from GitHub Releases (macOS/Linux):
 
 ```bash
-curl -fsSL https://github.com/hack-dance/facult/releases/latest/download/fclt-install.sh | bash
+curl -fsSL https://github.com/hack-dance/fclt/releases/latest/download/fclt-install.sh | bash
 ```
 
 Windows and manual installs can download the correct binary from each release page:
