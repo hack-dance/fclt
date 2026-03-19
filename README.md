@@ -18,6 +18,10 @@
   </a>
 </div>
 
+<p align="center">
+  <img alt="fclt demo" src="./Ghostty.gif">
+</p>
+
 `fclt` is a CLI for building and evolving AI faculties across tools, users, and projects.
 
 Most AI tooling manages files. `fclt` manages faculties: the instructions, snippets, templates, skills, agents, rules, and learning loops that should compound, improve, and survive the next session.
@@ -88,12 +92,24 @@ That means:
 - builtin agents sync into tool agent directories when the tool supports agents
 - if you do not author your own `AGENTS.global.md`, `fclt` renders a builtin global baseline doc into tool-native global docs
 
+The activation point is managed mode:
+- until you run `fclt manage <tool>`, the builtin operating-model layer is just packaged capability
+- once a tool is managed, the default operating-model layer becomes live for that tool automatically
+- for Codex, Claude, and Cursor, that means the core global doc surface plus the bundled writeback/evolution agents and skills are what agents actually see on disk
+- this is why the normal setup step is to manage the tools you care about first, then sync
+
 This is intentionally virtual at the canonical level:
 - builtin defaults remain part of the packaged tool
 - your personal `~/.ai` stays clean unless you explicitly vendor or override something
 - the live tool output on disk still contains the rendered defaults, so users and agents can read them directly
 
 In practice, this means the system is meant to learn by default. The CLI is there when you want to operate it directly, but the default skills, agents, and global docs are supposed to make writeback and evolution available without ceremony.
+
+More concretely:
+- the normal path is not a human manually typing `fclt ai ...` after every task
+- the bundled operating-model layer is meant to instruct synced agents and skills to notice reusable signal, preserve it, and push it toward writeback/evolution
+- the CLI remains the explicit operator surface for inspection, review, cleanup, and controlled apply
+- the generated state under `.ai/.facult/` gives those agents a durable thread of what was learned, when it was learned, what asset it pointed at, and what proposals or reviews happened afterward
 
 If you want to disable the builtin default layer for a specific global or project canonical root:
 
@@ -156,6 +172,12 @@ This makes it possible to answer:
 
 Writeback is the act of recording that signal in a structured way.
 Evolution is the act of grouping that signal into reviewable proposals and applying it back into canonical assets.
+
+The intended workflow is agent-driven by default:
+- synced global docs, agents, and skills should push your tooling toward creating writebacks when something important was learned
+- specialist agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter` are there to help turn that signal into cleaner proposals and scope decisions
+- the CLI is what you use when you want to inspect, override, review, reject, apply, or otherwise operate the system directly
+- the point is not a new UI. The point is that the operating layer itself can accumulate memory and context across tasks, sessions, and tools
 
 This matters because otherwise the same problems repeat in chat without ever improving the actual operating layer. With `fclt`, you can:
 - record a weak verification pattern
@@ -297,6 +319,8 @@ fclt sync
 ```
 
 At this point, your selected skills are actively synced to all managed tools.
+This is also the point where the default operating-model layer becomes active for those tools. If you manage Codex or Claude, the bundled learning/writeback/evolution guidance is no longer just discoverable in `fclt`; it is rendered into the managed global doc surface and synced alongside the bundled agents and skills.
+
 If you run these commands from inside a repo that has `<repo>/.ai`, `facult` targets the project-local canonical store and repo-local tool outputs by default.
 On first entry to managed mode, use `--dry-run` first if the live tool already has local content. `facult` will show what it would adopt into the active canonical store across skills, agents, docs, rules, config, and MCP, plus any conflicts. Then rerun with `--adopt-existing`; if names or files collide, add `--existing-conflicts keep-canonical` or `--existing-conflicts keep-existing`.
 For builtin-backed rendered defaults, `facult` now tracks the last managed render hash. If a user edits the generated target locally, normal sync warns and preserves that local edit instead of silently overwriting it. To replace the local edit with the latest packaged builtin default, rerun sync with `--builtin-conflicts overwrite`.
@@ -522,6 +546,7 @@ Runtime state stays generated and local inside the active canonical root:
 That split is intentional:
 - canonical source remains in `~/.ai` or `<repo>/.ai`
 - writeback queues, journals, proposal records, trust state, autosync state, and other Facult-owned runtime/config state stay inside `.ai/.facult/` rather than inside the tool homes
+- those records create a historical thread agents can inspect over time: what changed, what triggered it, which asset it pointed at, what proposal was drafted, how it was reviewed, and whether it was applied or rejected
 
 Use writeback when:
 - a task exposed a weak or misleading verification loop
@@ -532,6 +557,12 @@ Use writeback when:
 Do not think of writeback as “taking notes.” Think of it as preserving signal that should change the system, not just the current conversation.
 
 For many users, the normal entrypoint is not the CLI directly. The builtin operating-model layer is designed so synced agents, skills, and global docs can push the system toward writeback and evolution by default, while the `fclt ai ...` commands remain the explicit operator surface when you want direct control.
+
+In other words:
+- agents should be the ones noticing friction and capturing it
+- skills should be the ones teaching when writeback or evolution is warranted
+- proposal history should give future agents enough context to understand why a rule, instruction, or prompt changed
+- you drop to the CLI when you want to inspect the thread, steer it, or make the final call
 
 Current apply semantics are intentionally policy-bound:
 - targets are resolved through the generated graph when possible and fall back to canonical ref resolution for missing assets
