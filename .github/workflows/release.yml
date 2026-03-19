@@ -220,6 +220,108 @@ jobs:
           files: |
             dist/release-assets/*
 
+  publish-homebrew:
+    runs-on: ubuntu-latest
+    needs: [semantic-release, publish-assets]
+    if: needs.semantic-release.outputs.released == 'true'
+    steps:
+      - name: Skip if tap token is not configured
+        id: tap-token
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap publish."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout release tag
+        if: steps.tap-token.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.semantic-release.outputs.tag }}
+
+      - name: Setup Bun
+        if: steps.tap-token.outputs.enabled == 'true'
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "1.3.9"
+
+      - name: Install dependencies
+        if: steps.tap-token.outputs.enabled == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Download release assets
+        if: steps.tap-token.outputs.enabled == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: asset-*
+          merge-multiple: true
+          path: dist/release-assets
+
+      - name: Generate SHA256SUMS
+        if: steps.tap-token.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist/release-assets
+            sha256sum * > SHA256SUMS
+          )
+
+      - name: Render Homebrew formula
+        if: steps.tap-token.outputs.enabled == 'true'
+        run: |
+          bun run ./scripts/render-homebrew-formula.ts \
+            --version "${{ needs.semantic-release.outputs.version }}" \
+            --assets-dir dist/release-assets \
+            --output dist/homebrew/Formula/fclt.rb
+
+      - name: Write tap README
+        if: steps.tap-token.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/homebrew
+          cat > dist/homebrew/README.md <<'EOF'
+          # hack-dance/homebrew-tap
+
+          Homebrew tap for `fclt`.
+
+          Install:
+
+          ```bash
+          brew tap hack-dance/tap
+          brew install hack-dance/tap/fclt
+          ```
+          EOF
+
+      - name: Publish formula to tap repo
+        if: steps.tap-token.outputs.enabled == 'true'
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/hack-dance/homebrew-tap.git" tap-repo
+          mkdir -p tap-repo/Formula
+          cp dist/homebrew/Formula/fclt.rb tap-repo/Formula/fclt.rb
+          cp dist/homebrew/README.md tap-repo/README.md
+          cd tap-repo
+          if [[ -z "$(git status --porcelain -- Formula/fclt.rb README.md)" ]]; then
+            echo "No Homebrew tap changes to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/fclt.rb README.md
+          git commit -m "fclt ${{ needs.semantic-release.outputs.version }}"
+          git push origin HEAD:main
+
   publish-npm:
     runs-on: ubuntu-latest
     needs: [semantic-release, publish-assets]

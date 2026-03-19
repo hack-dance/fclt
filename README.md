@@ -171,6 +171,14 @@ That is the core idea behind `fclt`: not just syncing skills, but growing facult
 Recommended global install:
 
 ```bash
+brew tap hack-dance/tap
+brew install hack-dance/tap/fclt
+fclt --help
+```
+
+Package-manager install:
+
+```bash
 npm install -g facult
 # or
 bun add -g facult
@@ -787,8 +795,9 @@ Release behavior:
 2. `semantic-release` creates the version/tag and GitHub release (npm publish is disabled in this phase).
 3. The same release workflow then builds platform binaries and uploads them to that GitHub release.
 4. npm publish runs only after binary asset upload succeeds (`publish-npm` depends on `publish-assets`).
-5. Published release assets include platform binaries, `facult-install.sh`, and `SHA256SUMS`.
-6. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.ai/.facult/runtime/<version>/<platform-arch>/`, and runs it.
+5. Published release assets include platform binaries, `fclt-install.sh`, `facult-install.sh`, and `SHA256SUMS`.
+6. When `HOMEBREW_TAP_TOKEN` is configured, the release workflow also updates the Homebrew tap at `hack-dance/homebrew-tap`.
+7. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.ai/.facult/runtime/<version>/<platform-arch>/`, and runs it.
 
 Current prebuilt binary targets:
 - `darwin-x64`
@@ -803,6 +812,7 @@ Self-update behavior:
 
 Required secrets for publish:
 - `NPM_TOKEN`
+- `HOMEBREW_TAP_TOKEN` (fine-grained token with contents write access to `hack-dance/homebrew-tap`)
 
 Local semantic-release dry-runs require a supported Node runtime (`>=24.10`).
 
