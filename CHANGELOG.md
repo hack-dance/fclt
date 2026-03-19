@@ -1,3 +1,13 @@
+## [2.0.0](https://github.com/hack-dance/facult/compare/v1.3.0...v2.0.0) (2026-03-19)
+
+### ⚠ BREAKING CHANGES
+
+* rename npm package and primary cli to fclt
+
+### Features
+
+* rename npm package and primary cli to fclt ([0ab363c](https://github.com/hack-dance/facult/commit/0ab363c662e560d9a4f46906498c943d124ceea0))
+
 ## [1.3.0](https://github.com/hack-dance/facult/compare/v1.2.1...v1.3.0) (2026-03-19)
 
 ### Features

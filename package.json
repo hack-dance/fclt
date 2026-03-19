@@ -1,6 +1,6 @@
 {
   "name": "fclt",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "Manage canonical AI capabilities, sync surfaces, and evolution state.",
   "type": "module",
   "license": "MIT",
