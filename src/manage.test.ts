@@ -438,6 +438,12 @@ describe("manage/unmanage", () => {
     expect(index.skills["legacy-skill"]?.path).toBe(
       join(rootDir, "skills", "legacy-skill")
     );
+
+    const preservedSystemMarker = await readFile(
+      join(toolSkills, ".system", ".codex-system-skills.marker"),
+      "utf8"
+    );
+    expect(preservedSystemMarker).toBe("");
   });
 
   it("requires preflight adoption review before managing when live skills already exist", async () => {
@@ -845,6 +851,59 @@ describe("manage/unmanage", () => {
 });
 
 describe("syncManagedTools", () => {
+  it("preserves hidden tool-owned skill entries during sync planning", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "skills", "alpha"), { recursive: true });
+    await Bun.write(join(rootDir, "skills", "alpha", "SKILL.md"), "# Alpha\n");
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    const codexSkillsDir = join(home, ".codex", "skills");
+    await mkdir(join(codexSkillsDir, ".system"), { recursive: true });
+    await Bun.write(
+      join(codexSkillsDir, ".system", ".codex-system-skills.marker"),
+      ""
+    );
+
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-03-19T00:13:23.457Z",
+            skillsDir: codexSkillsDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "));
+    };
+
+    try {
+      await syncManagedTools({
+        homeDir: home,
+        rootDir,
+        tool: "codex",
+        dryRun: true,
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(
+      logs.some((line) => line.includes("would remove skill .system"))
+    ).toBe(false);
+  });
+
   it("manages project-local codex artifacts from a repo-local .ai root", async () => {
     const home = await createTempDir();
     const projectRoot = join(home, "work", "repo");

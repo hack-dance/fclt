@@ -1525,6 +1525,34 @@ async function createSkillSymlinks({
   }
 }
 
+function isPreservedToolSkillEntry(name: string): boolean {
+  return name.startsWith(".");
+}
+
+async function restorePreservedToolSkillEntries({
+  backupDir,
+  toolSkillsDir,
+}: {
+  backupDir: string | null | undefined;
+  toolSkillsDir: string;
+}) {
+  if (!(backupDir && (await fileExists(backupDir)))) {
+    return;
+  }
+  const entries = await readdir(backupDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  for (const entry of entries) {
+    if (!isPreservedToolSkillEntry(entry.name)) {
+      continue;
+    }
+    const source = join(backupDir, entry.name);
+    const target = join(toolSkillsDir, entry.name);
+    await rm(target, { recursive: true, force: true });
+    await cp(source, target, { recursive: true });
+  }
+}
+
 async function planSkillSymlinkChanges({
   homeDir,
   toolSkillsDir,
@@ -1553,6 +1581,9 @@ async function planSkillSymlinkChanges({
   const add: string[] = [];
 
   for (const entry of existing) {
+    if (isPreservedToolSkillEntry(entry.name)) {
+      continue;
+    }
     if (!desiredSet.has(entry.name)) {
       remove.push(entry.name);
       continue;
@@ -1970,6 +2001,10 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
 
   if (toolPaths.skillsDir) {
     await ensureEmptyDir(toolPaths.skillsDir);
+    await restorePreservedToolSkillEntries({
+      backupDir: skillsBackup,
+      toolSkillsDir: toolPaths.skillsDir,
+    });
     await createSkillSymlinks({
       homeDir: home,
       toolSkillsDir: toolPaths.skillsDir,
