@@ -36,7 +36,7 @@ async function loadIndex(homeDir: string): Promise<FacultIndex> {
   });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
-    throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
+    throw new Error(`Index not found at ${indexPath}. Run "fclt index".`);
   }
   const raw = await file.text();
   return JSON.parse(raw) as FacultIndex;
@@ -130,11 +130,11 @@ function parseNamesFromArgv(argv: string[]): string[] {
 
 export async function trustCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`facult trust — mark skills or MCP servers as trusted (annotation only)
+    console.log(`fclt trust — mark skills or MCP servers as trusted (annotation only)
 
 Usage:
-  facult trust <name> [moreNames...]
-  facult trust mcp:<name> [moreNames...]
+  fclt trust <name> [moreNames...]
+  fclt trust mcp:<name> [moreNames...]
 `);
     return;
   }
@@ -143,7 +143,7 @@ Usage:
     await applyTrust({ names, mode: "trust" });
     console.log(`Marked as trusted: ${names.join(", ")}`);
     console.log(
-      'Note: Trust is an annotation. Run "facult audit" for security review.'
+      'Note: Trust is an annotation. Run "fclt audit" for security review.'
     );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -153,11 +153,11 @@ Usage:
 
 export async function untrustCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`facult untrust — remove trusted annotation
+    console.log(`fclt untrust — remove trusted annotation
 
 Usage:
-  facult untrust <name> [moreNames...]
-  facult untrust mcp:<name> [moreNames...]
+  fclt untrust <name> [moreNames...]
+  fclt untrust mcp:<name> [moreNames...]
 `);
     return;
   }

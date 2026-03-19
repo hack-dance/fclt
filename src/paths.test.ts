@@ -42,7 +42,7 @@ describe("paths", () => {
     expect(facultRootDir(tempHome)).toBe(join(tempHome, ".ai"));
   });
 
-  it("falls back to legacy ~/agents/.facult when ~/.ai is absent", async () => {
+  it("falls back to legacy ~/agents/.fclt when ~/.ai is absent", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 

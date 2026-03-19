@@ -1,7 +1,7 @@
 {
-  "name": "facult",
+  "name": "fclt",
   "version": "1.3.0",
-  "description": "Manage coding-agent skills and MCP configs across tools.",
+  "description": "Manage canonical AI capabilities, sync surfaces, and evolution state.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -27,6 +27,7 @@
     "access": "public"
   },
   "files": [
+    "bin/fclt.cjs",
     "bin/facult.cjs",
     "src/**/*.ts",
     "!src/**/*.test.ts",
@@ -34,13 +35,15 @@
     "LICENSE"
   ],
   "bin": {
+    "fclt": "bin/fclt.cjs",
     "facult": "bin/facult.cjs"
   },
   "scripts": {
+    "fclt": "bun run ./src/index.ts",
     "facult": "bun run ./src/index.ts",
     "scan": "bun run ./src/index.ts scan",
     "build": "bun run scripts/build-binary.ts",
-    "build:verify": "./dist/facult --help",
+    "build:verify": "./dist/fclt --help",
     "install:dev": "bun run scripts/install-cli.ts --mode=dev --force",
     "install:bin": "bun run build && bun run scripts/install-cli.ts --mode=bin --force",
     "install:status": "bun run scripts/install-status.ts",

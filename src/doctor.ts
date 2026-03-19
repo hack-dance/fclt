@@ -224,10 +224,10 @@ async function repairLegacyState(args: {
 }
 
 function printHelp() {
-  console.log(`facult doctor — inspect and repair local facult state
+  console.log(`fclt doctor — inspect and repair local fclt state
 
 Usage:
-  facult doctor [--repair] [--root <path> | --global | --project]
+  fclt doctor [--repair] [--root <path> | --global | --project]
 
 Options:
   --repair   Reconcile legacy Facult state, canonical root config, AI index/graph, and autosync service config when needed
@@ -284,7 +284,7 @@ export async function doctorCommand(argv: string[]) {
     console.log(`Legacy root index: ${legacy}`);
 
     if (rootConfigRepaired) {
-      console.log(`Updated facult root config to ${join(home, ".ai")}`);
+      console.log(`Updated fclt root config to ${join(home, ".ai")}`);
     }
     if (stateRepaired) {
       console.log(
@@ -327,14 +327,14 @@ export async function doctorCommand(argv: string[]) {
 
     if (result.source === "legacy") {
       console.log(
-        "Legacy root index detected. Run `facult doctor --repair` to reconcile it."
+        "Legacy root index detected. Run `fclt doctor --repair` to reconcile it."
       );
       process.exitCode = 1;
       return;
     }
 
     console.log(
-      "Generated AI index is missing. Run `facult doctor --repair` or `facult index`."
+      "Generated AI index is missing. Run `fclt doctor --repair` or `fclt index`."
     );
     process.exitCode = 1;
   } catch (err) {

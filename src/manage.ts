@@ -1846,7 +1846,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
             .map((item) => formatManagedItem(item))
             .join(", ")}`
         : null,
-      `Run "facult manage ${tool} --dry-run" to review the plan, then rerun with "--adopt-existing"`,
+      `Run "fclt manage ${tool} --dry-run" to review the plan, then rerun with "--adopt-existing"`,
       existingImportPlan.conflicts.length > 0
         ? ' and "--existing-conflicts keep-canonical|keep-existing".'
         : ".",
@@ -3017,10 +3017,10 @@ export async function manageCommand(argv: string[]) {
   const parsed = parseCliContextArgs(argv);
   const args = [...parsed.argv];
   if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
-    console.log(`facult manage — enter managed mode for a tool (backup + symlinks + MCP generation)
+    console.log(`fclt manage — enter managed mode for a tool (backup + symlinks + MCP generation)
 
 Usage:
-  facult manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
+  fclt manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
 `);
     return;
   }
@@ -3105,10 +3105,10 @@ export async function unmanageCommand(argv: string[]) {
     parsed.argv.includes("-h") ||
     parsed.argv[0] === "help"
   ) {
-    console.log(`facult unmanage — exit managed mode for a tool (restore backups)
+    console.log(`fclt unmanage — exit managed mode for a tool (restore backups)
 
 Usage:
-  facult unmanage <tool> [--root PATH|--global|--project]
+  fclt unmanage <tool> [--root PATH|--global|--project]
 `);
     return;
   }
@@ -3140,10 +3140,10 @@ export async function managedCommand(argv: string[] = []) {
     parsed.argv.includes("-h") ||
     parsed.argv[0] === "help"
   ) {
-    console.log(`facult managed — list tools currently in managed mode
+    console.log(`fclt managed — list tools currently in managed mode
 
 Usage:
-  facult managed [--root PATH|--global|--project]
+  fclt managed [--root PATH|--global|--project]
 `);
     return;
   }
@@ -3170,10 +3170,10 @@ export async function syncCommand(argv: string[]) {
     parsed.argv.includes("-h") ||
     parsed.argv[0] === "help"
   ) {
-    console.log(`facult sync — sync managed tools with canonical state
+    console.log(`fclt sync — sync managed tools with canonical state
 
 Usage:
-  facult sync [tool] [--dry-run] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
+  fclt sync [tool] [--dry-run] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
 
 Options:
   --dry-run   Show what would change

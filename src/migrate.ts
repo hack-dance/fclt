@@ -14,10 +14,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import { facultConfigPath, preferredGlobalAiRoot } from "./paths";
 
 function printHelp() {
-  console.log(`facult migrate — migrate a legacy canonical store to the facult path
+  console.log(`fclt migrate — migrate a legacy canonical store to the fclt path
 
 Usage:
-  facult migrate [--from <path>] [--dry-run] [--move] [--write-config]
+  fclt migrate [--from <path>] [--dry-run] [--move] [--write-config]
 
 What it does:
   - Auto-detects a legacy store under ~/agents/ (or use --from)
@@ -239,7 +239,7 @@ export async function migrateCommand(argv: string[]) {
       return;
     }
     console.error(
-      `Destination exists but does not look like a facult store: ${dest}`
+      `Destination exists but does not look like a fclt store: ${dest}`
     );
     process.exitCode = 1;
     return;

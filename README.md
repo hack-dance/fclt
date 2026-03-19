@@ -1,8 +1,8 @@
-# facult
+# fclt
 
 <div align="center">
-  <a aria-label="NPM version" href="https://www.npmjs.com/package/facult">
-    <img alt="facult npm version" src="https://img.shields.io/npm/v/facult.svg?style=flat-square&logo=npm&labelColor=000000&label=facult">
+  <a aria-label="NPM version" href="https://www.npmjs.com/package/fclt">
+    <img alt="fclt npm version" src="https://img.shields.io/npm/v/fclt.svg?style=flat-square&logo=npm&labelColor=000000&label=fclt">
   </a>
   <a aria-label="CI status" href="https://github.com/hack-dance/facult/actions/workflows/ci.yml">
     <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/hack-dance/facult/ci.yml?branch=main&style=flat-square&logo=github&label=ci&labelColor=000000">
@@ -15,7 +15,9 @@
   </a>
 </div>
 
-`facult` is a CLI for managing canonical AI capability across tools, users, and projects.
+`fclt` is the primary package and CLI for managing canonical AI capability across tools, users, and projects.
+
+`facult` remains available as a compatibility command alias during the transition.
 
 It helps you:
 - discover what is installed on your machine
@@ -26,9 +28,9 @@ It helps you:
 - model relationships between instructions, snippets, agents, skills, and rendered tool outputs
 - preserve learning through writeback and evolve canonical assets over time
 
-## What facult Is
+## What fclt Is
 
-If your agent setup feels scattered (`~/.codex`, `~/.agents`, tool-specific MCP JSON/TOML), `facult` gives you one place to manage it safely.
+If your agent setup feels scattered (`~/.codex`, `~/.agents`, tool-specific MCP JSON/TOML), `fclt` gives you one place to manage it safely.
 
 Think of it as:
 - inventory + auditing for agent assets
@@ -38,9 +40,9 @@ Think of it as:
 - a local capability graph for discovering what exists and what depends on what
 - a writeback/evolution loop for turning repeated friction into durable improvements
 
-## What facult Does
+## What fclt Does
 
-`facult` is not just a skill manager.
+`fclt` is not just a skill manager.
 
 It provides five connected layers:
 
@@ -65,7 +67,7 @@ It provides five connected layers:
 
 ## Default Operating Model
 
-`facult` ships with a built-in Facult operating-model pack. That pack includes default:
+`fclt` ships with a built-in Facult operating-model pack. That pack includes default:
 
 - instructions for evolution, integration, and project capability
 - specialist agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
@@ -76,7 +78,7 @@ When managed sync is enabled, these built-in assets are available by default eve
 That means:
 - builtin skills sync into managed tool skill directories by default
 - builtin agents sync into tool agent directories when the tool supports agents
-- if you do not author your own `AGENTS.global.md`, `facult` renders a builtin global baseline doc into tool-native global docs
+- if you do not author your own `AGENTS.global.md`, `fclt` renders a builtin global baseline doc into tool-native global docs
 
 This is intentionally virtual at the canonical level:
 - builtin defaults remain part of the packaged tool
@@ -100,7 +102,7 @@ Put that in `config.toml` or `config.local.toml` under the active canonical root
 
 ### Canonical vs rendered
 
-`facult` separates source-of-truth from tool-native output.
+`fclt` separates source-of-truth from tool-native output.
 
 - canonical source lives in `~/.ai` or `<repo>/.ai`
 - rendered outputs live in tool homes like `~/.codex`, `<repo>/.codex`, `~/.claude`, or `~/.cursor`
@@ -147,7 +149,7 @@ This makes it possible to answer:
 Writeback is the act of recording that signal in a structured way.
 Evolution is the act of grouping that signal into reviewable proposals and applying it back into canonical assets.
 
-This matters because otherwise the same problems repeat in chat without ever improving the actual operating layer. With `facult`, you can:
+This matters because otherwise the same problems repeat in chat without ever improving the actual operating layer. With `fclt`, you can:
 - record a weak verification pattern
 - group repeated writebacks around an instruction or agent
 - draft a proposal to tighten that canonical asset
@@ -157,53 +159,53 @@ The result is that your AI system can get better over time without hiding mutati
 
 ## Quick Start
 
-### 1. Install facult
+### 1. Install fclt
 
 Recommended global install:
 
 ```bash
-npm install -g facult
+npm install -g fclt
 # or
-bun add -g facult
-facult --help
+bun add -g fclt
+fclt --help
 ```
 
 One-off usage without global install:
 
 ```bash
-npx facult --help
-bunx facult --help
+npx fclt --help
+bunx fclt --help
 ```
 
 Direct binary install from GitHub Releases (macOS/Linux):
 
 ```bash
-curl -fsSL https://github.com/hack-dance/facult/releases/latest/download/facult-install.sh | bash
+curl -fsSL https://github.com/hack-dance/facult/releases/latest/download/fclt-install.sh | bash
 ```
 
 Windows and manual installs can download the correct binary from each release page:
-`facult-<version>-<platform>-<arch>`.
+`fclt-<version>-<platform>-<arch>`.
 
 Update later with:
 
 ```bash
-facult self-update
+fclt self-update
 # or
-facult update --self
+fclt update --self
 ```
 
 Pin to a specific version:
 
 ```bash
-facult self-update --version 0.0.1
+fclt self-update --version 0.0.1
 ```
 
 ### 2. Start with a read-only inventory (recommended first)
 
 ```bash
-facult scan --show-duplicates
+fclt scan --show-duplicates
 # optional machine-readable output
-facult scan --json
+fclt scan --json
 ```
 
 `scan` is read-only. It inspects local configs and reports what `facult` found without changing files.
@@ -211,8 +213,8 @@ facult scan --json
 ### 3. Import existing skills/configs
 
 ```bash
-facult consolidate --auto keep-current --from ~/.codex/skills --from ~/.agents/skills
-facult index
+fclt consolidate --auto keep-current --from ~/.codex/skills --from ~/.agents/skills
+fclt index
 ```
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
@@ -225,8 +227,8 @@ Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-loca
 
 ```bash
 cd /path/to/repo
-bunx facult templates init project-ai
-bunx facult index
+bunx fclt templates init project-ai
+bunx fclt index
 ```
 
 This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes a merged project index/graph under `<repo>/.ai/.facult/ai/`.
@@ -234,45 +236,45 @@ This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes
 ### 4. Inspect what you have
 
 ```bash
-facult list skills
-facult list instructions
-facult list mcp
-facult show requesting-code-review
-facult show instruction:WRITING
-facult show mcp:github
-facult find verification
-facult graph show instruction:WRITING
-facult graph deps AGENTS.global.md
-facult graph dependents @ai/instructions/WRITING.md
-facult ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
-facult ai evolve propose
-facult ai evolve draft EV-00001
-facult ai evolve accept EV-00001
-facult ai evolve apply EV-00001
+fclt list skills
+fclt list instructions
+fclt list mcp
+fclt show requesting-code-review
+fclt show instruction:WRITING
+fclt show mcp:github
+fclt find verification
+fclt graph show instruction:WRITING
+fclt graph deps AGENTS.global.md
+fclt graph dependents @ai/instructions/WRITING.md
+fclt ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
+fclt ai evolve propose
+fclt ai evolve draft EV-00001
+fclt ai evolve accept EV-00001
+fclt ai evolve apply EV-00001
 ```
 
 Context controls:
 
 ```bash
-facult list instructions --global
-facult list instructions --project
-facult find verification --scope merged --source project
-facult sync codex --project
-facult autosync status --global
-facult list agents --root /path/to/repo/.ai
+fclt list instructions --global
+fclt list instructions --project
+fclt find verification --scope merged --source project
+fclt sync codex --project
+fclt autosync status --global
+fclt list agents --root /path/to/repo/.ai
 ```
 
 ### 5. Enable managed mode for your tools
 
 ```bash
-facult manage codex --dry-run
-facult manage codex --adopt-existing
-facult sync codex --builtin-conflicts overwrite
-facult manage cursor
-facult manage claude
+fclt manage codex --dry-run
+fclt manage codex --adopt-existing
+fclt sync codex --builtin-conflicts overwrite
+fclt manage cursor
+fclt manage claude
 
-facult enable requesting-code-review receiving-code-review brainstorming systematic-debugging --for codex,cursor,claude
-facult sync
+fclt enable requesting-code-review receiving-code-review brainstorming systematic-debugging --for codex,cursor,claude
+fclt sync
 ```
 
 At this point, your selected skills are actively synced to all managed tools.
@@ -283,8 +285,8 @@ For builtin-backed rendered defaults, `facult` now tracks the last managed rende
 ### 6. Turn on background autosync
 
 ```bash
-facult autosync install --git-remote origin --git-branch main --git-interval-minutes 60
-facult autosync status
+fclt autosync install --git-remote origin --git-branch main --git-interval-minutes 60
+fclt autosync status
 ```
 
 This installs a macOS LaunchAgent that:
@@ -297,14 +299,14 @@ If the repo hits a rebase conflict, remote autosync stops and reports the blocke
 ### 7. Turn on source trust and strict install flow
 
 ```bash
-facult sources list
-facult verify-source skills.sh --json
-facult sources trust skills.sh --note "reviewed"
+fclt sources list
+fclt verify-source skills.sh --json
+fclt sources trust skills.sh --note "reviewed"
 
-facult install skills.sh:code-review --as code-review-skills-sh --strict-source-trust
+fclt install skills.sh:code-review --as code-review-skills-sh --strict-source-trust
 ```
 
-## Use facult from your agents
+## Use fclt from your agents
 
 `facult` is CLI-first. The practical setup is:
 1. Install `facult` globally so any agent runtime can execute it.
@@ -313,24 +315,24 @@ facult install skills.sh:code-review --as code-review-skills-sh --strict-source-
 
 ```bash
 # Scaffold reusable templates in the canonical store
-facult templates init agents
-facult templates init claude
-facult templates init skill facult-manager
+fclt templates init agents
+fclt templates init claude
+fclt templates init skill facult-manager
 
 # Enable that skill for managed tools
-facult manage codex
-facult manage cursor
-facult manage claude
-facult enable facult-manager --for codex,cursor,claude
-facult sync
+fclt manage codex
+fclt manage cursor
+fclt manage claude
+fclt enable facult-manager --for codex,cursor,claude
+fclt sync
 ```
 
 Optional MCP scaffold:
 
 ```bash
-facult templates init mcp facult-cli
-facult enable mcp:facult-cli --for codex,cursor,claude
-facult sync
+fclt templates init mcp facult-cli
+fclt enable mcp:facult-cli --for codex,cursor,claude
+fclt sync
 ```
 
 Note: `templates init mcp ...` is a scaffold, not a running server by itself.
@@ -424,7 +426,7 @@ Recommended split:
 - `~/.ai/config.toml` or `<repo>/.ai/config.toml`: tracked, portable, non-secret refs/defaults
 - `~/.ai/config.local.toml` or `<repo>/.ai/config.local.toml`: ignored, machine-local paths and secrets
 - `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
-- `facult sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
+- `fclt sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
 
 ### Snippets
 
@@ -442,9 +444,9 @@ Resolution rules:
 Commands:
 
 ```bash
-facult snippets list
-facult snippets show global/codex/baseline
-facult snippets sync [--dry-run] [file...]
+fclt snippets list
+fclt snippets show global/codex/baseline
+fclt snippets sync [--dry-run] [file...]
 ```
 
 Snippets are already used during global Codex `AGENTS.md` rendering.
@@ -454,9 +456,9 @@ Snippets are already used during global Codex `AGENTS.md` rendering.
 The generated graph in `.ai/.facult/ai/graph.json` is queryable directly:
 
 ```bash
-facult graph show instruction:WRITING
-facult graph deps AGENTS.global.md
-facult graph dependents @project/instructions/TESTING.md
+fclt graph show instruction:WRITING
+fclt graph deps AGENTS.global.md
+fclt graph dependents @project/instructions/TESTING.md
 ```
 
 This is the explicit dependency layer for:
@@ -471,27 +473,27 @@ This is the explicit dependency layer for:
 `facult` also has a local writeback/evolution substrate built on top of the graph:
 
 ```bash
-facult ai writeback add \
+fclt ai writeback add \
   --kind weak_verification \
   --summary "Verification guidance did not distinguish shallow checks from meaningful proof." \
   --asset instruction:VERIFICATION \
   --tag verification \
   --tag false-positive
 
-facult ai writeback list
-facult ai writeback show WB-00001
-facult ai writeback group --by asset
-facult ai writeback summarize --by kind
-facult ai evolve propose
-facult ai evolve list
-facult ai evolve show EV-00001
-facult ai evolve draft EV-00001
-facult ai evolve review EV-00001
-facult ai evolve accept EV-00001
-facult ai evolve reject EV-00001 --reason "Needs a tighter draft"
-facult ai evolve supersede EV-00001 --by EV-00002
-facult ai evolve apply EV-00001
-facult ai evolve promote EV-00003 --to global --project
+fclt ai writeback list
+fclt ai writeback show WB-00001
+fclt ai writeback group --by asset
+fclt ai writeback summarize --by kind
+fclt ai evolve propose
+fclt ai evolve list
+fclt ai evolve show EV-00001
+fclt ai evolve draft EV-00001
+fclt ai evolve review EV-00001
+fclt ai evolve accept EV-00001
+fclt ai evolve reject EV-00001 --reason "Needs a tighter draft"
+fclt ai evolve supersede EV-00001 --by EV-00002
+fclt ai evolve apply EV-00001
+fclt ai evolve promote EV-00003 --to global --project
 ```
 
 Runtime state stays generated and local inside the active canonical root:
@@ -510,7 +512,7 @@ Use writeback when:
 
 Do not think of writeback as “taking notes.” Think of it as preserving signal that should change the system, not just the current conversation.
 
-For many users, the normal entrypoint is not the CLI directly. The builtin operating-model layer is designed so synced agents, skills, and global docs can push the system toward writeback and evolution by default, while the `facult ai ...` commands remain the explicit operator surface when you want direct control.
+For many users, the normal entrypoint is not the CLI directly. The builtin operating-model layer is designed so synced agents, skills, and global docs can push the system toward writeback and evolution by default, while the `fclt ai ...` commands remain the explicit operator surface when you want direct control.
 
 Current apply semantics are intentionally policy-bound:
 - targets are resolved through the generated graph when possible and fall back to canonical ref resolution for missing assets
@@ -538,29 +540,29 @@ Most inventory and sync commands support explicit canonical-root selection:
 ## Security and Trust
 
 `facult` has two trust layers:
-- Item trust: `facult trust <name>` / `facult untrust <name>`
-- Source trust: `facult sources ...` with levels `trusted`, `review`, `blocked`
+- Item trust: `fclt trust <name>` / `fclt untrust <name>`
+- Source trust: `fclt sources ...` with levels `trusted`, `review`, `blocked`
 
 `facult` also supports two audit modes:
 
 1. Interactive audit workflow:
 ```bash
-facult audit
+fclt audit
 ```
 2. Static audit rules (deterministic pattern checks):
 ```bash
-facult audit --non-interactive --severity high
-facult audit --non-interactive mcp:github --severity medium --json
+fclt audit --non-interactive --severity high
+fclt audit --non-interactive mcp:github --severity medium --json
 ```
 3. Agent-based audit (Claude/Codex review pass):
 ```bash
-facult audit --non-interactive --with claude --max-items 50
-facult audit --non-interactive --with codex --max-items all --json
+fclt audit --non-interactive --with claude --max-items 50
+fclt audit --non-interactive --with codex --max-items all --json
 ```
 
 Recommended security flow:
-1. `facult verify-source <source>`
-2. `facult sources trust <source>` only after review
+1. `fclt verify-source <source>`
+2. `fclt sources trust <source>` only after review
 3. use `--strict-source-trust` for `install`/`update`
 4. run both static and agent audits on a schedule
 
@@ -579,70 +581,70 @@ Recommended security flow:
 
 - Inventory and discovery
 ```bash
-facult scan [--from <path>] [--json] [--show-duplicates]
-facult list [skills|mcp|agents|snippets|instructions] [--enabled-for <tool>] [--untrusted] [--flagged] [--pending]
-facult show <name>
-facult show instruction:<name>
-facult show mcp:<name> [--show-secrets]
-facult find <query> [--json]
+fclt scan [--from <path>] [--json] [--show-duplicates]
+fclt list [skills|mcp|agents|snippets|instructions] [--enabled-for <tool>] [--untrusted] [--flagged] [--pending]
+fclt show <name>
+fclt show instruction:<name>
+fclt show mcp:<name> [--show-secrets]
+fclt find <query> [--json]
 ```
 
 - Canonical store and migration
 ```bash
-facult consolidate [--auto keep-current|keep-incoming|keep-newest] [--from <path> ...]
-facult index [--force]
-facult migrate [--from <path>] [--dry-run] [--move] [--write-config]
+fclt consolidate [--auto keep-current|keep-incoming|keep-newest] [--from <path> ...]
+fclt index [--force]
+fclt migrate [--from <path>] [--dry-run] [--move] [--write-config]
 ```
 
 - Managed mode and rollout
 ```bash
-facult manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing]
-facult unmanage <tool>
-facult managed
-facult enable <name> [--for <tool1,tool2,...>]
-facult enable mcp:<name> [--for <tool1,tool2,...>]
-facult disable <name> [--for <tool1,tool2,...>]
-facult sync [tool] [--dry-run] [--builtin-conflicts overwrite]
-facult autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
-facult autosync status [tool]
-facult autosync restart [tool]
-facult autosync uninstall [tool]
+fclt manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing]
+fclt unmanage <tool>
+fclt managed
+fclt enable <name> [--for <tool1,tool2,...>]
+fclt enable mcp:<name> [--for <tool1,tool2,...>]
+fclt disable <name> [--for <tool1,tool2,...>]
+fclt sync [tool] [--dry-run] [--builtin-conflicts overwrite]
+fclt autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
+fclt autosync status [tool]
+fclt autosync restart [tool]
+fclt autosync uninstall [tool]
 ```
 
 - Remote catalogs and policies
 ```bash
-facult search <query> [--index <name>] [--limit <n>]
-facult install <index:item> [--as <name>] [--force] [--strict-source-trust]
-facult update [--apply] [--strict-source-trust]
-facult verify-source <name> [--json]
-facult sources list
-facult sources trust <source> [--note <text>]
-facult sources review <source> [--note <text>]
-facult sources block <source> [--note <text>]
-facult sources clear <source>
+fclt search <query> [--index <name>] [--limit <n>]
+fclt install <index:item> [--as <name>] [--force] [--strict-source-trust]
+fclt update [--apply] [--strict-source-trust]
+fclt verify-source <name> [--json]
+fclt sources list
+fclt sources trust <source> [--note <text>]
+fclt sources review <source> [--note <text>]
+fclt sources block <source> [--note <text>]
+fclt sources clear <source>
 ```
 
 - Templates and snippets
 ```bash
-facult templates list
-facult templates init project-ai
-facult templates init skill <name>
-facult templates init mcp <name>
-facult templates init snippet <marker>
-facult templates init agents
-facult templates init claude
+fclt templates list
+fclt templates init project-ai
+fclt templates init skill <name>
+fclt templates init mcp <name>
+fclt templates init snippet <marker>
+fclt templates init agents
+fclt templates init claude
 
-facult snippets list
-facult snippets show <marker>
-facult snippets create <marker>
-facult snippets edit <marker>
-facult snippets sync [--dry-run] [file...]
+fclt snippets list
+fclt snippets show <marker>
+fclt snippets create <marker>
+fclt snippets edit <marker>
+fclt snippets sync [--dry-run] [file...]
 ```
 
 For full flags and exact usage:
 ```bash
-facult --help
-facult <command> --help
+fclt --help
+fclt <command> --help
 ```
 
 ### Root resolution
@@ -724,7 +726,7 @@ Default install path is `~/.ai/.facult/bin/facult`. You can pass a custom target
 
 ## Autosync
 
-`facult autosync` is the background propagation layer for managed installs.
+`fclt autosync` is the background propagation layer for managed installs.
 
 Current v1 behavior:
 - macOS LaunchAgent-backed
@@ -736,28 +738,28 @@ Current v1 behavior:
 Recommended usage:
 
 ```bash
-facult autosync install
-facult autosync status
+fclt autosync install
+fclt autosync status
 ```
 
 Project-local usage:
 
 ```bash
 cd /path/to/repo
-facult autosync install codex
-facult autosync status codex
+fclt autosync install codex
+fclt autosync status codex
 ```
 
 Tool-scoped service:
 
 ```bash
-facult autosync install codex
+fclt autosync install codex
 ```
 
 One-shot runner for verification/debugging:
 
 ```bash
-facult autosync run --service all --once
+fclt autosync run --service all --once
 ```
 
 Remote git policy:
@@ -787,9 +789,9 @@ Current prebuilt binary targets:
 - `windows-x64`
 
 Self-update behavior:
-1. npm/bun global install: updates via package manager (`npm install -g facult@...` or `bun add -g facult@...`).
+1. npm/bun global install: updates via package manager (`npm install -g fclt@...` or `bun add -g fclt@...`).
 2. Direct binary install (release script/local binary path): downloads and replaces the binary in place.
-3. Use `facult self-update` (or `facult update --self`).
+3. Use `fclt self-update` (or `fclt update --self`).
 
 Required secrets for publish:
 - `NPM_TOKEN`
@@ -827,13 +829,13 @@ bun run release:dry-run
 
 ## FAQ
 
-### Does facult run its own MCP server today?
+### Does fclt run its own MCP server today?
 
-Not as a first-party `facult mcp serve` runtime.
+Not as a first-party `fclt mcp serve` runtime.
 
 `facult` currently focuses on inventory, trust/audit, install/update, and managed sync of skills/MCP configs.
 
-### Does facult now manage global AI config, not just skills and MCP?
+### Does fclt now manage global AI config, not just skills and MCP?
 
 Yes. The core model now includes:
 - canonical personal AI source in `~/.ai`
@@ -842,8 +844,8 @@ Yes. The core model now includes:
 - tool-native configs such as `~/.codex/config.toml`
 - tool-native rule files such as `~/.codex/rules/*.rules`
 
-### Do I still need to run `facult sync` manually?
+### Do I still need to run `fclt sync` manually?
 
 If autosync is not installed, yes.
 
-If autosync is installed, local changes under `~/.ai` propagate automatically to managed tools. Manual `facult sync` is still useful for explicit repair, dry-runs, and non-daemon workflows.
+If autosync is installed, local changes under `~/.ai` propagate automatically to managed tools. Manual `fclt sync` is still useful for explicit repair, dry-runs, and non-daemon workflows.

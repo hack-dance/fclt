@@ -29,7 +29,7 @@ export async function runSkillsTui(res: ScanResult): Promise<void> {
     height,
     borderStyle: "double",
     borderColor: "#4CC9F0",
-    title: "facult scan — skills",
+    title: "fclt scan — skills",
     titleAlignment: "center",
     backgroundColor: "#001122",
   });

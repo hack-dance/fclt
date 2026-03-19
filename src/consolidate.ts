@@ -1573,10 +1573,10 @@ export async function consolidateCommand(
   ctx: { homeDir?: string; rootDir?: string; cwd?: string } = {}
 ) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`facult consolidate — deduplicate and copy skills + MCP configs into the canonical store
+    console.log(`fclt consolidate — deduplicate and copy skills + MCP configs into the canonical store
 
 Usage:
-  facult consolidate [--force] [--auto <keep-newest|keep-current|keep-incoming>] [scan options]
+  fclt consolidate [--force] [--auto <keep-newest|keep-current|keep-incoming>] [scan options]
 
 Options:
   --force                 Re-copy items already consolidated
@@ -1597,7 +1597,7 @@ Options:
     const scanOptions = parseConsolidateScanOptions(argv);
     const home = ctx.homeDir ?? homedir();
     const rootDir = ctx.rootDir ?? facultRootDir(home);
-    intro("facult consolidate");
+    intro("fclt consolidate");
 
     const res = await scan([], {
       ...scanOptions,

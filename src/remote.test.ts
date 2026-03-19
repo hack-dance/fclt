@@ -1158,14 +1158,14 @@ describe("templates command", () => {
     const evolutionText = await Bun.file(
       join(repoDir, ".ai", "instructions", "EVOLUTION.md")
     ).text();
-    expect(evolutionText).toContain("facult ai writeback add");
+    expect(evolutionText).toContain("fclt ai writeback add");
     expect(evolutionText).toContain("Current supported proposal kinds");
 
     const skillText = await Bun.file(
       join(repoDir, ".ai", "skills", "capability-evolution", "SKILL.md")
     ).text();
     expect(skillText).toContain("Proposal Kind Selection");
-    expect(skillText).toContain("facult ai evolve draft EV-00001 --append");
+    expect(skillText).toContain("fclt ai evolve draft EV-00001 --append");
     expect(
       await Bun.file(
         join(repoDir, ".ai", ".facult", "ai", "index.json")

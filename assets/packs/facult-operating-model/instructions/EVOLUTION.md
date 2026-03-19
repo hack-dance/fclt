@@ -59,16 +59,16 @@ Every good writeback should try to include:
 Typical workflow:
 
 ```bash
-facult ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
-facult ai writeback group --by asset
-facult ai writeback summarize --by domain
-facult ai evolve propose
-facult ai evolve draft EV-00001
-facult ai evolve accept EV-00001
-facult ai evolve apply EV-00001
+fclt ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
+fclt ai writeback group --by asset
+fclt ai writeback summarize --by domain
+fclt ai evolve propose
+fclt ai evolve draft EV-00001
+fclt ai evolve accept EV-00001
+fclt ai evolve apply EV-00001
 ```
 
-Use `facult ai evolve draft <id> --append "..."` to revise a draft while preserving draft history.
+Use `fclt ai evolve draft <id> --append "..."` to revise a draft while preserving draft history.
 
 ## Proposal Kinds
 

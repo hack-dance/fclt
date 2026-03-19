@@ -90,7 +90,7 @@ export async function loadGraph(opts?: {
   const graphPath = facultAiGraphPath(homeDir, opts?.rootDir);
   const file = Bun.file(graphPath);
   if (!(await file.exists())) {
-    throw new Error(`Graph not found at ${graphPath}. Run "facult index".`);
+    throw new Error(`Graph not found at ${graphPath}. Run "fclt index".`);
   }
   return JSON.parse(await file.text()) as FacultGraph;
 }

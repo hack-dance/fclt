@@ -93,7 +93,7 @@ test("doctor --repair updates legacy root config to ~/.ai when present", async (
 
     expect(code).toBe(0);
     expect(err).toBe("");
-    expect(out).toContain(`Updated facult root config to ${aiRoot}`);
+    expect(out).toContain(`Updated fclt root config to ${aiRoot}`);
 
     const config = JSON.parse(
       await readFile(join(dir, ".ai", ".facult", "config.json"), "utf8")

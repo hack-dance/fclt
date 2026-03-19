@@ -3,7 +3,7 @@ export interface Provenance {
   sourceId: string;
   /** Path to the config file this item came from (if applicable). */
   sourcePath: string;
-  /** ISO timestamp when facult imported/consolidated this item. */
+  /** ISO timestamp when fclt imported/consolidated this item. */
   importedAt: string;
   /** Optional source file mtime at import time (ISO). */
   sourceModifiedAt?: string;

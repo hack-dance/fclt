@@ -8,8 +8,10 @@ import {
 
 const REPO_OWNER = "hack-dance";
 const REPO_NAME = "facult";
+const PACKAGE_NAME = "fclt";
 const DOWNLOAD_RETRIES = 12;
 const DOWNLOAD_RETRY_DELAY_MS = 5000;
+const CLI_BASENAME_PATTERN = /^(fclt|facult)(\.exe)?$/;
 
 type InstallMethod =
   | "script-dev"
@@ -40,11 +42,11 @@ interface DetectInstallMethodContext {
 }
 
 function printHelp() {
-  console.log(`facult self-update — update facult itself based on install method
+  console.log(`fclt self-update — update fclt itself based on install method
 
 Usage:
-  facult self-update [--version <x.y.z|latest>] [--dry-run]
-  facult update --self [--version <x.y.z|latest>] [--dry-run]
+  fclt self-update [--version <x.y.z|latest>] [--dry-run]
+  fclt update --self [--version <x.y.z|latest>] [--dry-run]
 
 Options:
   --version   Target version (defaults to latest)
@@ -131,7 +133,8 @@ export function detectInstallMethod(
   if (
     facultBins.some(
       (facultBin) =>
-        exec.startsWith(facultBin + sep) && basename(exec).startsWith("facult")
+        exec.startsWith(facultBin + sep) &&
+        CLI_BASENAME_PATTERN.test(basename(exec))
     )
   ) {
     return "release-script";
@@ -173,7 +176,7 @@ async function resolveLatestTag(): Promise<string> {
   const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
   const res = await fetch(url, {
     headers: {
-      "user-agent": "facult-self-update",
+      "user-agent": "fclt-self-update",
       accept: "application/vnd.github+json",
     },
   });
@@ -232,11 +235,16 @@ async function selfUpdateBinary(args: {
   const explicitTag = normalizeVersionTag(args.requestedVersion);
   const tag = explicitTag ?? (await resolveLatestTag());
   const version = stripTagPrefix(tag);
-  const assetName = `facult-${version}-${target.platform}-${target.arch}${target.ext}`;
-  const url = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`;
+  const assetNames = [
+    `${PACKAGE_NAME}-${version}-${target.platform}-${target.arch}${target.ext}`,
+    `facult-${version}-${target.platform}-${target.arch}${target.ext}`,
+  ];
+  const urls = assetNames.map(
+    (assetName) =>
+      `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`
+  );
 
-  const defaultBinaryName =
-    target.platform === "windows" ? "facult.exe" : "facult";
+  const defaultBinaryName = target.platform === "windows" ? "fclt.exe" : "fclt";
   const fallbackPath = join(
     preferredGlobalFacultStateDir(args.home),
     "bin",
@@ -245,17 +253,19 @@ async function selfUpdateBinary(args: {
   const currentExec = process.execPath;
   const preferredPath =
     args.state?.binaryPath ||
-    (basename(currentExec).startsWith("facult") ? currentExec : fallbackPath);
+    (CLI_BASENAME_PATTERN.test(basename(currentExec))
+      ? currentExec
+      : fallbackPath);
   const binaryPath = resolve(preferredPath);
 
   if (args.dryRun) {
-    console.log(`[dry-run] Would download ${url}`);
+    console.log(`[dry-run] Would download ${urls[0]}`);
     console.log(`[dry-run] Would replace ${binaryPath}`);
     return;
   }
 
   await mkdir(dirname(binaryPath), { recursive: true });
-  const bytes = await fetchReleaseBinaryWithRetry(url);
+  const bytes = await fetchFirstReleaseBinaryWithRetry(urls);
   const tmpPath = `${binaryPath}.tmp-${Date.now()}`;
   await Bun.write(tmpPath, Buffer.from(bytes));
   if (target.platform !== "windows") {
@@ -268,7 +278,7 @@ async function selfUpdateBinary(args: {
     packageVersion: version,
     binaryPath,
   });
-  console.log(`Updated facult binary to ${version}`);
+  console.log(`Updated fclt binary to ${version}`);
   console.log(`Path: ${binaryPath}`);
 }
 
@@ -307,7 +317,7 @@ async function selfUpdateViaPackageManager(args: {
       ? stripTagPrefix(args.requestedVersion)
       : "latest";
 
-  const installSpec = `facult@${targetVersion}`;
+  const installSpec = `${PACKAGE_NAME}@${targetVersion}`;
   const cmd =
     pm === "npm"
       ? ["npm", "install", "-g", installSpec]
@@ -329,7 +339,7 @@ async function selfUpdateViaPackageManager(args: {
   if (code !== 0) {
     throw new Error(`Self-update failed via ${pm} (exit ${code}).`);
   }
-  console.log(`Updated facult via ${pm}: ${installSpec}`);
+  console.log(`Updated fclt via ${pm}: ${installSpec}`);
 }
 
 async function fetchReleaseBinaryWithRetry(url: string): Promise<ArrayBuffer> {
@@ -340,7 +350,7 @@ async function fetchReleaseBinaryWithRetry(url: string): Promise<ArrayBuffer> {
     try {
       const response = await fetch(url, {
         headers: {
-          "user-agent": "facult-self-update",
+          "user-agent": "fclt-self-update",
           accept: "application/octet-stream",
         },
       });
@@ -373,6 +383,20 @@ async function fetchReleaseBinaryWithRetry(url: string): Promise<ArrayBuffer> {
   }
   const statusDetail = lastStatus ? ` HTTP ${lastStatus}` : "";
   throw new Error(`Failed to download ${url}.${statusDetail}`);
+}
+
+async function fetchFirstReleaseBinaryWithRetry(
+  urls: string[]
+): Promise<ArrayBuffer> {
+  let lastError: unknown;
+  for (const url of urls) {
+    try {
+      return await fetchReleaseBinaryWithRetry(url);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Download failed.");
 }
 
 function sleep(ms: number): Promise<void> {

@@ -96,50 +96,50 @@ interface GraphCommandOptions {
 }
 
 function printHelp() {
-  console.log(`facult — manage canonical AI capabilities, sync surfaces, and evolution state
+  console.log(`fclt — manage canonical AI capabilities, sync surfaces, and evolution state
 
 Usage:
-  facult scan [--json] [--show-duplicates] [--tui] [--from <path>]
-  facult audit [--from <path>]
-  facult audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
-  facult audit --non-interactive [name|mcp:<name>] --with <claude|codex> [--from <path>] [--max-items <n|all>] [--json]
-  facult migrate [--from <path>] [--dry-run] [--move] [--write-config]
-  facult doctor [--repair]
-  facult consolidate [--force] [--auto <mode>] [scan options]
-  facult index [--force]
-  facult list [skills|mcp|agents|snippets|instructions] [--enabled-for TOOL] [--untrusted] [--flagged] [--pending] [--json]
-  facult show <name>
-  facult show mcp:<name> [--show-secrets]
-  facult show instruction:<name>
-  facult find <query> [--json]
-  facult graph <show|deps|dependents> <asset> [--json]
-  facult ai <writeback|evolve> [args...]
-  facult adapters
-  facult trust <name> [moreNames...]
-  facult untrust <name> [moreNames...]
-  facult manage <tool>
-  facult unmanage <tool>
-  facult managed
-  facult enable <name> [moreNames...] [--for <tools>]
-  facult disable <name> [moreNames...] [--for <tools>]
-  facult sync [tool] [--dry-run]
-  facult autosync <cmd> [args...]
-  facult search <query> [--index <name>] [--limit <n>]
-  facult install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust]
-  facult update [--apply] [--strict-source-trust]
-  facult update --self [--version <x.y.z|latest>] [--dry-run]
-  facult self-update [--version <x.y.z|latest>] [--dry-run]
-  facult verify-source <name> [--json]
-  facult sources <cmd> [args...]
-  facult templates <cmd> [args...]
-  facult snippets <cmd> [args...]
-  facult --show-duplicates
+  fclt scan [--json] [--show-duplicates] [--tui] [--from <path>]
+  fclt audit [--from <path>]
+  fclt audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
+  fclt audit --non-interactive [name|mcp:<name>] --with <claude|codex> [--from <path>] [--max-items <n|all>] [--json]
+  fclt migrate [--from <path>] [--dry-run] [--move] [--write-config]
+  fclt doctor [--repair]
+  fclt consolidate [--force] [--auto <mode>] [scan options]
+  fclt index [--force]
+  fclt list [skills|mcp|agents|snippets|instructions] [--enabled-for TOOL] [--untrusted] [--flagged] [--pending] [--json]
+  fclt show <name>
+  fclt show mcp:<name> [--show-secrets]
+  fclt show instruction:<name>
+  fclt find <query> [--json]
+  fclt graph <show|deps|dependents> <asset> [--json]
+  fclt ai <writeback|evolve> [args...]
+  fclt adapters
+  fclt trust <name> [moreNames...]
+  fclt untrust <name> [moreNames...]
+  fclt manage <tool>
+  fclt unmanage <tool>
+  fclt managed
+  fclt enable <name> [moreNames...] [--for <tools>]
+  fclt disable <name> [moreNames...] [--for <tools>]
+  fclt sync [tool] [--dry-run]
+  fclt autosync <cmd> [args...]
+  fclt search <query> [--index <name>] [--limit <n>]
+  fclt install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust]
+  fclt update [--apply] [--strict-source-trust]
+  fclt update --self [--version <x.y.z|latest>] [--dry-run]
+  fclt self-update [--version <x.y.z|latest>] [--dry-run]
+  fclt verify-source <name> [--json]
+  fclt sources <cmd> [args...]
+  fclt templates <cmd> [args...]
+  fclt snippets <cmd> [args...]
+  fclt --show-duplicates
 
 Commands:
   scan         Scan common config locations (Cursor, Claude, Claude Desktop, etc.)
   audit        Security audits (interactive by default; use --non-interactive for scripts)
   migrate      Copy/move a legacy canonical store to the current canonical root
-  doctor       Inspect and repair local facult state
+  doctor       Inspect and repair local fclt state
   consolidate  Deduplicate and copy skills + MCP configs (interactive or --auto)
   index        Build a queryable index from the canonical store (see FACULT_ROOT_DIR)
   list         List indexed skills, MCP servers, agents, snippets, or instructions
@@ -160,7 +160,7 @@ Commands:
   search       Search remote indices (builtin + provider aliases + configured)
   install      Install an item from a remote index
   update       Check/apply updates for remotely installed items
-  self-update  Update facult itself based on install method
+  self-update  Update fclt itself based on install method
   verify-source  Verify source trust and manifest integrity/signature status
   sources      Manage source trust policy for remote indices
   templates    Scaffold DX-first templates (skills/instructions/MCP/snippets)
@@ -203,10 +203,10 @@ Options:
 }
 
 function printListHelp() {
-  console.log(`facult list — list indexed entries from the canonical store
+  console.log(`fclt list — list indexed entries from the canonical store
 
 Usage:
-  facult list [skills|mcp|agents|snippets|instructions] [options]
+  fclt list [skills|mcp|agents|snippets|instructions] [options]
 
 Options:
   --enabled-for TOOL  Only include entries enabled for a tool
@@ -223,12 +223,12 @@ Options:
 }
 
 function printShowHelp() {
-  console.log(`facult show — show a single indexed entry (and file contents)
+  console.log(`fclt show — show a single indexed entry (and file contents)
 
 Usage:
-  facult show <name>
-  facult show mcp:<name> [--show-secrets]
-  facult show instruction:<name>
+  fclt show <name>
+  fclt show mcp:<name> [--show-secrets]
+  fclt show instruction:<name>
 
 Options:
   --show-secrets      (mcp) Print raw secret values (unsafe)
@@ -241,10 +241,10 @@ Options:
 }
 
 function printFindHelp() {
-  console.log(`facult find — search local indexed capabilities across asset types
+  console.log(`fclt find — search local indexed capabilities across asset types
 
 Usage:
-  facult find <query> [--json]
+  fclt find <query> [--json]
 
 Options:
   --root PATH         Select a canonical .ai root explicitly
@@ -257,12 +257,12 @@ Options:
 }
 
 function printGraphHelp() {
-  console.log(`facult graph — inspect explicit capability graph nodes and relations
+  console.log(`fclt graph — inspect explicit capability graph nodes and relations
 
 Usage:
-  facult graph show <asset> [--json]
-  facult graph deps <asset> [--json]
-  facult graph dependents <asset> [--json]
+  fclt graph show <asset> [--json]
+  fclt graph deps <asset> [--json]
+  fclt graph dependents <asset> [--json]
 
 Options:
   --root PATH         Select a canonical .ai root explicitly
@@ -890,7 +890,7 @@ async function graphCommand(argv: string[]) {
 function adaptersCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     console.log(
-      "facult adapters — list registered tool adapters\n\nUsage:\n  facult adapters\n"
+      "fclt adapters — list registered tool adapters\n\nUsage:\n  fclt adapters\n"
     );
     return;
   }
@@ -912,7 +912,7 @@ async function main(argv: string[]) {
     return;
   }
 
-  // Convenience: allow `facult --show-duplicates` as shorthand for `facult scan --show-duplicates`.
+  // Convenience: allow `fclt --show-duplicates` as shorthand for `fclt scan --show-duplicates`.
   if (cmd === "--show-duplicates") {
     await scanCommand([cmd, ...rest]);
     return;

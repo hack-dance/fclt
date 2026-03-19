@@ -27,7 +27,7 @@ Promote to `~/.ai` only when:
 Use:
 
 ```bash
-facult ai evolve promote EV-00001 --to global --project
+fclt ai evolve promote EV-00001 --to global --project
 ```
 
 That creates a new global proposal for review. It does not auto-apply the promotion.

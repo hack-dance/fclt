@@ -1,5 +1,5 @@
 ---
-description: Convert repeated writeback into concrete facult capability proposals.
+description: Convert repeated writeback into concrete fclt capability proposals.
 tags: [facult, evolution, writeback]
 ---
 
@@ -28,14 +28,14 @@ If unsure, start at project scope and promote later with evidence.
 Use:
 
 ```bash
-facult ai writeback add ...
-facult ai writeback group --by asset
-facult ai writeback summarize --by domain
-facult ai evolve propose
-facult ai evolve draft EV-00001
-facult ai evolve draft EV-00001 --append "tighten the rule with a concrete verification step"
-facult ai evolve accept EV-00001
-facult ai evolve apply EV-00001
+fclt ai writeback add ...
+fclt ai writeback group --by asset
+fclt ai writeback summarize --by domain
+fclt ai evolve propose
+fclt ai evolve draft EV-00001
+fclt ai evolve draft EV-00001 --append "tighten the rule with a concrete verification step"
+fclt ai evolve accept EV-00001
+fclt ai evolve apply EV-00001
 ```
 
 ## Proposal Kind Selection

@@ -71,7 +71,7 @@ async function loadIndex(homeDir: string): Promise<FacultIndex> {
   });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
-    throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
+    throw new Error(`Index not found at ${indexPath}. Run "fclt index".`);
   }
   const raw = await file.text();
   return JSON.parse(raw) as FacultIndex;
@@ -310,11 +310,11 @@ function parseEnableDisableArgs(argv: string[]): {
 
 export async function enableCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`facult enable — enable skills or MCP servers for tools
+    console.log(`fclt enable — enable skills or MCP servers for tools
 
 Usage:
-  facult enable <name> [moreNames...] [--for <tool1,tool2,...>]
-  facult enable mcp:<name> [--for <tools>]
+  fclt enable <name> [moreNames...] [--for <tool1,tool2,...>]
+  fclt enable mcp:<name> [--for <tools>]
 
 Options:
   --for   Comma-separated list of tools (defaults to all managed tools)
@@ -333,11 +333,11 @@ Options:
 
 export async function disableCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`facult disable — disable skills or MCP servers for tools
+    console.log(`fclt disable — disable skills or MCP servers for tools
 
 Usage:
-  facult disable <name> [moreNames...] [--for <tool1,tool2,...>]
-  facult disable mcp:<name> [--for <tools>]
+  fclt disable <name> [moreNames...] [--for <tool1,tool2,...>]
+  fclt disable mcp:<name> [--for <tools>]
 
 Options:
   --for   Comma-separated list of tools (defaults to all managed tools)

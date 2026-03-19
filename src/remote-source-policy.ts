@@ -49,14 +49,14 @@ function parseLongFlag(argv: string[], flag: string): string | null {
 }
 
 function printSourcesHelp(args: { builtinIndexName: string }) {
-  console.log(`facult sources — manage source trust policy for remote indices
+  console.log(`fclt sources — manage source trust policy for remote indices
 
 Usage:
-  facult sources list [--json]
-  facult sources trust <source> [--note <text>]
-  facult sources review <source> [--note <text>]
-  facult sources block <source> [--note <text>]
-  facult sources clear <source>
+  fclt sources list [--json]
+  fclt sources trust <source> [--note <text>]
+  fclt sources review <source> [--note <text>]
+  fclt sources block <source> [--note <text>]
+  fclt sources clear <source>
 
 Notes:
   - Default policy is "${args.builtinIndexName}=trusted", all other sources=review.
@@ -94,12 +94,12 @@ export function assertSourceAllowed(args: {
   const trust = evaluateSourceTrust(args);
   if (trust.level === "blocked") {
     throw new Error(
-      `Source "${args.sourceName}" is blocked by policy. Use "facult sources clear ${args.sourceName}" to remove the block.`
+      `Source "${args.sourceName}" is blocked by policy. Use "fclt sources clear ${args.sourceName}" to remove the block.`
     );
   }
   if (args.strictSourceTrust && trust.level === "review") {
     throw new Error(
-      `Source "${args.sourceName}" requires review (strict mode). Use "facult sources trust ${args.sourceName}" after review.`
+      `Source "${args.sourceName}" requires review (strict mode). Use "fclt sources trust ${args.sourceName}" after review.`
     );
   }
   return trust.level;

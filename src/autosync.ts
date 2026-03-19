@@ -90,7 +90,7 @@ function nowIso(): string {
 
 function logAutosyncError(context: string, error: unknown) {
   const detail = error instanceof Error ? error.message : String(error);
-  console.error(`facult autosync: ${context}: ${detail}`);
+  console.error(`fclt autosync: ${context}: ${detail}`);
 }
 
 function runDetached(context: string, promise: Promise<void>) {
@@ -791,14 +791,14 @@ function parseAutosyncPositionals(
 }
 
 function autosyncHelp(): string {
-  return `facult autosync — background autosync for managed tools
+  return `fclt autosync — background autosync for managed tools
 
 Usage:
-  facult autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
-  facult autosync uninstall [tool]
-  facult autosync status [tool]
-  facult autosync restart [tool]
-  facult autosync run [tool] [--service <name>] [--once]
+  fclt autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
+  fclt autosync uninstall [tool]
+  fclt autosync status [tool]
+  fclt autosync restart [tool]
+  fclt autosync run [tool] [--service <name>] [--once]
 
 Options:
   --git-remote <name>           Git remote for canonical repo sync (default: origin)

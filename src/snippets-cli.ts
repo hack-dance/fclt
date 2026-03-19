@@ -10,14 +10,14 @@ import {
 const EDITOR_SPLIT_RE = /\s+/;
 
 function printSnippetsHelp() {
-  console.log(`facult snippets — sync reusable blocks across config files
+  console.log(`fclt snippets — sync reusable blocks across config files
 
 Usage:
-  facult snippets list [--json]
-  facult snippets show <name> [--json]
-  facult snippets create <name>
-  facult snippets edit <name>
-  facult snippets sync [--dry-run] [file...]
+  fclt snippets list [--json]
+  fclt snippets show <name> [--json]
+  fclt snippets create <name>
+  fclt snippets edit <name>
+  fclt snippets sync [--dry-run] [file...]
 
 Notes:
   - <name> is the snippet marker name (e.g. codingstyle, global/codingstyle, myproject/context)

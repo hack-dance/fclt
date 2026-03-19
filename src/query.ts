@@ -138,7 +138,7 @@ function matchesScope(entry: IndexEntry, scope?: AssetScope): boolean {
   return entry.scope === scope;
 }
 
-/** Return the canonical facult root directory. */
+/** Return the canonical fclt root directory. */
 export function facultRootDirPath(home: string = homedir()): string {
   return facultRootDir(home);
 }
@@ -148,7 +148,7 @@ export function facultContextRootDirPath(home: string = homedir()): string {
 }
 
 /**
- * Return the path to the facult index.json file.
+ * Return the path to the fclt index.json file.
  */
 export function facultIndexPath(home: string = homedir()): string {
   return facultAiIndexPath(
@@ -158,7 +158,7 @@ export function facultIndexPath(home: string = homedir()): string {
 }
 
 /**
- * Load the facult index.json into memory.
+ * Load the fclt index.json into memory.
  */
 export async function loadIndex(opts?: {
   /** Override the default canonical root dir (useful for tests). */
@@ -181,7 +181,7 @@ export async function loadIndex(opts?: {
   });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
-    throw new Error(`Index not found at ${indexPath}. Run "facult index".`);
+    throw new Error(`Index not found at ${indexPath}. Run "fclt index".`);
   }
   const raw = await file.text();
   const parsed = JSON.parse(raw) as FacultIndex;

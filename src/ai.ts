@@ -1236,7 +1236,7 @@ export async function applyProposal(
   }
   if (current.draftRefs.length === 0) {
     throw new Error(
-      `Proposal ${id} has no draft refs. Run "facult ai evolve draft ${id}" first.`
+      `Proposal ${id} has no draft refs. Run "fclt ai evolve draft ${id}" first.`
     );
   }
 
@@ -1393,42 +1393,42 @@ export async function promoteProposal(
 }
 
 function aiHelp(): string {
-  return `facult ai — writeback and evolution workflows
+  return `fclt ai — writeback and evolution workflows
 
 Usage:
-  facult ai writeback <add|list|show|dismiss|promote> [args...]
-  facult ai evolve <propose|list|show|draft|review|accept|reject|supersede|apply> [args...]
+  fclt ai writeback <add|list|show|dismiss|promote> [args...]
+  fclt ai evolve <propose|list|show|draft|review|accept|reject|supersede|apply> [args...]
 `;
 }
 
 function writebackHelp(): string {
-  return `facult ai writeback
+  return `fclt ai writeback
 
 Usage:
-  facult ai writeback add --kind <kind> --summary <text> [--asset <selector>] [--tag <tag>] [--evidence <type:ref>]
-  facult ai writeback list [--json]
-  facult ai writeback show <id> [--json]
-  facult ai writeback group --by <asset|kind|domain> [--json]
-  facult ai writeback summarize [--by <asset|kind|domain>] [--json]
-  facult ai writeback dismiss <id>
-  facult ai writeback promote <id>
+  fclt ai writeback add --kind <kind> --summary <text> [--asset <selector>] [--tag <tag>] [--evidence <type:ref>]
+  fclt ai writeback list [--json]
+  fclt ai writeback show <id> [--json]
+  fclt ai writeback group --by <asset|kind|domain> [--json]
+  fclt ai writeback summarize [--by <asset|kind|domain>] [--json]
+  fclt ai writeback dismiss <id>
+  fclt ai writeback promote <id>
 `;
 }
 
 function evolveHelp(): string {
-  return `facult ai evolve
+  return `fclt ai evolve
 
 Usage:
-  facult ai evolve propose [--asset <selector>] [--json]
-  facult ai evolve list [--json]
-  facult ai evolve show <id> [--json]
-  facult ai evolve draft <id> [--append <text>]
-  facult ai evolve review <id>
-  facult ai evolve accept <id>
-  facult ai evolve reject <id> --reason <text>
-  facult ai evolve supersede <id> --by <proposal-id>
-  facult ai evolve apply <id>
-  facult ai evolve promote <id> --to global
+  fclt ai evolve propose [--asset <selector>] [--json]
+  fclt ai evolve list [--json]
+  fclt ai evolve show <id> [--json]
+  fclt ai evolve draft <id> [--append <text>]
+  fclt ai evolve review <id>
+  fclt ai evolve accept <id>
+  fclt ai evolve reject <id> --reason <text>
+  fclt ai evolve supersede <id> --by <proposal-id>
+  fclt ai evolve apply <id>
+  fclt ai evolve promote <id> --to global
 `;
 }
 

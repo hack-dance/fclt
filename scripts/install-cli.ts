@@ -5,7 +5,8 @@ import { dirname, resolve } from "node:path";
 
 type InstallMode = "dev" | "bin";
 
-const CLI_NAME = "facult";
+const CLI_NAME = "fclt";
+const COMPATIBILITY_CLI_NAMES = ["facult"];
 const DEFAULT_INSTALL_DIR_RELATIVE = ".ai/.facult/bin";
 
 interface ParseOk {
@@ -104,6 +105,11 @@ async function main(parsed: ParseOk): Promise<number> {
   }
 
   await applyInstall(desired);
+  await installCompatibilityAliases({
+    desired,
+    installDir,
+    force: parsed.force,
+  });
   await writeInstallState({
     home,
     method: parsed.mode === "dev" ? "script-dev" : "script-bin",
@@ -147,14 +153,14 @@ function parseArgs(argv: readonly string[]): ParseOk | ParseErr {
       return {
         ok: false,
         message: [
-          "Install facult as a local global command (~/.ai/.facult/bin/facult by default).",
+          "Install fclt as a local global command (~/.ai/.facult/bin/fclt by default).",
           "",
           "Usage:",
           "  bun run scripts/install-cli.ts [--mode=dev|bin] [--dir=/path] [--force]",
           "",
           "Modes:",
           "  --mode=dev  Install a wrapper that runs this repo's source via Bun.",
-          "  --mode=bin  Install a symlink to dist/facult (compiled binary).",
+          "  --mode=bin  Install a symlink to dist/fclt (compiled binary).",
           "",
         ].join("\n"),
       };
@@ -186,7 +192,7 @@ async function desiredInstall(opts: {
     const content = [
       "#!/usr/bin/env bash",
       "set -euo pipefail",
-      "# facult local-dev shim (auto-generated)",
+      "# fclt local-dev shim (auto-generated)",
       `exec bun ${shellQuote(sourceEntry)} "$@"`,
       "",
     ].join("\n");
@@ -200,7 +206,7 @@ async function desiredInstall(opts: {
     };
   }
 
-  const linkTarget = resolve(opts.repoRoot, "dist", "facult");
+  const linkTarget = resolve(opts.repoRoot, "dist", "fclt");
   if (!(await fileExists(linkTarget))) {
     throw new Error(
       `Missing compiled binary at ${linkTarget}\nRun: bun run build`
@@ -259,6 +265,32 @@ async function applyInstall(desired: DesiredInstall): Promise<void> {
   await chmod(desired.targetPath, 0o755);
 }
 
+async function installCompatibilityAliases(args: {
+  desired: DesiredInstall;
+  installDir: string;
+  force: boolean;
+}) {
+  for (const alias of COMPATIBILITY_CLI_NAMES) {
+    const aliasPath = resolve(args.installDir, alias);
+    const current = await readCurrentInstall(aliasPath);
+    if (current.status === "present") {
+      await rm(aliasPath, { force: true });
+    }
+
+    if (args.desired.kind === "symlink") {
+      await symlink(args.desired.linkTarget, aliasPath);
+      continue;
+    }
+
+    const aliasContent = args.desired.content.replace(
+      "# fclt local-dev shim",
+      "# fclt compatibility shim"
+    );
+    await Bun.write(aliasPath, aliasContent);
+    await chmod(aliasPath, 0o755);
+  }
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
@@ -272,7 +304,7 @@ function printSuccess(args: {
   if (args.note) {
     process.stdout.write(`${args.note}.\n`);
   } else {
-    process.stdout.write(`Installed facult (${args.mode}).\n`);
+    process.stdout.write(`Installed fclt (${args.mode}).\n`);
   }
   process.stdout.write(`Path: ${args.targetPath}\n`);
   process.stdout.write(`Install dir: ${args.installDir}\n`);

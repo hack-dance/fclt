@@ -512,7 +512,7 @@ function defaultSourceSpecs(
   const specs: SourceSpec[] = [
     {
       id: "facult",
-      name: "facult (canonical)",
+      name: "fclt (canonical)",
       candidates: [canonicalRoot],
       skillDirs: [join(canonicalRoot, "skills")],
       configFiles: [
@@ -1677,7 +1677,7 @@ function printSourceAssets(assets: SourceResult["assets"]) {
 }
 
 function printHuman(res: ScanResult) {
-  console.log(`facult scan — ${res.scannedAt}`);
+  console.log(`fclt scan — ${res.scannedAt}`);
   console.log("");
 
   const foundSources = res.sources.filter((s) => s.found);
@@ -1976,7 +1976,7 @@ async function computeAssetContentDuplicates(
 function _printSkillsTable(res: ScanResult) {
   const all = computeSkillOccurrences(res);
 
-  console.log(`facult scan — ${res.scannedAt}`);
+  console.log(`fclt scan — ${res.scannedAt}`);
   console.log("Skills (deduplicated by SKILL.md parent directory name):");
 
   if (all.length === 0) {
@@ -2009,7 +2009,7 @@ function _printSkillsTable(res: ScanResult) {
 function printSkillDuplicatesTable(res: ScanResult) {
   const all = computeSkillOccurrences(res).filter((d) => d.count > 1);
 
-  console.log(`facult scan — ${res.scannedAt}`);
+  console.log(`fclt scan — ${res.scannedAt}`);
   console.log("Duplicate skills (same skill name appears in multiple places):");
 
   if (all.length === 0) {
@@ -2232,14 +2232,14 @@ export async function writeState(res: ScanResult) {
 }
 
 function printScanHelp() {
-  console.log(`facult scan — inventory local agent configs across tools
+  console.log(`fclt scan — inventory local agent configs across tools
 
 Usage:
-  facult scan [--json] [--show-duplicates] [--tui]
-  facult scan --from <path> [--from <path> ...]
+  fclt scan [--json] [--show-duplicates] [--tui]
+  fclt scan --from <path> [--from <path> ...]
 
 Notes:
-  - If no --from roots are provided and no scanFrom is configured, facult defaults to scanning ~.
+  - If no --from roots are provided and no scanFrom is configured, fclt defaults to scanning ~.
 
 Options:
   --json              Print full JSON (ScanResult)

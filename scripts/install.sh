@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO_OWNER="hack-dance"
 REPO_NAME="facult"
+CLI_NAME="fclt"
+COMPATIBILITY_NAME="facult"
 
 INSTALL_DIR="${FACULT_INSTALL_DIR:-$HOME/.ai/.facult/bin}"
 REQUESTED_VERSION="${FACULT_VERSION:-latest}"
@@ -57,28 +59,35 @@ PLATFORM="$(detect_platform)"
 ARCH="$(detect_arch "$PLATFORM")"
 TAG="$(resolve_tag)"
 VERSION="${TAG#v}"
-ASSET_NAME="facult-${VERSION}-${PLATFORM}-${ARCH}"
-ASSET_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${TAG}/${ASSET_NAME}"
+PRIMARY_ASSET_NAME="${CLI_NAME}-${VERSION}-${PLATFORM}-${ARCH}"
+PRIMARY_ASSET_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${TAG}/${PRIMARY_ASSET_NAME}"
+COMPATIBILITY_ASSET_NAME="${COMPATIBILITY_NAME}-${VERSION}-${PLATFORM}-${ARCH}"
+COMPATIBILITY_ASSET_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${TAG}/${COMPATIBILITY_ASSET_NAME}"
 
 mkdir -p "$INSTALL_DIR"
-TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/facult.XXXXXX")"
+TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/fclt.XXXXXX")"
 trap 'rm -f "$TMP_FILE"' EXIT
 
-echo "Downloading ${ASSET_NAME} from ${TAG}..."
+echo "Downloading ${PRIMARY_ASSET_NAME} from ${TAG}..."
 attempt=1
 while true; do
-  if curl -fsSL "$ASSET_URL" -o "$TMP_FILE"; then
+  if curl -fsSL "$PRIMARY_ASSET_URL" -o "$TMP_FILE"; then
+    break
+  fi
+  if curl -fsSL "$COMPATIBILITY_ASSET_URL" -o "$TMP_FILE"; then
     break
   fi
   if [[ "$attempt" -ge "$DOWNLOAD_RETRIES" ]]; then
-    echo "Failed to download ${ASSET_URL} after ${DOWNLOAD_RETRIES} attempts." >&2
+    echo "Failed to download ${PRIMARY_ASSET_URL} after ${DOWNLOAD_RETRIES} attempts." >&2
     exit 1
   fi
   sleep "$DOWNLOAD_RETRY_DELAY_SECONDS"
   attempt=$((attempt + 1))
 done
 chmod +x "$TMP_FILE"
-mv "$TMP_FILE" "${INSTALL_DIR}/facult"
+mv "$TMP_FILE" "${INSTALL_DIR}/${CLI_NAME}"
+cp "${INSTALL_DIR}/${CLI_NAME}" "${INSTALL_DIR}/${COMPATIBILITY_NAME}"
+chmod +x "${INSTALL_DIR}/${COMPATIBILITY_NAME}"
 
 mkdir -p "$HOME/.ai/.facult"
 cat > "$HOME/.ai/.facult/install.json" <<EOF
@@ -86,12 +95,12 @@ cat > "$HOME/.ai/.facult/install.json" <<EOF
   "version": 1,
   "method": "release-script",
   "packageVersion": "${VERSION}",
-  "binaryPath": "${INSTALL_DIR}/facult",
+  "binaryPath": "${INSTALL_DIR}/${CLI_NAME}",
   "source": "github-release",
   "installedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
 
-echo "Installed facult ${VERSION} to ${INSTALL_DIR}/facult"
+echo "Installed fclt ${VERSION} to ${INSTALL_DIR}/${CLI_NAME}"
 echo "If needed, add this to your shell profile:"
 echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""

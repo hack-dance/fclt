@@ -109,7 +109,7 @@ describe("ai writeback", () => {
     expect(journal).toContain('"kind":"writeback_recorded"');
   });
 
-  it("stores project-scoped runtime state under the repo .ai/.facult tree", async () => {
+  it("stores project-scoped runtime state under the repo .ai/.fclt tree", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 

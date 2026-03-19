@@ -197,17 +197,17 @@ function viewFindingDetails(r: AuditItemResult) {
 }
 
 function printHelp() {
-  console.log(`facult audit tui — interactive security audit + quarantine
+  console.log(`fclt audit tui — interactive security audit + quarantine
 
 Usage:
-  facult audit tui
-  facult audit tui --from <path> [--from <path> ...]
-  facult audit tui --no-config-from
+  fclt audit tui
+  fclt audit tui --from <path> [--from <path> ...]
+  fclt audit tui --no-config-from
 
 Notes:
   - This is an interactive wizard (TTY required).
   - Quarantine will move/copy files into ~/.ai/.facult/quarantine/<timestamp>/ and write a manifest.json.
-  - For non-interactive runs, use: facult audit --non-interactive ...
+  - For non-interactive runs, use: fclt audit --non-interactive ...
 `);
 }
 
@@ -223,7 +223,7 @@ export async function auditTuiCommand(argv: string[]) {
   const cfg = noConfigFrom ? null : readFacultConfig();
   const cfgRoots = cfg?.scanFrom ?? [];
 
-  intro("facult audit");
+  intro("fclt audit");
 
   if (cfgRoots.length) {
     note(

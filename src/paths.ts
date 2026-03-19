@@ -7,13 +7,13 @@ export interface FacultConfig {
   /**
    * Override the canonical root directory.
    *
-   * This is where facult stores the consolidated "canonical" skill + MCP state
+   * This is where fclt stores the consolidated "canonical" skill + MCP state
    * (skills/, mcp/, snippets/, index.json, ...).
    */
   rootDir?: string;
 
   /**
-   * Default scan roots (equivalent to passing `facult scan --from <path>`).
+   * Default scan roots (equivalent to passing `fclt scan --from <path>`).
    * Example: ["~", "~/dev", "~/work"]
    */
   scanFrom?: string[];
@@ -107,7 +107,7 @@ function looksLikeFacultRoot(root: string): boolean {
   if (!dirExists(root)) {
     return false;
   }
-  // Heuristic: treat as a facult store if it contains something we'd create.
+  // Heuristic: treat as a fclt store if it contains something we'd create.
   return (
     dirExists(join(root, "rules")) ||
     dirExists(join(root, "instructions")) ||
@@ -375,7 +375,7 @@ export function readFacultConfig(
 }
 
 /**
- * Return the canonical facult root directory.
+ * Return the canonical fclt root directory.
  *
  * Precedence:
  * 1) `FACULT_ROOT_DIR` env var

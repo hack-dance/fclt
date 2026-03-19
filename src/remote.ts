@@ -1634,10 +1634,10 @@ async function verifySource(args: {
 }
 
 function printSearchHelp() {
-  console.log(`facult search — search configured remote indices
+  console.log(`fclt search — search configured remote indices
 
 Usage:
-  facult search <query> [--index <name>] [--limit <n>] [--json]
+  fclt search <query> [--index <name>] [--limit <n>] [--json]
 
 Notes:
   - Builtin index "${BUILTIN_INDEX_NAME}" is always available.
@@ -1647,26 +1647,26 @@ Notes:
 }
 
 function printInstallHelp() {
-  console.log(`facult install — install an item from a remote index
+  console.log(`fclt install — install an item from a remote index
 
 Usage:
-  facult install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust] [--json]
+  fclt install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust] [--json]
 
 Examples:
-  facult install facult:skill-template --as my-skill
-  facult install facult:mcp-stdio-template --as github
-  facult install smithery:github
-  facult install glama:systeminit/si --as system-initiative
-  facult install skills.sh:owner/repo --as my-skill
-  facult install clawhub:my-skill
+  fclt install facult:skill-template --as my-skill
+  fclt install facult:mcp-stdio-template --as github
+  fclt install smithery:github
+  fclt install glama:systeminit/si --as system-initiative
+  fclt install skills.sh:owner/repo --as my-skill
+  fclt install clawhub:my-skill
 `);
 }
 
 function printUpdateHelp() {
-  console.log(`facult update — check for updates to remotely installed items
+  console.log(`fclt update — check for updates to remotely installed items
 
 Usage:
-  facult update [--apply] [--strict-source-trust] [--json]
+  fclt update [--apply] [--strict-source-trust] [--json]
 
 Options:
   --apply                Install available updates
@@ -1675,16 +1675,16 @@ Options:
 }
 
 function printTemplatesHelp() {
-  console.log(`facult templates — DX-first local scaffolding for skills/instructions/MCP/snippets
+  console.log(`fclt templates — DX-first local scaffolding for skills/instructions/MCP/snippets
 
 Usage:
-  facult templates list [--json]
-  facult templates init skill <name> [--force] [--dry-run]
-  facult templates init mcp <name> [--force] [--dry-run]
-  facult templates init snippet <marker> [--force] [--dry-run]
-  facult templates init agents [--force] [--dry-run]
-  facult templates init claude [--force] [--dry-run]
-  facult templates init project-ai [--force] [--dry-run]
+  fclt templates list [--json]
+  fclt templates init skill <name> [--force] [--dry-run]
+  fclt templates init mcp <name> [--force] [--dry-run]
+  fclt templates init snippet <marker> [--force] [--dry-run]
+  fclt templates init agents [--force] [--dry-run]
+  fclt templates init claude [--force] [--dry-run]
+  fclt templates init project-ai [--force] [--dry-run]
 
 Notes:
   - Templates are powered by the builtin remote index (${BUILTIN_INDEX_NAME}).
@@ -1692,15 +1692,15 @@ Notes:
 }
 
 function printVerifySourceHelp() {
-  console.log(`facult verify-source — verify source trust/integrity/signature status
+  console.log(`fclt verify-source — verify source trust/integrity/signature status
 
 Usage:
-  facult verify-source <name> [--json]
+  fclt verify-source <name> [--json]
 
 Examples:
-  facult verify-source facult
-  facult verify-source smithery
-  facult verify-source local-index --json
+  fclt verify-source facult
+  fclt verify-source smithery
+  fclt verify-source local-index --json
 `);
 }
 

@@ -1599,10 +1599,10 @@ export async function indexCommand(argv: string[]) {
     parsed.argv.includes("-h") ||
     parsed.argv[0] === "help"
   ) {
-    console.log(`facult index — rebuild the generated index for the canonical store
+    console.log(`fclt index — rebuild the generated index for the canonical store
 
 Usage:
-  facult index [--force] [--root PATH|--global|--project]
+  fclt index [--force] [--root PATH|--global|--project]
 
 Options:
   --force   Rebuild index from scratch (ignore existing metadata)

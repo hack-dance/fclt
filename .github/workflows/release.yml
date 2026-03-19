@@ -140,12 +140,12 @@ jobs:
       - name: Verify binary (unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: ./dist/facult --help
+        run: ./dist/fclt --help
 
       - name: Verify binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./dist/facult.exe --help
+        run: ./dist/fclt.exe --help
 
       - name: Prepare asset (unix)
         if: runner.os != 'Windows'
@@ -153,27 +153,34 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ needs.semantic-release.outputs.version }}"
-          ASSET="facult-${VERSION}-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}"
-          cp dist/facult "dist/${ASSET}"
-          chmod +x "dist/${ASSET}"
+          PRIMARY="fclt-${VERSION}-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}"
+          COMPAT="facult-${VERSION}-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}"
+          cp dist/fclt "dist/${PRIMARY}"
+          cp dist/fclt "dist/${COMPAT}"
+          chmod +x "dist/${PRIMARY}" "dist/${COMPAT}"
 
       - name: Prepare asset (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = "${{ needs.semantic-release.outputs.version }}"
-          $asset = "facult-$version-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}"
-          if (Test-Path "dist/facult.exe") {
-            Copy-Item "dist/facult.exe" "dist/$asset" -Force
+          $primary = "fclt-$version-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}"
+          $compat = "facult-$version-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}"
+          if (Test-Path "dist/fclt.exe") {
+            Copy-Item "dist/fclt.exe" "dist/$primary" -Force
+            Copy-Item "dist/fclt.exe" "dist/$compat" -Force
           } else {
-            Copy-Item "dist/facult" "dist/$asset" -Force
+            Copy-Item "dist/fclt" "dist/$primary" -Force
+            Copy-Item "dist/fclt" "dist/$compat" -Force
           }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: asset-${{ matrix.target_os }}-${{ matrix.target_arch }}
-          path: dist/facult-*-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}
+          path: |
+            dist/fclt-*-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}
+            dist/facult-*-${{ matrix.target_os }}-${{ matrix.target_arch }}${{ matrix.ext }}
           if-no-files-found: error
 
   publish-assets:
@@ -197,8 +204,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cp scripts/install.sh dist/release-assets/fclt-install.sh
           cp scripts/install.sh dist/release-assets/facult-install.sh
-          chmod +x dist/release-assets/facult-install.sh
+          chmod +x dist/release-assets/fclt-install.sh dist/release-assets/facult-install.sh
           (
             cd dist/release-assets
             sha256sum * > SHA256SUMS
@@ -253,7 +261,7 @@ jobs:
           set -euo pipefail
           HOME="$(mktemp -d)"
           export HOME
-          node ./bin/facult.cjs --help
+          node ./bin/fclt.cjs --help
 
       - name: Smoke test release install script against release asset
         shell: bash
@@ -265,6 +273,7 @@ jobs:
           FACULT_INSTALL_DIR="$TMP_BIN" \
           HOME="$TMP_HOME" \
           bash ./scripts/install.sh
+          "$TMP_BIN/fclt" --help
           "$TMP_BIN/facult" --help
 
       - name: Ensure NPM_TOKEN is configured
@@ -284,9 +293,10 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ needs.semantic-release.outputs.version }}"
-          if npm view "facult@${VERSION}" version >/dev/null 2>&1; then
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "facult@${VERSION} already exists on npm; skipping publish."
+            echo "${PACKAGE_NAME}@${VERSION} already exists on npm; skipping publish."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi

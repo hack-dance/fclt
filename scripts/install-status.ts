@@ -3,7 +3,7 @@
 import { lstat, readlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-const CLI_NAME = "facult";
+const CLI_NAME = "fclt";
 const DEFAULT_INSTALL_DIR_RELATIVE = ".ai/.facult/bin";
 
 const home = (process.env.HOME ?? "").trim();
@@ -24,7 +24,7 @@ if (current.status === "missing") {
 }
 
 if (current.kind === "symlink") {
-  const mode = current.linkTarget.endsWith("/dist/facult")
+  const mode = current.linkTarget.endsWith("/dist/fclt")
     ? "bin (symlink)"
     : "symlink";
   process.stdout.write(`Install mode: ${mode}\n`);
@@ -33,7 +33,9 @@ if (current.kind === "symlink") {
   process.exit(0);
 }
 
-const isDevWrapper = current.content.includes("facult local-dev shim");
+const isDevWrapper =
+  current.content.includes("fclt local-dev shim") ||
+  current.content.includes("fclt compatibility shim");
 process.stdout.write(
   `Install mode: ${isDevWrapper ? "dev (wrapper)" : "file (unknown)"}\n`
 );
