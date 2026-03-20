@@ -1,3 +1,9 @@
+## [2.2.0](https://github.com/hack-dance/fclt/compare/v2.1.2...v2.2.0) (2026-03-20)
+
+### Features
+
+* improve codex automation templates ([6136c82](https://github.com/hack-dance/fclt/commit/6136c8281653be038c3f3a976f92c14ac6e15708))
+
 ## [2.1.2](https://github.com/hack-dance/fclt/compare/v2.1.1...v2.1.2) (2026-03-19)
 
 ### Bug Fixes
