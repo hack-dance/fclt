@@ -683,12 +683,53 @@ fclt templates init mcp <name>
 fclt templates init snippet <marker>
 fclt templates init agents
 fclt templates init claude
+fclt templates init automation <template-id> --scope global|project|wide [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE]
 
 fclt snippets list
 fclt snippets show <marker>
 fclt snippets create <marker>
 fclt snippets edit <marker>
 fclt snippets sync [--dry-run] [file...]
+```
+
+### Codex automations
+
+`templates init automation` can scaffold two Codex automation forms:
+
+- `--scope project` (single repo): set `--project-root` (or infer from current working directory)
+- `--scope wide|global` (multiple repos): set `--cwds` explicitly; if omitted, created automation has no `cwds` by default.
+- If you run it interactively without `--scope`, `fclt` prompts for scope and, where possible, known workspaces (git worktrees, configured scan roots, and existing Codex automation paths).
+- Built-in automation templates are opinionated: they reference the global Codex operating model, point at relevant Codex skills, and tell Codex when to use focused subagents for bounded review work.
+
+Files are written to:
+
+- `~/.codex/automations/<name>/automation.toml`
+- `~/.codex/automations/<name>/memory.md`
+
+Example project automation:
+
+```bash
+fclt templates init automation tool-call-audit \
+  --scope project \
+  --project-root /path/to/repo \
+  --name project-tool-audit \
+  --status ACTIVE
+```
+
+Example global automation:
+
+```bash
+fclt templates init automation learning-review \
+  --scope wide \
+  --cwds /path/to/repo-a,/path/to/repo-b \
+  --status PAUSED
+```
+
+Interactive prompt example:
+
+```bash
+fclt templates init automation learning-review
+# prompts for scope, then lets you select known workspaces or add custom paths.
 ```
 
 For full flags and exact usage:

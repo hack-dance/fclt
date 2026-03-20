@@ -1126,6 +1126,197 @@ describe("templates command", () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it("scaffolds codex automation templates", async () => {
+    const { home, root } = await makeTempRoot();
+    process.chdir(home);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "learning-review",
+          "--name",
+          "facult-daily",
+          "--scope",
+          "wide",
+        ],
+        {
+          homeDir: home,
+          rootDir: root,
+          cwd: home,
+        }
+      );
+    });
+
+    const automationDir = join(home, ".codex", "automations", "facult-daily");
+    const automationToml = await readFile(
+      join(automationDir, "automation.toml"),
+      "utf8"
+    );
+    expect(automationToml).toContain('id = "facult-daily"');
+    expect(automationToml).toContain('status = "PAUSED"');
+    expect(automationToml).toContain("rrule = ");
+    expect(automationToml).toContain('model = "gpt-5.4"');
+    expect(automationToml).toContain('reasoning_effort = "high"');
+    expect(automationToml).toContain(join(home, ".codex", "AGENTS.md"));
+    expect(automationToml).toContain(
+      join(home, ".ai", "instructions", "LEARNING_AND_WRITEBACK.md")
+    );
+    expect(automationToml).toContain(
+      join(home, ".ai", "instructions", "EVOLUTION.md")
+    );
+    expect(automationToml).toContain("$feedback-loop-setup");
+    expect(automationToml).toContain("$capability-evolution");
+    expect(automationToml).toContain("learning-extractor");
+    expect(automationToml).toContain("writeback-curator");
+    expect(automationToml).toContain("scope-promoter");
+    expect(automationToml).toContain("evolution-planner");
+    expect(automationToml).toContain("verification-auditor");
+    expect(automationToml).toContain("Recorded writebacks");
+    expect(await Bun.file(join(automationDir, "memory.md")).exists()).toBe(
+      true
+    );
+    const memory = await readFile(join(automationDir, "memory.md"), "utf8");
+    expect(memory).toContain("$feedback-loop-setup");
+    expect(memory).toContain("$capability-evolution");
+  });
+
+  it("supports project-scoped automation scaffolding with explicit scope root", async () => {
+    const { home, root } = await makeTempRoot();
+    const projectRoot = join(home, "repo");
+    await mkdir(projectRoot, { recursive: true });
+    process.chdir(home);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "tool-call-audit",
+          "--project-root",
+          projectRoot,
+          "--name",
+          "tool-audit",
+          "--scope",
+          "project",
+          "--rrule",
+          "RRULE:FREQ=WEEKLY;BYHOUR=10;BYMINUTE=30;BYDAY=MO",
+        ],
+        {
+          homeDir: home,
+          rootDir: root,
+          cwd: home,
+        }
+      );
+    });
+
+    const automationDir = join(home, ".codex", "automations", "tool-audit");
+    const automationToml = await readFile(
+      join(automationDir, "automation.toml"),
+      "utf8"
+    );
+    expect(automationToml).toContain('name = "Tool Call Audit"');
+    expect(automationToml).toContain(
+      'rrule = "RRULE:FREQ=WEEKLY;BYHOUR=10;BYMINUTE=30;BYDAY=MO"'
+    );
+    expect(automationToml).toContain('model = "gpt-5.4"');
+    expect(automationToml).toContain('reasoning_effort = "high"');
+    expect(automationToml).toContain(join(home, ".codex", "AGENTS.md"));
+    expect(automationToml).toContain(
+      join(home, ".ai", "instructions", "LEARNING_AND_WRITEBACK.md")
+    );
+    expect(automationToml).toContain(
+      join(home, ".ai", "instructions", "EVOLUTION.md")
+    );
+    expect(automationToml).toContain("$feedback-loop-setup");
+    expect(automationToml).toContain("$capability-evolution");
+    expect(automationToml).toContain("verification-auditor");
+    expect(automationToml).toContain("evolution-planner");
+    expect(automationToml).toContain("Operational gaps");
+    expect(automationToml).toContain(`cwds = ["${projectRoot}"]`);
+  });
+
+  it("supports global automation scaffolding and aliases scope to wide", async () => {
+    const { home, root } = await makeTempRoot();
+    process.chdir(home);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "learning-review",
+          "--scope",
+          "global",
+          "--name",
+          "global-learning",
+        ],
+        {
+          homeDir: home,
+          rootDir: root,
+          cwd: home,
+        }
+      );
+    });
+
+    const automationDir = join(
+      home,
+      ".codex",
+      "automations",
+      "global-learning"
+    );
+    const automationToml = await readFile(
+      join(automationDir, "automation.toml"),
+      "utf8"
+    );
+    expect(automationToml).toContain('id = "global-learning"');
+    expect(automationToml).toContain("cwds = []");
+  });
+
+  it("supports explicit cwds for wide/global automation scaffolding", async () => {
+    const { home, root } = await makeTempRoot();
+    const repoA = join(home, "repo-a");
+    const repoB = join(home, "repo-b");
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    process.chdir(home);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "learning-review",
+          "--scope",
+          "wide",
+          "--name",
+          "multi-repo-learning",
+          "--cwds",
+          `${repoA}, ${repoB}`,
+        ],
+        {
+          homeDir: home,
+          rootDir: root,
+          cwd: home,
+        }
+      );
+    });
+
+    const automationDir = join(
+      home,
+      ".codex",
+      "automations",
+      "multi-repo-learning"
+    );
+    const automationToml = await readFile(
+      join(automationDir, "automation.toml"),
+      "utf8"
+    );
+    expect(automationToml).toContain('id = "multi-repo-learning"');
+    expect(automationToml).toContain(`cwds = ["${repoA}", "${repoB}"]`);
+  });
+
   it("scaffolds the builtin project-ai pack into a repo-local .ai", async () => {
     const { home } = await makeTempRoot();
     const repoDir = join(home, "repo");

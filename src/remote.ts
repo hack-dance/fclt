@@ -1,9 +1,18 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
+import { isCancel, multiselect, select, text } from "@clack/prompts";
 import { buildIndex } from "./index-builder";
-import { facultRootDir } from "./paths";
+import { facultRootDir, readFacultConfig } from "./paths";
 import {
   assertManifestIntegrity,
   assertManifestSignature,
@@ -40,6 +49,23 @@ const REMOTE_STATE_VERSION = 1;
 const VERSION_TOKEN_RE = /[A-Za-z]+|[0-9]+/g;
 const QUERY_SPLIT_RE = /\s+/;
 const MD_EXT_RE = /\.md$/i;
+const PROMPT_PATH_SPLIT_RE = /[,\n]/;
+const GIT_WORKTREE_LINE_RE = /\r?\n/;
+
+type BuiltinAutomationTemplateScope = "global" | "project" | "wide";
+
+interface BuiltinAutomationTemplate {
+  id: string;
+  title: string;
+  description: string;
+  prompt: string;
+  memory: string;
+  defaultRRule: string;
+  defaultStatus: "PAUSED" | "ACTIVE";
+  defaultModel: string;
+  defaultReasoningEffort: "low" | "medium" | "high";
+  scope: BuiltinAutomationTemplateScope;
+}
 
 interface InstalledRemoteItem {
   ref: string;
@@ -52,6 +78,12 @@ interface InstalledRemoteItem {
   sourceUrl?: string;
   sourceTrustLevel?: SourceTrustLevel;
   installedAt: string;
+}
+
+interface AutomationCwdCandidate {
+  value: string;
+  label: string;
+  hint?: string;
 }
 
 interface InstalledRemoteState {
@@ -290,6 +322,123 @@ Ship reliable changes quickly while keeping behavior predictable.
   ],
 };
 
+const BUILTIN_AUTOMATION_TEMPLATES: BuiltinAutomationTemplate[] = [
+  {
+    id: "learning-review",
+    title: "Learning Review Loop",
+    description:
+      "Daily/weekly Codex session review that converts repeated signals into fclt writebacks and evolution candidates.",
+    defaultRRule: "RRULE:FREQ=DAILY;BYHOUR=19;BYMINUTE=0",
+    defaultStatus: "PAUSED",
+    defaultModel: "gpt-5.4",
+    defaultReasoningEffort: "high",
+    scope: "wide",
+    memory: `# Learning Review Loop
+
+Use this memory for pattern continuity:
+
+- Primary goal: convert repeated, evidence-backed session signal into durable writeback or evolution, not chat-only summary.
+- Grounding: prefer evidence from session messages, tool calls, shell commands, diffs, tests, commits, and touched files.
+- Threshold: only encode signal when you can name what was learned, why it matters, and the most plausible destination.
+- Scope: default to project writeback unless the signal clearly belongs in global doctrine or a shared capability.
+- Verification: distinguish one-off friction from a repeated pattern before escalating it.
+- If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when the review needs stronger feedback loops or verification framing.
+- If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when repeated signal should become a concrete proposal.
+- If available, delegate bounded review slices to \`learning-extractor\`, \`writeback-curator\`, \`scope-promoter\`, \`evolution-planner\`, or \`verification-auditor\` when that materially improves the review.
+`,
+    prompt: `Goal: review recent Codex work in the configured CWDs and convert durable, evidence-backed signal into writebacks or reviewable evolution proposals.
+
+Before producing output:
+- Treat [AGENTS.md]({{codexAgents}}) as the rendered operating-model baseline for this Codex environment.
+- Use [LEARNING_AND_WRITEBACK.md]({{aiLearningAndWriteback}}) and [EVOLUTION.md]({{aiEvolution}}) as the durable doctrine for writeback and capability change decisions.
+- Use [FEEDBACK_LOOPS.md]({{aiFeedbackLoops}}) and [VERIFICATION.md]({{aiVerification}}) when you need stronger loop design or more defensible proof.
+- If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when you need stronger feedback loops, success criteria, or verification framing.
+- If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when repeated signal appears strong enough to become a durable capability proposal.
+- If it will materially improve quality, explicitly ask Codex to spawn narrow subagents such as \`learning-extractor\`, \`writeback-curator\`, \`scope-promoter\`, \`evolution-planner\`, or \`verification-auditor\`. Only use them for bounded, non-overlapping review slices.
+
+Grounding rules:
+- Work only from evidence in Codex sessions and nearby repo artifacts for the configured CWDs.
+- Prefer evidence from session messages, tool calls, shell commands, diffs, tests, commits, and touched files.
+- Do not speculate about intent or propose changes that are not anchored in evidence.
+- Distinguish one-off friction from repeated signal. Escalate only when the signal is durable enough to matter.
+
+Decision rules:
+- Use \`fclt ai writeback add\` when the signal, target asset, and scope are clear.
+- Use \`fclt ai evolve\` only when repeated signal is strong enough to justify a reviewable capability change.
+- Prefer project scope unless the learning clearly belongs in shared global doctrine, shared agents, shared skills, or other cross-project capability.
+- Skip weak, speculative, or purely anecdotal observations.
+
+Verification:
+- Verify every claim against at least one concrete artifact.
+- Call out residual uncertainty instead of overstating confidence.
+- Separate missing context, weak verification, failed execution, and reusable pattern; do not collapse them together.
+
+Output:
+- Recorded writebacks: what you recorded, why, and the target asset or command used.
+- Evolution candidates: only the strongest repeated signals, with rationale and likely scope.
+- Watch list: promising signals not yet strong enough to encode.
+- Gaps in current operating model or verification harness: only if evidence supports them.
+
+Keep the result concise, high-signal, and operational. If nothing crosses the threshold, say what you reviewed and why no writeback or evolution was justified.`,
+  },
+  {
+    id: "tool-call-audit",
+    title: "Tool Call Audit",
+    description:
+      "Checks whether repeated Codex tool usage looks repetitive or missing guardrails and proposes operating-model adjustments.",
+    defaultRRule: "RRULE:FREQ=WEEKLY;BYHOUR=10;BYMINUTE=0;BYDAY=MO,WE,FR",
+    defaultStatus: "PAUSED",
+    defaultModel: "gpt-5.4",
+    defaultReasoningEffort: "high",
+    scope: "wide",
+    memory: `# Tool Call Audit
+
+Use this memory for continuity:
+
+- Focus on repeated tool failures, retries, shallow-success loops, and missing operating-model guardrails.
+- Distinguish whether the root issue is instruction quality, missing verification, missing skill usage, missing subagent delegation, or a real tool limitation.
+- Prefer reusable operating-model changes over one-off commentary.
+- If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when the audit reveals weak or gameable verification loops.
+- If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when the same pattern should become a lasting capability change.
+- If available, delegate bounded slices to \`verification-auditor\`, \`writeback-curator\`, or \`evolution-planner\` when that improves rigor.
+`,
+    prompt: `Goal: audit recent Codex tool and agent usage in the configured CWDs, find repeated high-cost patterns, and turn strong evidence into operating-model improvements.
+
+Before producing output:
+- Treat [AGENTS.md]({{codexAgents}}) as the rendered operating-model baseline for this Codex environment.
+- Use [LEARNING_AND_WRITEBACK.md]({{aiLearningAndWriteback}}), [EVOLUTION.md]({{aiEvolution}}), and [VERIFICATION.md]({{aiVerification}}) when deciding whether a repeated operational pattern deserves durable change.
+- Use [FEEDBACK_LOOPS.md]({{aiFeedbackLoops}}) when the audit exposes weak, stale, or gameable loops.
+- If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when the audit exposes weak, stale, or gameable verification loops.
+- If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when repeated operational pain should become a durable capability proposal.
+- If it will materially improve rigor, explicitly ask Codex to spawn focused subagents such as \`verification-auditor\`, \`writeback-curator\`, \`scope-promoter\`, or \`evolution-planner\`.
+
+Grounding rules:
+- Anchor findings in concrete evidence from session messages, tool calls, shell commands, diffs, tests, commits, and touched files.
+- Focus on repeated misses, repeated retries, expensive dead ends, missing skill use, missing delegation, or weak proof of correctness.
+- Do not report style-only observations unless they hide a real operational problem.
+
+For each candidate pattern, determine:
+- what tool, agent, or command pattern recurred,
+- what the actual failure mode or inefficiency was,
+- what evidence supports the pattern,
+- whether the better fix is instruction, skill usage, subagent usage, verification, or a capability change.
+
+Decision rules:
+- Use \`fclt ai writeback add\` when the signal and target destination are clear.
+- Use \`fclt ai evolve\` only when the pattern is repeated enough to justify a durable capability change.
+- Prefer project scope unless the problem clearly generalizes across projects or global doctrine.
+- Skip isolated incidents that do not justify durable change.
+
+Output:
+- Recorded writebacks.
+- Evolution candidates.
+- Watch list.
+- Operational gaps: the most important missing skill, missing instruction, weak loop, or missing guardrail revealed by the audit.
+
+Keep the output concise, evidence-backed, and biased toward durable improvement rather than narration.`,
+  },
+];
+
 function isSafePathString(p: string): boolean {
   return !p.includes("\0");
 }
@@ -319,6 +468,640 @@ function renderTemplate(text: string, values: Record<string, string>): string {
     out = out.replaceAll(`{{${k}}}`, v);
   }
   return out;
+}
+
+function automationTemplateValues(homeDir: string): Record<string, string> {
+  const codexRoot = join(homeDir, ".codex");
+  const aiRoot = join(homeDir, ".ai");
+  return {
+    codexAgents: join(codexRoot, "AGENTS.md"),
+    aiLearningAndWriteback: join(
+      aiRoot,
+      "instructions",
+      "LEARNING_AND_WRITEBACK.md"
+    ),
+    aiEvolution: join(aiRoot, "instructions", "EVOLUTION.md"),
+    aiFeedbackLoops: join(aiRoot, "instructions", "FEEDBACK_LOOPS.md"),
+    aiVerification: join(aiRoot, "instructions", "VERIFICATION.md"),
+    feedbackLoopSkill: join(
+      codexRoot,
+      "skills",
+      "feedback-loop-setup",
+      "SKILL.md"
+    ),
+    capabilityEvolutionSkill: join(
+      codexRoot,
+      "skills",
+      "capability-evolution",
+      "SKILL.md"
+    ),
+  };
+}
+
+function quoteTomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function quoteTomlStringArray(values: string[]): string {
+  return `[${values.map(quoteTomlString).join(", ")}]`;
+}
+
+function normalizeCwdList(raw: string | null | undefined): string[] {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function isInteractiveOutputRequested(args: string[]): boolean {
+  return (
+    !args.includes("--json") &&
+    process.stdin.isTTY === true &&
+    process.stdout.isTTY === true
+  );
+}
+
+function parseAutomationScope(
+  raw: string | null
+): BuiltinAutomationTemplateScope | null {
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === "global" ||
+    normalized === "project" ||
+    normalized === "wide"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function expandPathForUserHome(p: string, home: string): string {
+  if (p === "~") {
+    return home;
+  }
+  if (p.startsWith("~/")) {
+    return join(home, p.slice(2));
+  }
+  return p;
+}
+
+function normalizeCwdInput(
+  raw: string,
+  cwd: string,
+  homeDir: string
+): string[] {
+  return normalizeCwdList(raw)
+    .map((entry) => {
+      const expanded = expandPathForUserHome(entry, homeDir);
+      return resolve(cwd, expanded);
+    })
+    .filter((entry) => isSafePathString(entry));
+}
+
+function normalizePromptPath(
+  raw: string,
+  cwd: string,
+  homeDir: string
+): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return resolve(cwd, expandPathForUserHome(trimmed, homeDir));
+}
+
+function normalizePromptPathList(
+  raw: string,
+  cwd: string,
+  homeDir: string
+): string[] {
+  return raw
+    .split(PROMPT_PATH_SPLIT_RE)
+    .map((entry) => normalizePromptPath(entry, cwd, homeDir))
+    .filter((value): value is string => Boolean(value));
+}
+
+function runGitCommand(
+  cwd: string,
+  args: string[]
+): { stdout: string; status: number } | null {
+  try {
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 1_000_000,
+    });
+    if (!result || result.status === null || result.status === undefined) {
+      return null;
+    }
+    return {
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+      status: result.status,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findGitRootFromPath(cwd: string): string | null {
+  const result = runGitCommand(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!result || result.status !== 0) {
+    return null;
+  }
+  const root = result.stdout.trim();
+  return root || null;
+}
+
+function parseGitWorktreeList(raw: string): string[] {
+  const lines = raw.split(GIT_WORKTREE_LINE_RE);
+  const out: string[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("worktree ")) {
+      continue;
+    }
+    const value = line.slice("worktree ".length).trim();
+    if (value) {
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+async function addGitWorkspaceCandidatesFromDirectory(
+  root: string,
+  out: Map<string, AutomationCwdCandidate>,
+  homeDir: string
+) {
+  const gitRootPath = resolve(root);
+  const direct = normalizePromptPath(root, gitRootPath, homeDir);
+  if (direct) {
+    const gitFile = join(gitRootPath, ".git");
+    try {
+      await Bun.file(gitFile).stat();
+      out.set(gitRootPath, {
+        value: gitRootPath,
+        label: `${basename(gitRootPath)} (root)`,
+        hint: `Git root: ${gitRootPath}`,
+      });
+    } catch {
+      // Not a git root at this path.
+    }
+  }
+
+  const dirEntries = await readdir(root, { withFileTypes: true }).catch(
+    () => []
+  );
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const candidate = join(root, entry.name);
+    const gitDir = join(candidate, ".git");
+    try {
+      await Bun.file(gitDir).stat();
+      const abs = resolve(candidate);
+      const existing = out.get(abs);
+      if (!existing) {
+        out.set(abs, {
+          value: abs,
+          label: `${entry.name} (candidate)`,
+          hint: `Git workspace: ${abs}`,
+        });
+      }
+    } catch {
+      // Not a git directory.
+    }
+  }
+}
+
+async function collectKnownAutomationCwdCandidates(
+  homeDir: string,
+  cwd: string
+): Promise<AutomationCwdCandidate[]> {
+  const discovered = new Map<string, AutomationCwdCandidate>();
+  const cwdResolved = resolve(cwd);
+
+  const gitRoot = findGitRootFromPath(cwdResolved);
+  if (gitRoot) {
+    const worktreeResult = runGitCommand(gitRoot, [
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+    if (worktreeResult && worktreeResult.status === 0) {
+      for (const pathValue of parseGitWorktreeList(worktreeResult.stdout)) {
+        const abs = resolve(pathValue);
+        if (!discovered.has(abs)) {
+          discovered.set(abs, {
+            value: abs,
+            label: `${basename(abs)} (git worktree)`,
+            hint: abs,
+          });
+        }
+      }
+    }
+
+    if (discovered.size === 0) {
+      const abs = resolve(gitRoot);
+      discovered.set(abs, {
+        value: abs,
+        label: `${basename(abs)} (project root)`,
+        hint: abs,
+      });
+    }
+  }
+
+  const cfg = readFacultConfig(homeDir);
+  for (const rawPath of cfg?.scanFrom ?? []) {
+    const scanRoot = expandPathForUserHome(rawPath, homeDir);
+    await addGitWorkspaceCandidatesFromDirectory(scanRoot, discovered, homeDir);
+  }
+
+  const automationRoot = join(homeDir, ".codex", "automations");
+  const entries = await readdir(automationRoot, { withFileTypes: true }).catch(
+    () => []
+  );
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const tomlPath = join(automationRoot, entry.name, "automation.toml");
+    try {
+      const rawToml = await Bun.file(tomlPath).text();
+      const parsed = Bun.TOML.parse(rawToml) as Record<string, unknown>;
+      const cwds = parsed.cwds;
+      if (!Array.isArray(cwds)) {
+        continue;
+      }
+      for (const rawValue of cwds) {
+        if (typeof rawValue !== "string") {
+          continue;
+        }
+        const normalized = normalizePromptPath(rawValue, cwdResolved, homeDir);
+        if (!normalized) {
+          continue;
+        }
+        const label = basename(normalized);
+        if (!discovered.has(normalized)) {
+          discovered.set(normalized, {
+            value: normalized,
+            label: `${label} (from Codex automation)`,
+            hint: normalized,
+          });
+        }
+      }
+    } catch {
+      // Ignore malformed or missing automation files.
+    }
+  }
+
+  return Array.from(discovered.values()).sort((a, b) =>
+    a.label.localeCompare(b.label, "en-US")
+  );
+}
+
+async function resolveAutomationScopeInputs(opts: {
+  template: BuiltinAutomationTemplate;
+  requestedScope: string | null;
+  requestedProjectRoot: string | null;
+  requestedCwdsRaw: string | null;
+  requestedCwdsArray?: string[];
+  homeDir: string;
+  cwd: string;
+  interactive: boolean;
+}): Promise<{
+  scope: string | null;
+  projectRoot: string | null;
+  cwds: string[] | null;
+}> {
+  const parsedRequestedScope = parseAutomationScope(opts.requestedScope);
+  if (opts.requestedScope && !parsedRequestedScope) {
+    throw new Error(`Unsupported automation scope: ${opts.requestedScope}`);
+  }
+
+  const requestedCwds = opts.requestedCwdsArray?.length
+    ? opts.requestedCwdsArray
+    : normalizeCwdInput(opts.requestedCwdsRaw ?? "", opts.cwd, opts.homeDir);
+  const requestedProjectRoot = opts.requestedProjectRoot
+    ? normalizePromptPath(opts.requestedProjectRoot, opts.cwd, opts.homeDir)
+    : null;
+
+  if (
+    !opts.interactive ||
+    (parsedRequestedScope &&
+      (parsedRequestedScope === "global" || parsedRequestedScope === "wide") &&
+      requestedCwds.length > 0) ||
+    (parsedRequestedScope === "project" && requestedProjectRoot)
+  ) {
+    return {
+      scope: parsedRequestedScope,
+      projectRoot:
+        parsedRequestedScope === "project" ? requestedProjectRoot : null,
+      cwds:
+        parsedRequestedScope === "global" || parsedRequestedScope === "wide"
+          ? requestedCwds
+          : [],
+    };
+  }
+
+  const candidates = await collectKnownAutomationCwdCandidates(
+    opts.homeDir,
+    opts.cwd
+  );
+  const scopeDefault: BuiltinAutomationTemplateScope =
+    parsedRequestedScope ?? opts.template.scope;
+
+  let scope: BuiltinAutomationTemplateScope = scopeDefault;
+  if (parsedRequestedScope) {
+    scope = parsedRequestedScope;
+  } else {
+    const chosen = await select({
+      message: "Choose automation scope",
+      options: [
+        { value: "project", label: "project", hint: "Track one project root" },
+        {
+          value: "wide",
+          label: "wide",
+          hint: "Track many explicit project roots",
+        },
+        {
+          value: "global",
+          label: "global",
+          hint: "Create a global/default scaffold",
+        },
+      ],
+      initialValue: scopeDefault,
+    });
+    if (isCancel(chosen)) {
+      process.exit(1);
+    }
+    scope = chosen;
+  }
+
+  if (scope === "project" && !requestedProjectRoot) {
+    if (!candidates.length) {
+      const txt = await text({
+        message: "Project root path",
+        placeholder: opts.cwd,
+      });
+      if (isCancel(txt) || !txt || typeof txt !== "string") {
+        process.exit(1);
+      }
+      return {
+        scope,
+        projectRoot: normalizePromptPath(txt, opts.cwd, opts.homeDir),
+        cwds: [],
+      };
+    }
+
+    const choices = [
+      ...candidates.map((c) => ({
+        value: c.value,
+        label: c.label,
+        hint: c.hint,
+      })),
+      {
+        value: "__custom__",
+        label: "Custom project path",
+        hint: "Enter a different absolute or relative path",
+      },
+    ];
+    const chosen = await select({
+      message: "Select project scope root",
+      options: choices,
+      initialValue: candidates[0]?.value ?? "__custom__",
+    });
+    if (isCancel(chosen)) {
+      process.exit(1);
+    }
+    if (chosen === "__custom__") {
+      const txt = await text({
+        message: "Project root path",
+        placeholder: opts.cwd,
+      });
+      if (isCancel(txt) || !txt || typeof txt !== "string") {
+        process.exit(1);
+      }
+      return {
+        scope,
+        projectRoot: normalizePromptPath(txt, opts.cwd, opts.homeDir),
+        cwds: [],
+      };
+    }
+    return { scope, projectRoot: chosen, cwds: [] };
+  }
+
+  if (scope === "global" || scope === "wide") {
+    if (requestedCwds.length > 0) {
+      return { scope, projectRoot: null, cwds: requestedCwds };
+    }
+
+    if (!candidates.length) {
+      const txt = await text({
+        message: "Workspace paths (comma-separated or leave blank for none)",
+        placeholder: "",
+      });
+      if (isCancel(txt) || typeof txt !== "string") {
+        process.exit(1);
+      }
+      const parsed = normalizePromptPathList(txt, opts.cwd, opts.homeDir);
+      return { scope, projectRoot: null, cwds: parsed };
+    }
+
+    const chosen = await multiselect({
+      message: "Select workspaces",
+      options: [
+        ...candidates.map((c) => ({
+          value: c.value,
+          label: c.label,
+          hint: c.hint,
+        })),
+        {
+          value: "__manual__",
+          label: "Add custom paths",
+          hint: "Comma-separated absolute or relative paths",
+        },
+      ],
+      required: false,
+    });
+    if (isCancel(chosen) || !Array.isArray(chosen)) {
+      process.exit(1);
+    }
+
+    const base = chosen.filter((value) => value !== "__manual__");
+    if (!chosen.includes("__manual__")) {
+      return { scope, projectRoot: null, cwds: base };
+    }
+
+    const manual = await text({
+      message: "Additional workspace paths (comma-separated)",
+      placeholder: "",
+    });
+    if (isCancel(manual) || typeof manual !== "string") {
+      process.exit(1);
+    }
+    const manualList = normalizePromptPathList(manual, opts.cwd, opts.homeDir);
+    return {
+      scope,
+      projectRoot: null,
+      cwds: uniqueSorted([...base, ...manualList]),
+    };
+  }
+
+  return {
+    scope,
+    projectRoot: null,
+    cwds: requestedCwds,
+  };
+}
+
+function sanitizeAutomationName(value: string): string {
+  const safe = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!safe) {
+    throw new Error("Invalid automation name");
+  }
+  return safe;
+}
+
+function pickScopeTemplateCwds(opts: {
+  template: BuiltinAutomationTemplate;
+  requestedScope: string | null;
+  providedCwds: string[];
+  projectRoot: string | null;
+  cwd: string;
+}): string[] {
+  const requested = (opts.requestedScope ?? "global").trim().toLowerCase();
+  if (!["global", "project", "wide"].includes(requested)) {
+    throw new Error(`Unsupported automation scope: ${opts.requestedScope}`);
+  }
+
+  if (requested === "project") {
+    if (opts.projectRoot) {
+      return [resolve(opts.projectRoot)];
+    }
+    return [resolve(opts.cwd)];
+  }
+
+  if (opts.providedCwds.length) {
+    return opts.providedCwds.map((pathValue) => resolve(pathValue));
+  }
+
+  if (opts.template.scope === "project") {
+    return [resolve(opts.cwd)];
+  }
+
+  return [];
+}
+
+async function scaffoldCodexAutomationTemplate(args: {
+  homeDir?: string;
+  cwd?: string;
+  templateId: string;
+  force?: boolean;
+  dryRun?: boolean;
+  name?: string;
+  scope?: string | null;
+  projectRoot?: string | null;
+  cwds?: string[] | null;
+  cwdsRaw?: string | null;
+  rrule?: string | null;
+  status?: string | null;
+}): Promise<{
+  installedAs: string;
+  path: string;
+  dryRun: boolean;
+  changedPaths: string[];
+}> {
+  const home = args.homeDir ?? homedir();
+  const cwd = resolve(args.cwd ?? process.cwd());
+  const template = BUILTIN_AUTOMATION_TEMPLATES.find(
+    (candidate) => candidate.id === args.templateId
+  );
+  if (!template) {
+    throw new Error(`Unknown automation template: ${args.templateId}`);
+  }
+
+  const safeName = sanitizeAutomationName(args.name ?? template.id);
+  const requestedCwds = Array.isArray(args.cwds)
+    ? args.cwds
+    : normalizeCwdList(args.cwdsRaw ?? "");
+  const cwds = pickScopeTemplateCwds({
+    template,
+    requestedScope: args.scope ?? null,
+    providedCwds: requestedCwds,
+    projectRoot: args.projectRoot ?? null,
+    cwd,
+  });
+
+  const scopeStatus =
+    args.status === "active" || args.status === "ACTIVE"
+      ? "ACTIVE"
+      : args.status === "paused" || args.status === "PAUSED"
+        ? "PAUSED"
+        : template.defaultStatus;
+  const rrule = args.rrule?.trim() || template.defaultRRule;
+  const model = template.defaultModel;
+  const reasoningEffort = template.defaultReasoningEffort;
+  const templateValues = automationTemplateValues(home);
+  const renderedPrompt = renderTemplate(template.prompt.trim(), templateValues);
+  const renderedMemory = renderTemplate(template.memory.trim(), templateValues);
+
+  const timestamp = String(Date.now());
+  const automationPath = join(home, ".codex", "automations", safeName);
+  const automationTomlPath = join(automationPath, "automation.toml");
+  const memoryPath = join(automationPath, "memory.md");
+
+  const automationToml = `version = 1
+id = ${quoteTomlString(safeName)}
+name = ${quoteTomlString(template.title)}
+prompt = ${quoteTomlString(renderedPrompt)}
+status = ${quoteTomlString(scopeStatus)}
+rrule = ${quoteTomlString(rrule)}
+model = ${quoteTomlString(model)}
+reasoning_effort = ${quoteTomlString(reasoningEffort)}
+cwds = ${quoteTomlStringArray(cwds)}
+created_at = ${timestamp}
+updated_at = ${timestamp}
+`;
+
+  const memory = `${renderedMemory}\n`;
+  const changedPaths: string[] = [];
+
+  const automationTomlExists = await fileExists(automationTomlPath);
+  if (!automationTomlExists || args.force) {
+    changedPaths.push(automationTomlPath);
+    if (!args.dryRun) {
+      await mkdir(automationPath, { recursive: true });
+      await Bun.write(automationTomlPath, `${automationToml}\n`);
+    }
+  }
+
+  const memoryExists = await fileExists(memoryPath);
+  if (!memoryExists || args.force) {
+    changedPaths.push(memoryPath);
+    if (!args.dryRun) {
+      await mkdir(automationPath, { recursive: true });
+      await Bun.write(memoryPath, memory);
+    }
+  }
+
+  return {
+    installedAs: safeName,
+    path: automationPath,
+    dryRun: Boolean(args.dryRun),
+    changedPaths: uniqueSorted(changedPaths),
+  };
 }
 
 function builtinPackRoot(packName: string): string {
@@ -1685,9 +2468,19 @@ Usage:
   fclt templates init agents [--force] [--dry-run]
   fclt templates init claude [--force] [--dry-run]
   fclt templates init project-ai [--force] [--dry-run]
+  fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>]
+    --status [PAUSED|ACTIVE] [--force] [--dry-run]
 
-Notes:
+  Notes:
   - Templates are powered by the builtin remote index (${BUILTIN_INDEX_NAME}).
+  - Automation templates scaffold Codex automation files under ~/.codex/automations/.
+  - scope=global|wide creates a wide automation. Provide --cwds for explicit repo roots.
+    Without --cwds, wide/global automation has no cwds by default.
+  - scope=project creates an automation scoped to one project root.
+  - If --scope (or --project-root / --cwds) is omitted and the command runs in an
+    interactive terminal, you will be prompted to choose scope and candidate paths.
+    Without explicit answers, project scope falls back to current git project and
+    wide/global scope can be left empty.
 `);
 }
 
@@ -1984,6 +2777,13 @@ export async function templatesCommand(
           "Seed a repo-local .ai with the built-in Facult operating-model pack.",
         version: "1.0.0",
       },
+      ...BUILTIN_AUTOMATION_TEMPLATES.map((item) => ({
+        id: item.id,
+        type: "automation",
+        title: item.title,
+        description: item.description,
+        version: "wide",
+      })),
     ];
     if (json) {
       console.log(JSON.stringify(rows, null, 2));
@@ -2003,7 +2803,7 @@ export async function templatesCommand(
   const [kind, ...args] = rest;
   if (!kind) {
     console.error(
-      "templates init requires a kind (skill|mcp|snippet|agents|claude|project-ai)"
+      "templates init requires a kind (skill|mcp|snippet|agents|claude|project-ai|automation)"
     );
     process.exitCode = 2;
     return;
@@ -2070,6 +2870,75 @@ export async function templatesCommand(
   } else if (kind === "claude") {
     ref = `${BUILTIN_INDEX_NAME}:claude-md-template`;
     as = positional[0];
+  } else if (kind === "automation") {
+    const templateId = positional[0];
+    if (!templateId) {
+      console.error(
+        "templates init automation requires a <template-id> (learning-review|tool-call-audit)"
+      );
+      process.exitCode = 2;
+      return;
+    }
+    const template = BUILTIN_AUTOMATION_TEMPLATES.find(
+      (candidate) => candidate.id === templateId
+    );
+    if (!template) {
+      console.error(`Unknown automation template: ${templateId}`);
+      process.exitCode = 1;
+      return;
+    }
+    const status =
+      parseLongFlag(args, "--status") ??
+      parseLongFlag(args, "--automation-status");
+    const scope = parseLongFlag(args, "--scope");
+    const projectRoot = parseLongFlag(args, "--project-root");
+    const cwdsRaw = parseLongFlag(args, "--cwds");
+    const rrule = parseLongFlag(args, "--rrule");
+    const name = parseLongFlag(args, "--name");
+    const cwd = resolve(ctx.cwd ?? process.cwd());
+    const home = ctx.homeDir ?? homedir();
+    const normalizedCwds = normalizeCwdInput(cwdsRaw ?? "", cwd, home);
+    const resolved = await resolveAutomationScopeInputs({
+      template,
+      requestedScope: scope,
+      requestedProjectRoot: projectRoot,
+      requestedCwdsRaw: cwdsRaw,
+      requestedCwdsArray: normalizedCwds,
+      homeDir: home,
+      cwd,
+      interactive: isInteractiveOutputRequested(args),
+    });
+    try {
+      const result = await scaffoldCodexAutomationTemplate({
+        homeDir: ctx.homeDir,
+        cwd,
+        templateId,
+        force,
+        dryRun,
+        name: name ?? undefined,
+        scope: resolved.scope,
+        projectRoot: resolved.projectRoot,
+        cwds: resolved.cwds,
+        rrule,
+        status,
+      });
+      if (json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const action = dryRun ? "Would scaffold" : "Scaffolded";
+      console.log(
+        `${action} automation template as ${result.installedAs} (${result.path})`
+      );
+      for (const path of result.changedPaths) {
+        console.log(`  - ${path}`);
+      }
+      return;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+      return;
+    }
   } else {
     console.error(`Unknown template kind: ${kind}`);
     process.exitCode = 2;

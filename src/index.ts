@@ -163,7 +163,7 @@ Commands:
   self-update  Update fclt itself based on install method
   verify-source  Verify source trust and manifest integrity/signature status
   sources      Manage source trust policy for remote indices
-  templates    Scaffold DX-first templates (skills/instructions/MCP/snippets)
+  templates    Scaffold DX-first templates (skills/instructions/MCP/snippets/automations)
   snippets     Sync reusable snippet blocks into config files
 
 Options:
