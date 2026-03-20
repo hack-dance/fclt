@@ -1,3 +1,13 @@
+## [2.3.0](https://github.com/hack-dance/fclt/compare/v2.2.0...v2.3.0) (2026-03-20)
+
+### Features
+
+* add evolution review automation template ([3b633fd](https://github.com/hack-dance/fclt/commit/3b633fd62c63b97ff32c38c6ef2f537a12721039))
+
+### Bug Fixes
+
+* harden writeback capture and cli fallback ([afebfec](https://github.com/hack-dance/fclt/commit/afebfec0dfcdcb262ac0464710bef1fdba20982f))
+
 ## [2.2.0](https://github.com/hack-dance/fclt/compare/v2.1.2...v2.2.0) (2026-03-20)
 
 ### Features
