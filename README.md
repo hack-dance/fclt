@@ -694,12 +694,20 @@ fclt snippets sync [--dry-run] [file...]
 
 ### Codex automations
 
-`templates init automation` can scaffold two Codex automation forms:
+`templates init automation` can scaffold three Codex automation forms:
 
 - `--scope project` (single repo): set `--project-root` (or infer from current working directory)
 - `--scope wide|global` (multiple repos): set `--cwds` explicitly; if omitted, created automation has no `cwds` by default.
 - If you run it interactively without `--scope`, `fclt` prompts for scope and, where possible, known workspaces (git worktrees, configured scan roots, and existing Codex automation paths).
 - Built-in automation templates are opinionated: they reference the global Codex operating model, point at relevant Codex skills, and tell Codex when to use focused subagents for bounded review work.
+
+Recommended topology:
+
+- Use `learning-review --scope project` for repo-local writeback and evolution. This keeps review state, verification, and follow-up scoped to the repo that actually produced the evidence.
+- Use `evolution-review` on a slower cadence, usually weekly, to triage open proposals and proposal-worthy clusters and suggest the next operator action (`draft`, `review`, `accept`, `reject`, `promote`, or `apply`).
+- Use a separate wide/global automation only for cross-repo or shared-surface review, such as global doctrine, shared skills, or repeated tool/agent patterns across repos.
+- If you do use a wide learning review, keep the `cwds` list intentionally small and related. The prompt is designed to partition by cwd first, not to blur unrelated repos together.
+- A practical default is daily `learning-review` plus weekly `evolution-review`. The first finds and records durable signal; the second keeps proposal review from stalling.
 
 Files are written to:
 
@@ -722,6 +730,16 @@ Example global automation:
 fclt templates init automation learning-review \
   --scope wide \
   --cwds /path/to/repo-a,/path/to/repo-b \
+  --status PAUSED
+```
+
+Example weekly evolution automation:
+
+```bash
+fclt templates init automation evolution-review \
+  --scope wide \
+  --cwds /path/to/repo-a,/path/to/repo-b \
+  --name weekly-evolution-review \
   --status PAUSED
 ```
 

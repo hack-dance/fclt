@@ -338,9 +338,11 @@ const BUILTIN_AUTOMATION_TEMPLATES: BuiltinAutomationTemplate[] = [
 Use this memory for pattern continuity:
 
 - Primary goal: convert repeated, evidence-backed session signal into durable writeback or evolution, not chat-only summary.
+- For wide reviews, partition evidence by cwd first; do not let one repo's evidence stand in for another.
 - Grounding: prefer evidence from session messages, tool calls, shell commands, diffs, tests, commits, and touched files.
 - Threshold: only encode signal when you can name what was learned, why it matters, and the most plausible destination.
 - Scope: default to project writeback unless the signal clearly belongs in global doctrine or a shared capability.
+- Promote to global only when the same signal appears across multiple repos or clearly targets shared doctrine, shared agents, or shared skills.
 - Verification: distinguish one-off friction from a repeated pattern before escalating it.
 - If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when the review needs stronger feedback loops or verification framing.
 - If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when repeated signal should become a concrete proposal.
@@ -358,6 +360,7 @@ Before producing output:
 
 Grounding rules:
 - Work only from evidence in Codex sessions and nearby repo artifacts for the configured CWDs.
+- Partition the review by cwd first. Name which configured cwds had real evidence this run and which did not.
 - Prefer evidence from session messages, tool calls, shell commands, diffs, tests, commits, and touched files.
 - Do not speculate about intent or propose changes that are not anchored in evidence.
 - Distinguish one-off friction from repeated signal. Escalate only when the signal is durable enough to matter.
@@ -366,6 +369,7 @@ Decision rules:
 - Use \`fclt ai writeback add\` when the signal, target asset, and scope are clear.
 - Use \`fclt ai evolve\` only when repeated signal is strong enough to justify a reviewable capability change.
 - Prefer project scope unless the learning clearly belongs in shared global doctrine, shared agents, shared skills, or other cross-project capability.
+- For wide automations, require repeated evidence across more than one cwd before recommending a global/shared capability change unless the target is obviously global.
 - Skip weak, speculative, or purely anecdotal observations.
 
 Verification:
@@ -374,12 +378,77 @@ Verification:
 - Separate missing context, weak verification, failed execution, and reusable pattern; do not collapse them together.
 
 Output:
+- Coverage: which cwds had concrete evidence, and which were effectively idle for this run.
 - Recorded writebacks: what you recorded, why, and the target asset or command used.
 - Evolution candidates: only the strongest repeated signals, with rationale and likely scope.
 - Watch list: promising signals not yet strong enough to encode.
 - Gaps in current operating model or verification harness: only if evidence supports them.
 
 Keep the result concise, high-signal, and operational. If nothing crosses the threshold, say what you reviewed and why no writeback or evolution was justified.`,
+  },
+  {
+    id: "evolution-review",
+    title: "Evolution Review Loop",
+    description:
+      "Weekly Codex review of open evolution proposals and strong writeback clusters, with suggested next actions for review, acceptance, rejection, promotion, or apply.",
+    defaultRRule: "RRULE:FREQ=WEEKLY;BYHOUR=16;BYMINUTE=0;BYDAY=FR",
+    defaultStatus: "PAUSED",
+    defaultModel: "gpt-5.4",
+    defaultReasoningEffort: "high",
+    scope: "wide",
+    memory: `# Evolution Review Loop
+
+Use this memory for continuity:
+
+- Primary goal: keep proposal review moving so durable changes do not stall after writeback.
+- Review continuity matters: track which proposals were already seen, what changed since the last review, and which action was previously recommended.
+- Prefer reviewing existing proposal and writeback state over rediscovering the entire history from scratch.
+- Scope: default to project evolution unless the proposal clearly belongs in shared doctrine, shared agents, shared skills, or another cross-project capability.
+- For wide reviews, partition by cwd first and only recommend shared/global promotion when evidence truly spans multiple repos or the target asset is obviously shared.
+- Recommend actions, do not silently apply high-risk changes.
+- If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when proposal shaping or promotion decisions need stronger structure.
+- If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when proposal validity depends on weak or stale verification.
+- If available, delegate bounded slices to \`evolution-planner\`, \`scope-promoter\`, \`writeback-curator\`, or \`verification-auditor\` when that materially improves rigor.
+`,
+    prompt: `Goal: review current evolution state in the configured CWDs, keep proposal continuity intact, and suggest the highest-signal next actions for draft, review, accept, reject, promote, supersede, or apply.
+
+Before producing output:
+- Treat [AGENTS.md]({{codexAgents}}) as the rendered operating-model baseline for this Codex environment.
+- Use [EVOLUTION.md]({{aiEvolution}}), [LEARNING_AND_WRITEBACK.md]({{aiLearningAndWriteback}}), and [VERIFICATION.md]({{aiVerification}}) as the doctrine for proposal quality, thresholding, and proof.
+- Use [FEEDBACK_LOOPS.md]({{aiFeedbackLoops}}) when a proposal depends on a weak or gameable verification loop.
+- If available, use [$capability-evolution]({{capabilityEvolutionSkill}}) when you need stronger proposal-shaping or promotion judgment.
+- If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when proposal validity depends on missing or stale verification.
+- If it will materially improve quality, explicitly ask Codex to spawn narrow subagents such as \`evolution-planner\`, \`scope-promoter\`, \`writeback-curator\`, or \`verification-auditor\`. Only use them for bounded, non-overlapping review slices.
+
+Grounding rules:
+- Work from concrete proposal and writeback artifacts first, then confirm with nearby repo evidence when needed.
+- Preserve continuity: compare this run against the automation memory and note what is actually new, unchanged, strengthened, weakened, accepted, rejected, or stale.
+- Partition the review by cwd first. Name which configured cwds had real proposal or writeback state this run and which did not.
+- Do not speculate about intent or recommend advancing a proposal without citing the evidence that still supports it.
+- Distinguish proposal quality problems from execution gaps, stale evidence, missing verification, and simple lack of reviewer attention.
+
+Decision rules:
+- Prefer suggesting the next operator action over narrating the whole proposal history.
+- Recommend \`draft\` when a proposal exists but is under-specified.
+- Recommend \`review\` or \`accept\` only when the rationale, scope, and evidence are strong enough.
+- Recommend \`apply\` only for already-accepted proposals whose evidence still looks valid and whose risk is appropriate.
+- Recommend \`reject\` or \`supersede\` when the proposal is stale, contradicted, duplicated, or too weak.
+- Recommend \`promote --to global\` only when a project-scoped proposal now clearly belongs in shared doctrine, shared agents, shared skills, or another cross-project surface.
+- For wide automations, require repeated evidence across more than one cwd before recommending shared/global promotion unless the target is obviously global.
+
+Verification:
+- Verify every recommendation against at least one concrete artifact.
+- Call out residual uncertainty instead of overstating confidence.
+- If a proposal should move forward but the proof is weak, say exactly what verification is missing.
+
+Output:
+- Coverage: which cwds had concrete proposal/writeback evidence, and which were effectively idle for this run.
+- Proposal queue: the strongest active proposals or proposal-worthy clusters, with what changed since the last review.
+- Recommended actions: for each important item, the next operator action and why.
+- Hold or reject: proposals that should stay parked, be rejected, or be superseded.
+- Verification gaps: only the missing proof that materially blocks a recommendation.
+
+Keep the result concise, continuity-aware, and operational. If nothing is ready to move, say what you reviewed and why no proposal should advance this run.`,
   },
   {
     id: "tool-call-audit",
@@ -2874,7 +2943,7 @@ export async function templatesCommand(
     const templateId = positional[0];
     if (!templateId) {
       console.error(
-        "templates init automation requires a <template-id> (learning-review|tool-call-audit)"
+        "templates init automation requires a <template-id> (learning-review|evolution-review|tool-call-audit)"
       );
       process.exitCode = 2;
       return;

@@ -171,6 +171,7 @@ interface AddWritebackArgs {
   summary: string;
   asset?: string;
   evidence?: WritebackEvidence[];
+  allowEmptyEvidence?: boolean;
   confidence?: ConfidenceLevel;
   source?: string;
   suggestedDestination?: string;
@@ -348,6 +349,12 @@ export async function addWriteback(
   args: AddWritebackArgs
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const evidence = args.evidence ?? [];
+  if (evidence.length === 0 && !args.allowEmptyEvidence) {
+    throw new Error(
+      "writeback add requires at least one evidence item; pass --evidence <type:ref> or use --allow-empty-evidence for scratch/demo notes"
+    );
+  }
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
   const latest = await latestWritebackMap({
     homeDir,
@@ -368,7 +375,7 @@ export async function addWriteback(
     projectRoot: scopeContext.projectRoot,
     kind: args.kind.trim(),
     summary: args.summary.trim(),
-    evidence: args.evidence ?? [],
+    evidence,
     confidence: args.confidence ?? "medium",
     source: args.source ?? "facult:manual",
     assetRef: asset.assetRef,
@@ -667,6 +674,9 @@ export async function proposeEvolution(args: {
 
   const candidates = writebacks.filter((entry) => {
     if (entry.status === "dismissed" || entry.status === "superseded") {
+      return false;
+    }
+    if (entry.evidence.length === 0) {
       return false;
     }
     if (filterAsset) {
@@ -1405,7 +1415,7 @@ function writebackHelp(): string {
   return `fclt ai writeback
 
 Usage:
-  fclt ai writeback add --kind <kind> --summary <text> [--asset <selector>] [--tag <tag>] [--evidence <type:ref>]
+  fclt ai writeback add --kind <kind> --summary <text> [--asset <selector>] [--tag <tag>] [--evidence <type:ref>] [--allow-empty-evidence]
   fclt ai writeback list [--json]
   fclt ai writeback show <id> [--json]
   fclt ai writeback group --by <asset|kind|domain> [--json]
@@ -1521,6 +1531,7 @@ async function writebackCommand(argv: string[]) {
         kind,
         summary,
         asset: parseStringFlag(parsed.argv, "--asset"),
+        allowEmptyEvidence: parsed.argv.includes("--allow-empty-evidence"),
         confidence:
           (parseStringFlag(parsed.argv, "--confidence") as
             | ConfidenceLevel
