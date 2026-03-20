@@ -1317,6 +1317,61 @@ describe("templates command", () => {
     expect(automationToml).toContain(`cwds = ["${repoA}", "${repoB}"]`);
   });
 
+  it("scaffolds the weekly evolution review automation template", async () => {
+    const { home, root } = await makeTempRoot();
+    const repoA = join(home, "repo-a");
+    const repoB = join(home, "repo-b");
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    process.chdir(home);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "evolution-review",
+          "--scope",
+          "wide",
+          "--name",
+          "weekly-evolution",
+          "--cwds",
+          `${repoA},${repoB}`,
+        ],
+        {
+          homeDir: home,
+          rootDir: root,
+          cwd: home,
+        }
+      );
+    });
+
+    const automationDir = join(
+      home,
+      ".codex",
+      "automations",
+      "weekly-evolution"
+    );
+    const automationToml = await readFile(
+      join(automationDir, "automation.toml"),
+      "utf8"
+    );
+    expect(automationToml).toContain('name = "Evolution Review Loop"');
+    expect(automationToml).toContain(
+      'rrule = "RRULE:FREQ=WEEKLY;BYHOUR=16;BYMINUTE=0;BYDAY=FR"'
+    );
+    expect(automationToml).toContain("$capability-evolution");
+    expect(automationToml).toContain("scope-promoter");
+    expect(automationToml).toContain("Recommended actions");
+    expect(automationToml).toContain("Hold or reject");
+    expect(automationToml).toContain(`cwds = ["${repoA}", "${repoB}"]`);
+
+    const memory = await readFile(join(automationDir, "memory.md"), "utf8");
+    expect(memory).toContain("keep proposal review moving");
+    expect(memory).toContain("$capability-evolution");
+    expect(memory).toContain("Recommend actions, do not silently apply");
+  });
+
   it("scaffolds the builtin project-ai pack into a repo-local .ai", async () => {
     const { home } = await makeTempRoot();
     const repoDir = join(home, "repo");
