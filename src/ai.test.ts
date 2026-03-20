@@ -28,6 +28,7 @@ import {
 
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
+const proposalEvidence = (ref: string) => [{ type: "session", ref }];
 
 async function makeTempHome(): Promise<string> {
   const dir = join(
@@ -88,6 +89,7 @@ describe("ai writeback", () => {
       kind: "weak_verification",
       summary: "Guidance does not distinguish shallow from meaningful checks.",
       asset: "instruction:VERIFICATION",
+      evidence: proposalEvidence("recorded-writeback"),
       tags: ["verification", "false-positive"],
     });
 
@@ -128,6 +130,7 @@ describe("ai writeback", () => {
       rootDir,
       kind: "capability_gap",
       summary: "Repo-local verification guidance is missing.",
+      evidence: proposalEvidence("project-runtime-state"),
     });
 
     expect(record.scope).toBe("project");
@@ -162,6 +165,7 @@ describe("ai writeback", () => {
       rootDir,
       kind: "bad_default",
       summary: "Default behavior is too optimistic.",
+      evidence: proposalEvidence("append-only-status"),
     });
     await promoteWriteback(first.id, { homeDir: tempHome, rootDir });
     await dismissWriteback(first.id, { homeDir: tempHome, rootDir });
@@ -178,6 +182,38 @@ describe("ai writeback", () => {
       .trim()
       .split("\n");
     expect(snapshots).toHaveLength(3);
+  });
+
+  it("requires evidence unless explicitly allowed", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-03-18T00:00:00.000Z",
+      nodes: {},
+      edges: [],
+    });
+
+    await expect(
+      addWriteback({
+        homeDir: tempHome,
+        rootDir,
+        kind: "capability_gap",
+        summary: "Missing evidence should fail.",
+      })
+    ).rejects.toThrow("writeback add requires at least one evidence item");
+
+    const record = await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "capability_gap",
+      summary: "Scratch note with explicit override.",
+      allowEmptyEvidence: true,
+    });
+    expect(record.evidence).toEqual([]);
   });
 
   it("groups recorded writebacks into structured proposals", async () => {
@@ -209,6 +245,7 @@ describe("ai writeback", () => {
       kind: "weak_verification",
       summary: "Checks are too shallow.",
       asset: "instruction:VERIFICATION",
+      evidence: proposalEvidence("group-1"),
     });
     await addWriteback({
       homeDir: tempHome,
@@ -217,6 +254,7 @@ describe("ai writeback", () => {
       summary: "Green checks did not prove correctness.",
       asset: "instruction:VERIFICATION",
       suggestedDestination: "@ai/instructions/VERIFICATION.md",
+      evidence: proposalEvidence("group-2"),
     });
 
     const proposals = await proposeEvolution({
@@ -284,6 +322,7 @@ describe("ai writeback", () => {
       summary: "Checks were too shallow.",
       asset: "instruction:VERIFICATION",
       domain: "verification",
+      evidence: proposalEvidence("group-summary-1"),
       tags: ["verification"],
     });
     await addWriteback({
@@ -293,6 +332,7 @@ describe("ai writeback", () => {
       summary: "Passing checks did not prove correctness.",
       asset: "instruction:VERIFICATION",
       domain: "verification",
+      evidence: proposalEvidence("group-summary-2"),
       tags: ["false-positive"],
     });
     await addWriteback({
@@ -302,6 +342,7 @@ describe("ai writeback", () => {
       summary: "Testing guidance also needs stronger proof.",
       asset: "instruction:TESTING",
       domain: "testing",
+      evidence: proposalEvidence("group-summary-3"),
       tags: ["verification"],
     });
 
@@ -356,6 +397,7 @@ describe("ai writeback", () => {
       summary: "A dedicated work-units instruction is missing.",
       suggestedDestination: "@ai/instructions/WORK_UNITS.md",
       domain: "work-units",
+      evidence: proposalEvidence("create-instruction"),
     });
 
     const [proposal] = await proposeEvolution({ homeDir: tempHome, rootDir });
@@ -418,6 +460,7 @@ describe("ai writeback", () => {
       summary: "A feedback loop setup skill should exist.",
       suggestedDestination: "@ai/skills/feedback-loop-setup/SKILL.md",
       domain: "feedback-loops",
+      evidence: proposalEvidence("add-skill"),
     });
 
     const [proposal] = await proposeEvolution({ homeDir: tempHome, rootDir });
@@ -469,12 +512,54 @@ describe("ai writeback", () => {
       kind: "weak_verification",
       summary: "Verification guidance is too shallow.",
       asset: "instruction:VERIFICATION",
+      evidence: proposalEvidence("update-instruction"),
     });
 
     const [proposal] = await proposeEvolution({ homeDir: tempHome, rootDir });
     expect(proposal?.kind).toBe("update_instruction");
     expect(proposal?.policyClass).toBe("high-risk");
     expect(proposal?.reviewRequired).toBe(true);
+  });
+
+  it("skips evidence-free writebacks when proposing evolution", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    const targetPath = join(rootDir, "instructions", "VERIFICATION.md");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await Bun.write(targetPath, "# Verification\n");
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-03-18T00:00:00.000Z",
+      nodes: {
+        "instruction:global:global:VERIFICATION": {
+          id: "instruction:global:global:VERIFICATION",
+          kind: "instruction",
+          name: "VERIFICATION",
+          sourceKind: "global",
+          scope: "global",
+          canonicalRef: "@ai/instructions/VERIFICATION.md",
+          path: targetPath,
+        },
+      },
+      edges: [],
+    });
+
+    await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "weak_verification",
+      summary: "Verification guidance is too shallow.",
+      asset: "instruction:VERIFICATION",
+      allowEmptyEvidence: true,
+    });
+
+    const proposals = await proposeEvolution({ homeDir: tempHome, rootDir });
+    expect(proposals).toEqual([]);
+
+    const writebacks = await listWritebacks({ homeDir: tempHome, rootDir });
+    expect(writebacks[0]?.status).toBe("recorded");
   });
 
   it("treats project instruction creation as low-risk and allows apply after draft", async () => {
@@ -497,6 +582,7 @@ describe("ai writeback", () => {
       kind: "missing_context",
       summary: "Local project context doc is missing.",
       suggestedDestination: "@project/instructions/WORK_UNITS.md",
+      evidence: proposalEvidence("project-create-instruction"),
     });
 
     const [proposal] = await proposeEvolution({ homeDir: tempHome, rootDir });
@@ -547,6 +633,7 @@ describe("ai writeback", () => {
       kind: "agent_gap",
       summary: "Reviewer agent lacks escalation guidance.",
       asset: "agent:reviewer",
+      evidence: proposalEvidence("update-agent"),
     });
 
     const [proposal] = await proposeEvolution({ homeDir: tempHome, rootDir });
@@ -586,6 +673,7 @@ describe("ai writeback", () => {
       kind: "weak_verification",
       summary: "Verification guidance needs stronger proof language.",
       asset: "instruction:VERIFICATION",
+      evidence: proposalEvidence("draft-apply"),
     });
 
     const [proposal] = await proposeEvolution({
@@ -681,6 +769,7 @@ describe("ai writeback", () => {
       kind: "weak_verification",
       summary: "First proposal input.",
       asset: "instruction:VERIFICATION",
+      evidence: proposalEvidence("supersede-first"),
     });
     const [first] = await proposeEvolution({ homeDir: tempHome, rootDir });
     const rejected = await rejectProposal(first!.id, {
@@ -697,6 +786,7 @@ describe("ai writeback", () => {
       kind: "false_positive",
       summary: "Second proposal input.",
       asset: "instruction:VERIFICATION",
+      evidence: proposalEvidence("supersede-second"),
     });
     const proposals = await proposeEvolution({ homeDir: tempHome, rootDir });
     const second = proposals.at(-1);
@@ -744,6 +834,7 @@ describe("ai writeback", () => {
       kind: "reusable_pattern",
       summary: "This testing pattern should be promoted globally.",
       asset: "instruction:TESTING",
+      evidence: proposalEvidence("promote-project"),
     });
     const [proposal] = await proposeEvolution({
       homeDir: tempHome,
@@ -805,6 +896,7 @@ describe("ai writeback", () => {
       kind: "reusable_pattern",
       summary: "Promote this project testing guidance globally.",
       asset: "instruction:TESTING",
+      evidence: proposalEvidence("promote-global"),
     });
     const [projectProposal] = await proposeEvolution({
       homeDir: tempHome,

@@ -7,6 +7,8 @@ let tempHome: string | null = null;
 const originalHome = process.env.HOME;
 const originalRoot = process.env.FACULT_ROOT_DIR;
 const originalCwd = process.cwd();
+const proposalEvidenceArgs = (ref: string) => ["--evidence", `session:${ref}`];
+const allowEmptyEvidenceArgs = ["--allow-empty-evidence"];
 
 async function makeTempHome(): Promise<string> {
   const dir = join(
@@ -71,6 +73,7 @@ describe("ai CLI", () => {
         "capability_gap",
         "--summary",
         "Need a project operating layer review.",
+        ...allowEmptyEvidenceArgs,
       ]);
     });
     expect(addOut.errors).toEqual([]);
@@ -82,6 +85,35 @@ describe("ai CLI", () => {
     expect(listOut.errors).toEqual([]);
     expect(listOut.logs.join("\n")).toContain("WB-00001");
     expect(listOut.logs.join("\n")).toContain("capability_gap");
+  });
+
+  it("rejects evidence-free writebacks unless explicitly allowed", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
+    await Bun.write(
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
+      `${JSON.stringify({ version: 1, generatedAt: "2026-03-18T00:00:00.000Z", nodes: {}, edges: [] }, null, 2)}\n`
+    );
+    process.chdir(tempHome);
+
+    const addOut = await captureConsole(async () => {
+      await aiCommand([
+        "writeback",
+        "add",
+        "--kind",
+        "capability_gap",
+        "--summary",
+        "Need evidence to persist this.",
+      ]);
+    });
+    expect(addOut.logs).toEqual([]);
+    expect(addOut.errors.join("\n")).toContain(
+      "writeback add requires at least one evidence item"
+    );
   });
 
   it("supports grouping and summarizing writebacks through the ai namespace", async () => {
@@ -127,6 +159,7 @@ describe("ai CLI", () => {
       "Checks were too shallow.",
       "--asset",
       "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("group-1"),
     ]);
     await aiCommand([
       "writeback",
@@ -137,6 +170,7 @@ describe("ai CLI", () => {
       "Passing checks did not prove correctness.",
       "--asset",
       "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("group-2"),
     ]);
 
     const groupOut = await captureConsole(async () => {
@@ -201,6 +235,7 @@ describe("ai CLI", () => {
       "Verification guidance is too shallow.",
       "--asset",
       "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("show-proposal"),
     ]);
 
     const proposeOut = await captureConsole(async () => {
@@ -261,6 +296,7 @@ describe("ai CLI", () => {
       "First proposal input.",
       "--asset",
       "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("draft-first"),
     ]);
     await aiCommand(["evolve", "propose"]);
 
@@ -294,6 +330,7 @@ describe("ai CLI", () => {
       "Second proposal input.",
       "--asset",
       "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("draft-second"),
     ]);
     await aiCommand(["evolve", "propose"]);
 
@@ -318,6 +355,7 @@ describe("ai CLI", () => {
       "Third proposal input.",
       "--asset",
       "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("draft-third"),
     ]);
     await aiCommand(["evolve", "propose"]);
 
@@ -374,6 +412,7 @@ describe("ai CLI", () => {
       "--asset",
       "instruction:TESTING",
       "--project",
+      ...proposalEvidenceArgs("promote-cli"),
     ]);
     await aiCommand(["evolve", "propose", "--project"]);
 
@@ -414,6 +453,7 @@ describe("ai CLI", () => {
       "Work units doc is missing.",
       "--suggested-destination",
       "@ai/instructions/WORK_UNITS.md",
+      ...proposalEvidenceArgs("create-instruction-cli"),
     ]);
     await aiCommand(["evolve", "propose"]);
 
@@ -467,6 +507,7 @@ describe("ai CLI", () => {
       "@project/instructions/WORK_UNITS.md",
       "--root",
       rootDir,
+      ...proposalEvidenceArgs("project-create-cli"),
     ]);
     await aiCommand(["evolve", "propose", "--root", rootDir]);
     await aiCommand(["evolve", "draft", "EV-00001", "--root", rootDir]);

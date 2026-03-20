@@ -38,15 +38,16 @@ async function main() {
   );
   const binaryName = resolved.platform === "windows" ? "fclt.exe" : "fclt";
   const binaryPath = path.join(installDir, binaryName);
+  const sourceEntry = path.join(__dirname, "..", "src", "index.ts");
 
   if (!(await fileExists(binaryPath))) {
     const tag = `v${version}`;
     const assetName = `${PACKAGE_NAME}-${version}-${resolved.platform}-${resolved.arch}${resolved.ext}`;
     const url = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`;
-
-    await fsp.mkdir(installDir, { recursive: true });
     const tmpPath = `${binaryPath}.tmp-${Date.now()}`;
+
     try {
+      await fsp.mkdir(installDir, { recursive: true });
       await downloadWithRetry(url, tmpPath, {
         attempts: DOWNLOAD_RETRIES,
         delayMs: DOWNLOAD_RETRY_DELAY_MS,
@@ -57,6 +58,14 @@ async function main() {
       await fsp.rename(tmpPath, binaryPath);
     } catch (error) {
       await safeUnlink(tmpPath);
+      if (await canUseSourceFallback(sourceEntry)) {
+        return runSourceFallback({
+          sourceEntry,
+          version,
+          packageManager: detectPackageManager(),
+          reason: error,
+        });
+      }
       const message =
         error instanceof Error ? error.message : String(error ?? "");
       console.error(
@@ -75,7 +84,7 @@ async function main() {
   }
 
   const packageManager = detectPackageManager();
-  await writeInstallState({
+  await bestEffortWriteInstallState({
     method: "npm-binary-cache",
     version,
     binaryPath,
@@ -90,6 +99,41 @@ async function main() {
       FACULT_INSTALL_METHOD: "npm-binary-cache",
       FACULT_NPM_PACKAGE_VERSION: version,
       FACULT_RUNTIME_BINARY: binaryPath,
+      FACULT_INSTALL_PM: packageManager,
+    },
+  });
+
+  if (typeof result.status === "number") {
+    process.exit(result.status);
+  }
+  process.exit(1);
+}
+
+async function canUseSourceFallback(sourceEntry) {
+  if (!(await fileExists(sourceEntry))) {
+    return false;
+  }
+  const result = spawnSync("bun", ["--version"], {
+    stdio: "ignore",
+    env: process.env,
+  });
+  return result.status === 0;
+}
+
+function runSourceFallback({ sourceEntry, version, packageManager, reason }) {
+  const message =
+    reason instanceof Error ? reason.message : String(reason ?? "");
+  console.error(
+    `fclt: cached runtime unavailable, falling back to Bun source entry (${message})`
+  );
+  const args = process.argv.slice(2);
+  const result = spawnSync("bun", [sourceEntry, ...args], {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      FACULT_INSTALL_METHOD: "npm-source-fallback",
+      FACULT_NPM_PACKAGE_VERSION: version,
+      FACULT_SOURCE_ENTRY: sourceEntry,
       FACULT_INSTALL_PM: packageManager,
     },
   });
@@ -255,6 +299,14 @@ async function writeInstallState(state) {
     JSON.stringify(state, null, 2)
   );
   await fsp.rename(`${installStatePath}.tmp`, installStatePath);
+}
+
+async function bestEffortWriteInstallState(state) {
+  try {
+    await writeInstallState(state);
+  } catch {
+    // Install state is useful metadata, but it should not block normal CLI usage.
+  }
 }
 
 main().catch((error) => {
