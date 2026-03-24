@@ -129,7 +129,7 @@ describe("autosync launch agent migration", () => {
     await writeFile(legacyPlistPath, "legacy", "utf8");
     setLaunchctlRunnerForTests((args) => {
       launchctlCalls.push(args);
-      return { exitCode: 0, stdout: "", stderr: "" };
+      return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
     });
 
     await installAutosyncService({
@@ -185,7 +185,7 @@ describe("autosync launch agent migration", () => {
     await writeFile(legacyPlistPath, "legacy", "utf8");
     setLaunchctlRunnerForTests((args) => {
       launchctlCalls.push(args);
-      return { exitCode: 0, stdout: "", stderr: "" };
+      return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
     });
 
     const changed = await repairAutosyncServices(homeDir, rootDir);
