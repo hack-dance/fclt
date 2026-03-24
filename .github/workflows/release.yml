@@ -65,6 +65,7 @@ jobs:
         id: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HUSKY: "0"
         shell: bash
         run: |
           set -euo pipefail
