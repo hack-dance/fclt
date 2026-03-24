@@ -1227,7 +1227,10 @@ function registerManagedRenderedTargets(args: {
         if (!nodes[sourceNodeId]) {
           continue;
         }
-        const targetPath = join(toolState.agentsDir, `${entry.name}${extension}`);
+        const targetPath = join(
+          toolState.agentsDir,
+          `${entry.name}${extension}`
+        );
         registerRenderedTargetNode({
           graph: args.graph,
           currentScope: args.currentScope,

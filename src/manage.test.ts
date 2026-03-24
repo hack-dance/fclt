@@ -133,8 +133,8 @@ describe("managed state", () => {
         'description = "Editorial reviewer."',
         "",
         'developer_instructions = """',
-        "Before reviewing, read ${refs.writing_rule}.",
-        "Target tool: ${TARGET_TOOL}.",
+        `Before reviewing, read ${"${"}refs.writing_rule}.`,
+        `Target tool: ${"${"}TARGET_TOOL}.`,
         '"""',
         "",
       ].join("\n")

@@ -466,7 +466,8 @@ async function renderManagedAgentFile(args: {
       raw: args.agent.raw,
       homeDir: args.homeDir,
       rootDir: args.rootDir,
-      projectRoot: projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
+      projectRoot:
+        projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
       tool: args.tool,
       targetPath: args.targetPath,
     });
@@ -497,7 +498,7 @@ async function loadManagedAgentsFromTool(args: {
   const out: { name: string; sourcePath: string; raw: string }[] = [];
 
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(extension)) {
+    if (!(entry.isFile() && entry.name.endsWith(extension))) {
       continue;
     }
     const sourcePath = join(args.agentsDir, entry.name);

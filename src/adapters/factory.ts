@@ -11,6 +11,12 @@ import type {
 } from "./types";
 import { detectExplicitVersion } from "./version";
 
+const FRONTMATTER_LINE_SPLIT_REGEX = /\r?\n/;
+const FACTORY_AGENT_FRONTMATTER_REGEX =
+  /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+const LEADING_WHITESPACE_REGEX = /^\s+/;
+const TRAILING_WHITESPACE_REGEX = /\s+$/;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -54,7 +60,7 @@ function parseFrontmatterScalar(value: string): string {
 
 function parseFrontmatter(text: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of text.split(FRONTMATTER_LINE_SPLIT_REGEX)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) {
       continue;
@@ -72,25 +78,21 @@ function parseFrontmatter(text: string): Record<string, string> {
   return out;
 }
 
-function normalizeFactoryServer(server: CanonicalMcpServer): CanonicalMcpServer {
+function normalizeFactoryServer(
+  server: CanonicalMcpServer
+): CanonicalMcpServer {
   if (!isPlainObject(server.vendorExtensions)) {
     return server;
   }
 
-  const vendorExtensions = { ...server.vendorExtensions };
-  const type = vendorExtensions.type;
-  if (typeof type === "string" && !server.transport) {
-    server.transport = type;
-  }
-  delete vendorExtensions.type;
-
-  if (Object.keys(vendorExtensions).length > 0) {
-    server.vendorExtensions = vendorExtensions;
-  } else {
-    delete server.vendorExtensions;
-  }
-
-  return server;
+  const { type, ...vendorExtensions } = server.vendorExtensions;
+  return {
+    ...server,
+    transport:
+      typeof type === "string" && !server.transport ? type : server.transport,
+    vendorExtensions:
+      Object.keys(vendorExtensions).length > 0 ? vendorExtensions : undefined,
+  };
 }
 
 function parseFactoryMcp(config: unknown): CanonicalMcpConfig {
@@ -101,34 +103,34 @@ function parseFactoryMcp(config: unknown): CanonicalMcpConfig {
   return parsed;
 }
 
-function generateFactoryMcp(canonical: CanonicalMcpConfig): Record<string, unknown> {
+function generateFactoryMcp(
+  canonical: CanonicalMcpConfig
+): Record<string, unknown> {
   const generated = generateMcpConfig(canonical, "mcpServers");
   const servers = generated.mcpServers;
   if (!isPlainObject(servers)) {
     return generated;
   }
 
-  for (const value of Object.values(servers)) {
+  for (const [name, value] of Object.entries(servers)) {
     if (!isPlainObject(value)) {
       continue;
     }
-    const server = value as Record<string, unknown>;
-    const transport =
-      typeof server.transport === "string" ? server.transport : undefined;
+    const { transport, ...server } = value as Record<string, unknown>;
     const inferredType =
-      transport ??
+      (typeof transport === "string" ? transport : undefined) ??
       (typeof server.url === "string"
         ? "http"
         : typeof server.command === "string"
           ? "stdio"
           : undefined);
-    delete server.transport;
     if (inferredType && typeof server.type !== "string") {
       server.type = inferredType;
     }
     if (typeof server.disabled !== "boolean") {
       server.disabled = false;
     }
+    servers[name] = server;
   }
 
   return generated;
@@ -177,7 +179,7 @@ async function parseFactoryManagedAgentFile(
   }
 
   const raw = await file.text();
-  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  const match = raw.match(FACTORY_AGENT_FRONTMATTER_REGEX);
   if (!match) {
     return null;
   }
@@ -186,7 +188,9 @@ async function parseFactoryManagedAgentFile(
   const frontmatter = parseFrontmatter(frontmatterRaw ?? "");
   const name = frontmatter.name || basename(path, extname(path));
   const description = frontmatter.description || undefined;
-  const body = (bodyRaw ?? "").replace(/^\s+/, "").replace(/\s+$/, "");
+  const body = (bodyRaw ?? "")
+    .replace(LEADING_WHITESPACE_REGEX, "")
+    .replace(TRAILING_WHITESPACE_REGEX, "");
   const lines = [`name = ${JSON.stringify(name)}`];
   if (description) {
     lines.push(`description = ${JSON.stringify(description)}`);
@@ -219,5 +223,6 @@ export const factoryAdapter: ToolAdapter = {
   parseSkills: async (skillsDir) => await parseSkillsDir(skillsDir),
   agentFileExtension: ".md",
   renderAgent: async (options) => await renderFactoryAgent(options),
-  parseManagedAgentFile: async (path) => await parseFactoryManagedAgentFile(path),
+  parseManagedAgentFile: async (path) =>
+    await parseFactoryManagedAgentFile(path),
 };
