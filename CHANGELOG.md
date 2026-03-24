@@ -1,3 +1,14 @@
+## [2.4.0](https://github.com/hack-dance/fclt/compare/v2.3.1...v2.4.0) (2026-03-24)
+
+### Features
+
+* centralize codex automations and localize machine state ([a34c9be](https://github.com/hack-dance/fclt/commit/a34c9be5df24a73d65d0f9b87b9d58846a00e674))
+
+### Bug Fixes
+
+* make machine-state path tests cross-platform ([ec8dfa0](https://github.com/hack-dance/fclt/commit/ec8dfa06377b36dc544650a450e2d021c2d43700))
+* return promised launchctl test results ([9fce337](https://github.com/hack-dance/fclt/commit/9fce3372c4095bdb2fb2eaef20329496a85658b6))
+
 ## [2.3.1](https://github.com/hack-dance/fclt/compare/v2.3.0...v2.3.1) (2026-03-24)
 
 ### Bug Fixes
