@@ -11,7 +11,7 @@ const platform =
       ? "darwin"
       : "linux";
 const arch = process.arch;
-const launcherRuntime = Bun.which("node") ?? process.execPath;
+const launcherRuntime = process.execPath;
 
 const tempDirs: string[] = [];
 
