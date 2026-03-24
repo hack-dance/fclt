@@ -1,3 +1,9 @@
+## [2.3.1](https://github.com/hack-dance/fclt/compare/v2.3.0...v2.3.1) (2026-03-24)
+
+### Bug Fixes
+
+* avoid install-state writes on cached launcher runs ([3670823](https://github.com/hack-dance/fclt/commit/3670823ab4ca3bfe712a0d83cfeb00ce77cbbd04))
+
 ## [2.3.0](https://github.com/hack-dance/fclt/compare/v2.2.0...v2.3.0) (2026-03-20)
 
 ### Features
