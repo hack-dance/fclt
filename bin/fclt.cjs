@@ -39,6 +39,7 @@ async function main() {
   const binaryName = resolved.platform === "windows" ? "fclt.exe" : "fclt";
   const binaryPath = path.join(installDir, binaryName);
   const sourceEntry = path.join(__dirname, "..", "src", "index.ts");
+  let installedBinaryThisRun = false;
 
   if (!(await fileExists(binaryPath))) {
     const tag = `v${version}`;
@@ -56,6 +57,7 @@ async function main() {
         await fsp.chmod(tmpPath, 0o755);
       }
       await fsp.rename(tmpPath, binaryPath);
+      installedBinaryThisRun = true;
     } catch (error) {
       await safeUnlink(tmpPath);
       if (await canUseSourceFallback(sourceEntry)) {
@@ -84,12 +86,14 @@ async function main() {
   }
 
   const packageManager = detectPackageManager();
-  await bestEffortWriteInstallState({
-    method: "npm-binary-cache",
-    version,
-    binaryPath,
-    packageManager,
-  });
+  if (installedBinaryThisRun) {
+    await bestEffortWriteInstallState({
+      method: "npm-binary-cache",
+      version,
+      binaryPath,
+      packageManager,
+    });
+  }
 
   const args = process.argv.slice(2);
   const result = spawnSync(binaryPath, args, {
