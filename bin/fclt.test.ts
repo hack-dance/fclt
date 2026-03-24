@@ -11,9 +11,30 @@ const platform =
       ? "darwin"
       : "linux";
 const arch = process.arch;
-const launcherRuntime = process.execPath;
 
 const tempDirs: string[] = [];
+
+async function resolveLauncherRuntime(): Promise<string> {
+  if (process.platform === "win32") {
+    return process.execPath;
+  }
+
+  const proc = Bun.spawn({
+    cmd: ["/bin/sh", "-lc", "command -v bun || command -v node"],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const exitCode = await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+  if (exitCode === 0) {
+    const runtime = stdout.trim();
+    if (runtime) {
+      return runtime;
+    }
+  }
+
+  return process.execPath;
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -41,6 +62,7 @@ it("does not write install metadata when using a cached runtime binary", async (
   const binaryPath = join(runtimeDir, binaryName);
   await writeFile(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
   await chmod(binaryPath, 0o755);
+  const launcherRuntime = await resolveLauncherRuntime();
 
   const proc = Bun.spawn({
     cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
