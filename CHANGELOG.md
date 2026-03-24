@@ -1,3 +1,13 @@
+## [2.5.0](https://github.com/hack-dance/fclt/compare/v2.4.0...v2.5.0) (2026-03-24)
+
+### Features
+
+* **factory:** add managed factory tool support ([74393a2](https://github.com/hack-dance/fclt/commit/74393a2da127a4b004bdf5b73aea48744606a705))
+
+### Bug Fixes
+
+* resolve factory CI lint failures ([c459f98](https://github.com/hack-dance/fclt/commit/c459f98a6a4860ffef473c9aaaed019bb0c9df7f))
+
 ## [2.4.0](https://github.com/hack-dance/fclt/compare/v2.3.1...v2.4.0) (2026-03-24)
 
 ### Features
