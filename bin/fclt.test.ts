@@ -1,7 +1,15 @@
 import { afterEach, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { facultInstallStatePath, facultRuntimeCacheDir } from "../src/paths";
 
 const version = (await import("../package.json")).version as string;
@@ -12,11 +20,19 @@ const platform =
       ? "darwin"
       : "linux";
 const arch = process.arch;
+const repoRoot = resolve(import.meta.dir, "..");
 
 const tempDirs: string[] = [];
 const localOnly = process.env.FACULT_TEST_SKIP_LOCAL === "1";
 
 async function resolveLauncherRuntime(): Promise<string> {
+  try {
+    await access(process.execPath);
+    return process.execPath;
+  } catch {
+    // Fall back to shell lookup if the current runtime path is unavailable.
+  }
+
   if (process.platform === "win32") {
     return process.execPath;
   }
@@ -69,7 +85,7 @@ it("does not write install metadata when using a cached runtime binary", async (
 
   const proc = Bun.spawn({
     cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
-    cwd: "/Users/hack/dev/hack-dance/facult",
+    cwd: repoRoot,
     env: {
       ...process.env,
       HOME: homeDir,
@@ -111,7 +127,7 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
 
   const proc = Bun.spawn({
     cmd: [launcherRuntime, "bin/fclt.cjs", "--help"],
-    cwd: "/Users/hack/dev/hack-dance/facult",
+    cwd: repoRoot,
     env: {
       ...process.env,
       HOME: homeDir,
