@@ -13,6 +13,7 @@ const platform =
 const arch = process.arch;
 
 const tempDirs: string[] = [];
+const localOnly = process.env.FACULT_TEST_SKIP_LOCAL === "1";
 
 async function resolveLauncherRuntime(): Promise<string> {
   if (process.platform === "win32") {
@@ -45,6 +46,10 @@ afterEach(async () => {
 });
 
 it("does not write install metadata when using a cached runtime binary", async () => {
+  if (localOnly) {
+    return;
+  }
+
   const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-"));
   tempDirs.push(homeDir);
 
