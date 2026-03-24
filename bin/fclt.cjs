@@ -16,6 +16,43 @@ const PACKAGE_NAME = "facult";
 const DOWNLOAD_RETRIES = 12;
 const DOWNLOAD_RETRY_DELAY_MS = 5000;
 
+function isHelpLikeArgs(args) {
+  return (
+    args.length === 0 ||
+    args.includes("--help") ||
+    args.includes("-h") ||
+    args[0] === "help"
+  );
+}
+
+function localStateRoot(home) {
+  const override = String(process.env.FACULT_LOCAL_STATE_DIR || "").trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "fclt");
+  }
+  const xdg = String(process.env.XDG_STATE_HOME || "").trim();
+  return xdg
+    ? path.join(path.resolve(xdg), "fclt")
+    : path.join(home, ".local", "state", "fclt");
+}
+
+function localCacheRoot(home) {
+  const override = String(process.env.FACULT_CACHE_DIR || "").trim();
+  if (override) {
+    return path.resolve(override);
+  }
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Caches", "fclt");
+  }
+  const xdg = String(process.env.XDG_CACHE_HOME || "").trim();
+  return xdg
+    ? path.join(path.resolve(xdg), "fclt")
+    : path.join(home, ".cache", "fclt");
+}
+
 async function main() {
   const resolved = resolveTarget();
   if (!resolved.ok) {
@@ -30,7 +67,7 @@ async function main() {
   }
 
   const home = os.homedir();
-  const cacheRoot = path.join(home, ".ai", ".facult", "runtime");
+  const cacheRoot = path.join(localCacheRoot(home), "runtime");
   const installDir = path.join(
     cacheRoot,
     version,
@@ -39,9 +76,34 @@ async function main() {
   const binaryName = resolved.platform === "windows" ? "fclt.exe" : "fclt";
   const binaryPath = path.join(installDir, binaryName);
   const sourceEntry = path.join(__dirname, "..", "src", "index.ts");
+  const args = process.argv.slice(2);
   let installedBinaryThisRun = false;
 
   if (!(await fileExists(binaryPath))) {
+    const packageManager = detectPackageManager();
+    const hasSourceFallback = await canUseSourceFallback(sourceEntry);
+    const incompleteCache = await hasIncompleteRuntimeCache({
+      installDir,
+      binaryName,
+    });
+
+    if (incompleteCache) {
+      await removeIncompleteRuntimeTemps({ installDir, binaryName });
+    }
+
+    if (hasSourceFallback && (incompleteCache || isHelpLikeArgs(args))) {
+      return runSourceFallback({
+        sourceEntry,
+        version,
+        packageManager,
+        reason: new Error(
+          incompleteCache
+            ? "incomplete cached runtime download"
+            : "runtime binary missing for help-like command"
+        ),
+      });
+    }
+
     const tag = `v${version}`;
     const assetName = `${PACKAGE_NAME}-${version}-${resolved.platform}-${resolved.arch}${resolved.ext}`;
     const url = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`;
@@ -95,7 +157,6 @@ async function main() {
     });
   }
 
-  const args = process.argv.slice(2);
   const result = spawnSync(binaryPath, args, {
     stdio: "inherit",
     env: {
@@ -281,6 +342,28 @@ async function fileExists(filePath) {
   }
 }
 
+async function hasIncompleteRuntimeCache({ installDir, binaryName }) {
+  try {
+    const entries = await fsp.readdir(installDir);
+    return entries.some((entry) => entry.startsWith(`${binaryName}.tmp-`));
+  } catch {
+    return false;
+  }
+}
+
+async function removeIncompleteRuntimeTemps({ installDir, binaryName }) {
+  try {
+    const entries = await fsp.readdir(installDir);
+    await Promise.all(
+      entries
+        .filter((entry) => entry.startsWith(`${binaryName}.tmp-`))
+        .map((entry) => safeUnlink(path.join(installDir, entry)))
+    );
+  } catch {
+    // Ignore missing runtime dirs while cleaning stale temp files.
+  }
+}
+
 async function safeUnlink(filePath) {
   try {
     await fsp.unlink(filePath);
@@ -295,7 +378,7 @@ function sleep(ms) {
 
 async function writeInstallState(state) {
   const home = os.homedir();
-  const installStateDir = path.join(home, ".ai", ".facult");
+  const installStateDir = localStateRoot(home);
   const installStatePath = path.join(installStateDir, "install.json");
   await fsp.mkdir(installStateDir, { recursive: true });
   await fsp.writeFile(

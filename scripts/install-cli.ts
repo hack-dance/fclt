@@ -2,6 +2,7 @@
 
 import { chmod, lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { facultInstallStatePath } from "../src/paths";
 
 type InstallMode = "dev" | "bin";
 
@@ -341,8 +342,8 @@ async function writeInstallState(args: {
   packageVersion?: string;
   binaryPath?: string;
 }) {
-  const dir = resolve(args.home, ".ai", ".facult");
-  await mkdir(dir, { recursive: true });
+  const installStatePath = facultInstallStatePath(args.home);
+  await mkdir(dirname(installStatePath), { recursive: true });
   const payload = {
     version: 1,
     method: args.method,
@@ -351,8 +352,5 @@ async function writeInstallState(args: {
     source: "local-script",
     installedAt: new Date().toISOString(),
   };
-  await Bun.write(
-    resolve(dir, "install.json"),
-    `${JSON.stringify(payload, null, 2)}\n`
-  );
+  await Bun.write(installStatePath, `${JSON.stringify(payload, null, 2)}\n`);
 }

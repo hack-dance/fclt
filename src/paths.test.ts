@@ -6,7 +6,10 @@ import {
   facultAiIndexPath,
   facultAiStateDir,
   facultContextRootDir,
+  facultInstallStatePath,
+  facultMachineStateDir,
   facultRootDir,
+  facultRuntimeCacheDir,
 } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -115,5 +118,31 @@ describe("paths", () => {
         cwd: join(projectRoot, "src"),
       })
     ).toBe(rootDir);
+  });
+
+  it("stores machine-local install state and runtime cache outside the canonical .ai tree", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    expect(facultInstallStatePath(tempHome)).toBe(
+      join(tempHome, "Library", "Application Support", "fclt", "install.json")
+    );
+    expect(facultRuntimeCacheDir(tempHome)).toBe(
+      join(tempHome, "Library", "Caches", "fclt", "runtime")
+    );
+  });
+
+  it("stores project managed state in machine-local per-project state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    expect(facultMachineStateDir(tempHome, rootDir)).toContain(
+      join(tempHome, "Library", "Application Support", "fclt", "projects")
+    );
+    expect(facultMachineStateDir(tempHome, rootDir)).not.toContain(
+      join(projectRoot, ".ai", ".facult")
+    );
   });
 });

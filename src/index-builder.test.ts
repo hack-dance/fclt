@@ -7,6 +7,7 @@ import {
   facultAiGraphPath,
   facultAiIndexPath,
   facultGeneratedStateDir,
+  facultMachineStateDir,
   facultRootDir,
 } from "./paths";
 
@@ -244,11 +245,9 @@ describe("buildIndex", () => {
     await mkdir(facultGeneratedStateDir({ home: tempHome, rootDir }), {
       recursive: true,
     });
+    await mkdir(facultMachineStateDir(tempHome, rootDir), { recursive: true });
     await Bun.write(
-      join(
-        facultGeneratedStateDir({ home: tempHome, rootDir }),
-        "managed.json"
-      ),
+      join(facultMachineStateDir(tempHome, rootDir), "managed.json"),
       JSON.stringify(
         {
           version: 1,

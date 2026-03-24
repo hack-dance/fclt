@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { syncManagedTools } from "./manage";
 import {
+  facultMachineStateDir,
   facultRootDir,
   facultStateDir,
   legacyFacultStateDirForRoot,
@@ -84,6 +85,10 @@ interface GitSyncOutcome {
   message?: string;
 }
 
+let launchctlRunnerForTests:
+  | ((args: string[]) => Promise<CommandResult>)
+  | null = null;
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -100,6 +105,10 @@ function runDetached(context: string, promise: Promise<void>) {
 }
 
 function autosyncDir(home: string, rootDir?: string): string {
+  return join(facultMachineStateDir(home, rootDir), "autosync");
+}
+
+function canonicalAutosyncDir(home: string, rootDir?: string): string {
   return join(facultStateDir(home, rootDir), "autosync");
 }
 
@@ -156,8 +165,18 @@ function autosyncServiceName(
 
 function autosyncLabel(serviceName: string): string {
   return serviceName === "all"
+    ? "com.fclt.autosync"
+    : `com.fclt.autosync.${serviceName}`;
+}
+
+function legacyAutosyncLabel(serviceName: string): string {
+  return serviceName === "all"
     ? "com.facult.autosync"
     : `com.facult.autosync.${serviceName}`;
+}
+
+function autosyncLabelCandidates(serviceName: string): string[] {
+  return [autosyncLabel(serviceName), legacyAutosyncLabel(serviceName)];
 }
 
 function autosyncPlistPath(home: string, serviceName: string): string {
@@ -331,6 +350,11 @@ export async function loadAutosyncConfig(
 ): Promise<AutosyncServiceConfig | null> {
   const candidates = [
     autosyncConfigPath(homeDir, serviceName, rootDir),
+    join(
+      canonicalAutosyncDir(homeDir, rootDir),
+      "services",
+      `${serviceName}.json`
+    ),
     legacyAutosyncConfigPath(homeDir, serviceName, rootDir),
   ];
   for (const candidate of candidates) {
@@ -359,6 +383,11 @@ export async function loadAutosyncRuntimeState(
 ): Promise<AutosyncRuntimeState | null> {
   const candidates = [
     autosyncRuntimeStatePath(homeDir, serviceName, rootDir),
+    join(
+      canonicalAutosyncDir(homeDir, rootDir),
+      "state",
+      `${serviceName}.json`
+    ),
     legacyAutosyncRuntimeStatePath(homeDir, serviceName, rootDir),
   ];
   for (const candidate of candidates) {
@@ -399,7 +428,16 @@ async function runCommand(
 }
 
 async function runLaunchctl(args: string[]): Promise<CommandResult> {
+  if (launchctlRunnerForTests) {
+    return await launchctlRunnerForTests(args);
+  }
   return await runCommand(["launchctl", ...args]);
+}
+
+export function setLaunchctlRunnerForTests(
+  runner: ((args: string[]) => Promise<CommandResult>) | null
+) {
+  launchctlRunnerForTests = runner;
 }
 
 function launchdDomain(): string {
@@ -470,6 +508,122 @@ async function ensureGitRepo(repoDir: string): Promise<boolean> {
   return await pathExists(join(repoDir, ".git"));
 }
 
+async function cleanupAutosyncLaunchAgentArtifacts(args: {
+  homeDir: string;
+  serviceName: string;
+}) {
+  const domain = launchdDomain();
+  for (const label of autosyncLabelCandidates(args.serviceName)) {
+    await runLaunchctl(["bootout", `${domain}/${label}`]).catch(() => null);
+  }
+
+  const legacyPlistPath = join(
+    args.homeDir,
+    "Library",
+    "LaunchAgents",
+    `${legacyAutosyncLabel(args.serviceName)}.plist`
+  );
+  if (legacyPlistPath !== autosyncPlistPath(args.homeDir, args.serviceName)) {
+    await rm(legacyPlistPath, { force: true });
+  }
+}
+
+async function cleanupLegacyAutosyncFiles(args: {
+  homeDir: string;
+  serviceName: string;
+  rootDir: string;
+}) {
+  const legacyPaths = [
+    join(
+      canonicalAutosyncDir(args.homeDir, args.rootDir),
+      "services",
+      `${args.serviceName}.json`
+    ),
+    join(
+      canonicalAutosyncDir(args.homeDir, args.rootDir),
+      "state",
+      `${args.serviceName}.json`
+    ),
+    join(
+      canonicalAutosyncDir(args.homeDir, args.rootDir),
+      "logs",
+      `${args.serviceName}.log`
+    ),
+    join(
+      canonicalAutosyncDir(args.homeDir, args.rootDir),
+      "logs",
+      `${args.serviceName}.err.log`
+    ),
+    legacyAutosyncConfigPath(args.homeDir, args.serviceName, args.rootDir),
+    legacyAutosyncRuntimeStatePath(
+      args.homeDir,
+      args.serviceName,
+      args.rootDir
+    ),
+  ];
+  for (const candidate of legacyPaths) {
+    await rm(candidate, { force: true }).catch(() => null);
+  }
+}
+
+const AUTOSYNC_REBUILDABLE_PATHS = [
+  ".facult/ai/index.json",
+  ".facult/ai/graph.json",
+];
+
+const AUTOSYNC_MACHINE_LOCAL_LEGACY_PATHS = [
+  ".facult/managed.json",
+  ".facult/install.json",
+  ".facult/autosync",
+  ".facult/runtime",
+];
+
+async function gitListTrackedPaths(
+  repoDir: string,
+  pathValue: string
+): Promise<string[]> {
+  const result = await runCommand(["git", "ls-files", "-z", "--", pathValue], {
+    cwd: repoDir,
+  });
+  if (result.exitCode !== 0 || !result.stdout) {
+    return [];
+  }
+  return result.stdout
+    .split("\0")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+async function cleanupAutosyncProtectedPaths(repoDir: string): Promise<void> {
+  const tracked = new Set<string>();
+  for (const pathValue of [
+    ...AUTOSYNC_REBUILDABLE_PATHS,
+    ...AUTOSYNC_MACHINE_LOCAL_LEGACY_PATHS,
+  ]) {
+    for (const entry of await gitListTrackedPaths(repoDir, pathValue)) {
+      tracked.add(entry);
+    }
+    await rm(join(repoDir, pathValue), { force: true, recursive: true }).catch(
+      () => null
+    );
+  }
+
+  if (tracked.size > 0) {
+    await runCommand(
+      [
+        "git",
+        "restore",
+        "--staged",
+        "--worktree",
+        "--source=HEAD",
+        "--",
+        ...tracked,
+      ],
+      { cwd: repoDir }
+    );
+  }
+}
+
 export async function runGitAutosyncOnce(args: {
   config: AutosyncServiceConfig;
 }): Promise<GitSyncOutcome> {
@@ -502,6 +656,8 @@ export async function runGitAutosyncOnce(args: {
       message: `Autosync expects branch ${config.git.branch} but repo is on ${branch}.`,
     };
   }
+
+  await cleanupAutosyncProtectedPaths(repoDir);
 
   const fetch = await runCommand(
     ["git", "fetch", config.git.remote, config.git.branch],
@@ -849,10 +1005,18 @@ export async function installAutosyncService(args: {
   await mkdir(dirname(spec.plistPath), { recursive: true });
   await mkdir(autosyncLogsDir(home, rootDir), { recursive: true });
   await saveAutosyncConfig(config, home);
+  await cleanupLegacyAutosyncFiles({
+    homeDir: home,
+    serviceName,
+    rootDir: config.rootDir,
+  });
+  await cleanupAutosyncLaunchAgentArtifacts({
+    homeDir: home,
+    serviceName,
+  });
   await writeFile(spec.plistPath, plist, "utf8");
 
   const domain = launchdDomain();
-  await runLaunchctl(["bootout", `${domain}/${spec.label}`]).catch(() => null);
   await runLaunchctl(["bootstrap", domain, spec.plistPath]);
   await runLaunchctl(["kickstart", "-k", `${domain}/${spec.label}`]);
   return config;
@@ -868,10 +1032,16 @@ export async function uninstallAutosyncService(args: {
     args.rootDir ??
     resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
   const serviceName = autosyncServiceName(args.tool, rootDir, home);
-  const label = autosyncLabel(serviceName);
-  const domain = launchdDomain();
 
-  await runLaunchctl(["bootout", `${domain}/${label}`]).catch(() => null);
+  await cleanupAutosyncLaunchAgentArtifacts({
+    homeDir: home,
+    serviceName,
+  });
+  await cleanupLegacyAutosyncFiles({
+    homeDir: home,
+    serviceName,
+    rootDir,
+  });
   await rm(autosyncPlistPath(home, serviceName), { force: true });
   await rm(autosyncConfigPath(home, serviceName, rootDir), { force: true });
 }
@@ -883,6 +1053,7 @@ export async function repairAutosyncServices(
   const activeRoot = rootDir ?? facultRootDir(homeDir);
   const serviceDirs = [
     autosyncServicesDir(homeDir, activeRoot),
+    join(canonicalAutosyncDir(homeDir, activeRoot), "services"),
     legacyAutosyncServicesDir(homeDir, activeRoot),
   ];
   const seen = new Set<string>();
@@ -916,6 +1087,11 @@ export async function repairAutosyncServices(
       await saveAutosyncConfig(config, homeDir);
       changed = true;
     }
+    await cleanupLegacyAutosyncFiles({
+      homeDir,
+      serviceName,
+      rootDir: config.rootDir,
+    });
 
     const spec = buildLaunchAgentSpec({
       homeDir,
@@ -923,19 +1099,27 @@ export async function repairAutosyncServices(
       rootDir: config.rootDir,
     });
     const desired = buildLaunchAgentPlist(spec);
+    const legacyPlistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      `${legacyAutosyncLabel(serviceName)}.plist`
+    );
     const currentText = await readFile(spec.plistPath, "utf8").catch(
       () => null
     );
-    if (currentText !== desired) {
+    const legacyExists = await pathExists(legacyPlistPath);
+    if (currentText !== desired || legacyExists) {
       await mkdir(dirname(spec.plistPath), { recursive: true });
       await mkdir(autosyncLogsDir(homeDir, config.rootDir), {
         recursive: true,
       });
+      await cleanupAutosyncLaunchAgentArtifacts({
+        homeDir,
+        serviceName,
+      });
       await writeFile(spec.plistPath, desired, "utf8");
       const domain = launchdDomain();
-      await runLaunchctl(["bootout", `${domain}/${spec.label}`]).catch(
-        () => null
-      );
       await runLaunchctl(["bootstrap", domain, spec.plistPath]).catch(
         () => null
       );

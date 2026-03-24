@@ -14,7 +14,7 @@ import {
 import {
   facultAiGraphPath,
   facultAiIndexPath,
-  facultGeneratedStateDir,
+  facultMachineStateDir,
   facultRootDir,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
@@ -987,7 +987,7 @@ async function readManagedState(
   rootDir: string
 ): Promise<ManagedStateLite | null> {
   const statePath = join(
-    facultGeneratedStateDir({ home: homeDir, rootDir }),
+    facultMachineStateDir(homeDir, rootDir),
     "managed.json"
   );
   try {

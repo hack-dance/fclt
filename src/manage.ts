@@ -32,7 +32,7 @@ import {
   type SkillEntry,
 } from "./index-builder";
 import {
-  facultGeneratedStateDir,
+  facultMachineStateDir,
   facultRootDir,
   legacyFacultStateDirForRoot,
   projectRootFromAiRoot,
@@ -44,6 +44,7 @@ export interface ManagedToolState {
   skillsDir?: string;
   mcpConfig?: string;
   agentsDir?: string;
+  automationDir?: string;
   toolHome?: string;
   globalAgentsPath?: string;
   globalAgentsOverridePath?: string;
@@ -75,6 +76,7 @@ export interface ToolPaths {
   skillsDir?: string;
   mcpConfig?: string;
   agentsDir?: string;
+  automationDir?: string;
   toolHome?: string;
   rulesDir?: string;
   toolConfig?: string;
@@ -163,6 +165,7 @@ function defaultToolPaths(
       skillsDir: toolBase(".codex", "skills"),
       mcpConfig: toolBase(".codex", "mcp.json"),
       agentsDir: toolBase(".codex", "agents"),
+      automationDir: homePath(home, ".codex", "automations"),
       toolHome: toolBase(".codex"),
       rulesDir: toolBase(".codex", "rules"),
       toolConfig: toolBase(".codex", "config.toml"),
@@ -293,7 +296,7 @@ export function managedStatePathForRoot(
   home: string = homedir(),
   rootDir?: string
 ): string {
-  return join(facultGeneratedStateDir({ home, rootDir }), "managed.json");
+  return join(facultMachineStateDir(home, rootDir), "managed.json");
 }
 
 function legacyManagedStatePathForRoot(
@@ -336,7 +339,7 @@ export async function saveManagedState(
   home: string = homedir(),
   rootDir?: string
 ) {
-  const dir = facultGeneratedStateDir({ home, rootDir });
+  const dir = facultMachineStateDir(home, rootDir);
   await ensureDir(dir);
   await Bun.write(
     managedStatePathForRoot(home, rootDir),
@@ -431,6 +434,104 @@ async function loadCanonicalAgents(
   rootDir: string
 ): Promise<{ name: string; sourcePath: string; raw: string }[]> {
   return await loadAgentsFromRoot(homePath(rootDir, "agents"));
+}
+
+interface AutomationEntry {
+  name: string;
+  sourceDir: string;
+  files: Map<string, string>;
+}
+
+async function listRelativeFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+
+  async function visit(currentDir: string, prefix = ""): Promise<void> {
+    const entries = await readdir(currentDir, { withFileTypes: true }).catch(
+      () => [] as import("node:fs").Dirent[]
+    );
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const relPath = prefix ? join(prefix, entry.name) : entry.name;
+      const fullPath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath, relPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        out.push(relPath);
+      }
+    }
+  }
+
+  await visit(root);
+  return out.sort();
+}
+
+async function loadAutomationEntries(
+  automationsRoot: string
+): Promise<AutomationEntry[]> {
+  const entries = await readdir(automationsRoot, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  const out: AutomationEntry[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    const sourceDir = join(automationsRoot, entry.name);
+    const relativeFiles = await listRelativeFiles(sourceDir);
+    const files = new Map<string, string>();
+    for (const relPath of relativeFiles) {
+      const raw = await readTextIfExists(join(sourceDir, relPath));
+      if (raw == null) {
+        continue;
+      }
+      files.set(relPath, raw);
+    }
+    if (!files.has("automation.toml")) {
+      continue;
+    }
+    out.push({
+      name: entry.name,
+      sourceDir,
+      files,
+    });
+  }
+
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function loadCanonicalAutomations(
+  rootDir: string
+): Promise<AutomationEntry[]> {
+  return await loadAutomationEntries(join(rootDir, "automations"));
+}
+
+function automationEntriesEqual(
+  left: AutomationEntry,
+  right: AutomationEntry
+): boolean {
+  if (left.files.size !== right.files.size) {
+    return false;
+  }
+  for (const [relPath, leftRaw] of left.files.entries()) {
+    if (right.files.get(relPath) !== leftRaw) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function canonicalAutomationsExist(rootDir: string): Promise<boolean> {
+  try {
+    const automations = await loadCanonicalAutomations(rootDir);
+    return automations.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function loadMergedIndex(
@@ -622,6 +723,58 @@ async function syncAgentFiles({
     }
   }
   return { add: plan.add, remove: plan.remove };
+}
+
+async function planAutomationFileChanges(args: {
+  automationDir: string;
+  rootDir: string;
+  previouslyManagedTargets?: string[];
+}): Promise<{
+  add: string[];
+  remove: string[];
+  contents: Map<string, string>;
+  sources: Map<string, string>;
+}> {
+  const automations = await loadCanonicalAutomations(args.rootDir);
+  const contents = new Map<string, string>();
+  const sources = new Map<string, string>();
+  const desiredPaths = new Set<string>();
+
+  for (const automation of automations) {
+    for (const [relPath, raw] of automation.files.entries()) {
+      const targetPath = join(args.automationDir, automation.name, relPath);
+      const sourcePath = join(automation.sourceDir, relPath);
+      desiredPaths.add(targetPath);
+      contents.set(targetPath, raw);
+      sources.set(targetPath, sourcePath);
+    }
+  }
+
+  const add = new Set<string>();
+  for (const targetPath of desiredPaths) {
+    const current = await readTextIfExists(targetPath);
+    const desired = contents.get(targetPath);
+    if (desired != null && current !== desired) {
+      add.add(targetPath);
+    }
+  }
+
+  const remove = Array.from(
+    new Set(
+      (args.previouslyManagedTargets ?? []).filter(
+        (targetPath) =>
+          targetPath.startsWith(join(args.automationDir, "")) &&
+          !desiredPaths.has(targetPath)
+      )
+    )
+  ).sort();
+
+  return {
+    add: Array.from(add).sort(),
+    remove,
+    contents,
+    sources,
+  };
 }
 
 async function listSkillDirs(skillsRoot: string): Promise<string[]> {
@@ -945,6 +1098,7 @@ interface ExistingManagedItem {
   kind:
     | "skill"
     | "agent"
+    | "automation"
     | "global-doc"
     | "rule"
     | "tool-config"
@@ -1120,6 +1274,87 @@ async function adoptExistingToolAgents(args: {
       canonicalPath,
     });
   }
+  return adopted;
+}
+
+async function planExistingAutomationAdoption(args: {
+  rootDir: string;
+  automationDir: string;
+}): Promise<ExistingManagedImportPlan> {
+  const plan = emptyManagedImportPlan();
+  const liveAutomations = await loadAutomationEntries(args.automationDir);
+  const canonicalAutomations = new Map(
+    (await loadCanonicalAutomations(args.rootDir)).map((entry) => [
+      entry.name,
+      entry,
+    ])
+  );
+
+  for (const liveAutomation of liveAutomations) {
+    const canonicalAutomation = canonicalAutomations.get(liveAutomation.name);
+    if (!canonicalAutomation) {
+      continue;
+    }
+    const item: ExistingManagedItem = {
+      kind: "automation",
+      name: liveAutomation.name,
+      livePath: liveAutomation.sourceDir,
+      canonicalPath: join(args.rootDir, "automations", liveAutomation.name),
+    };
+    if (automationEntriesEqual(liveAutomation, canonicalAutomation)) {
+      plan.identical.push(item);
+    } else {
+      plan.conflicts.push(item);
+    }
+  }
+
+  return mergeManagedImportPlans(plan);
+}
+
+async function adoptExistingAutomations(args: {
+  rootDir: string;
+  automationDir: string;
+  conflictMode: "keep-canonical" | "keep-existing";
+}): Promise<ExistingManagedItem[]> {
+  if (args.conflictMode !== "keep-existing") {
+    return [];
+  }
+
+  const adopted: ExistingManagedItem[] = [];
+  const liveAutomations = await loadAutomationEntries(args.automationDir);
+  const canonicalAutomations = new Map(
+    (await loadCanonicalAutomations(args.rootDir)).map((entry) => [
+      entry.name,
+      entry,
+    ])
+  );
+
+  for (const liveAutomation of liveAutomations) {
+    const canonicalAutomation = canonicalAutomations.get(liveAutomation.name);
+    if (
+      !(
+        canonicalAutomation &&
+        !automationEntriesEqual(liveAutomation, canonicalAutomation)
+      )
+    ) {
+      continue;
+    }
+    const canonicalPath = join(
+      args.rootDir,
+      "automations",
+      liveAutomation.name
+    );
+    await ensureDir(dirname(canonicalPath));
+    await rm(canonicalPath, { recursive: true, force: true });
+    await cp(liveAutomation.sourceDir, canonicalPath, { recursive: true });
+    adopted.push({
+      kind: "automation",
+      name: liveAutomation.name,
+      livePath: liveAutomation.sourceDir,
+      canonicalPath,
+    });
+  }
+
   return adopted;
 }
 
@@ -1788,6 +2023,12 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
           agentsDir: toolPaths.agentsDir,
         })
       : emptyManagedImportPlan(),
+    toolPaths.automationDir
+      ? await planExistingAutomationAdoption({
+          rootDir,
+          automationDir: toolPaths.automationDir,
+        })
+      : emptyManagedImportPlan(),
     toolPaths.toolHome
       ? await planExistingGlobalDocAdoption({
           rootDir,
@@ -1826,6 +2067,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   if (
     (toolPaths.skillsDir ||
       toolPaths.agentsDir ||
+      toolPaths.automationDir ||
       toolPaths.toolHome ||
       toolPaths.rulesDir ||
       toolPaths.toolConfig ||
@@ -1906,6 +2148,14 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     });
     adoptedSkills.push(...result.map((item) => item.name));
   }
+  if (toolPaths.automationDir && opts.adoptExisting) {
+    const result = await adoptExistingAutomations({
+      rootDir,
+      automationDir: toolPaths.automationDir,
+      conflictMode: importConflictMode,
+    });
+    adoptedSkills.push(...result.map((item) => `${item.kind}:${item.name}`));
+  }
   if (toolPaths.toolHome && opts.adoptExisting) {
     const result = await adoptExistingGlobalDocs({
       rootDir,
@@ -1955,6 +2205,12 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
         homeDir: home,
         rootDir,
         tool,
+      })
+    : null;
+  const automationPreview = toolPaths.automationDir
+    ? await planAutomationFileChanges({
+        automationDir: toolPaths.automationDir,
+        rootDir,
       })
     : null;
   const globalDocsPreview = toolPaths.toolHome
@@ -2048,6 +2304,16 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     });
   }
 
+  if (toolPaths.automationDir && automationPreview) {
+    await ensureDir(toolPaths.automationDir);
+    await applyRenderedRemoves(automationPreview.remove);
+    await applyRenderedWrites({
+      contents: automationPreview.contents,
+      targets: Array.from(automationPreview.contents.keys()),
+    });
+    await pruneEmptyParents(automationPreview.remove, toolPaths.automationDir);
+  }
+
   if (toolPaths.toolHome && globalDocsPreview) {
     await ensureDir(toolPaths.toolHome);
     await applyRenderedRemoves(globalDocsPreview.remove);
@@ -2086,6 +2352,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     skillsDir: toolPaths.skillsDir,
     mcpConfig: toolPaths.mcpConfig,
     agentsDir: toolPaths.agentsDir,
+    automationDir: toolPaths.automationDir,
     toolHome: globalDocsPreview?.managedTargets.length
       ? toolPaths.toolHome
       : undefined,
@@ -2121,6 +2388,15 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
       removedTargets: agentPreview.remove,
       contents: agentPreview.contents,
       sources: agentPreview.sources,
+    });
+  }
+  if (automationPreview) {
+    updateRenderedTargetState({
+      entry: managedEntry,
+      writtenTargets: Array.from(automationPreview.contents.keys()),
+      removedTargets: automationPreview.remove,
+      contents: automationPreview.contents,
+      sources: automationPreview.sources,
     });
   }
   if (globalDocsPreview) {
@@ -2238,6 +2514,14 @@ export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
     });
   }
 
+  if (entry.automationDir) {
+    const automationTargets = Object.keys(entry.renderedTargets ?? {}).filter(
+      (targetPath) => targetPath.startsWith(join(entry.automationDir!, ""))
+    );
+    await applyRenderedRemoves(automationTargets);
+    await pruneEmptyParents(automationTargets, entry.automationDir);
+  }
+
   if (entry.globalAgentsPath) {
     await restoreBackup({
       original: entry.globalAgentsPath,
@@ -2317,6 +2601,15 @@ async function repairManagedToolEntry(args: {
   ) {
     next.agentsBackup = await backupPath(toolPaths.agentsDir);
     next.agentsDir = toolPaths.agentsDir;
+    changed = true;
+  }
+
+  if (
+    !next.automationDir &&
+    toolPaths.automationDir &&
+    (await canonicalAutomationsExist(rootDir))
+  ) {
+    next.automationDir = toolPaths.automationDir;
     changed = true;
   }
 
@@ -2406,6 +2699,7 @@ async function planRenderedTargetConflicts(args: {
   desiredContents: Map<string, string>;
   desiredSources: Map<string, string>;
   conflictMode?: "warn" | "overwrite";
+  protectAllSources?: boolean;
 }): Promise<RenderedApplyPlan> {
   if (args.conflictMode === "overwrite") {
     return {
@@ -2433,7 +2727,7 @@ async function planRenderedTargetConflicts(args: {
       continue;
     }
     const sourceKind = renderedSourceKindForPath(sourcePath);
-    if (sourceKind !== "builtin") {
+    if (sourceKind !== "builtin" && !args.protectAllSources) {
       if (args.desiredWrites.includes(targetPath)) {
         write.push(targetPath);
       } else {
@@ -2452,8 +2746,16 @@ async function planRenderedTargetConflicts(args: {
     }
 
     const currentHash = renderedHash(current);
+    const desiredHash = args.desiredContents.get(targetPath)
+      ? renderedHash(args.desiredContents.get(targetPath)!)
+      : null;
     if (prior?.hash) {
-      if (currentHash === prior.hash) {
+      if (
+        currentHash === prior.hash ||
+        (args.desiredWrites.includes(targetPath) &&
+          desiredHash != null &&
+          currentHash === desiredHash)
+      ) {
         if (args.desiredWrites.includes(targetPath)) {
           write.push(targetPath);
         } else {
@@ -2467,6 +2769,15 @@ async function planRenderedTargetConflicts(args: {
         sourceKind,
         reason: "modified",
       });
+      continue;
+    }
+
+    if (
+      args.desiredWrites.includes(targetPath) &&
+      desiredHash != null &&
+      currentHash === desiredHash
+    ) {
+      write.push(targetPath);
       continue;
     }
 
@@ -2496,8 +2807,14 @@ function logRenderedConflicts(
       conflict.reason === "unknown_state"
         ? "no prior managed hash is recorded"
         : "local edits were detected";
+    const surface =
+      conflict.sourceKind === "builtin"
+        ? "builtin-backed target"
+        : "managed target";
     console.warn(
-      `${tool}: ${verb} builtin-backed target ${conflict.targetPath} because ${state}. Rerun with "--builtin-conflicts overwrite" to replace it with the latest packaged default.`
+      conflict.sourceKind === "builtin"
+        ? `${tool}: ${verb} ${surface} ${conflict.targetPath} because ${state}. Rerun with "--builtin-conflicts overwrite" to replace it with the latest packaged default.`
+        : `${tool}: ${verb} ${surface} ${conflict.targetPath} because ${state}.`
     );
   }
 }
@@ -2522,6 +2839,24 @@ async function applyRenderedWrites(args: {
 async function applyRenderedRemoves(targets: string[]) {
   for (const pathValue of targets) {
     await rm(pathValue, { force: true });
+  }
+}
+
+async function pruneEmptyParents(targets: string[], stopDir: string) {
+  const candidateDirs = Array.from(
+    new Set(targets.map((pathValue) => dirname(pathValue)))
+  ).sort((a, b) => b.length - a.length);
+
+  for (const startDir of candidateDirs) {
+    let currentDir = startDir;
+    while (currentDir.startsWith(join(stopDir, "")) && currentDir !== stopDir) {
+      const entries = await readdir(currentDir).catch(() => null);
+      if (!(entries && entries.length === 0)) {
+        break;
+      }
+      await rm(currentDir, { recursive: true, force: true });
+      currentDir = dirname(currentDir);
+    }
   }
 }
 
@@ -2558,6 +2893,8 @@ function logSyncDryRun({
   mcpPlan,
   agentPlan,
   agentConflicts,
+  automationPlan,
+  automationConflicts,
   globalDocsPlan,
   globalDocsConflicts,
   rulesPlan,
@@ -2571,6 +2908,8 @@ function logSyncDryRun({
   mcpPlan: { needsWrite: boolean };
   agentPlan: { add: string[]; remove: string[] };
   agentConflicts: RenderedConflict[];
+  automationPlan: { write: string[]; remove: string[] };
+  automationConflicts: RenderedConflict[];
   globalDocsPlan: { write: string[]; remove: string[] };
   globalDocsConflicts: RenderedConflict[];
   rulesPlan: { write: string[]; remove: string[] };
@@ -2591,6 +2930,13 @@ function logSyncDryRun({
     console.log(`${tool}: would remove agent ${p}`);
   }
   logRenderedConflicts(tool, agentConflicts, true);
+  for (const p of automationPlan.write) {
+    console.log(`${tool}: would write automation ${p}`);
+  }
+  for (const p of automationPlan.remove) {
+    console.log(`${tool}: would remove automation ${p}`);
+  }
+  logRenderedConflicts(tool, automationConflicts, true);
   for (const p of globalDocsPlan.write) {
     console.log(`${tool}: would write global doc ${p}`);
   }
@@ -2620,6 +2966,8 @@ function logSyncDryRun({
     skillPlan.remove.length === 0 &&
     agentPlan.add.length === 0 &&
     agentPlan.remove.length === 0 &&
+    automationPlan.write.length === 0 &&
+    automationPlan.remove.length === 0 &&
     globalDocsPlan.write.length === 0 &&
     globalDocsPlan.remove.length === 0 &&
     rulesPlan.write.length === 0 &&
@@ -2628,6 +2976,7 @@ function logSyncDryRun({
     !configPlan.remove &&
     !mcpPlan.needsWrite &&
     agentConflicts.length === 0 &&
+    automationConflicts.length === 0 &&
     globalDocsConflicts.length === 0 &&
     rulesConflicts.length === 0 &&
     configConflicts.length === 0
@@ -2767,6 +3116,13 @@ async function syncManagedToolEntry({
         tool,
       })
     : { add: [], remove: [], contents: new Map(), sources: new Map() };
+  const automationPlan = entry.automationDir
+    ? await planAutomationFileChanges({
+        automationDir: entry.automationDir,
+        rootDir,
+        previouslyManagedTargets: Object.keys(entry.renderedTargets ?? {}),
+      })
+    : { add: [], remove: [], contents: new Map(), sources: new Map() };
 
   const mcpPlan = entry.mcpConfig
     ? await syncMcpConfig({
@@ -2846,6 +3202,15 @@ async function syncManagedToolEntry({
     desiredSources: globalDocsPlan.sources,
     conflictMode: builtinConflictMode,
   });
+  const automationRendered = await planRenderedTargetConflicts({
+    entry,
+    desiredWrites: automationPlan.add,
+    desiredRemoves: automationPlan.remove,
+    desiredContents: automationPlan.contents,
+    desiredSources: automationPlan.sources,
+    conflictMode: builtinConflictMode,
+    protectAllSources: true,
+  });
   const rulesRendered = await planRenderedTargetConflicts({
     entry,
     desiredWrites: rulesPlan.write,
@@ -2882,6 +3247,11 @@ async function syncManagedToolEntry({
       mcpPlan,
       agentPlan: { add: agentRendered.write, remove: agentRendered.remove },
       agentConflicts: agentRendered.conflicts,
+      automationPlan: {
+        write: automationRendered.write,
+        remove: automationRendered.remove,
+      },
+      automationConflicts: automationRendered.conflicts,
       globalDocsPlan: {
         write: globalDocsRendered.write,
         remove: globalDocsRendered.remove,
@@ -2902,6 +3272,14 @@ async function syncManagedToolEntry({
       contents: agentPlan.contents,
       targets: agentRendered.write,
     });
+    await applyRenderedRemoves(automationRendered.remove);
+    await applyRenderedWrites({
+      contents: automationPlan.contents,
+      targets: automationRendered.write,
+    });
+    if (entry.automationDir) {
+      await pruneEmptyParents(automationRendered.remove, entry.automationDir);
+    }
     await applyRenderedRemoves(globalDocsRendered.remove);
     await applyRenderedWrites({
       contents: globalDocsPlan.contents,
@@ -2918,6 +3296,7 @@ async function syncManagedToolEntry({
       targets: configRendered.write,
     });
     logRenderedConflicts(tool, agentRendered.conflicts);
+    logRenderedConflicts(tool, automationRendered.conflicts);
     logRenderedConflicts(tool, globalDocsRendered.conflicts);
     logRenderedConflicts(tool, rulesRendered.conflicts);
     logRenderedConflicts(tool, configRendered.conflicts);
@@ -2928,6 +3307,13 @@ async function syncManagedToolEntry({
       removedTargets: agentRendered.remove,
       contents: agentPlan.contents,
       sources: agentPlan.sources,
+    });
+    updateRenderedTargetState({
+      entry,
+      writtenTargets: automationRendered.write,
+      removedTargets: automationRendered.remove,
+      contents: automationPlan.contents,
+      sources: automationPlan.sources,
     });
     updateRenderedTargetState({
       entry,

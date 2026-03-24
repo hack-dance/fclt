@@ -260,9 +260,17 @@ fclt index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-local work. Facult-owned generated/config/runtime state lives inside the active canonical root:
-- global: `~/.ai/.facult`
-- project: `<repo>/.ai/.facult`
+Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-local work.
+
+Generated AI state that belongs with the canonical root lives inside that root:
+- global: `~/.ai/.facult/ai/...`
+- project: `<repo>/.ai/.facult/ai/...`
+
+Machine-local operational state lives outside the canonical root:
+- macOS state: `~/Library/Application Support/fclt/...`
+- macOS cache: `~/Library/Caches/fclt/...`
+- Linux/other state: `${XDG_STATE_HOME:-~/.local/state}/fclt/...`
+- Linux/other cache: `${XDG_CACHE_HOME:-~/.cache}/fclt/...`
 
 ### 3b. Bootstrap a repo-local `.ai`
 
@@ -420,7 +428,8 @@ Typical layout:
 
 Important split:
 - `.ai/` is canonical source
-- `.ai/.facult/` is Facult-owned generated state, trust state, managed tool state, autosync state, and caches
+- `.ai/.facult/ai/` is generated AI state that belongs with the canonical root
+- machine-local Facult state such as managed-tool state, autosync runtime/config, install metadata, and launcher caches lives outside `.ai/`
 - tool homes such as `.codex/` and `.claude/` are rendered outputs
 - the generated capability graph lives at `.ai/.facult/ai/graph.json`
 
@@ -714,6 +723,13 @@ Files are written to:
 - `~/.codex/automations/<name>/automation.toml`
 - `~/.codex/automations/<name>/memory.md`
 
+When Codex is in managed mode, canonical automation sources live under:
+
+- `~/.ai/automations/<name>/...` for global automation state
+- `<repo>/.ai/automations/<name>/...` for project-scoped canonical state
+
+Managed sync renders those canonical automation directories into the shared live Codex automation store at `~/.codex/automations/` and only removes automation files that were previously rendered by the same canonical root.
+
 Example project automation:
 
 ```bash
@@ -774,17 +790,21 @@ fclt <command> --help
 
 ### State and report files
 
-Under `~/.ai/.facult/`:
+Under canonical generated AI state (`~/.ai/.facult/` or `<repo>/.ai/.facult/`):
 - `sources.json` (latest inventory scan state)
 - `consolidated.json` (consolidation state)
-- `managed.json` (managed tool state)
 - `ai/index.json` (generated canonical AI inventory)
 - `audit/static-latest.json` (latest static audit report)
 - `audit/agent-latest.json` (latest agent audit report)
 - `trust/sources.json` (source trust policy state)
-- `autosync/services/*.json` (autosync service configs)
-- `autosync/state/*.json` (autosync runtime state)
-- `autosync/logs/*` (autosync service logs)
+
+Under machine-local Facult state:
+- `install.json` (machine-local install metadata)
+- `global/managed.json` or `projects/<slug-hash>/managed.json` (managed tool state)
+- `.../autosync/services/*.json` (autosync service configs)
+- `.../autosync/state/*.json` (autosync runtime state)
+- `.../autosync/logs/*` (autosync service logs)
+- `runtime/<version>/<platform-arch>/...` under the machine-local cache root (npm launcher binary cache)
 
 ### Config reference
 
@@ -890,7 +910,7 @@ Release behavior:
 4. npm publish runs only after binary asset upload succeeds (`publish-npm` depends on `publish-assets`).
 5. Published release assets include platform binaries, `fclt-install.sh`, `facult-install.sh`, and `SHA256SUMS`.
 6. When `HOMEBREW_TAP_TOKEN` is configured, the release workflow also updates the Homebrew tap at `hack-dance/homebrew-tap`.
-7. The npm package launcher resolves your platform, downloads the matching release binary, caches it under `~/.ai/.facult/runtime/<version>/<platform-arch>/`, and runs it.
+7. The npm package launcher resolves your platform, downloads the matching release binary, caches it under the machine-local cache root (`~/Library/Caches/fclt/runtime/...` on macOS or `${XDG_CACHE_HOME:-~/.cache}/fclt/runtime/...` elsewhere), and runs it.
 
 Current prebuilt binary targets:
 - `darwin-x64`

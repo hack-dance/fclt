@@ -89,8 +89,16 @@ mv "$TMP_FILE" "${INSTALL_DIR}/${CLI_NAME}"
 cp "${INSTALL_DIR}/${CLI_NAME}" "${INSTALL_DIR}/${COMPATIBILITY_NAME}"
 chmod +x "${INSTALL_DIR}/${COMPATIBILITY_NAME}"
 
-mkdir -p "$HOME/.ai/.facult"
-cat > "$HOME/.ai/.facult/install.json" <<EOF
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  INSTALL_STATE_PATH="${HOME}/Library/Application Support/fclt/install.json"
+elif [[ -n "${XDG_STATE_HOME:-}" ]]; then
+  INSTALL_STATE_PATH="${XDG_STATE_HOME}/fclt/install.json"
+else
+  INSTALL_STATE_PATH="${HOME}/.local/state/fclt/install.json"
+fi
+
+mkdir -p "$(dirname "$INSTALL_STATE_PATH")"
+cat > "$INSTALL_STATE_PATH" <<EOF
 {
   "version": 1,
   "method": "release-script",

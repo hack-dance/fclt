@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -93,6 +94,34 @@ export function preferredGlobalFacultStateDir(
   return join(preferredGlobalAiRoot(home), ".facult");
 }
 
+export function facultLocalStateRoot(home: string = defaultHomeDir()): string {
+  const override = process.env.FACULT_LOCAL_STATE_DIR?.trim();
+  if (override) {
+    return resolvePath(override, home);
+  }
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Application Support", "fclt");
+  }
+  const xdg = process.env.XDG_STATE_HOME?.trim();
+  return xdg
+    ? join(resolvePath(xdg, home), "fclt")
+    : join(home, ".local", "state", "fclt");
+}
+
+export function facultLocalCacheRoot(home: string = defaultHomeDir()): string {
+  const override = process.env.FACULT_CACHE_DIR?.trim();
+  if (override) {
+    return resolvePath(override, home);
+  }
+  if (process.platform === "darwin") {
+    return join(home, "Library", "Caches", "fclt");
+  }
+  const xdg = process.env.XDG_CACHE_HOME?.trim();
+  return xdg
+    ? join(resolvePath(xdg, home), "fclt")
+    : join(home, ".cache", "fclt");
+}
+
 export function legacyExternalFacultStateDir(
   home: string = defaultHomeDir()
 ): string {
@@ -184,6 +213,46 @@ export function facultStateDir(
     return preferredGlobalFacultStateDir(home);
   }
   return join(resolvedRoot, ".facult");
+}
+
+function machineStateProjectKey(
+  rootDir: string,
+  home: string = defaultHomeDir()
+): string {
+  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  const labelSource = projectRoot ?? rootDir;
+  const label = basename(labelSource).trim().toLowerCase();
+  const slug = label.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const digest = createHash("sha256")
+    .update(resolve(rootDir))
+    .digest("hex")
+    .slice(0, 12);
+  return `${slug || "project"}-${digest}`;
+}
+
+export function facultMachineStateDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  const projectRoot = projectRootFromAiRoot(resolvedRoot, home);
+  return projectRoot
+    ? join(
+        facultLocalStateRoot(home),
+        "projects",
+        machineStateProjectKey(resolvedRoot, home)
+      )
+    : join(facultLocalStateRoot(home), "global");
+}
+
+export function facultInstallStatePath(
+  home: string = defaultHomeDir()
+): string {
+  return join(facultLocalStateRoot(home), "install.json");
+}
+
+export function facultRuntimeCacheDir(home: string = defaultHomeDir()): string {
+  return join(facultLocalCacheRoot(home), "runtime");
 }
 
 export function projectRootFromAiRoot(

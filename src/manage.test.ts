@@ -13,6 +13,7 @@ import { facultBuiltinPackRoot } from "./builtin";
 import {
   loadManagedState,
   managedStatePath,
+  managedStatePathForRoot,
   manageTool,
   saveManagedState,
   syncManagedTools,
@@ -116,6 +117,58 @@ describe("managed state", () => {
     expect(rendered).toContain(join(rootDir, "rules", "WRITING.md"));
     expect(rendered).toContain("Target tool: codex.");
     expect(rendered).not.toContain(REFS_WRITING_RULE);
+  });
+
+  it("renders codex automations into the shared Codex automation dir", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(rootDir, "automations", "project-check"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "automations", "project-check", "automation.toml"),
+      [
+        "version = 1",
+        'id = "project-check"',
+        'name = "Project check"',
+        'prompt = "Inspect the repo"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(rootDir, "automations", "project-check", "memory.md"),
+      "# Memory\n"
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const renderedToml = await readFile(
+      join(home, ".codex", "automations", "project-check", "automation.toml"),
+      "utf8"
+    );
+    const renderedMemory = await readFile(
+      join(home, ".codex", "automations", "project-check", "memory.md"),
+      "utf8"
+    );
+    expect(renderedToml).toContain('id = "project-check"');
+    expect(renderedMemory).toBe("# Memory\n");
+
+    const managedPath = managedStatePathForRoot(home, rootDir);
+    const raw = await readFile(managedPath, "utf8");
+    const parsed = JSON.parse(raw) as {
+      tools: Record<string, { automationDir?: string }>;
+    };
+    expect(parsed.tools.codex?.automationDir).toBe(
+      join(home, ".codex", "automations")
+    );
   });
 
   it("syncs builtin operating-model skills, agents, and global docs by default", async () => {
@@ -514,7 +567,7 @@ describe("manage/unmanage", () => {
     expect(canonical).toBe("# Live Skill\n");
   });
 
-  it("adopts existing managed content across skills, agents, docs, rules, config, and mcp", async () => {
+  it("adopts existing managed content across skills, agents, overlapping automations, docs, rules, config, and mcp", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
     await mkdir(join(home, ".codex"), { recursive: true });
@@ -531,6 +584,38 @@ describe("manage/unmanage", () => {
     await Bun.write(
       join(home, ".codex", "agents", "legacy-agent.toml"),
       'name = "legacy-agent"\n'
+    );
+    await mkdir(join(rootDir, "automations", "legacy-review"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "automations", "legacy-review", "automation.toml"),
+      [
+        "version = 1",
+        'id = "legacy-review"',
+        'name = "Canonical review"',
+        'prompt = "Canonical prompt"',
+        'status = "PAUSED"',
+        'rrule = "FREQ=WEEKLY;BYDAY=SU;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await mkdir(join(home, ".codex", "automations", "legacy-review"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(home, ".codex", "automations", "legacy-review", "automation.toml"),
+      [
+        "version = 1",
+        'id = "legacy-review"',
+        'name = "Legacy review"',
+        'prompt = "Review changes"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(home, ".codex", "automations", "legacy-review", "memory.md"),
+      "# Legacy automation memory\n"
     );
 
     await Bun.write(join(home, ".codex", "AGENTS.md"), "# Legacy Global\n");
@@ -568,6 +653,24 @@ describe("manage/unmanage", () => {
         "utf8"
       )
     ).toContain('name = "legacy-agent"');
+    expect(
+      await readFile(
+        join(rootDir, "automations", "legacy-review", "automation.toml"),
+        "utf8"
+      )
+    ).toContain('id = "legacy-review"');
+    expect(
+      await readFile(
+        join(rootDir, "automations", "legacy-review", "automation.toml"),
+        "utf8"
+      )
+    ).toContain('name = "Legacy review"');
+    expect(
+      await readFile(
+        join(rootDir, "automations", "legacy-review", "memory.md"),
+        "utf8"
+      )
+    ).toBe("# Legacy automation memory\n");
     expect(await readFile(join(rootDir, "AGENTS.global.md"), "utf8")).toBe(
       "# Legacy Global\n"
     );
@@ -937,7 +1040,7 @@ describe("syncManagedTools", () => {
     expect(rendered).toContain("Target tool: codex.");
 
     const managedRaw = await readFile(
-      join(projectRoot, ".ai", ".facult", "managed.json"),
+      managedStatePathForRoot(home, rootDir),
       "utf8"
     );
     expect(JSON.parse(managedRaw).tools.codex.agentsDir).toBe(
@@ -989,6 +1092,87 @@ describe("syncManagedTools", () => {
       join(home, ".codex", "agents", "beta.toml")
     ).exists();
     expect(betaExists).toBe(false);
+  });
+
+  it("reconciles managed codex automations without removing unrelated live automations", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "automations", "alpha"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "automations", "alpha", "automation.toml"),
+      [
+        "version = 1",
+        'id = "alpha"',
+        'name = "Alpha"',
+        'prompt = "Run alpha"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(rootDir, "automations", "alpha", "memory.md"),
+      "# Alpha memory\n"
+    );
+    await mkdir(join(rootDir, "automations", "beta"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "automations", "beta", "automation.toml"),
+      [
+        "version = 1",
+        'id = "beta"',
+        'name = "Beta"',
+        'prompt = "Run beta"',
+        'status = "PAUSED"',
+        'rrule = "FREQ=WEEKLY;BYDAY=TU;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    await mkdir(join(home, ".codex", "automations", "local-only"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(home, ".codex", "automations", "local-only", "automation.toml"),
+      [
+        "version = 1",
+        'id = "local-only"',
+        'name = "Local only"',
+        'prompt = "Stay local"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=WE;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+
+    await rm(join(rootDir, "automations", "beta"), {
+      recursive: true,
+      force: true,
+    });
+    await Bun.write(
+      join(rootDir, "automations", "alpha", "memory.md"),
+      "# Alpha memory updated\n"
+    );
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    expect(
+      await readFile(
+        join(home, ".codex", "automations", "alpha", "memory.md"),
+        "utf8"
+      )
+    ).toBe("# Alpha memory updated\n");
+    expect(
+      await Bun.file(
+        join(home, ".codex", "automations", "beta", "automation.toml")
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        join(home, ".codex", "automations", "local-only", "automation.toml")
+      ).exists()
+    ).toBe(true);
   });
 
   it("reconciles global codex docs and rules on sync", async () => {

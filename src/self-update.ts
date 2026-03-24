@@ -2,6 +2,7 @@ import { mkdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
+  facultInstallStatePath,
   legacyExternalFacultStateDir,
   preferredGlobalFacultStateDir,
 } from "./paths";
@@ -88,6 +89,7 @@ export function parseSelfUpdateArgs(argv: string[]): ParsedArgs {
 
 async function loadInstallState(home: string): Promise<InstallState | null> {
   const paths = [
+    facultInstallStatePath(home),
     join(preferredGlobalFacultStateDir(home), "install.json"),
     join(legacyExternalFacultStateDir(home), "install.json"),
   ];
@@ -208,7 +210,7 @@ async function writeInstallState(args: {
   packageVersion?: string;
   binaryPath?: string;
 }) {
-  const dir = preferredGlobalFacultStateDir(args.home);
+  const dir = dirname(facultInstallStatePath(args.home));
   await mkdir(dir, { recursive: true });
   const payload: InstallState = {
     version: 1,
@@ -219,7 +221,7 @@ async function writeInstallState(args: {
     installedAt: new Date().toISOString(),
   };
   await Bun.write(
-    join(dir, "install.json"),
+    facultInstallStatePath(args.home),
     `${JSON.stringify(payload, null, 2)}\n`
   );
 }

@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { facultInstallStatePath, facultRuntimeCacheDir } from "../src/paths";
 
 const version = (await import("../package.json")).version as string;
 const platform =
@@ -54,10 +55,7 @@ it("does not write install metadata when using a cached runtime binary", async (
   tempDirs.push(homeDir);
 
   const runtimeDir = join(
-    homeDir,
-    ".ai",
-    ".facult",
-    "runtime",
+    facultRuntimeCacheDir(homeDir),
     version,
     `${platform}-${arch}`
   );
@@ -86,6 +84,59 @@ it("does not write install metadata when using a cached runtime binary", async (
   expect(exitCode).toBe(0);
   expect(stderr).toBe("");
 
-  const installStatePath = join(homeDir, ".ai", ".facult", "install.json");
+  const installStatePath = facultInstallStatePath(homeDir);
   await expect(stat(installStatePath)).rejects.toThrow();
+});
+
+it("falls back quickly to the bundled source entry when the cached runtime is incomplete", async () => {
+  if (localOnly) {
+    return;
+  }
+
+  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-fallback-"));
+  tempDirs.push(homeDir);
+
+  const runtimeDir = join(
+    facultRuntimeCacheDir(homeDir),
+    version,
+    `${platform}-${arch}`
+  );
+  await mkdir(runtimeDir, { recursive: true });
+  await writeFile(
+    join(runtimeDir, `fclt.tmp-${Date.now()}`),
+    "partial",
+    "utf8"
+  );
+  const launcherRuntime = await resolveLauncherRuntime();
+
+  const proc = Bun.spawn({
+    cmd: [launcherRuntime, "bin/fclt.cjs", "--help"],
+    cwd: "/Users/hack/dev/hack-dance/facult",
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      HTTPS_PROXY: "http://127.0.0.1:1",
+      HTTP_PROXY: "http://127.0.0.1:1",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await Promise.race([
+    proc.exited,
+    new Promise<number>((resolve) => setTimeout(() => resolve(-999), 1500)),
+  ]);
+
+  if (exitCode === -999) {
+    proc.kill();
+  }
+
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  expect(exitCode).toBe(0);
+  expect(stdout).toContain("fclt — manage canonical AI capabilities");
+  expect(stderr).not.toContain("Unable to download the fclt binary");
 });
