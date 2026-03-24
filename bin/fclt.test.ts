@@ -11,6 +11,7 @@ const platform =
       ? "darwin"
       : "linux";
 const arch = process.arch;
+const launcherRuntime = Bun.which("node") ?? process.execPath;
 
 const tempDirs: string[] = [];
 
@@ -42,7 +43,7 @@ it("does not write install metadata when using a cached runtime binary", async (
   await chmod(binaryPath, 0o755);
 
   const proc = Bun.spawn({
-    cmd: ["node", "bin/fclt.cjs", "help"],
+    cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
     cwd: "/Users/hack/dev/hack-dance/facult",
     env: {
       ...process.env,
