@@ -26,6 +26,18 @@ async function makeTempHome(): Promise<string> {
   return dir;
 }
 
+function expectedLocalStateRoot(home: string): string {
+  return process.platform === "darwin"
+    ? join(home, "Library", "Application Support", "fclt")
+    : join(home, ".local", "state", "fclt");
+}
+
+function expectedLocalCacheRoot(home: string): string {
+  return process.platform === "darwin"
+    ? join(home, "Library", "Caches", "fclt")
+    : join(home, ".cache", "fclt");
+}
+
 afterEach(async () => {
   if (tempHome) {
     await rm(tempHome, { recursive: true, force: true });
@@ -125,10 +137,10 @@ describe("paths", () => {
     process.env.HOME = tempHome;
 
     expect(facultInstallStatePath(tempHome)).toBe(
-      join(tempHome, "Library", "Application Support", "fclt", "install.json")
+      join(expectedLocalStateRoot(tempHome), "install.json")
     );
     expect(facultRuntimeCacheDir(tempHome)).toBe(
-      join(tempHome, "Library", "Caches", "fclt", "runtime")
+      join(expectedLocalCacheRoot(tempHome), "runtime")
     );
   });
 
@@ -139,7 +151,7 @@ describe("paths", () => {
     const projectRoot = join(tempHome, "work", "repo");
     const rootDir = join(projectRoot, ".ai");
     expect(facultMachineStateDir(tempHome, rootDir)).toContain(
-      join(tempHome, "Library", "Application Support", "fclt", "projects")
+      join(expectedLocalStateRoot(tempHome), "projects")
     );
     expect(facultMachineStateDir(tempHome, rootDir)).not.toContain(
       join(projectRoot, ".ai", ".facult")
