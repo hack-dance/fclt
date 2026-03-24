@@ -7,6 +7,7 @@ import { claudeDesktopAdapter } from "./claude-desktop";
 import { clawdbotAdapter } from "./clawdbot";
 import { codexAdapter } from "./codex";
 import { cursorAdapter } from "./cursor";
+import { factoryAdapter } from "./factory";
 import type { ToolAdapter } from "./types";
 
 const SAMPLE_MCP_CONFIG = {
@@ -36,6 +37,23 @@ const SAMPLE_MCP_NESTED = {
     mode: "strict",
   },
   theme: "dark",
+};
+
+const SAMPLE_FACTORY_MCP = {
+  mcpServers: {
+    alpha: {
+      type: "http",
+      url: "https://example.com/mcp",
+      disabled: false,
+      headers: { Authorization: "Bearer token" },
+    },
+    beta: {
+      type: "stdio",
+      command: "node",
+      args: ["server.js"],
+      disabled: true,
+    },
+  },
 };
 
 function roundTrip(adapter: ToolAdapter, input: unknown) {
@@ -95,6 +113,16 @@ describe("tool adapters MCP roundtrip", () => {
     const { parsed, generated, parsedAgain } = roundTrip(
       clawdbotAdapter,
       SAMPLE_MCP_CONFIG
+    );
+    expect(parsed).toBeTruthy();
+    expect(generated).toBeTruthy();
+    expect(parsedAgain).toEqual(parsed);
+  });
+
+  it("round-trips factory", () => {
+    const { parsed, generated, parsedAgain } = roundTrip(
+      factoryAdapter,
+      SAMPLE_FACTORY_MCP
     );
     expect(parsed).toBeTruthy();
     expect(generated).toBeTruthy();

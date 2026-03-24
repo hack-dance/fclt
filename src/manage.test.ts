@@ -119,6 +119,53 @@ describe("managed state", () => {
     expect(rendered).not.toContain(REFS_WRITING_RULE);
   });
 
+  it("renders factory droids into markdown files", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "agents", "argument-editor"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "agents", "argument-editor", "agent.toml"),
+      [
+        'name = "argument-editor"',
+        'description = "Editorial reviewer."',
+        "",
+        'developer_instructions = """',
+        "Before reviewing, read ${refs.writing_rule}.",
+        "Target tool: ${TARGET_TOOL}.",
+        '"""',
+        "",
+      ].join("\n")
+    );
+
+    await mkdir(join(rootDir, "rules"), { recursive: true });
+    await Bun.write(join(rootDir, "rules", "WRITING.md"), "House rules.\n");
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("factory", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const rendered = await readFile(
+      join(home, ".factory", "droids", "argument-editor.md"),
+      "utf8"
+    );
+    expect(rendered).toContain('name: "argument-editor"');
+    expect(rendered).toContain('description: "Editorial reviewer."');
+    expect(rendered).toContain('model: "inherit"');
+    expect(rendered).toContain(join(rootDir, "rules", "WRITING.md"));
+    expect(rendered).toContain("Target tool: factory.");
+    expect(rendered).not.toContain(REFS_WRITING_RULE);
+  });
+
   it("renders codex automations into the shared Codex automation dir", async () => {
     const home = await createTempDir();
     const projectRoot = join(home, "work", "repo");

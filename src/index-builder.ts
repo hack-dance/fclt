@@ -1,6 +1,7 @@
 import { mkdir, readdir } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAdapter } from "./adapters";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import {
   type AssetScope,
@@ -29,6 +30,10 @@ interface AssetEntryBase {
   projectSlug?: string;
   sourceRoot?: string;
   shadow?: boolean;
+}
+
+function managedAgentFileExtension(tool: string): string {
+  return getAdapter(tool)?.agentFileExtension ?? ".toml";
 }
 
 export interface SkillEntry {
@@ -1213,6 +1218,7 @@ function registerManagedRenderedTargets(args: {
   const nodes = args.graph.nodes;
   for (const toolState of toolStates) {
     if (toolState.agentsDir) {
+      const extension = managedAgentFileExtension(toolState.tool);
       for (const entry of Object.values(args.index.agents)) {
         const sourceNodeId = sourceNodeIdForEntry({
           kind: "agent",
@@ -1221,7 +1227,7 @@ function registerManagedRenderedTargets(args: {
         if (!nodes[sourceNodeId]) {
           continue;
         }
-        const targetPath = join(toolState.agentsDir, `${entry.name}.toml`);
+        const targetPath = join(toolState.agentsDir, `${entry.name}${extension}`);
         registerRenderedTargetNode({
           graph: args.graph,
           currentScope: args.currentScope,

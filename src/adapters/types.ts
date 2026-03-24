@@ -18,6 +18,21 @@ export interface CanonicalSkill {
   path?: string;
 }
 
+export interface RenderManagedAgentOptions {
+  raw: string;
+  rootDir: string;
+  tool: string;
+  targetPath: string;
+  homeDir?: string;
+  projectRoot?: string;
+}
+
+export interface ParsedManagedAgentFile {
+  name: string;
+  raw: string;
+  sourcePath: string;
+}
+
 export interface AdapterDefaultPaths {
   mcp?: string;
   skills?: string | string[];
@@ -34,6 +49,13 @@ export interface ToolAdapter {
   parseSkills?: (skillsDir: string) => Promise<CanonicalSkill[]>;
   generateMcp?: (canonical: CanonicalMcpConfig, version?: string) => unknown;
   generateSkillsDir?: (skills: CanonicalSkill[]) => Promise<void>;
+  agentFileExtension?: string;
+  renderAgent?: (
+    options: RenderManagedAgentOptions
+  ) => Promise<string> | string;
+  parseManagedAgentFile?: (
+    path: string
+  ) => Promise<ParsedManagedAgentFile | null>;
   getDefaultPaths?: () => AdapterDefaultPaths;
 }
 

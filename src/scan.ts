@@ -602,6 +602,19 @@ function defaultSourceSpecs(
       ],
     },
     {
+      id: "factory",
+      name: "Factory",
+      candidates: ["~/.factory", "~/.factory/mcp.json"],
+      skillDirs: ["~/.factory/skills"],
+      configFiles: ["~/.factory/mcp.json"],
+      assets: [
+        {
+          kind: "agents-instructions",
+          patterns: ["~/.factory/AGENTS.md"],
+        },
+      ],
+    },
+    {
       id: "claude",
       name: "Claude (CLI)",
       candidates: ["~/.claude", "~/.claude.json", "~/.config/claude"],
@@ -783,6 +796,13 @@ function defaultSourceSpecs(
           patterns: [join(cwd, ".claude", "CLAUDE.md")],
         },
       ],
+    },
+    {
+      id: "factory-project",
+      name: "Factory (project)",
+      candidates: [join(cwd, ".factory")],
+      skillDirs: [join(cwd, ".factory", "skills")],
+      configFiles: [join(cwd, ".factory", "mcp.json")],
     },
   ];
 
@@ -1288,7 +1308,12 @@ async function buildFromRootResult(args: {
         }
         continue;
       }
-      if (name === ".codex" || name === ".agents" || name === ".clawdbot") {
+      if (
+        name === ".codex" ||
+        name === ".agents" ||
+        name === ".clawdbot" ||
+        name === ".factory"
+      ) {
         await scanToolDotDir(child);
         continue;
       }

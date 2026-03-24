@@ -3,6 +3,7 @@ import { claudeDesktopAdapter } from "./claude-desktop";
 import { clawdbotAdapter } from "./clawdbot";
 import { codexAdapter } from "./codex";
 import { cursorAdapter } from "./cursor";
+import { factoryAdapter } from "./factory";
 import { referenceAdapter } from "./reference";
 import type { ResolveVersionOptions, ToolAdapter } from "./types";
 
@@ -64,6 +65,7 @@ export async function resolveAdapterVersion(
 registerAdapter(referenceAdapter);
 registerAdapter(cursorAdapter);
 registerAdapter(codexAdapter);
+registerAdapter(factoryAdapter);
 registerAdapter(claudeCliAdapter);
 registerAdapter(claudeDesktopAdapter);
 registerAdapter(clawdbotAdapter);

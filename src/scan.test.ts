@@ -136,6 +136,44 @@ test("scan --from detects instruction files inside known tool dot-dirs (e.g. .co
   ).toBe(true);
 });
 
+test("scan --from detects Factory tool surfaces", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-scan-"));
+  const home = join(dir, "home");
+
+  const toolDir = join(dir, ".factory");
+  await mkdir(join(toolDir, "skills", "alpha"), { recursive: true });
+  await Bun.write(join(toolDir, "AGENTS.md"), "factory override\n");
+  await Bun.write(
+    join(toolDir, "mcp.json"),
+    '{"mcpServers":{"alpha":{"url":"https://example.com/mcp","type":"http"}}}\n'
+  );
+  await Bun.write(join(toolDir, "skills", "alpha", "SKILL.md"), "# Alpha\n");
+
+  const res = await scan([], {
+    cwd: dir,
+    homeDir: home,
+    includeConfigFrom: false,
+    from: [dir],
+  });
+
+  const allAssets = res.sources.flatMap((s) => s.assets.files);
+  expect(
+    allAssets.some(
+      (a) =>
+        a.kind === "agents-instructions" &&
+        a.path === join(toolDir, "AGENTS.md")
+    )
+  ).toBe(true);
+
+  const allSkillPaths = res.sources.flatMap((s) => s.skills.entries ?? []);
+  expect(allSkillPaths).toContain(join(toolDir, "skills", "alpha"));
+
+  const allMcpPaths = res.sources.flatMap((s) =>
+    s.mcp.configs.map((cfg) => cfg.path)
+  );
+  expect(allMcpPaths).toContain(join(toolDir, "mcp.json"));
+});
+
 test("scan --from discovers per-project .vscode/settings.json MCP servers (JSONC)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-scan-"));
   const home = join(dir, "home");

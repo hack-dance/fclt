@@ -203,6 +203,19 @@ function defaultToolPaths(
       skillsDir: toolBase(".antigravity", "skills"),
       mcpConfig: toolBase(".antigravity", "mcp.json"),
     },
+    factory: {
+      tool: "factory",
+      skillsDir: projectRoot
+        ? join(projectRoot, ".factory", "skills")
+        : homePath(home, ".factory", "skills"),
+      mcpConfig: projectRoot
+        ? join(projectRoot, ".factory", "mcp.json")
+        : homePath(home, ".factory", "mcp.json"),
+      agentsDir: projectRoot
+        ? join(projectRoot, ".factory", "droids")
+        : homePath(home, ".factory", "droids"),
+      toolHome: projectRoot ? undefined : homePath(home, ".factory"),
+    },
   };
 
   const adapterDefaults = (tool: string): ToolPaths | null => {
@@ -436,6 +449,68 @@ async function loadCanonicalAgents(
   return await loadAgentsFromRoot(homePath(rootDir, "agents"));
 }
 
+function managedAgentFileExtension(tool: string): string {
+  return getAdapter(tool)?.agentFileExtension ?? ".toml";
+}
+
+async function renderManagedAgentFile(args: {
+  agent: { name: string; sourcePath: string; raw: string };
+  homeDir: string;
+  rootDir: string;
+  tool: string;
+  targetPath: string;
+}): Promise<string> {
+  const adapter = getAdapter(args.tool);
+  if (adapter?.renderAgent) {
+    return await adapter.renderAgent({
+      raw: args.agent.raw,
+      homeDir: args.homeDir,
+      rootDir: args.rootDir,
+      projectRoot: projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
+      tool: args.tool,
+      targetPath: args.targetPath,
+    });
+  }
+
+  return await renderCanonicalText(args.agent.raw, {
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    projectRoot: projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
+    targetTool: args.tool,
+    targetPath: args.targetPath,
+  });
+}
+
+async function loadManagedAgentsFromTool(args: {
+  tool: string;
+  agentsDir: string;
+}): Promise<{ name: string; sourcePath: string; raw: string }[]> {
+  const adapter = getAdapter(args.tool);
+  if (!adapter?.parseManagedAgentFile) {
+    return await loadAgentsFromRoot(args.agentsDir);
+  }
+
+  const extension = managedAgentFileExtension(args.tool);
+  const entries = await readdir(args.agentsDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  const out: { name: string; sourcePath: string; raw: string }[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(extension)) {
+      continue;
+    }
+    const sourcePath = join(args.agentsDir, entry.name);
+    const parsed = await adapter.parseManagedAgentFile(sourcePath);
+    if (!parsed) {
+      continue;
+    }
+    out.push(parsed);
+  }
+
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 interface AutomationEntry {
   name: string;
   sourceDir: string;
@@ -637,14 +712,15 @@ async function planAgentFileChanges({
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
+  const extension = managedAgentFileExtension(tool);
 
   for (const agent of agents) {
-    const target = homePath(agentsDir, `${agent.name}.toml`);
-    const rendered = await renderCanonicalText(agent.raw, {
+    const target = homePath(agentsDir, `${agent.name}${extension}`);
+    const rendered = await renderManagedAgentFile({
+      agent,
       homeDir,
       rootDir,
-      projectRoot: projectRootFromAiRoot(rootDir, homeDir) ?? undefined,
-      targetTool: tool,
+      tool,
       targetPath: target,
     });
     desiredPaths.add(target);
@@ -659,7 +735,7 @@ async function planAgentFileChanges({
   const remove = new Set<string>();
 
   for (const entry of existing) {
-    if (!(entry.isFile() && entry.name.endsWith(".toml"))) {
+    if (!(entry.isFile() && entry.name.endsWith(extension))) {
       continue;
     }
     const p = homePath(agentsDir, entry.name);
@@ -1214,11 +1290,15 @@ function logManagedImportPlan(tool: string, plan: ExistingManagedImportPlan) {
 }
 
 async function planExistingToolAgentAdoption(args: {
+  tool: string;
   rootDir: string;
   agentsDir: string;
 }): Promise<ExistingManagedImportPlan> {
   const plan = emptyManagedImportPlan();
-  const agents = await loadAgentsFromRoot(args.agentsDir);
+  const agents = await loadManagedAgentsFromTool({
+    tool: args.tool,
+    agentsDir: args.agentsDir,
+  });
   for (const agent of agents) {
     const canonicalPath = join(
       args.rootDir,
@@ -1245,12 +1325,16 @@ async function planExistingToolAgentAdoption(args: {
 }
 
 async function adoptExistingToolAgents(args: {
+  tool: string;
   rootDir: string;
   agentsDir: string;
   conflictMode: "keep-canonical" | "keep-existing";
 }): Promise<ExistingManagedItem[]> {
   const adopted: ExistingManagedItem[] = [];
-  const agents = await loadAgentsFromRoot(args.agentsDir);
+  const agents = await loadManagedAgentsFromTool({
+    tool: args.tool,
+    agentsDir: args.agentsDir,
+  });
   for (const agent of agents) {
     const canonicalPath = join(
       args.rootDir,
@@ -2019,6 +2103,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     asManagedSkillPlan(existingSkillPlan),
     toolPaths.agentsDir
       ? await planExistingToolAgentAdoption({
+          tool,
           rootDir,
           agentsDir: toolPaths.agentsDir,
         })
@@ -2142,6 +2227,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   }
   if (toolPaths.agentsDir && opts.adoptExisting) {
     const result = await adoptExistingToolAgents({
+      tool,
       rootDir,
       agentsDir: toolPaths.agentsDir,
       conflictMode: importConflictMode,
@@ -3006,6 +3092,7 @@ async function repairManagedCanonicalContent(args: {
 
   if (args.entry.agentsBackup) {
     const items = await adoptExistingToolAgents({
+      tool: args.entry.tool,
       rootDir: args.rootDir,
       agentsDir: args.entry.agentsBackup,
       conflictMode: "keep-canonical",
