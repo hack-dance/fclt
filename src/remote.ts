@@ -341,7 +341,7 @@ Use this memory for pattern continuity:
 - For wide reviews, partition evidence by cwd first; do not let one repo's evidence stand in for another.
 - Grounding: prefer evidence from session messages, tool calls, shell commands, diffs, tests, commits, and touched files.
 - Threshold: only encode signal when you can name what was learned, why it matters, and the most plausible destination.
-- Scope: default to project writeback unless the signal clearly belongs in global doctrine or a shared capability.
+- Scope: default to project writeback only when the repo has a project-local \`.ai\` root. If a local writable repo is missing one, bootstrap baseline project AI state with \`fclt templates init project-ai\` before retrying project-scoped writeback. If bootstrap fails or the repo is not writable, treat that as the blocker instead of silently falling back to global runtime state.
 - Promote to global only when the same signal appears across multiple repos or clearly targets shared doctrine, shared agents, or shared skills.
 - Verification: distinguish one-off friction from a repeated pattern before escalating it.
 - If available, use [$feedback-loop-setup]({{feedbackLoopSkill}}) when the review needs stronger feedback loops or verification framing.
@@ -367,6 +367,8 @@ Grounding rules:
 
 Decision rules:
 - Use \`fclt ai writeback add\` when the signal, target asset, and scope are clear.
+- Before attempting project-scoped writeback, verify the cwd has a repo-local \`.ai\` root. If it does not and the cwd is a local writable repo, run \`fclt templates init project-ai\` from that repo root, then continue. If bootstrap fails or the repo is not writable, report the writeback as blocked by missing project AI state rather than falling back to merged/global runtime state.
+- Before passing \`--asset\`, verify the target resolves in the Facult graph. If the destination is a raw file path or otherwise not graph-backed, report that as a missing-asset blocker instead of retrying blind.
 - Use \`fclt ai evolve\` only when repeated signal is strong enough to justify a reviewable capability change.
 - Prefer project scope unless the learning clearly belongs in shared global doctrine, shared agents, shared skills, or other cross-project capability.
 - For wide automations, require repeated evidence across more than one cwd before recommending a global/shared capability change unless the target is obviously global.

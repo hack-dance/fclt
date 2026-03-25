@@ -1173,6 +1173,9 @@ describe("templates command", () => {
     expect(automationToml).toContain("scope-promoter");
     expect(automationToml).toContain("evolution-planner");
     expect(automationToml).toContain("verification-auditor");
+    expect(automationToml).toContain("fclt templates init project-ai");
+    expect(automationToml).toContain("blocked by missing project AI state");
+    expect(automationToml).toContain("not graph-backed");
     expect(automationToml).toContain("Recorded writebacks");
     expect(await Bun.file(join(automationDir, "memory.md")).exists()).toBe(
       true
@@ -1180,6 +1183,7 @@ describe("templates command", () => {
     const memory = await readFile(join(automationDir, "memory.md"), "utf8");
     expect(memory).toContain("$feedback-loop-setup");
     expect(memory).toContain("$capability-evolution");
+    expect(memory).toContain("bootstrap baseline project AI state");
   });
 
   it("supports project-scoped automation scaffolding with explicit scope root", async () => {

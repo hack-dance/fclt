@@ -1,19 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 
 let tempRoot: string | null = null;
 const ORIGINAL_ROOT = process.env.FACULT_ROOT_DIR;
 
-async function makeTempDir(): Promise<string> {
-  const dir = join(
-    process.cwd(),
-    ".tmp-tests",
-    `cli-context-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  );
-  await mkdir(dir, { recursive: true });
-  return dir;
+function makeTempDir(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "cli-context-"));
 }
 
 afterEach(async () => {
@@ -78,5 +73,19 @@ describe("resolveCliContextRoot", () => {
 
     const rootDir = resolveCliContextRoot({ homeDir, cwd, scope: "merged" });
     expect(rootDir).toBe(envRoot);
+  });
+
+  it("explains how to create project AI state when project scope has no repo-local .ai", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const cwd = join(homeDir, "work", "repo");
+    await mkdir(cwd, { recursive: true });
+
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow("No project-local .ai root found:");
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow('Run "fclt templates init project-ai" in the repo first');
   });
 });

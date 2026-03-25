@@ -16,6 +16,11 @@ export interface ParsedCliContext {
   sourceKind?: AssetSourceKind;
 }
 
+function missingProjectAiRootMessage(pathValue?: string): string {
+  const suffix = pathValue ? `: ${pathValue}` : "";
+  return `No project-local .ai root found${suffix}. Run "fclt templates init project-ai" in the repo first, or pass --root <repo>/.ai.`;
+}
+
 function expandHomePath(pathValue: string, home: string): string {
   if (pathValue === "~") {
     return home;
@@ -173,9 +178,7 @@ export function resolveCliContextRoot(args?: {
   if (args?.rootArg) {
     const rootDir = coerceCanonicalRoot(args.rootArg, homeDir);
     if (scope === "project" && !projectRootFromAiRoot(rootDir, homeDir)) {
-      throw new Error(
-        `Project scope requires a repo-local .ai root: ${rootDir}`
-      );
+      throw new Error(missingProjectAiRootMessage(rootDir));
     }
     return rootDir;
   }
@@ -187,9 +190,7 @@ export function resolveCliContextRoot(args?: {
   if (scope === "project") {
     const projectRoot = findNearestProjectAiRoot(cwd);
     if (!projectRoot) {
-      throw new Error(
-        "No project-local .ai root found from the current directory"
-      );
+      throw new Error(missingProjectAiRootMessage(cwd));
     }
     return projectRoot;
   }

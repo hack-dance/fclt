@@ -282,6 +282,8 @@ bunx fclt index
 
 This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes a merged project index/graph under `<repo>/.ai/.facult/ai/`.
 
+Wide learning-review automations should use this same bootstrap when they hit a local writable repo with durable project-local signal but no repo-local `.ai` yet.
+
 ### 4. Inspect what you have
 
 ```bash
