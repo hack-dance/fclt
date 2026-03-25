@@ -1,3 +1,9 @@
+## [2.5.2](https://github.com/hack-dance/fclt/compare/v2.5.1...v2.5.2) (2026-03-25)
+
+### Bug Fixes
+
+* treat automation memory as runtime state ([a96c1c7](https://github.com/hack-dance/fclt/commit/a96c1c7f3aa670e4769bc796a0017d9afbab44af))
+
 ## [2.5.1](https://github.com/hack-dance/fclt/compare/v2.5.0...v2.5.1) (2026-03-25)
 
 ### Bug Fixes
