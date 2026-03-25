@@ -1,3 +1,9 @@
+## [2.5.1](https://github.com/hack-dance/fclt/compare/v2.5.0...v2.5.1) (2026-03-25)
+
+### Bug Fixes
+
+* bootstrap project ai before learning writebacks ([52476bb](https://github.com/hack-dance/fclt/commit/52476bbfbe9f2ea92a7c3814b9200c4c322c860d))
+
 ## [2.5.0](https://github.com/hack-dance/fclt/compare/v2.4.0...v2.5.0) (2026-03-24)
 
 ### Features
