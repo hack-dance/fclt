@@ -1199,17 +1199,38 @@ describe("syncManagedTools", () => {
     });
     await Bun.write(
       join(rootDir, "automations", "alpha", "memory.md"),
-      "# Alpha memory updated\n"
+      "# Alpha canonical memory updated\n"
+    );
+    await Bun.write(
+      join(rootDir, "automations", "alpha", "automation.toml"),
+      [
+        "version = 1",
+        'id = "alpha"',
+        'name = "Alpha"',
+        'prompt = "Run alpha with new scope"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(home, ".codex", "automations", "alpha", "memory.md"),
+      "# Alpha live memory\n"
     );
 
     await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
 
     expect(
       await readFile(
+        join(home, ".codex", "automations", "alpha", "automation.toml"),
+        "utf8"
+      )
+    ).toContain('prompt = "Run alpha with new scope"');
+    expect(
+      await readFile(
         join(home, ".codex", "automations", "alpha", "memory.md"),
         "utf8"
       )
-    ).toBe("# Alpha memory updated\n");
+    ).toBe("# Alpha live memory\n");
     expect(
       await Bun.file(
         join(home, ".codex", "automations", "beta", "automation.toml")
@@ -1220,6 +1241,62 @@ describe("syncManagedTools", () => {
         join(home, ".codex", "automations", "local-only", "automation.toml")
       ).exists()
     ).toBe(true);
+  });
+
+  it("treats automation memory as seed-only runtime state during sync", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "automations", "alpha"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "automations", "alpha", "automation.toml"),
+      [
+        "version = 1",
+        'id = "alpha"',
+        'name = "Alpha"',
+        'prompt = "Run alpha"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(rootDir, "automations", "alpha", "memory.md"),
+      "# Alpha seed memory\n"
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    await Bun.write(
+      join(home, ".codex", "automations", "alpha", "memory.md"),
+      "# Alpha runtime memory\n"
+    );
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    expect(
+      await readFile(
+        join(home, ".codex", "automations", "alpha", "memory.md"),
+        "utf8"
+      )
+    ).toBe("# Alpha runtime memory\n");
+
+    const managed = JSON.parse(
+      await readFile(managedStatePathForRoot(home, rootDir), "utf8")
+    ) as {
+      tools: Record<
+        string,
+        {
+          renderedTargets?: Record<string, unknown>;
+        }
+      >;
+    };
+    const renderedTargets = Object.keys(
+      managed.tools.codex?.renderedTargets ?? {}
+    );
+    expect(
+      renderedTargets.some((target) => target.endsWith("/memory.md"))
+    ).toBe(false);
   });
 
   it("reconciles global codex docs and rules on sync", async () => {

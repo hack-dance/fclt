@@ -586,15 +586,34 @@ async function loadCanonicalAutomations(
   return await loadAutomationEntries(join(rootDir, "automations"));
 }
 
+function isAutomationRuntimeRelativePath(relPath: string): boolean {
+  return relPath === "memory.md";
+}
+
+function isAutomationRuntimeTargetPath(targetPath: string): boolean {
+  return basename(targetPath) === "memory.md";
+}
+
 function automationEntriesEqual(
   left: AutomationEntry,
   right: AutomationEntry
 ): boolean {
-  if (left.files.size !== right.files.size) {
+  const leftFiles = new Map(
+    [...left.files.entries()].filter(
+      ([relPath]) => !isAutomationRuntimeRelativePath(relPath)
+    )
+  );
+  const rightFiles = new Map(
+    [...right.files.entries()].filter(
+      ([relPath]) => !isAutomationRuntimeRelativePath(relPath)
+    )
+  );
+
+  if (leftFiles.size !== rightFiles.size) {
     return false;
   }
-  for (const [relPath, leftRaw] of left.files.entries()) {
-    if (right.files.get(relPath) !== leftRaw) {
+  for (const [relPath, leftRaw] of leftFiles.entries()) {
+    if (rightFiles.get(relPath) !== leftRaw) {
       return false;
     }
   }
@@ -816,23 +835,27 @@ async function planAutomationFileChanges(args: {
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
+  const add = new Set<string>();
 
   for (const automation of automations) {
     for (const [relPath, raw] of automation.files.entries()) {
       const targetPath = join(args.automationDir, automation.name, relPath);
       const sourcePath = join(automation.sourceDir, relPath);
-      desiredPaths.add(targetPath);
       contents.set(targetPath, raw);
-      sources.set(targetPath, sourcePath);
-    }
-  }
 
-  const add = new Set<string>();
-  for (const targetPath of desiredPaths) {
-    const current = await readTextIfExists(targetPath);
-    const desired = contents.get(targetPath);
-    if (desired != null && current !== desired) {
-      add.add(targetPath);
+      if (isAutomationRuntimeRelativePath(relPath)) {
+        if ((await readTextIfExists(targetPath)) == null) {
+          add.add(targetPath);
+        }
+        continue;
+      }
+
+      desiredPaths.add(targetPath);
+      sources.set(targetPath, sourcePath);
+      const current = await readTextIfExists(targetPath);
+      if (current !== raw) {
+        add.add(targetPath);
+      }
     }
   }
 
@@ -841,6 +864,7 @@ async function planAutomationFileChanges(args: {
       (args.previouslyManagedTargets ?? []).filter(
         (targetPath) =>
           targetPath.startsWith(join(args.automationDir, "")) &&
+          !isAutomationRuntimeTargetPath(targetPath) &&
           !desiredPaths.has(targetPath)
       )
     )
@@ -2973,6 +2997,30 @@ function updateRenderedTargetState(args: {
   args.entry.renderedTargets = next;
 }
 
+function pruneAutomationRuntimeRenderedTargets(args: {
+  entry: ManagedToolState;
+  automationDir?: string;
+}) {
+  if (!(args.automationDir && args.entry.renderedTargets)) {
+    return;
+  }
+  const prefix = join(args.automationDir, "");
+  const next = { ...args.entry.renderedTargets };
+  let changed = false;
+  for (const targetPath of Object.keys(next)) {
+    if (
+      targetPath.startsWith(prefix) &&
+      isAutomationRuntimeTargetPath(targetPath)
+    ) {
+      delete next[targetPath];
+      changed = true;
+    }
+  }
+  if (changed) {
+    args.entry.renderedTargets = next;
+  }
+}
+
 function logSyncDryRun({
   tool,
   entry,
@@ -3177,6 +3225,11 @@ async function syncManagedToolEntry({
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
 }) {
+  pruneAutomationRuntimeRenderedTargets({
+    entry,
+    automationDir: entry.automationDir,
+  });
+
   const adoptedSkills = dryRun
     ? []
     : await repairManagedCanonicalContent({
