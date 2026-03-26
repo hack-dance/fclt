@@ -1,3 +1,9 @@
+## [2.6.0](https://github.com/hack-dance/fclt/compare/v2.5.2...v2.6.0) (2026-03-26)
+
+### Features
+
+* support tool-local config overlays ([2a0865f](https://github.com/hack-dance/fclt/commit/2a0865f97a496a1e9436f40fbe940fc283af7a38))
+
 ## [2.5.2](https://github.com/hack-dance/fclt/compare/v2.5.1...v2.5.2) (2026-03-25)
 
 ### Bug Fixes
