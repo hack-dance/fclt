@@ -426,7 +426,16 @@ export async function planToolConfigSync(args: {
   previouslyManaged?: boolean;
 }): Promise<ToolConfigPlan> {
   const sourcePath = join(args.rootDir, "tools", args.tool, "config.toml");
-  if (!(await fileExists(sourcePath))) {
+  const localSourcePath = join(
+    args.rootDir,
+    "tools",
+    args.tool,
+    "config.local.toml"
+  );
+  const hasTrackedSource = await fileExists(sourcePath);
+  const hasLocalSource = await fileExists(localSourcePath);
+
+  if (!(hasTrackedSource || hasLocalSource)) {
     return {
       targetPath: args.toolConfigPath,
       write: false,
@@ -437,14 +446,28 @@ export async function planToolConfigSync(args: {
     };
   }
 
-  const rendered = await renderSourceTarget({
-    homeDir: args.homeDir,
-    rootDir: args.rootDir,
-    sourcePath,
-    targetPath: args.toolConfigPath,
-    tool: args.tool,
-  });
-  const canonicalConfig = Bun.TOML.parse(rendered);
+  const trackedRendered = hasTrackedSource
+    ? await renderSourceTarget({
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+        sourcePath,
+        targetPath: args.toolConfigPath,
+        tool: args.tool,
+      })
+    : null;
+  const localRendered = hasLocalSource
+    ? await renderSourceTarget({
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+        sourcePath: localSourcePath,
+        targetPath: args.toolConfigPath,
+        tool: args.tool,
+      })
+    : null;
+  const canonicalConfig = trackedRendered
+    ? Bun.TOML.parse(trackedRendered)
+    : {};
+  const localConfig = localRendered ? Bun.TOML.parse(localRendered) : {};
   const existingConfig =
     (await readTomlFile(args.toolConfigPath)) ??
     (args.existingConfigPath
@@ -452,8 +475,11 @@ export async function planToolConfigSync(args: {
       : null) ??
     ({} as Record<string, unknown>);
   const merged = mergeTomlObjects(
-    existingConfig,
-    isPlainObject(canonicalConfig) ? canonicalConfig : {}
+    mergeTomlObjects(
+      existingConfig,
+      isPlainObject(canonicalConfig) ? canonicalConfig : {}
+    ),
+    isPlainObject(localConfig) ? localConfig : {}
   );
   const nextContents = stringifyTomlObject(merged);
   const current = await readTextIfExists(args.toolConfigPath);
@@ -462,7 +488,7 @@ export async function planToolConfigSync(args: {
     write: current !== `${nextContents}\n`,
     remove: false,
     contents: nextContents,
-    sourcePath,
+    sourcePath: hasLocalSource ? localSourcePath : sourcePath,
     managedConfig: true,
   };
 }

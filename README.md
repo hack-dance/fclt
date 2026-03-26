@@ -445,6 +445,7 @@ The canonical store can contain several distinct asset classes:
 - `skills/`: workflow-specific capability folders
 - `mcp/`: canonical MCP server definitions
 - `tools/<tool>/config.toml`: canonical tool config
+- `tools/<tool>/config.local.toml`: machine-local tool config overlay
 - `tools/<tool>/rules/*.rules`: canonical tool rules
 - global docs such as `AGENTS.global.md` and `AGENTS.override.global.md`
 
@@ -479,6 +480,8 @@ Built-ins currently include:
 Recommended split:
 - `~/.ai/config.toml` or `<repo>/.ai/config.toml`: tracked, portable, non-secret refs/defaults
 - `~/.ai/config.local.toml` or `<repo>/.ai/config.local.toml`: ignored, machine-local paths and secrets
+- `~/.ai/tools/<tool>/config.toml` or `<repo>/.ai/tools/<tool>/config.toml`: tracked tool defaults
+- `~/.ai/tools/<tool>/config.local.toml` or `<repo>/.ai/tools/<tool>/config.local.toml`: ignored, machine-local tool overrides merged after tracked tool config during sync
 - `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
 - `fclt sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
 

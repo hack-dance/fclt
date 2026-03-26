@@ -1365,6 +1365,52 @@ describe("syncManagedTools", () => {
     expect(toolConfig).toContain('approval_policy = "trusted-only"');
   });
 
+  it("merges tool-local codex config overrides during sync", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "tools", "codex"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "tools", "codex", "config.toml"),
+      [
+        'approval_policy = "on-failure"',
+        "",
+        "[shell_environment_policy]",
+        'inherit = "all"',
+      ].join("\n")
+    );
+    await Bun.write(
+      join(rootDir, "tools", "codex", "config.local.toml"),
+      [
+        "[shell_environment_policy]",
+        'inherit = "core"',
+        `set = { PATH = "\${HOME}/.local/bin:/usr/bin:/bin" }`,
+      ].join("\n")
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    const toolConfig = Bun.TOML.parse(
+      await readFile(join(home, ".codex", "config.toml"), "utf8")
+    ) as {
+      approval_policy: string;
+      shell_environment_policy?: {
+        inherit?: string;
+        set?: {
+          PATH?: string;
+        };
+      };
+    };
+
+    expect(toolConfig.approval_policy).toBe("on-failure");
+    expect(toolConfig.shell_environment_policy?.inherit).toBe("core");
+    expect(toolConfig.shell_environment_policy?.set?.PATH).toBe(
+      `${home}/.local/bin:/usr/bin:/bin`
+    );
+  });
+
   it("repairs legacy managed codex state and adopts new global surfaces on sync", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
