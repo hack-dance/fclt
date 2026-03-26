@@ -100,4 +100,100 @@ describe("trust/untrust", () => {
     expect((untrusted.skills.alpha as any).trustedAt).toBeUndefined();
     expect((untrusted.mcp.servers.test as any).trusted).toBe(false);
   });
+
+  it("supports bulk trust and untrust for all entries or one kind", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, "agents", ".facult");
+    await mkdir(join(rootDir, "skills", "alpha"), { recursive: true });
+    await mkdir(join(rootDir, "skills", "beta"), { recursive: true });
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+
+    const index: FacultIndex = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      skills: {
+        alpha: {
+          name: "alpha",
+          path: join(rootDir, "skills", "alpha"),
+          description: "Alpha",
+          tags: [],
+          auditStatus: "pending",
+          trusted: false,
+        },
+        beta: {
+          name: "beta",
+          path: join(rootDir, "skills", "beta"),
+          description: "Beta",
+          tags: [],
+          auditStatus: "pending",
+          trusted: false,
+        },
+      },
+      mcp: {
+        servers: {
+          test: {
+            name: "test",
+            path: join(rootDir, "mcp", "mcp.json"),
+            definition: { command: "node" },
+            auditStatus: "pending",
+            trusted: false,
+          },
+        },
+      },
+      agents: {},
+      snippets: {},
+      instructions: {},
+    };
+
+    await Bun.write(
+      facultAiIndexPath(tempHome),
+      JSON.stringify(index, null, 2)
+    );
+
+    await applyTrust({
+      names: [],
+      all: true,
+      kind: "skills",
+      mode: "trust",
+      homeDir: tempHome,
+    });
+
+    let next = JSON.parse(
+      await Bun.file(facultAiIndexPath(tempHome)).text()
+    ) as FacultIndex;
+    expect((next.skills.alpha as any).trusted).toBe(true);
+    expect((next.skills.beta as any).trusted).toBe(true);
+    expect((next.mcp.servers.test as any).trusted).toBe(false);
+
+    await applyTrust({
+      names: [],
+      all: true,
+      mode: "trust",
+      homeDir: tempHome,
+    });
+
+    next = JSON.parse(
+      await Bun.file(facultAiIndexPath(tempHome)).text()
+    ) as FacultIndex;
+    expect((next.skills.alpha as any).trusted).toBe(true);
+    expect((next.skills.beta as any).trusted).toBe(true);
+    expect((next.mcp.servers.test as any).trusted).toBe(true);
+
+    await applyTrust({
+      names: [],
+      all: true,
+      kind: "mcp",
+      mode: "untrust",
+      homeDir: tempHome,
+    });
+
+    next = JSON.parse(
+      await Bun.file(facultAiIndexPath(tempHome)).text()
+    ) as FacultIndex;
+    expect((next.skills.alpha as any).trusted).toBe(true);
+    expect((next.skills.beta as any).trusted).toBe(true);
+    expect((next.mcp.servers.test as any).trusted).toBe(false);
+  });
 });
