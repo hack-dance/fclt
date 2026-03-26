@@ -1,4 +1,6 @@
 import { agentAuditCommand } from "./agent";
+import { auditFixCommand } from "./fix";
+import { auditSafeCommand } from "./safe";
 import { staticAuditCommand } from "./static";
 import { auditTuiCommand } from "./tui";
 
@@ -7,6 +9,8 @@ function printHelp() {
 
 Usage:
   fclt audit [--from <path>] [--no-config-from]
+  fclt audit fix <item> [--path <path>] [--source <static|agent|combined>]
+  fclt audit safe <item> [--rule <id>] [--location <text>] [--message <text>]
   fclt audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
   fclt audit --non-interactive [name|mcp:<name>] --with <claude|codex> [--from <path>] [--max-items <n|all>] [--json]
 
@@ -18,13 +22,36 @@ Legacy (still supported; prefer --non-interactive):
 }
 
 export async function auditCommand(argv: string[]) {
+  const firstPositional = argv.find((a) => a && !a.startsWith("-")) ?? null;
+
+  if (
+    (argv.includes("--help") || argv.includes("-h")) &&
+    firstPositional === "fix"
+  ) {
+    await auditFixCommand(argv.slice(1));
+    return;
+  }
+  if (
+    (argv.includes("--help") || argv.includes("-h")) &&
+    firstPositional === "safe"
+  ) {
+    await auditSafeCommand(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "help" && (argv[1] === "fix" || argv[1] === "safe")) {
+    if (argv[1] === "fix") {
+      await auditFixCommand(["--help"]);
+      return;
+    }
+    await auditSafeCommand(["--help"]);
+    return;
+  }
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     printHelp();
     return;
   }
 
   const nonInteractive = argv.includes("--non-interactive");
-  const firstPositional = argv.find((a) => a && !a.startsWith("-")) ?? null;
 
   const rest = argv.filter((a) => a !== "--non-interactive");
 
@@ -32,9 +59,23 @@ export async function auditCommand(argv: string[]) {
     // Optional: allow `fclt audit --non-interactive static ...` / `... agent ...`
     const sub = firstPositional;
     const subArgs =
-      sub === "static" || sub === "agent" || sub === "tui" || sub === "wizard"
+      sub === "static" ||
+      sub === "agent" ||
+      sub === "tui" ||
+      sub === "wizard" ||
+      sub === "fix" ||
+      sub === "safe"
         ? rest.slice(1)
         : rest;
+
+    if (sub === "fix") {
+      await auditFixCommand(subArgs);
+      return;
+    }
+    if (sub === "safe") {
+      await auditSafeCommand(subArgs);
+      return;
+    }
 
     const hasWith =
       subArgs.includes("--with") ||
@@ -66,6 +107,14 @@ export async function auditCommand(argv: string[]) {
   if (firstPositional === "tui" || firstPositional === "wizard") {
     console.error('Tip: "fclt audit" is now interactive by default.');
     await auditTuiCommand(argv.slice(1));
+    return;
+  }
+  if (firstPositional === "safe") {
+    await auditSafeCommand(argv.slice(1));
+    return;
+  }
+  if (firstPositional === "fix") {
+    await auditFixCommand(argv.slice(1));
     return;
   }
 

@@ -15,6 +15,7 @@ import { renderCanonicalText } from "./agents";
 import { ensureAiIndexPath } from "./ai-state";
 import { builtinSyncDefaultsEnabled, facultBuiltinPackRoot } from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import { renderBullets, renderCode, renderPage } from "./cli-ui";
 import { contentHash, normalizeText } from "./conflicts";
 import {
   globalDocTargetPaths,
@@ -31,6 +32,11 @@ import {
   type FacultIndex,
   type SkillEntry,
 } from "./index-builder";
+import {
+  extractServersObject,
+  loadCanonicalMcpState,
+  stringifyCanonicalMcpServers,
+} from "./mcp-config";
 import {
   facultMachineStateDir,
   facultRootDir,
@@ -903,24 +909,6 @@ async function loadEnabledSkillNames({
   return entries.map((entry) => entry.name);
 }
 
-function extractServersObject(parsed: unknown): Record<string, unknown> | null {
-  if (!isPlainObject(parsed)) {
-    return null;
-  }
-  const raw = parsed as Record<string, unknown>;
-  const servers =
-    (raw.servers as Record<string, unknown> | undefined) ??
-    (raw.mcpServers as Record<string, unknown> | undefined) ??
-    ((raw.mcp as Record<string, unknown> | undefined)?.servers as
-      | Record<string, unknown>
-      | undefined) ??
-    null;
-  if (servers && isPlainObject(servers)) {
-    return servers;
-  }
-  return null;
-}
-
 function canonicalServerToToolConfig(server: unknown): unknown {
   if (!isPlainObject(server)) {
     return server;
@@ -970,21 +958,11 @@ async function loadCanonicalServers(rootDir: string): Promise<{
   servers: Record<string, unknown>;
   sourcePath: string | null;
 }> {
-  const serversPath = join(rootDir, "mcp", "servers.json");
-  const mcpPath = join(rootDir, "mcp", "mcp.json");
-
-  const preferred = (await fileExists(serversPath)) ? serversPath : mcpPath;
-  if (!(await fileExists(preferred))) {
-    return { servers: {}, sourcePath: null };
-  }
-  try {
-    const txt = await Bun.file(preferred).text();
-    const parsed = JSON.parse(txt) as unknown;
-    const servers = extractServersObject(parsed) ?? {};
-    return { servers, sourcePath: preferred };
-  } catch {
-    return { servers: {}, sourcePath: preferred };
-  }
+  const loaded = await loadCanonicalMcpState(rootDir);
+  const sourcePath = (await fileExists(loaded.trackedPath))
+    ? loaded.trackedPath
+    : null;
+  return { servers: loaded.trackedServers, sourcePath };
 }
 
 async function ensureEmptyDir(p: string) {
@@ -1744,12 +1722,6 @@ async function adoptExistingToolConfig(args: {
   ];
 }
 
-function normalizeCanonicalMcpServers(
-  servers: Record<string, unknown>
-): string {
-  return JSON.stringify({ servers }, null, 2);
-}
-
 async function planExistingMcpAdoption(args: {
   rootDir: string;
   tool: string;
@@ -1845,7 +1817,7 @@ async function adoptExistingMcpServers(args: {
   const canonicalPath =
     canonical.sourcePath ?? join(args.rootDir, "mcp", "servers.json");
   await ensureDir(dirname(canonicalPath));
-  await Bun.write(canonicalPath, `${normalizeCanonicalMcpServers(merged)}\n`);
+  await Bun.write(canonicalPath, stringifyCanonicalMcpServers(merged));
   return adopted;
 }
 
@@ -2044,7 +2016,9 @@ async function planMcpWrite({
   rootDir: string;
   tool: string;
 }): Promise<{ needsWrite: boolean; contents: string }> {
-  const { servers } = await loadCanonicalServers(rootDir);
+  const { servers } = await loadCanonicalMcpState(rootDir, {
+    includeLocal: true,
+  });
   const filtered = filterServersForTool(servers, tool);
   const contents = `${JSON.stringify({ mcpServers: filtered }, null, 2)}\n`;
 
@@ -2090,7 +2064,9 @@ async function writeToolMcpConfig({
   rootDir: string;
   tool: string;
 }) {
-  const { servers } = await loadCanonicalServers(rootDir);
+  const { servers } = await loadCanonicalMcpState(rootDir, {
+    includeLocal: true,
+  });
   const filtered = filterServersForTool(servers, tool);
   await ensureDir(dirname(mcpConfigPath));
   await Bun.write(
@@ -3667,11 +3643,20 @@ export async function managedCommand(argv: string[] = []) {
     parsed.argv.includes("-h") ||
     parsed.argv[0] === "help"
   ) {
-    console.log(`fclt managed — list tools currently in managed mode
-
-Usage:
-  fclt managed [--root PATH|--global|--project]
-`);
+    console.log(
+      renderPage({
+        title: "fclt managed",
+        subtitle: "List tools currently in managed mode.",
+        sections: [
+          {
+            title: "Usage",
+            lines: renderBullets([
+              renderCode("fclt managed [--root PATH|--global|--project]"),
+            ]),
+          },
+        ],
+      })
+    );
     return;
   }
   const tools = await listManagedTools({
@@ -3682,12 +3667,27 @@ Usage:
     }),
   });
   if (!tools.length) {
-    console.log("No managed tools.");
+    console.log(
+      renderPage({
+        title: "fclt managed",
+        subtitle: "No managed tools.",
+        sections: [],
+      })
+    );
     return;
   }
-  for (const tool of tools) {
-    console.log(tool);
-  }
+  console.log(
+    renderPage({
+      title: "fclt managed",
+      subtitle: `${tools.length} managed tool${tools.length === 1 ? "" : "s"}`,
+      sections: [
+        {
+          title: "Tools",
+          lines: renderBullets(tools),
+        },
+      ],
+    })
+  );
 }
 
 export async function syncCommand(argv: string[]) {

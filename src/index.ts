@@ -10,6 +10,16 @@ import {
   parseCliContextArgs,
   resolveCliContextRoot,
 } from "./cli-context";
+import {
+  renderBadge,
+  renderBullets,
+  renderCatalog,
+  renderCode,
+  renderJsonBlock,
+  renderKeyValue,
+  renderPage,
+  renderTable,
+} from "./cli-ui";
 import { consolidateCommand } from "./consolidate";
 import { doctorCommand } from "./doctor";
 import { disableCommand, enableCommand } from "./enable-disable";
@@ -96,182 +106,232 @@ interface GraphCommandOptions {
 }
 
 function printHelp() {
-  console.log(`fclt — manage canonical AI capabilities, sync surfaces, and evolution state
-
-Usage:
-  fclt scan [--json] [--show-duplicates] [--tui] [--from <path>]
-  fclt audit [--from <path>]
-  fclt audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
-  fclt audit --non-interactive [name|mcp:<name>] --with <claude|codex> [--from <path>] [--max-items <n|all>] [--json]
-  fclt migrate [--from <path>] [--dry-run] [--move] [--write-config]
-  fclt doctor [--repair]
-  fclt consolidate [--force] [--auto <mode>] [scan options]
-  fclt index [--force]
-  fclt list [skills|mcp|agents|snippets|instructions] [--enabled-for TOOL] [--untrusted] [--flagged] [--pending] [--json]
-  fclt show <name>
-  fclt show mcp:<name> [--show-secrets]
-  fclt show instruction:<name>
-  fclt find <query> [--json]
-  fclt graph <show|deps|dependents> <asset> [--json]
-  fclt ai <writeback|evolve> [args...]
-  fclt adapters
-  fclt trust <name> [moreNames...]
-  fclt untrust <name> [moreNames...]
-  fclt manage <tool>
-  fclt unmanage <tool>
-  fclt managed
-  fclt enable <name> [moreNames...] [--for <tools>]
-  fclt disable <name> [moreNames...] [--for <tools>]
-  fclt sync [tool] [--dry-run]
-  fclt autosync <cmd> [args...]
-  fclt search <query> [--index <name>] [--limit <n>]
-  fclt install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust]
-  fclt update [--apply] [--strict-source-trust]
-  fclt update --self [--version <x.y.z|latest>] [--dry-run]
-  fclt self-update [--version <x.y.z|latest>] [--dry-run]
-  fclt verify-source <name> [--json]
-  fclt sources <cmd> [args...]
-  fclt templates <cmd> [args...]
-  fclt snippets <cmd> [args...]
-  fclt --show-duplicates
-
-Commands:
-  scan         Scan common config locations (Cursor, Claude, Claude Desktop, etc.)
-  audit        Security audits (interactive by default; use --non-interactive for scripts)
-  migrate      Copy/move a legacy canonical store to the current canonical root
-  doctor       Inspect and repair local fclt state
-  consolidate  Deduplicate and copy skills + MCP configs (interactive or --auto)
-  index        Build a queryable index from the canonical store (see FACULT_ROOT_DIR)
-  list         List indexed skills, MCP servers, agents, snippets, or instructions
-  show         Show a single indexed entry, including file contents
-  find         Search local indexed capabilities across asset types
-  graph        Inspect explicit capability graph nodes and dependencies
-  ai           Record, group, and evolve AI writeback into reviewable proposals
-  adapters     List registered tool adapters
-  trust        Mark a skill or MCP server as trusted (annotation only)
-  untrust      Remove trusted annotation
-  manage       Back up tool config and enter managed mode
-  unmanage     Restore backups and exit managed mode
-  managed      List tools in managed mode
-  enable       Enable skills or MCP servers for tools
-  disable      Disable skills or MCP servers for tools
-  sync         Sync managed tools with canonical configs
-  autosync     Install/manage a background autosync service
-  search       Search remote indices (builtin + provider aliases + configured)
-  install      Install an item from a remote index
-  update       Check/apply updates for remotely installed items
-  self-update  Update fclt itself based on install method
-  verify-source  Verify source trust and manifest integrity/signature status
-  sources      Manage source trust policy for remote indices
-  templates    Scaffold DX-first templates (skills/instructions/MCP/snippets/automations)
-  snippets     Sync reusable snippet blocks into config files
-
-Options:
-  --json              Print full JSON (ScanResult or list output)
-  --show-duplicates   Print duplicates for skills, MCP servers, and hook assets
-  --tui               Render scan output in an interactive TUI (skills list)
-  --from              Add one or more additional scan roots (repeatable): --from ~/dev
-  --from-ignore       (scan) Ignore directories by basename under --from roots (repeatable)
-  --from-no-default-ignore  (scan) Disable the default ignore list for --from scans
-  --from-max-visits   (scan) Max directories visited per --from root before truncating
-  --from-max-results  (scan) Max discovered paths per --from root before truncating
-  --non-interactive   (audit) Run static/agent audit non-interactively (for scripts)
-  --severity          Minimum severity to include in audit output (low|medium|high|critical)
-  --rules             Path to an audit rules YAML file (default: ~/.ai/.facult/audit-rules.yaml)
-  --with              (audit) Agent tool: claude|codex
-  --max-items         (audit) Max items to send to the agent (n|all)
-  --force             Re-copy items already consolidated OR rebuild index from scratch
-  --auto              Auto-resolve consolidate conflicts: keep-newest, keep-current, keep-incoming
-  --enabled-for       Filter list to entries enabled for a specific tool
-  --untrusted         Filter list to entries that are not trusted
-  --flagged           Filter list to entries flagged by audit
-  --pending           Filter list to entries pending audit
-  --for               Comma-separated list of tools for enable/disable
-  --dry-run           Show what sync would change
-  --as                Install/scaffold target name override
-  --limit             Max results for search
-  --apply             Apply updates (update command)
-  --self              (update) run self-update flow instead of remote item updates
-  --strict-source-trust  Enforce trust-only remote install/update actions
-  --show-secrets      (show) Print raw secret values (unsafe)
-  --root              Select a canonical .ai root explicitly
-  --global            Force the global canonical root
-  --project           Force the nearest repo-local .ai root
-  --scope             Capability view scope: merged|global|project
-  --source            Filter to builtin|global|project asset provenance
-`);
+  console.log(
+    renderPage({
+      title: "fclt",
+      subtitle:
+        "Manage canonical AI capability, rendered tool surfaces, and evolution state.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            `${renderCode("fclt list")} defaults to ${renderCode("skills")} when you do not specify a type.`,
+            `${renderCode("fclt graph <asset>")} is shorthand for ${renderCode("fclt graph show <asset>")}.`,
+            `${renderCode("fclt templates init ...")} is the main entry for scaffolding new canonical capability.`,
+          ]),
+        },
+        {
+          title: "Core Commands",
+          lines: renderTable({
+            headers: ["Command", "Purpose"],
+            rows: [
+              ["scan", "Scan local tool configs and discovered assets"],
+              [
+                "audit",
+                "Run security audits with interactive or scripted flows",
+              ],
+              [
+                "consolidate",
+                "Import existing skills and MCP configs into canonical state",
+              ],
+              ["index", "Rebuild the generated capability index"],
+              [
+                "list",
+                "List indexed skills, MCP, agents, snippets, or instructions",
+              ],
+              ["show", "Inspect one indexed asset and its source contents"],
+              ["find", "Search indexed capability across asset types"],
+              ["graph", "Inspect capability graph nodes, deps, and dependents"],
+              [
+                "templates",
+                "Scaffold skills, MCP, agents, snippets, and automations",
+              ],
+              ["search/install/update", "Work with remote capability indices"],
+              [
+                "manage/sync",
+                "Enter managed mode and render tool-native output",
+              ],
+              ["ai", "Capture writeback and evolve canonical assets"],
+            ],
+          }),
+        },
+        {
+          title: "Common Options",
+          lines: renderTable({
+            headers: ["Option", "Meaning"],
+            rows: [
+              [
+                "--json",
+                "Machine-readable output instead of formatted terminal UI",
+              ],
+              ["--dry-run", "Show intended writes without mutating files"],
+              [
+                "--root / --global / --project",
+                "Pick the canonical root explicitly",
+              ],
+              [
+                "--scope / --source",
+                "Narrow merged views by scope or provenance",
+              ],
+              [
+                "--non-interactive / --yes",
+                "Suppress prompts where the command supports inferred defaults",
+              ],
+            ],
+          }),
+        },
+        {
+          title: "Examples",
+          lines: renderBullets([
+            renderCode("fclt list"),
+            renderCode("fclt graph skills:capability-evolution"),
+            renderCode("fclt templates init skill review-checklist"),
+            renderCode("fclt templates init agent writeback-curator"),
+          ]),
+        },
+      ],
+    })
+  );
 }
 
 function printListHelp() {
-  console.log(`fclt list — list indexed entries from the canonical store
-
-Usage:
-  fclt list [skills|mcp|agents|snippets|instructions] [options]
-
-Options:
-  --enabled-for TOOL  Only include entries enabled for a tool
-  --untrusted         Only include entries that are not trusted
-  --flagged           Only include entries flagged by audit
-  --pending           Only include entries pending audit
-  --root PATH         Select a canonical .ai root explicitly
-  --global            Force the global canonical root
-  --project           Force the nearest repo-local .ai root
-  --scope SCOPE       merged|global|project (default: merged)
-  --source KIND       builtin|global|project
-  --json              Print JSON array
-`);
+  console.log(
+    renderPage({
+      title: "fclt list",
+      subtitle: "List indexed entries from the canonical store.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode(
+              "fclt list [skills|mcp|agents|snippets|instructions] [options]"
+            ),
+            renderCode("fclt list"),
+          ]),
+        },
+        {
+          title: "Options",
+          lines: renderTable({
+            headers: ["Option", "Meaning"],
+            rows: [
+              [
+                "--enabled-for TOOL",
+                "Only include entries enabled for one tool",
+              ],
+              ["--untrusted", "Only include entries without trust approval"],
+              ["--flagged", "Only include entries flagged by audit"],
+              ["--pending", "Only include entries still pending audit"],
+              ["--root / --global / --project", "Choose the canonical root"],
+              ["--scope", "merged, global, or project"],
+              ["--source", "builtin, global, or project provenance"],
+              ["--json", "Print the raw JSON array"],
+            ],
+          }),
+        },
+      ],
+    })
+  );
 }
 
 function printShowHelp() {
-  console.log(`fclt show — show a single indexed entry (and file contents)
-
-Usage:
-  fclt show <name>
-  fclt show mcp:<name> [--show-secrets]
-  fclt show instruction:<name>
-
-Options:
-  --show-secrets      (mcp) Print raw secret values (unsafe)
-  --root PATH         Select a canonical .ai root explicitly
-  --global            Force the global canonical root
-  --project           Force the nearest repo-local .ai root
-  --scope SCOPE       merged|global|project (default: merged)
-  --source KIND       builtin|global|project
-`);
+  console.log(
+    renderPage({
+      title: "fclt show",
+      subtitle: "Inspect one indexed entry and the source file behind it.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode("fclt show <name>"),
+            renderCode("fclt show mcp:<name> [--show-secrets]"),
+            renderCode("fclt show instruction:<name>"),
+          ]),
+        },
+        {
+          title: "Options",
+          lines: renderTable({
+            headers: ["Option", "Meaning"],
+            rows: [
+              [
+                "--show-secrets",
+                "For MCP configs, print raw secrets instead of redacting",
+              ],
+              ["--root / --global / --project", "Choose the canonical root"],
+              ["--scope", "merged, global, or project"],
+              ["--source", "builtin, global, or project provenance"],
+            ],
+          }),
+        },
+      ],
+    })
+  );
 }
 
 function printFindHelp() {
-  console.log(`fclt find — search local indexed capabilities across asset types
-
-Usage:
-  fclt find <query> [--json]
-
-Options:
-  --root PATH         Select a canonical .ai root explicitly
-  --global            Force the global canonical root
-  --project           Force the nearest repo-local .ai root
-  --scope SCOPE       merged|global|project (default: merged)
-  --source KIND       builtin|global|project
-  --json              Print JSON array
-`);
+  console.log(
+    renderPage({
+      title: "fclt find",
+      subtitle:
+        "Search indexed capability across skills, MCP, agents, snippets, and instructions.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([renderCode("fclt find <query> [--json]")]),
+        },
+        {
+          title: "Options",
+          lines: renderTable({
+            headers: ["Option", "Meaning"],
+            rows: [
+              ["--root / --global / --project", "Choose the canonical root"],
+              ["--scope", "merged, global, or project"],
+              ["--source", "builtin, global, or project provenance"],
+              ["--json", "Print the raw JSON array"],
+            ],
+          }),
+        },
+      ],
+    })
+  );
 }
 
 function printGraphHelp() {
-  console.log(`fclt graph — inspect explicit capability graph nodes and relations
-
-Usage:
-  fclt graph show <asset> [--json]
-  fclt graph deps <asset> [--json]
-  fclt graph dependents <asset> [--json]
-
-Options:
-  --root PATH         Select a canonical .ai root explicitly
-  --global            Force the global canonical root
-  --project           Force the nearest repo-local .ai root
-  --scope SCOPE       merged|global|project (default: merged)
-  --source KIND       builtin|global|project
-  --json              Print JSON
-`);
+  console.log(
+    renderPage({
+      title: "fclt graph",
+      subtitle: "Inspect explicit capability graph nodes and relations.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode("fclt graph <asset> [--json]"),
+            renderCode("fclt graph show <asset> [--json]"),
+            renderCode("fclt graph deps <asset> [--json]"),
+            renderCode("fclt graph dependents <asset> [--json]"),
+          ]),
+        },
+        {
+          title: "Notes",
+          lines: renderBullets([
+            `${renderCode("fclt graph <asset>")} defaults to ${renderCode("show")}.`,
+            "Selectors can be canonical refs, names, or graph node ids.",
+          ]),
+        },
+        {
+          title: "Options",
+          lines: renderTable({
+            headers: ["Option", "Meaning"],
+            rows: [
+              ["--root / --global / --project", "Choose the canonical root"],
+              ["--scope", "merged, global, or project"],
+              ["--source", "builtin, global, or project provenance"],
+              ["--json", "Print raw graph JSON"],
+            ],
+          }),
+        },
+      ],
+    })
+  );
 }
 
 function parseListKind(argv: string[]): { kind: ListKind; startIndex: number } {
@@ -371,15 +431,16 @@ export function parseFindArgs(argv: string[]): FindCommandOptions {
   return { text, json };
 }
 
-function parseGraphArgs(argv: string[]): GraphCommandOptions {
-  const [kind, ...rest] = argv;
-  if (!(kind === "show" || kind === "deps" || kind === "dependents")) {
-    throw new Error(`Unknown graph command: ${kind ?? "<missing>"}`);
-  }
+export function parseGraphArgs(argv: string[]): GraphCommandOptions {
+  const [first, ...rest] = argv;
+  const hasExplicitKind =
+    first === "show" || first === "deps" || first === "dependents";
+  const kind: GraphCommandKind = hasExplicitKind ? first : "show";
+  const args = hasExplicitKind ? rest : argv;
 
   let json = false;
   let target: string | null = null;
-  for (const arg of rest) {
+  for (const arg of args) {
     if (!arg) {
       continue;
     }
@@ -407,6 +468,68 @@ function scopeFilterForMode(
   scopeMode: CapabilityScopeMode
 ): AssetScope | undefined {
   return scopeMode === "project" ? "project" : undefined;
+}
+
+function sourceLabel(entry: { sourceKind?: string; scope?: string }): string {
+  const source = entry.sourceKind?.trim();
+  const scope = entry.scope?.trim();
+  if (source && scope) {
+    return `${source}/${scope}`;
+  }
+  return source ?? scope ?? "merged";
+}
+
+function describeFilters(filters: QueryFilters): string {
+  const parts: string[] = [];
+
+  if (filters.enabledFor) {
+    parts.push(`enabled for ${filters.enabledFor}`);
+  }
+  if (filters.untrusted) {
+    parts.push("untrusted only");
+  }
+  if (filters.flagged) {
+    parts.push("flagged only");
+  }
+  if (filters.pending) {
+    parts.push("pending only");
+  }
+  if (filters.sourceKind) {
+    parts.push(`source ${filters.sourceKind}`);
+  }
+  if (filters.scope) {
+    parts.push(`scope ${filters.scope}`);
+  }
+
+  return parts.join(" • ");
+}
+
+function trustBadge(trusted?: boolean): string {
+  return trusted
+    ? renderBadge("trusted", "success")
+    : renderBadge("untrusted", "warn");
+}
+
+function auditBadge(status?: string): string {
+  const normalized = (status ?? "pending").trim().toLowerCase();
+  if (normalized === "passed") {
+    return renderBadge("audit passed", "success");
+  }
+  if (normalized === "flagged") {
+    return renderBadge("audit flagged", "danger");
+  }
+  return renderBadge("audit pending", "warn");
+}
+
+function displayDescription(value?: string): string {
+  const normalized = value
+    ?.trim()
+    .replaceAll('\\"', '"')
+    .replace(INLINE_NAME_DESCRIPTION_RE, "");
+  if (!normalized || normalized === ">") {
+    return "No description.";
+  }
+  return normalized;
 }
 
 function resolveContextualOptions(
@@ -504,33 +627,70 @@ async function listCommand(argv: string[]) {
     return;
   }
 
-  for (const entry of entries) {
+  if (entries.length === 0) {
+    console.log(
+      renderPage({
+        title: `fclt list ${opts.kind}`,
+        subtitle: "No matching entries.",
+        sections: [
+          {
+            title: "Next Steps",
+            lines: renderBullets([
+              renderCode("fclt index --force"),
+              renderCode("fclt templates list"),
+            ]),
+          },
+        ],
+        footer: describeFilters(opts.filters)
+          ? [describeFilters(opts.filters)]
+          : undefined,
+      })
+    );
+    return;
+  }
+
+  const items = entries.map((entry) => {
     if (opts.kind === "skills") {
       const skill = entry as SkillEntry;
-      const desc = skill.description ? `\t${skill.description}` : "";
-      const meta = skill as SkillEntry & {
-        trusted?: boolean;
-        auditStatus?: string;
+      return {
+        title: skill.name,
+        meta: sourceLabel(skill),
+        badges: [trustBadge(skill.trusted), auditBadge(skill.auditStatus)],
+        description: displayDescription(skill.description),
       };
-      const trustedLabel = meta.trusted === true ? "trusted" : "untrusted";
-      const auditLabel = (meta.auditStatus ?? "pending").trim().toLowerCase();
-      console.log(
-        `${skill.name}${desc}\t[${trustedLabel}; audit=${auditLabel}]${formatSourceMeta(skill)}`
-      );
-    } else if (opts.kind === "mcp") {
-      const meta = entry as McpEntry & {
-        trusted?: boolean;
-        auditStatus?: string;
-      };
-      const trustedLabel = meta.trusted === true ? "trusted" : "untrusted";
-      const auditLabel = (meta.auditStatus ?? "pending").trim().toLowerCase();
-      console.log(
-        `${entry.name}\t[${trustedLabel}; audit=${auditLabel}]${formatSourceMeta(entry)}`
-      );
-    } else {
-      console.log(`${entry.name}${formatSourceMeta(entry)}`);
     }
-  }
+
+    if (opts.kind === "mcp") {
+      const server = entry as McpEntry;
+      return {
+        title: server.name,
+        meta: sourceLabel(server),
+        badges: [trustBadge(server.trusted), auditBadge(server.auditStatus)],
+        description:
+          Array.isArray(server.enabledFor) && server.enabledFor.length > 0
+            ? `Enabled for ${server.enabledFor.join(", ")}.`
+            : "No enabled-for restrictions recorded.",
+      };
+    }
+
+    const detailEntry = entry as AgentEntry | SnippetEntry | InstructionEntry;
+    return {
+      title: entry.name,
+      meta: sourceLabel(entry),
+      description: displayDescription(detailEntry.description),
+    };
+  });
+
+  console.log(
+    renderPage({
+      title: `fclt list ${opts.kind}`,
+      subtitle: `${entries.length} matching entr${entries.length === 1 ? "y" : "ies"}`,
+      sections: [{ title: "Entries", lines: renderCatalog(items) }],
+      footer: describeFilters(opts.filters)
+        ? [describeFilters(opts.filters)]
+        : undefined,
+    })
+  );
 }
 
 async function readEntryContents(entryPath: string): Promise<string> {
@@ -589,33 +749,53 @@ async function findCommand(argv: string[]) {
     return;
   }
 
-  for (const entry of matches) {
-    const desc = entry.description ? `\t${entry.description}` : "";
-    console.log(`${entry.kind}:${entry.name}${desc}${formatSourceMeta(entry)}`);
+  if (matches.length === 0) {
+    console.log(
+      renderPage({
+        title: "fclt find",
+        subtitle: `No matches for "${opts.text}".`,
+        sections: [
+          {
+            title: "Try",
+            lines: renderBullets([
+              renderCode("fclt list"),
+              renderCode("fclt index --force"),
+            ]),
+          },
+        ],
+      })
+    );
+    return;
   }
+
+  console.log(
+    renderPage({
+      title: "fclt find",
+      subtitle: `${matches.length} match${matches.length === 1 ? "" : "es"} for "${opts.text}"`,
+      sections: [
+        {
+          title: "Results",
+          lines: renderCatalog(
+            matches.map((entry) => ({
+              title: `${entry.kind}:${entry.name}`,
+              meta: sourceLabel(entry),
+              description: displayDescription(entry.description),
+            }))
+          ),
+        },
+      ],
+    })
+  );
 }
 
 const SECRET_KEY_RE = /(TOKEN|KEY|SECRET|PASSWORD|PASS|BEARER)/i;
 const SECRETY_STRING_RE =
   /\b(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g;
+const INLINE_NAME_DESCRIPTION_RE = /^name:\s+\S+\s+description:\s*/i;
+const TRAILING_NEWLINE_RE = /\n$/;
 
 function redactPossibleSecrets(value: string): string {
   return value.replace(SECRETY_STRING_RE, "<redacted>");
-}
-
-function formatSourceMeta(entry: {
-  sourceKind?: string;
-  scope?: string;
-}): string {
-  const source = entry.sourceKind?.trim();
-  const scope = entry.scope?.trim();
-  if (!(source || scope)) {
-    return "";
-  }
-  if (source && scope) {
-    return `\t[${source}/${scope}]`;
-  }
-  return `\t[${source ?? scope}]`;
 }
 
 function sanitizeForDisplay(value: unknown): unknown {
@@ -796,10 +976,28 @@ async function showCommand(argv: string[]) {
     }
   }
 
-  console.log(`${kind}:${entry.name}`);
-  console.log(JSON.stringify(displayEntry, null, 2));
-  console.log("\n---\n");
-  console.log(displayContents);
+  console.log(
+    renderPage({
+      title: `fclt show ${kind}:${entry.name}`,
+      subtitle: contentPath,
+      sections: [
+        {
+          title: "Metadata",
+          lines: renderJsonBlock(displayEntry),
+        },
+        {
+          title: "Contents",
+          lines: displayContents.replace(TRAILING_NEWLINE_RE, "").split("\n"),
+        },
+      ],
+      footer:
+        kind === "mcp" && !showSecrets
+          ? [
+              "Secrets are redacted. Re-run with --show-secrets only when you need raw values.",
+            ]
+          : undefined,
+    })
+  );
 }
 
 async function graphCommand(argv: string[]) {
@@ -858,29 +1056,75 @@ async function graphCommand(argv: string[]) {
     }
 
     if (opts.kind === "show") {
-      console.log(node.id);
-      console.log(JSON.stringify(node, null, 2));
-      console.log("\nDependencies:");
-      for (const dep of deps) {
-        console.log(
-          `- ${dep.edge.kind}\t${dep.node.id}\t(${dep.edge.locator})`
-        );
-      }
-      console.log("\nDependents:");
-      for (const dependent of dependents) {
-        console.log(
-          `- ${dependent.edge.kind}\t${dependent.node.id}\t(${dependent.edge.locator})`
-        );
-      }
+      console.log(
+        renderPage({
+          title: `fclt graph ${node.id}`,
+          subtitle: `${node.kind} • ${sourceLabel(node)}`,
+          sections: [
+            {
+              title: "Node",
+              lines: renderKeyValue([
+                ["id", node.id],
+                ["kind", node.kind],
+                ["name", node.name],
+                ["path", node.path ?? "—"],
+                ["canonicalRef", node.canonicalRef ?? "—"],
+              ]),
+            },
+            {
+              title: "Dependencies",
+              lines:
+                deps.length > 0
+                  ? renderCatalog(
+                      deps.map((dep) => ({
+                        title: dep.node.id,
+                        meta: dep.edge.kind,
+                        details: [dep.edge.locator],
+                      }))
+                    )
+                  : ["No dependencies."],
+            },
+            {
+              title: "Dependents",
+              lines:
+                dependents.length > 0
+                  ? renderCatalog(
+                      dependents.map((dependent) => ({
+                        title: dependent.node.id,
+                        meta: dependent.edge.kind,
+                        details: [dependent.edge.locator],
+                      }))
+                    )
+                  : ["No dependents."],
+            },
+          ],
+        })
+      );
       return;
     }
 
     const relations = opts.kind === "deps" ? deps : dependents;
-    for (const relation of relations) {
-      console.log(
-        `${relation.edge.kind}\t${relation.node.id}\t(${relation.edge.locator})`
-      );
-    }
+    console.log(
+      renderPage({
+        title: `fclt graph ${opts.kind}`,
+        subtitle: `${relations.length} relation${relations.length === 1 ? "" : "s"} for ${node.id}`,
+        sections: [
+          {
+            title: opts.kind === "deps" ? "Dependencies" : "Dependents",
+            lines:
+              relations.length > 0
+                ? renderCatalog(
+                    relations.map((relation) => ({
+                      title: relation.node.id,
+                      meta: relation.edge.kind,
+                      details: [relation.edge.locator],
+                    }))
+                  )
+                : ["No relations found."],
+          },
+        ],
+      })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -890,19 +1134,47 @@ async function graphCommand(argv: string[]) {
 function adaptersCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     console.log(
-      "fclt adapters — list registered tool adapters\n\nUsage:\n  fclt adapters\n"
+      renderPage({
+        title: "fclt adapters",
+        subtitle: "List registered tool adapters.",
+        sections: [
+          {
+            title: "Usage",
+            lines: renderBullets([renderCode("fclt adapters")]),
+          },
+        ],
+      })
     );
     return;
   }
   const adapters = getAllAdapters();
   if (!adapters.length) {
-    console.log("No adapters registered.");
+    console.log(
+      renderPage({
+        title: "fclt adapters",
+        subtitle: "No adapters registered.",
+        sections: [],
+      })
+    );
     return;
   }
-  for (const adapter of adapters) {
-    const versions = adapter.versions.join(", ");
-    console.log(`${adapter.id}\t${versions}`);
-  }
+  console.log(
+    renderPage({
+      title: "fclt adapters",
+      subtitle: `${adapters.length} registered adapter${adapters.length === 1 ? "" : "s"}`,
+      sections: [
+        {
+          title: "Adapters",
+          lines: renderCatalog(
+            adapters.map((adapter) => ({
+              title: adapter.id,
+              description: `Versions: ${adapter.versions.join(", ")}`,
+            }))
+          ),
+        },
+      ],
+    })
+  );
 }
 
 async function main(argv: string[]) {

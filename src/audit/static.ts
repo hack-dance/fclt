@@ -2,14 +2,26 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { facultStateDir, readFacultConfig } from "../paths";
+import { loadManagedState } from "../manage";
+import { isInlineMcpSecretValue } from "../mcp-config";
+import {
+  facultContextRootDir,
+  facultRootDir,
+  facultStateDir,
+  readFacultConfig,
+} from "../paths";
 import type { ScanResult } from "../scan";
 import { scan } from "../scan";
 import {
   extractCodexTomlMcpServerBlocks,
   sanitizeCodexTomlMcpText,
 } from "../util/codex-toml";
+import { type GitPathExposure, getGitPathExposure } from "../util/git";
 import { parseJsonLenient } from "../util/json";
+import {
+  applyAuditSuppressionsToStaticReport,
+  loadAuditSuppressions,
+} from "./suppressions";
 import {
   type AuditFinding,
   type AuditItemResult,
@@ -440,14 +452,96 @@ function isSecretEnvKey(key: string): boolean {
   return SECRET_ENV_KEY_RE.test(key);
 }
 
+function managedInlineSecretFinding(args: {
+  configPath: string;
+  envKey: string;
+  exposure: GitPathExposure;
+  serverName: string;
+}): AuditFinding | null {
+  const location = `${args.configPath}:${args.serverName}:env:${args.envKey}`;
+  const evidence = `${args.envKey}=<redacted>`;
+
+  if (
+    args.exposure.state === "outside-repo" ||
+    args.exposure.state === "ignored"
+  ) {
+    return null;
+  }
+
+  if (args.exposure.state === "tracked") {
+    return {
+      severity: "critical",
+      ruleId: "mcp-env-inline-secret",
+      message:
+        "Managed MCP config includes an inline secret in a git-tracked file. Move the secret out of the repo or gitignore the rendered target.",
+      location,
+      evidence,
+    };
+  }
+
+  return {
+    severity: "high",
+    ruleId: "mcp-env-inline-secret",
+    message:
+      "Managed MCP config includes an inline secret in a repo-local file that is not gitignored. It may be committed accidentally.",
+    location,
+    evidence,
+  };
+}
+
+function canonicalInlineSecretFinding(args: {
+  configPath: string;
+  envKey: string;
+  exposure: GitPathExposure;
+  serverName: string;
+}): AuditFinding {
+  const location = `${args.configPath}:${args.serverName}:env:${args.envKey}`;
+  const evidence = `${args.envKey}=<redacted>`;
+
+  if (args.exposure.state === "tracked") {
+    return {
+      severity: "critical",
+      ruleId: "mcp-env-inline-secret",
+      message:
+        "MCP server env includes an inline secret in a git-tracked file. Move it into local-only config or env indirection.",
+      location,
+      evidence,
+    };
+  }
+
+  if (args.exposure.state === "untracked") {
+    return {
+      severity: "high",
+      ruleId: "mcp-env-inline-secret",
+      message:
+        "MCP server env includes an inline secret in a repo-local file that is not gitignored. It may be committed accidentally.",
+      location,
+      evidence,
+    };
+  }
+
+  return {
+    severity: "high",
+    ruleId: "mcp-env-inline-secret",
+    message:
+      "MCP server env includes what looks like a secret value (consider using indirection instead of inlining).",
+    location,
+    evidence,
+  };
+}
+
 function structuredMcpChecks({
   serverName,
   configPath,
   definition,
+  exposure,
+  isManagedOutput,
 }: {
   serverName: string;
   configPath: string;
   definition: unknown;
+  exposure: GitPathExposure;
+  isManagedOutput: boolean;
 }): AuditFinding[] {
   const findings: AuditFinding[] = [];
 
@@ -514,15 +608,23 @@ function structuredMcpChecks({
     const secretKeys = Object.keys(env).filter((k) => isSecretEnvKey(k));
     for (const k of secretKeys) {
       const v = env[k];
-      if (typeof v === "string" && v.trim()) {
-        findings.push({
-          severity: "high",
-          ruleId: "mcp-env-inline-secret",
-          message:
-            "MCP server env includes what looks like a secret value (consider using indirection instead of inlining).",
-          location: `${configPath}:${serverName}:env:${k}`,
-          evidence: `${k}=<redacted>`,
-        });
+      if (isInlineMcpSecretValue(v)) {
+        const finding = isManagedOutput
+          ? managedInlineSecretFinding({
+              configPath,
+              envKey: k,
+              exposure,
+              serverName,
+            })
+          : canonicalInlineSecretFinding({
+              configPath,
+              envKey: k,
+              exposure,
+              serverName,
+            });
+        if (finding) {
+          findings.push(finding);
+        }
       }
     }
   }
@@ -713,6 +815,21 @@ export async function runStaticAudit(opts?: {
       ? { kind: "mcp", name: nameArg.slice("mcp:".length) }
       : { kind: "skill", name: nameArg }
     : null;
+  const managedRoots = uniqueSorted([
+    facultRootDir(home),
+    facultContextRootDir({ home, cwd: opts?.cwd }),
+  ]);
+  const managedStates = await Promise.all(
+    managedRoots.map((rootDir) =>
+      loadManagedState(home, rootDir).catch(() => null)
+    )
+  );
+  const managedMcpConfigPaths = new Set(
+    managedStates
+      .flatMap((state) => Object.values(state?.tools ?? {}))
+      .map((entry) => entry.mcpConfig)
+      .filter((path): path is string => typeof path === "string")
+  );
 
   const results: AuditItemResult[] = [];
 
@@ -860,6 +977,8 @@ export async function runStaticAudit(opts?: {
   for (const cfg of Array.from(uniqMcpConfigs.values()).sort((a, b) =>
     a.path.localeCompare(b.path)
   )) {
+    const exposure = await getGitPathExposure(cfg.path);
+    const isManagedOutput = managedMcpConfigPaths.has(cfg.path);
     const isToml = cfg.format === "toml" || cfg.path.endsWith(".toml");
 
     if (isToml) {
@@ -981,6 +1100,8 @@ export async function runStaticAudit(opts?: {
         serverName,
         configPath: cfg.path,
         definition,
+        exposure,
+        isManagedOutput,
       });
 
       const findings = [...ruleFindings, ...structured].sort((a, b) => {
@@ -1006,27 +1127,7 @@ export async function runStaticAudit(opts?: {
   }
 
   const minSeverity = opts?.minSeverity ?? undefined;
-  const bySeverity: Record<Severity, number> = {
-    low: 0,
-    medium: 0,
-    high: 0,
-    critical: 0,
-  };
-  let totalFindings = 0;
-  let flaggedItems = 0;
-
-  for (const r of results) {
-    const all = r.findings;
-    totalFindings += all.length;
-    if (!r.passed) {
-      flaggedItems += 1;
-    }
-    for (const f of all) {
-      bySeverity[f.severity] += 1;
-    }
-  }
-
-  const report: StaticAuditReport = {
+  let report: StaticAuditReport = {
     timestamp: new Date().toISOString(),
     mode: "static",
     minSeverity,
@@ -1034,11 +1135,27 @@ export async function runStaticAudit(opts?: {
     results,
     summary: {
       totalItems: results.length,
-      totalFindings,
-      bySeverity,
-      flaggedItems,
+      totalFindings: results.reduce(
+        (sum, result) => sum + result.findings.length,
+        0
+      ),
+      bySeverity: results.reduce<Record<Severity, number>>(
+        (acc, result) => {
+          for (const finding of result.findings) {
+            acc[finding.severity] += 1;
+          }
+          return acc;
+        },
+        { low: 0, medium: 0, high: 0, critical: 0 }
+      ),
+      flaggedItems: results.filter((result) => !result.passed).length,
     },
   };
+
+  report = applyAuditSuppressionsToStaticReport(
+    report,
+    await loadAuditSuppressions(home)
+  );
 
   const auditDir = join(facultStateDir(home), "audit");
   await ensureDir(auditDir);

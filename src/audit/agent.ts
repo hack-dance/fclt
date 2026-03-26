@@ -10,6 +10,10 @@ import {
 } from "../util/codex-toml";
 import { parseJsonLenient } from "../util/json";
 import {
+  applyAuditSuppressionsToAgentReport,
+  loadAuditSuppressions,
+} from "./suppressions";
+import {
   type AuditFinding,
   type AuditItemResult,
   parseSeverity,
@@ -926,27 +930,7 @@ export async function runAgentAudit(opts?: {
     });
   }
 
-  // Summary
-  const bySeverity: Record<Severity, number> = {
-    low: 0,
-    medium: 0,
-    high: 0,
-    critical: 0,
-  };
-  let totalFindings = 0;
-  let flaggedItems = 0;
-
-  for (const r of results) {
-    totalFindings += r.findings.length;
-    if (!r.passed && r.findings.length > 0) {
-      flaggedItems += 1;
-    }
-    for (const f of r.findings) {
-      bySeverity[f.severity] += 1;
-    }
-  }
-
-  const report: AgentAuditReport = {
+  let report: AgentAuditReport = {
     timestamp: new Date().toISOString(),
     mode: "agent",
     agent: { tool, model },
@@ -972,11 +956,29 @@ export async function runAgentAudit(opts?: {
     }),
     summary: {
       totalItems: results.length,
-      totalFindings,
-      bySeverity,
-      flaggedItems,
+      totalFindings: results.reduce(
+        (sum, result) => sum + result.findings.length,
+        0
+      ),
+      bySeverity: results.reduce<Record<Severity, number>>(
+        (acc, result) => {
+          for (const finding of result.findings) {
+            acc[finding.severity] += 1;
+          }
+          return acc;
+        },
+        { low: 0, medium: 0, high: 0, critical: 0 }
+      ),
+      flaggedItems: results.filter(
+        (result) => !result.passed && result.findings.length > 0
+      ).length,
     },
   };
+
+  report = applyAuditSuppressionsToAgentReport(
+    report,
+    await loadAuditSuppressions(home)
+  );
 
   const auditDir = join(facultStateDir(home), "audit");
   await mkdir(auditDir, { recursive: true });
