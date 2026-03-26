@@ -1,3 +1,10 @@
+## [2.7.0](https://github.com/hack-dance/fclt/compare/v2.6.0...v2.7.0) (2026-03-26)
+
+### Features
+
+* **cli:** improve audit ux and mcp secret remediation ([2b69a25](https://github.com/hack-dance/fclt/commit/2b69a2529858c62acb384f5933f3ba896d7c12ef))
+* **trust:** add bulk trust and untrust commands ([38c6a7d](https://github.com/hack-dance/fclt/commit/38c6a7d0b772b6564c151fc70a3242ff8d946277))
+
 ## [2.6.0](https://github.com/hack-dance/fclt/compare/v2.5.2...v2.6.0) (2026-03-26)
 
 ### Features
