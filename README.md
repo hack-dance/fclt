@@ -24,170 +24,14 @@
 
 `fclt` is a CLI for building and evolving AI faculties across tools, users, and projects.
 
-Most AI tooling manages files. `fclt` manages faculties: the instructions, snippets, templates, skills, agents, rules, and learning loops that should compound, improve, and survive the next session.
+`fclt` manages the reusable parts of your AI setup: instructions, snippets, templates, skills, agents, rules, and the feedback loops that improve them over time.
 
 It helps you:
-- turn repeated friction into reusable capability
-- preserve learning through writeback and evolve canonical assets over time
-- consolidate AI behavior into one canonical store
-- compose prompts, agents, skills, and tool outputs from reusable snippets and templates
-- discover what exists, what depends on what, and what should change next
-- sync managed outputs into Codex, Cursor, and Claude
-- review trust/security before installing remote content
-- keep that operating layer in a git-backed store under `~/.ai` and repo-local `.ai/`
-
-## What fclt Is
-
-If your agent setup feels scattered, `fclt` gives it memory, structure, and a way to improve.
-
-A faculty is a reusable piece of AI behavior: an instruction, snippet, template, skill, agent, rule, or learned improvement that you want to keep around and make better.
-
-That matters because a lot of useful AI behavior is compositional. You want small reusable blocks, a clean way to assemble them into bigger prompts and operating layers, and a safe way to render the final tool-native outputs without losing the source structure.
-
-Think of it as:
-- a canonical home for your AI faculties
-- a composition system for snippets, templates, and rendered AI behavior
-- a sync layer for projecting them into real tools
-- a discovery graph for seeing what exists and what depends on what
-- a writeback/evolution loop for turning repeated friction into durable improvements
-- an inventory and trust boundary for the assets you let into the system
-
-## What fclt Does
-
-`fclt` is not a skills folder with a nicer CLI.
-
-It works as five connected layers:
-
-1. Canonical source
-   - global capability in `~/.ai`
-   - project capability in `<repo>/.ai`
-   - optional built-in Facult capability packs for bootstrap and defaults
-2. Discovery
-   - inventory across skills, agents, snippets, instructions, MCP, and rendered surfaces
-   - merged views across builtin, global, and project provenance
-   - explicit dependency graph queries
-3. Sync
-   - managed tool outputs for Codex, Claude, Cursor, and other file-backed surfaces
-   - rendered docs, agents, skills, MCP, config, and rules
-4. Automation
-   - background autosync for local propagation
-   - optional git autosync for the canonical store
-5. Evolution
-   - writeback capture
-   - proposal drafting and review
-   - controlled apply back into canonical assets
-
-## Default Operating Model
-
-`fclt` ships with a built-in operating model for learning, writeback, and capability evolution. That pack includes default:
-
-- instructions for evolution, integration, and project capability
-- specialist agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
-- skills such as `capability-evolution` and `project-operating-layer-design`
-
-When managed sync is enabled, these built-in assets are available by default even if you never copy them into `~/.ai`.
-
-That means:
-- builtin skills sync into managed tool skill directories by default
-- builtin agents sync into tool agent directories when the tool supports agents
-- if you do not author your own `AGENTS.global.md`, `fclt` renders a builtin global baseline doc into tool-native global docs
-
-The activation point is managed mode:
-- until you run `fclt manage <tool>`, the builtin operating-model layer is just packaged capability
-- once a tool is managed, the default operating-model layer becomes live for that tool automatically
-- for Codex, Claude, and Cursor, that means the core global doc surface plus the bundled writeback/evolution agents and skills are what agents actually see on disk
-- this is why the normal setup step is to manage the tools you care about first, then sync
-
-This is intentionally virtual at the canonical level:
-- builtin defaults remain part of the packaged tool
-- your personal `~/.ai` stays clean unless you explicitly vendor or override something
-- the live tool output on disk still contains the rendered defaults, so users and agents can read them directly
-
-In practice, this means the system is meant to learn by default. The CLI is there when you want to operate it directly, but the default skills, agents, and global docs are supposed to make writeback and evolution available without ceremony.
-
-More concretely:
-- the normal path is not a human manually typing `fclt ai ...` after every task
-- the bundled operating-model layer is meant to instruct synced agents and skills to notice reusable signal, preserve it, and push it toward writeback/evolution
-- the CLI remains the explicit operator surface for inspection, review, cleanup, and controlled apply
-- the generated state under `.ai/.facult/` gives those agents a durable thread of what was learned, when it was learned, what asset it pointed at, and what proposals or reviews happened afterward
-
-If you want to disable the builtin default layer for a specific global or project canonical root:
-
-```toml
-version = 1
-
-[builtin]
-sync_defaults = false
-```
-
-Put that in `config.toml` or `config.local.toml` under the active canonical root.
-
-## Core Concepts
-
-### Canonical vs rendered
-
-`fclt` separates source-of-truth from tool-native output.
-
-- canonical source lives in `~/.ai` or `<repo>/.ai`
-- rendered outputs live in tool homes like `~/.codex`, `<repo>/.codex`, `~/.claude`, or `~/.cursor`
-- generated Facult-owned state lives in `~/.ai/.facult` or `<repo>/.ai/.facult`
-
-This keeps authored capability portable and reviewable while still producing the exact files each tool expects.
-
-### Global vs project capability
-
-Use global `~/.ai` for reusable personal defaults:
-- cross-project instructions
-- reusable specialist agents
-- shared skills
-- default tool config and rules
-
-Use project `.ai/` for repo-owned capability:
-- project-specific instructions and snippets
-- local architecture/testing doctrine
-- project agents and skills that should travel with the codebase
-- repo-local rendered outputs for teammates
-
-Project capability is allowed to extend or shadow global capability in merged views, but it does not silently mutate the global source of truth.
-
-### The capability graph
-
-`fclt` builds a generated graph of explicit relationships between canonical assets and rendered outputs.
-
-That graph tracks things like:
-- snippet markers
-- `@ai/...` and `@project/...` refs
-- `${refs.*}` symbolic refs
-- rendered-target edges from canonical source to live tool files
-
-This makes it possible to answer:
-- what capability do I already have?
-- what instructions or snippets does this agent depend on?
-- what rendered files change if I update this canonical asset?
-- what project asset is shadowing a global asset?
-
-### Writeback and evolution
-
-`fclt` treats repeated failures, weak loops, missing context, and reusable patterns as signal worth preserving.
-
-Writeback is the act of recording that signal in a structured way.
-Evolution is the act of grouping that signal into reviewable proposals and applying it back into canonical assets.
-
-The intended workflow is agent-driven by default:
-- synced global docs, agents, and skills should push your tooling toward creating writebacks when something important was learned
-- specialist agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter` are there to help turn that signal into cleaner proposals and scope decisions
-- the CLI is what you use when you want to inspect, override, review, reject, apply, or otherwise operate the system directly
-- the point is not a new UI. The point is that the operating layer itself can accumulate memory and context across tasks, sessions, and tools
-
-This matters because otherwise the same problems repeat in chat without ever improving the actual operating layer. With `fclt`, you can:
-- record a weak verification pattern
-- group repeated writebacks around an instruction or agent
-- draft a proposal to tighten that canonical asset
-- review and apply the change in a controlled way
-
-The point is not just better storage. The point is that your AI setup can change shape as it learns.
-
-That is the core idea behind `fclt`: not just syncing skills, but growing faculties.
+- keep a canonical store in `~/.ai` or `<repo>/.ai`
+- render managed tool files into Codex, Claude, Cursor, and similar tools
+- inspect dependencies, provenance, and rendered outputs
+- review trust and audit remote or local capability before it spreads
+- capture writebacks and evolve canonical assets over time
 
 ## Quick Start
 
@@ -241,17 +85,23 @@ Pin to a specific version:
 fclt self-update --version 0.0.1
 ```
 
-### 2. Start with a read-only inventory (recommended first)
+### 2. Scan or bootstrap your canonical store
 
 ```bash
 fclt scan --show-duplicates
-# optional machine-readable output
-fclt scan --json
 ```
 
 `scan` is read-only. It inspects local configs and reports what `fclt` found without changing files.
 
-### 3. Import existing skills/configs
+If you want a repo-local `.ai`:
+
+```bash
+cd /path/to/repo
+fclt templates init project-ai
+fclt index
+```
+
+### 3. Import existing skills or config
 
 ```bash
 fclt consolidate --auto keep-current --from ~/.codex/skills --from ~/.agents/skills
@@ -260,62 +110,7 @@ fclt index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-Canonical source root: `~/.ai` for global work, or `<repo>/.ai` for project-local work.
-
-Generated AI state that belongs with the canonical root lives inside that root:
-- global: `~/.ai/.facult/ai/...`
-- project: `<repo>/.ai/.facult/ai/...`
-
-Machine-local operational state lives outside the canonical root:
-- macOS state: `~/Library/Application Support/fclt/...`
-- macOS cache: `~/Library/Caches/fclt/...`
-- Linux/other state: `${XDG_STATE_HOME:-~/.local/state}/fclt/...`
-- Linux/other cache: `${XDG_CACHE_HOME:-~/.cache}/fclt/...`
-
-### 3b. Bootstrap a repo-local `.ai`
-
-```bash
-cd /path/to/repo
-bunx fclt templates init project-ai
-bunx fclt index
-```
-
-This seeds `<repo>/.ai` from the built-in Facult operating-model pack and writes a merged project index/graph under `<repo>/.ai/.facult/ai/`.
-
-Wide learning-review automations should use this same bootstrap when they hit a local writable repo with durable project-local signal but no repo-local `.ai` yet.
-
-### 4. Inspect what you have
-
-```bash
-fclt list skills
-fclt list instructions
-fclt list mcp
-fclt show requesting-code-review
-fclt show instruction:WRITING
-fclt show mcp:github
-fclt find verification
-fclt graph show instruction:WRITING
-fclt graph deps AGENTS.global.md
-fclt graph dependents @ai/instructions/WRITING.md
-fclt ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
-fclt ai evolve propose
-fclt ai evolve draft EV-00001
-fclt ai evolve accept EV-00001
-fclt ai evolve apply EV-00001
-```
-
-Context controls:
-
-```bash
-fclt list instructions --global
-fclt list instructions --project
-fclt find verification --scope merged --source project
-fclt sync codex --project
-fclt autosync status --global
-fclt list agents --root /path/to/repo/.ai
-```
-
-### 5. Enable managed mode for your tools
+### 4. Manage a tool and sync
 
 ```bash
 fclt manage codex --dry-run
@@ -328,36 +123,77 @@ fclt enable requesting-code-review receiving-code-review brainstorming systemati
 fclt sync
 ```
 
-At this point, your selected skills are actively synced to all managed tools.
-This is also the point where the default operating-model layer becomes active for those tools. If you manage Codex or Claude, the bundled learning/writeback/evolution guidance is no longer just discoverable in `fclt`; it is rendered into the managed global doc surface and synced alongside the bundled agents and skills.
+Use `--dry-run` first if the live tool already has local content. If the tool already contains skills, agents, rules, docs, config, or MCP definitions, rerun with `--adopt-existing` and add `--existing-conflicts keep-canonical|keep-existing` if names collide.
 
-If you run these commands from inside a repo that has `<repo>/.ai`, `fclt` targets the project-local canonical store and repo-local tool outputs by default.
-On first entry to managed mode, use `--dry-run` first if the live tool already has local content. `fclt` will show what it would adopt into the active canonical store across skills, agents, docs, rules, config, and MCP, plus any conflicts. Then rerun with `--adopt-existing`; if names or files collide, add `--existing-conflicts keep-canonical` or `--existing-conflicts keep-existing`.
-For builtin-backed rendered defaults, `fclt` now tracks the last managed render hash. If a user edits the generated target locally, normal sync warns and preserves that local edit instead of silently overwriting it. To replace the local edit with the latest packaged builtin default, rerun sync with `--builtin-conflicts overwrite`.
+If you run these commands inside a repo that has `<repo>/.ai`, `fclt` targets the project-local canonical store and repo-local tool outputs by default.
 
-### 6. Turn on background autosync
+### 5. Inspect and evolve
+
+```bash
+fclt list skills
+fclt show instruction:WRITING
+fclt show mcp:github
+fclt find verification
+fclt graph AGENTS.global.md
+fclt ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
+fclt ai evolve propose
+```
+
+Context controls:
+
+```bash
+fclt list instructions --global
+fclt list instructions --project
+fclt find verification --scope merged --source project
+fclt list agents --root /path/to/repo/.ai
+```
+
+### 6. Optional: autosync, source trust, and audit
 
 ```bash
 fclt autosync install --git-remote origin --git-branch main --git-interval-minutes 60
 fclt autosync status
-```
 
-This installs a macOS LaunchAgent that:
-- watches the active canonical root (`~/.ai` or `<repo>/.ai`) for local changes and syncs managed tool outputs automatically
-- tracks dirty state for the canonical repo
-- runs a slower git autosync loop that batches changes, auto-commits them, rebases on the configured remote branch, and pushes on success
-
-If the repo hits a rebase conflict, remote autosync stops and reports the blocked state, but local tool sync continues.
-
-### 7. Turn on source trust and strict install flow
-
-```bash
 fclt sources list
 fclt verify-source skills.sh --json
 fclt sources trust skills.sh --note "reviewed"
-
 fclt install skills.sh:code-review --as code-review-skills-sh --strict-source-trust
+
+fclt audit
+fclt audit --non-interactive --severity high
+fclt audit safe mcp:github --rule static:mcp-env-inline-secret --note "reviewed"
+fclt audit fix mcp:github
 ```
+
+## Overview
+
+Useful AI behavior is composable. You need small reusable parts, a clean way to combine them, and a safe way to render them into the files your tools actually use.
+
+`fclt` is a canonical store plus a renderer:
+- canonical store in `~/.ai` or `<repo>/.ai`
+- rendered tool files in places like `~/.codex`, `~/.claude`, or repo-local tool dirs
+- discovery and graph views for dependencies, provenance, and rendered targets
+- writeback and evolution flows for improving canonical assets over time
+
+## Built-in Defaults
+
+`fclt` includes a built-in layer for writeback and evolution. By default, that layer provides:
+- instructions for evolution, integration, and project capability
+- agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
+- skills such as `capability-evolution` and `project-operating-layer-design`
+
+Those built-in defaults become live when you manage a tool. Once you manage Codex, Claude, or Cursor, `fclt` renders the bundled docs, agents, and skills into that tool’s live files.
+
+If you want to disable default built-in sync for one canonical root:
+
+```toml
+version = 1
+
+[builtin]
+sync_defaults = false
+```
+
+Put that in `config.toml` or `config.local.toml` under the active canonical root.
 
 ## Use fclt from your agents
 
@@ -390,9 +226,9 @@ fclt sync
 
 Note: `templates init mcp ...` is a scaffold, not a running server by itself.
 
-## The `.ai` Model
+## Mental Model
 
-`fclt` treats both `~/.ai` and `<repo>/.ai` as canonical AI stores. The global store is for personal reusable capability; the project store is for repo-owned capability that should travel with the codebase.
+`fclt` treats both `~/.ai` and `<repo>/.ai` as canonical stores. The global store is for personal reusable capability. The project store is for repo-owned capability that should travel with the codebase.
 
 Typical layout:
 
@@ -458,7 +294,7 @@ Not every asset syncs directly to a tool. Some exist primarily to support render
 - Use `snippets/` for composable partial blocks injected into markdown templates
 - Use `tools/codex/rules/*.rules` for actual Codex approval-policy rules
 - Use logical refs such as `@ai/instructions/WRITING.md` in tracked source
-- Use `@builtin/facult-operating-model/...` for packaged Facult defaults
+- Use `@builtin/facult-operating-model/...` for packaged built-in defaults
 - Use `@project/...` when a tracked ref must resolve inside a repo-local `.ai`
 - Use config-backed refs in prompts where you want stable named references such as `${refs.writing_rule}`
 
@@ -531,7 +367,7 @@ This is the explicit dependency layer for:
 
 ### Writeback and evolution
 
-`fclt` also has a local writeback/evolution substrate built on top of the graph:
+`fclt` also has a local writeback and evolution layer built on top of the graph:
 
 ```bash
 fclt ai writeback add \
@@ -563,8 +399,8 @@ Runtime state stays generated and local inside the active canonical root:
 
 That split is intentional:
 - canonical source remains in `~/.ai` or `<repo>/.ai`
-- writeback queues, journals, proposal records, trust state, autosync state, and other Facult-owned runtime/config state stay inside `.ai/.facult/` rather than inside the tool homes
-- those records create a historical thread agents can inspect over time: what changed, what triggered it, which asset it pointed at, what proposal was drafted, how it was reviewed, and whether it was applied or rejected
+- writeback queues, journals, proposal records, trust state, autosync state, and other generated runtime/config state stay inside `.ai/.facult/`
+- those records let agents inspect what changed, why it changed, and how it was reviewed
 
 Use writeback when:
 - a task exposed a weak or misleading verification loop
@@ -572,15 +408,7 @@ Use writeback when:
 - a pattern proved reusable enough to become doctrine
 - a project-local pattern deserves promotion toward global capability
 
-Do not think of writeback as “taking notes.” Think of it as preserving signal that should change the system, not just the current conversation.
-
-For many users, the normal entrypoint is not the CLI directly. The builtin operating-model layer is designed so synced agents, skills, and global docs can push the system toward writeback and evolution by default, while the `fclt ai ...` commands remain the explicit operator surface when you want direct control.
-
-In other words:
-- agents should be the ones noticing friction and capturing it
-- skills should be the ones teaching when writeback or evolution is warranted
-- proposal history should give future agents enough context to understand why a rule, instruction, or prompt changed
-- you drop to the CLI when you want to inspect the thread, steer it, or make the final call
+Do not think of writeback as note-taking. Treat it as preserved signal that should improve the system.
 
 Current apply semantics are intentionally policy-bound:
 - targets are resolved through the generated graph when possible and fall back to canonical ref resolution for missing assets
@@ -652,15 +480,6 @@ Recommended security flow:
 5. run both static and agent audits on a schedule
 
 ## Comprehensive Reference
-
-### Capability categories
-
-- Inventory: discover local skills, MCP configs, hooks, and instruction files
-- Management: consolidate, index, manage/unmanage tools, enable/disable entries, manage canonical AI config
-- Security: static audit, agent audit, item trust, source trust, source verification
-- Distribution: search/install/update from catalogs and verified manifests
-- DX: scaffold templates and sync snippets into instruction/config files
-- Automation: background autosync for local tool propagation and canonical repo git sync
 
 ### Command categories
 
@@ -870,18 +689,6 @@ Default source aliases:
 
 Custom remote sources can be defined in `~/.ai/.facult/indices.json` (manifest URL, optional integrity, optional signature keys/signature verification settings).
 
-## Local Install Modes
-
-For local CLI setup (outside npm global install), use:
-
-```bash
-bun run install:dev
-bun run install:bin
-bun run install:status
-```
-
-Default install path is `~/.ai/.facult/bin/fclt`. You can pass a custom target dir via `--dir=/path`.
-
 ## Autosync
 
 `fclt autosync` is the background propagation layer for managed installs.
@@ -900,18 +707,12 @@ fclt autosync install
 fclt autosync status
 ```
 
-Project-local usage:
+Tool-scoped or project-local usage:
 
 ```bash
 cd /path/to/repo
 fclt autosync install codex
 fclt autosync status codex
-```
-
-Tool-scoped service:
-
-```bash
-fclt autosync install codex
 ```
 
 One-shot runner for verification/debugging:
@@ -926,46 +727,6 @@ Remote git policy:
 - on the configured timer, fetch, auto-commit local canonical changes if needed, pull `--rebase`, then push
 - if rebase conflicts occur, remote autosync is blocked and reported, but local managed-tool sync keeps running
 
-## CI and Release Automation
-
-- CI workflow: `.github/workflows/ci.yml`
-- Release workflow: `.github/workflows/release.yml`
-- Semantic-release config: `.releaserc.json`
-
-Release behavior:
-1. Every push to `main` runs full checks.
-2. `semantic-release` creates the version/tag and GitHub release (npm publish is disabled in this phase).
-3. The same release workflow then builds platform binaries and uploads them to that GitHub release.
-4. npm publish runs only after binary asset upload succeeds (`publish-npm` depends on `publish-assets`).
-5. Published release assets include platform binaries, `fclt-install.sh`, `facult-install.sh`, and `SHA256SUMS`.
-6. When `HOMEBREW_TAP_TOKEN` is configured, the release workflow also updates the Homebrew tap at `hack-dance/homebrew-tap`.
-7. The npm package launcher resolves your platform, downloads the matching release binary, caches it under the machine-local cache root (`~/Library/Caches/fclt/runtime/...` on macOS or `${XDG_CACHE_HOME:-~/.cache}/fclt/runtime/...` elsewhere), and runs it.
-
-Current prebuilt binary targets:
-- `darwin-x64`
-- `darwin-arm64`
-- `linux-x64`
-- `windows-x64`
-
-Self-update behavior:
-1. npm/bun global install: updates via package manager (`npm install -g facult@...` or `bun add -g facult@...`).
-2. Direct binary install (release script/local binary path): downloads and replaces the binary in place.
-3. Use `fclt self-update` (or `fclt update --self`).
-
-Required secrets for publish:
-- `NPM_TOKEN`
-- `HOMEBREW_TAP_TOKEN` (fine-grained token with contents write access to `hack-dance/homebrew-tap`)
-
-Local semantic-release dry-runs require a supported Node runtime (`>=24.10`).
-
-Recommended one-time bootstrap before first auto release:
-```bash
-git tag v0.0.0
-git push origin v0.0.0
-```
-
-This makes the first semantic-release increment land at `0.0.1` for patch-level changes.
-
 ## Commit Hygiene
 
 Some MCP config files can contain secrets. Keep local generated artifacts and secret-bearing config files ignored and out of commits.
@@ -976,22 +737,9 @@ Recommended practice:
 - global rendered configs under `~/.codex`, `~/.claude`, or similar can contain merged secret values as machine-local runtime output
 - repo-local rendered configs should be gitignored; `fclt audit` now flags inline secrets more aggressively when the destination is git-tracked or repo-local and not ignored
 
-## Local Development
+## Contributing
 
-```bash
-bun run install:status
-bun run install:dev
-bun run install:bin
-bun run build
-bun run build:verify
-bun run type-check
-bun run test:ci
-bun test
-bun run check
-bun run fix
-bun run pack:dry-run
-bun run release:dry-run
-```
+Contributor and release workflow details live in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## FAQ
 
