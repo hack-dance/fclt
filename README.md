@@ -249,7 +249,7 @@ fclt scan --show-duplicates
 fclt scan --json
 ```
 
-`scan` is read-only. It inspects local configs and reports what `facult` found without changing files.
+`scan` is read-only. It inspects local configs and reports what `fclt` found without changing files.
 
 ### 3. Import existing skills/configs
 
@@ -331,9 +331,9 @@ fclt sync
 At this point, your selected skills are actively synced to all managed tools.
 This is also the point where the default operating-model layer becomes active for those tools. If you manage Codex or Claude, the bundled learning/writeback/evolution guidance is no longer just discoverable in `fclt`; it is rendered into the managed global doc surface and synced alongside the bundled agents and skills.
 
-If you run these commands from inside a repo that has `<repo>/.ai`, `facult` targets the project-local canonical store and repo-local tool outputs by default.
-On first entry to managed mode, use `--dry-run` first if the live tool already has local content. `facult` will show what it would adopt into the active canonical store across skills, agents, docs, rules, config, and MCP, plus any conflicts. Then rerun with `--adopt-existing`; if names or files collide, add `--existing-conflicts keep-canonical` or `--existing-conflicts keep-existing`.
-For builtin-backed rendered defaults, `facult` now tracks the last managed render hash. If a user edits the generated target locally, normal sync warns and preserves that local edit instead of silently overwriting it. To replace the local edit with the latest packaged builtin default, rerun sync with `--builtin-conflicts overwrite`.
+If you run these commands from inside a repo that has `<repo>/.ai`, `fclt` targets the project-local canonical store and repo-local tool outputs by default.
+On first entry to managed mode, use `--dry-run` first if the live tool already has local content. `fclt` will show what it would adopt into the active canonical store across skills, agents, docs, rules, config, and MCP, plus any conflicts. Then rerun with `--adopt-existing`; if names or files collide, add `--existing-conflicts keep-canonical` or `--existing-conflicts keep-existing`.
+For builtin-backed rendered defaults, `fclt` now tracks the last managed render hash. If a user edits the generated target locally, normal sync warns and preserves that local edit instead of silently overwriting it. To replace the local edit with the latest packaged builtin default, rerun sync with `--builtin-conflicts overwrite`.
 
 ### 6. Turn on background autosync
 
@@ -361,15 +361,15 @@ fclt install skills.sh:code-review --as code-review-skills-sh --strict-source-tr
 
 ## Use fclt from your agents
 
-`facult` is CLI-first. The practical setup is:
-1. Install `facult` globally so any agent runtime can execute it.
-2. Put allowed `facult` workflows in your agent instructions/skills.
-3. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `facult`.
+`fclt` is CLI-first. The practical setup is:
+1. Install `fclt` globally so any agent runtime can execute it.
+2. Put allowed `fclt` workflows in your agent instructions and skills.
+3. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
 
 ```bash
 # Scaffold reusable templates in the canonical store
 fclt templates init agents
-fclt templates init claude
+fclt templates init agent review-operator
 fclt templates init skill facult-manager
 
 # Enable that skill for managed tools
@@ -392,7 +392,7 @@ Note: `templates init mcp ...` is a scaffold, not a running server by itself.
 
 ## The `.ai` Model
 
-`facult` treats both `~/.ai` and `<repo>/.ai` as canonical AI stores. The global store is for personal reusable capability; the project store is for repo-owned capability that should travel with the codebase.
+`fclt` treats both `~/.ai` and `<repo>/.ai` as canonical AI stores. The global store is for personal reusable capability; the project store is for repo-owned capability that should travel with the codebase.
 
 Typical layout:
 
@@ -465,7 +465,7 @@ Not every asset syncs directly to a tool. Some exist primarily to support render
 ### Config and env layering
 
 Canonical render context is layered explicitly:
-1. built-ins injected by `facult`
+1. built-ins injected by `fclt`
 2. active canonical root `config.toml`
 3. active canonical root `config.local.toml`
 4. explicit runtime overrides
@@ -531,7 +531,7 @@ This is the explicit dependency layer for:
 
 ### Writeback and evolution
 
-`facult` also has a local writeback/evolution substrate built on top of the graph:
+`fclt` also has a local writeback/evolution substrate built on top of the graph:
 
 ```bash
 fclt ai writeback add \
@@ -607,11 +607,19 @@ Most inventory and sync commands support explicit canonical-root selection:
 
 ## Security and Trust
 
-`facult` has two trust layers:
+`fclt` has two trust layers:
 - Item trust: `fclt trust <name>` / `fclt untrust <name>`
 - Source trust: `fclt sources ...` with levels `trusted`, `review`, `blocked`
 
-`facult` also supports two audit modes:
+Bulk trust annotations are also supported:
+
+```bash
+fclt trust --all
+fclt trust skills --all
+fclt untrust mcp --all
+```
+
+`fclt` also supports interactive and scripted audit flows:
 
 1. Interactive audit workflow:
 ```bash
@@ -628,11 +636,20 @@ fclt audit --non-interactive --with claude --max-items 50
 fclt audit --non-interactive --with codex --max-items all --json
 ```
 
+4. Suppress or remediate reviewed findings:
+```bash
+fclt audit safe mcp:github --rule static:mcp-env-inline-secret --note "global managed render only"
+fclt audit safe --all --source static --yes
+fclt audit fix mcp:github
+fclt audit fix --all --source combined --yes
+```
+
 Recommended security flow:
 1. `fclt verify-source <source>`
 2. `fclt sources trust <source>` only after review
 3. use `--strict-source-trust` for `install`/`update`
-4. run both static and agent audits on a schedule
+4. keep tracked canonical MCP config secret-free; use `mcp/servers.local.json` for machine-local secrets
+5. run both static and agent audits on a schedule
 
 ## Comprehensive Reference
 
@@ -672,6 +689,9 @@ fclt managed
 fclt enable <name> [--for <tool1,tool2,...>]
 fclt enable mcp:<name> [--for <tool1,tool2,...>]
 fclt disable <name> [--for <tool1,tool2,...>]
+fclt trust --all
+fclt trust skills --all
+fclt untrust mcp --all
 fclt sync [tool] [--dry-run] [--builtin-conflicts overwrite]
 fclt autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
 fclt autosync status [tool]
@@ -698,9 +718,9 @@ fclt templates list
 fclt templates init project-ai
 fclt templates init skill <name>
 fclt templates init mcp <name>
+fclt templates init agent <name>
 fclt templates init snippet <marker>
 fclt templates init agents
-fclt templates init claude
 fclt templates init automation <template-id> --scope global|project|wide [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE]
 
 fclt snippets list
@@ -783,7 +803,7 @@ fclt <command> --help
 
 ### Root resolution
 
-`facult` resolves the canonical root in this order:
+`fclt` resolves the canonical root in this order:
 1. `FACULT_ROOT_DIR`
 2. nearest project `.ai` from the current working directory for CLI-facing commands
 3. `~/.ai/.facult/config.json` (`rootDir`)
@@ -950,6 +970,12 @@ This makes the first semantic-release increment land at `0.0.1` for patch-level 
 
 Some MCP config files can contain secrets. Keep local generated artifacts and secret-bearing config files ignored and out of commits.
 
+Recommended practice:
+- tracked canonical MCP definitions in `mcp/servers.json` should not inline secrets
+- machine-local secrets belong in `mcp/servers.local.json` or `mcp/mcp.local.json`
+- global rendered configs under `~/.codex`, `~/.claude`, or similar can contain merged secret values as machine-local runtime output
+- repo-local rendered configs should be gitignored; `fclt audit` now flags inline secrets more aggressively when the destination is git-tracked or repo-local and not ignored
+
 ## Local Development
 
 ```bash
@@ -973,7 +999,7 @@ bun run release:dry-run
 
 Not as a first-party `fclt mcp serve` runtime.
 
-`facult` currently focuses on inventory, trust/audit, install/update, and managed sync of skills/MCP configs.
+`fclt` currently focuses on inventory, trust/audit, install/update, and managed sync of canonical AI capability and tool-native outputs.
 
 ### Does fclt now manage global AI config, not just skills and MCP?
 
