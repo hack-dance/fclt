@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseFindArgs, parseListArgs } from "./index";
+import { parseFindArgs, parseGraphArgs, parseListArgs } from "./index";
 
 describe("parseListArgs", () => {
   it("parses list options and filters", () => {
@@ -40,6 +40,28 @@ describe("parseFindArgs", () => {
     const opts = parseFindArgs(["feedback", "loops", "--json"]);
     expect(opts).toEqual({
       text: "feedback loops",
+      json: true,
+    });
+  });
+});
+
+describe("parseGraphArgs", () => {
+  it("defaults to show when only an asset is provided", () => {
+    const opts = parseGraphArgs(["skills:alpha"]);
+
+    expect(opts).toEqual({
+      kind: "show",
+      target: "skills:alpha",
+      json: false,
+    });
+  });
+
+  it("parses explicit graph modes", () => {
+    const opts = parseGraphArgs(["deps", "skills:alpha", "--json"]);
+
+    expect(opts).toEqual({
+      kind: "deps",
+      target: "skills:alpha",
       json: true,
     });
   });

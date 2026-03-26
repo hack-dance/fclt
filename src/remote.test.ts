@@ -1115,6 +1115,11 @@ describe("templates command", () => {
         rootDir: root,
         cwd: home,
       });
+      await templatesCommand(["init", "agent", "code-reviewer"], {
+        homeDir: home,
+        rootDir: root,
+        cwd: home,
+      });
     });
 
     expect(
@@ -1123,6 +1128,15 @@ describe("templates command", () => {
     expect(await Bun.file(join(root, "agents", "AGENTS.md")).exists()).toBe(
       true
     );
+    expect(
+      await Bun.file(
+        join(root, "agents", "code-reviewer", "agent.toml")
+      ).exists()
+    ).toBe(true);
+    const agentText = await Bun.file(
+      join(root, "agents", "code-reviewer", "agent.toml")
+    ).text();
+    expect(agentText).toContain('name = "code-reviewer"');
     expect(process.exitCode).toBe(0);
   });
 

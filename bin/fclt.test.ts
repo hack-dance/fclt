@@ -153,6 +153,7 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
   ]);
 
   expect(exitCode).toBe(0);
-  expect(stdout).toContain("fclt — manage canonical AI capabilities");
+  expect(stdout).toContain("fclt");
+  expect(stdout).toContain("Manage canonical AI capability");
   expect(stderr).not.toContain("Unable to download the fclt binary");
 });

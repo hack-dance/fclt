@@ -45,6 +45,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .claude/
 
 # locally managed facult canonical artifacts (can include secrets)
+.ai/mcp/*.local.json
 .codex/config.toml
 .codex/index.json
 .codex/mcp/

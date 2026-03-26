@@ -2,8 +2,8 @@ import { homedir } from "node:os";
 import { ensureAiIndexPath } from "../ai-state";
 import type { FacultIndex } from "../index-builder";
 import { facultAiIndexPath, facultRootDir } from "../paths";
-import type { AuditItemResult, Severity } from "./types";
-import { SEVERITY_ORDER } from "./types";
+import { computeStoredAuditStatus } from "./status";
+import type { AuditItemResult } from "./types";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -19,19 +19,6 @@ function ensureIndexStructure(index: FacultIndex): FacultIndex {
     snippets: index.snippets ?? {},
     instructions: index.instructions ?? {},
   };
-}
-
-function computeAuditStatus(
-  findings: { severity: Severity; ruleId: string }[]
-): "pending" | "passed" | "flagged" {
-  if (findings.some((f) => f.ruleId === "agent-error")) {
-    return "pending";
-  }
-  const worst = findings.reduce(
-    (m, f) => Math.max(m, SEVERITY_ORDER[f.severity]),
-    -1
-  );
-  return worst >= SEVERITY_ORDER.high ? "flagged" : "passed";
 }
 
 async function loadIndex(homeDir: string): Promise<FacultIndex | null> {
@@ -83,7 +70,7 @@ export async function updateIndexFromAuditReport(opts: {
         // Only update the canonical instance tracked in the index.
         continue;
       }
-      const status = computeAuditStatus(
+      const status = computeStoredAuditStatus(
         r.findings.map((f) => ({ severity: f.severity, ruleId: f.ruleId }))
       );
       entry.auditStatus = status;
@@ -100,7 +87,7 @@ export async function updateIndexFromAuditReport(opts: {
     if (typeof entry.path === "string" && entry.path !== r.path) {
       continue;
     }
-    const status = computeAuditStatus(
+    const status = computeStoredAuditStatus(
       r.findings.map((f) => ({ severity: f.severity, ruleId: f.ruleId }))
     );
     entry.auditStatus = status;

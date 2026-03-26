@@ -1,7 +1,16 @@
 import { mkdir, mkdtemp, readdir, rename, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
-import { confirm, intro, isCancel, note, outro, select } from "@clack/prompts";
+import {
+  confirm,
+  intro,
+  isCancel,
+  log,
+  note,
+  outro,
+  select,
+  spinner,
+} from "@clack/prompts";
 import {
   type AutoDecision,
   type AutoMode,
@@ -328,8 +337,42 @@ function locationLabel(loc: {
   entryDir?: string;
   configPath?: string;
 }) {
-  const p = loc.entryDir ?? loc.configPath ?? "";
-  return `${p} (${loc.sourceId}, modified ${formatDate(loc.modified)})`;
+  return loc.entryDir ?? loc.configPath ?? "";
+}
+
+function locationHint(loc: {
+  sourceId?: string;
+  modified?: Date | null;
+}): string {
+  const parts = [
+    loc.sourceId?.trim() || "unknown source",
+    `modified ${formatDate(loc.modified ?? null)}`,
+  ];
+  return parts.join(" • ");
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function logConsolidateInfo(title: string, message: string) {
+  log.info(`${title}: ${message}`);
+}
+
+function logConsolidateStep(title: string, message: string) {
+  log.step(`${title}: ${message}`);
+}
+
+function logConsolidateSuccess(title: string, message: string) {
+  log.success(`${title}: ${message}`);
+}
+
+function logConsolidateWarn(title: string, message: string) {
+  log.warn(`${title}: ${message}`);
+}
+
+function logConsolidateError(title: string, message: string) {
+  log.error(`${title}: ${message}`);
 }
 
 function skillChoiceValue(loc: SkillLocation) {
@@ -365,10 +408,11 @@ function chooseByAutoMode<T extends { modified: Date | null }>(
 
 async function promptViewSkillContents(locs: SkillLocation[]) {
   const choice = await select({
-    message: "View SKILL.md from which location?",
+    message: "Which source do you want to preview?",
     options: locs.map((loc) => ({
       value: skillChoiceValue(loc),
       label: locationLabel(loc),
+      hint: locationHint(loc),
     })),
   });
   if (isCancel(choice)) {
@@ -392,13 +436,14 @@ async function promptViewMcpContents(
   locs: { configPath: string; sourceId?: string }[]
 ) {
   const choice = await select({
-    message: "View MCP JSON from which config?",
+    message: "Which MCP config do you want to preview?",
     options: locs.map((loc) => ({
       value: mcpChoiceValue({
         sourceId: loc.sourceId ?? "",
         configPath: loc.configPath,
       }),
       label: loc.configPath,
+      hint: locationHint(loc),
     })),
   });
   if (isCancel(choice)) {
@@ -495,11 +540,14 @@ async function copySkillAndUpdateState({
       target: dest,
       consolidatedAt: new Date().toISOString(),
     };
-    note(`Copied to ${dest}`, `Skill: ${name}`);
+    logConsolidateSuccess(`Skill ${name}`, `Copied to ${dest}`);
     return true;
   } catch (e: unknown) {
     const err = e as { message?: string } | null;
-    note(`Copy failed: ${String(err?.message ?? e)}`, `Skill: ${name}`);
+    logConsolidateError(
+      `Skill ${name}`,
+      `Copy failed: ${String(err?.message ?? e)}`
+    );
     return false;
   }
 }
@@ -561,14 +609,17 @@ async function resolveSkillConflictAndCopy({
       target: dest,
       consolidatedAt: new Date().toISOString(),
     };
-    note(`Kept existing skill at ${dest}`, `Skill: ${name}`);
+    logConsolidateStep(`Skill ${name}`, `Kept existing copy at ${dest}`);
     return;
   }
 
   if (decision === "keep-incoming") {
     const backup = await archiveExisting(dest);
     if (backup) {
-      note(`Archived existing skill to ${backup}`, `Skill: ${name}`);
+      logConsolidateWarn(
+        `Skill ${name}`,
+        `Archived existing copy to ${backup}`
+      );
     }
     await copySkillAndUpdateState({
       name,
@@ -602,7 +653,10 @@ async function resolveSkillConflictAndCopy({
       consolidatedAt: new Date().toISOString(),
     };
   }
-  note(`Kept both skills: ${name} + ${newName}`, `Skill: ${name}`);
+  logConsolidateInfo(
+    `Skill ${name}`,
+    `Kept both copies as ${name} and ${newName}`
+  );
 }
 
 async function handleSingleSkillLocation({
@@ -622,7 +676,9 @@ async function handleSingleSkillLocation({
 }): Promise<void> {
   if (!autoMode) {
     const ok = await confirm({
-      message: `Copy ${name} from ${loc.entryDir} (modified ${formatDate(loc.modified)})?`,
+      message: `Add skill "${name}" from this source?`,
+      active: "Add",
+      inactive: "Skip",
     });
     if (isCancel(ok) || !ok) {
       return;
@@ -673,14 +729,15 @@ async function handleMultipleSkillLocations({
 
   while (true) {
     const selection = await select({
-      message: `Choose source for skill "${name}"`,
+      message: `Choose a source for skill "${name}"`,
       options: [
         ...locs.map((loc) => ({
           value: skillChoiceValue(loc),
           label: locationLabel(loc),
+          hint: locationHint(loc),
         })),
-        { value: "view", label: "View SKILL.md" },
-        { value: "skip", label: "Skip" },
+        { value: "view", label: "Preview SKILL.md", hint: "Open source text" },
+        { value: "skip", label: "Skip", hint: "Leave this skill alone" },
       ],
     });
     if (isCancel(selection) || selection === "skip") {
@@ -717,15 +774,15 @@ async function consolidateSkills(
   const skillMap = await buildSkillLocations(res);
   const skillNames = [...skillMap.keys()].sort();
   if (!skillNames.length) {
-    note("No skills found to consolidate.", "Skills");
+    logConsolidateInfo("Skills", "No skills found to consolidate.");
     return;
   }
 
   for (const name of skillNames) {
     if (state.skills[name] && !force) {
-      note(
-        `Already consolidated from ${state.skills[name].source} → ${state.skills[name].target}`,
-        `Skill: ${name}`
+      logConsolidateStep(
+        `Skill ${name}`,
+        `Already consolidated from ${state.skills[name].source}`
       );
       continue;
     }
@@ -979,7 +1036,10 @@ async function mergeServerAndSave({
     consolidatedPath,
     `${JSON.stringify(consolidatedObj, null, 2)}\n`
   );
-  note(`Merged into ${consolidatedPath}`, `MCP server: ${serverName}`);
+  logConsolidateSuccess(
+    `MCP server ${serverName}`,
+    `Merged into ${consolidatedPath}`
+  );
 }
 
 async function resolveMcpServerConflictAndMerge({
@@ -1050,9 +1110,9 @@ async function resolveMcpServerConflictAndMerge({
         consolidatedAt: nowIso(),
       };
     }
-    note(
-      `Kept existing MCP server in ${consolidatedPath}`,
-      `MCP server: ${serverName}`
+    logConsolidateStep(
+      `MCP server ${serverName}`,
+      `Kept existing definition in ${consolidatedPath}`
     );
     return;
   }
@@ -1060,7 +1120,10 @@ async function resolveMcpServerConflictAndMerge({
   if (decision === "keep-incoming") {
     const backup = await archiveExisting(consolidatedPath);
     if (backup) {
-      note(`Archived existing MCP registry to ${backup}`, "MCP registry");
+      logConsolidateWarn(
+        "MCP registry",
+        `Archived existing registry to ${backup}`
+      );
     }
     consolidatedObj.updatedAt = nowIso();
     consolidatedObj.mcpServers[serverName] = incomingCanonical;
@@ -1073,7 +1136,10 @@ async function resolveMcpServerConflictAndMerge({
       consolidatedPath,
       `${JSON.stringify(consolidatedObj, null, 2)}\n`
     );
-    note(`Merged into ${consolidatedPath}`, `MCP server: ${serverName}`);
+    logConsolidateSuccess(
+      `MCP server ${serverName}`,
+      `Merged into ${consolidatedPath}`
+    );
     return;
   }
 
@@ -1107,7 +1173,10 @@ async function resolveMcpServerConflictAndMerge({
     consolidatedPath,
     `${JSON.stringify(consolidatedObj, null, 2)}\n`
   );
-  note(`Kept both servers: ${serverName} + ${newName}`, "MCP server");
+  logConsolidateInfo(
+    `MCP server ${serverName}`,
+    `Kept both definitions as ${serverName} and ${newName}`
+  );
 }
 
 async function handleSingleMcpServerLocation({
@@ -1127,7 +1196,9 @@ async function handleSingleMcpServerLocation({
 }): Promise<void> {
   if (!autoMode) {
     const ok = await confirm({
-      message: `Add MCP server "${serverName}" from ${loc.configPath} (modified ${formatDate(loc.modified)})?`,
+      message: `Add MCP server "${serverName}" from this config?`,
+      active: "Add",
+      inactive: "Skip",
     });
     if (isCancel(ok) || !ok) {
       return;
@@ -1176,14 +1247,15 @@ async function handleMultipleMcpServerLocations({
 
   while (true) {
     const selection = await select({
-      message: `Choose source for MCP server "${serverName}"`,
+      message: `Choose a source for MCP server "${serverName}"`,
       options: [
         ...locs.map((loc) => ({
           value: mcpChoiceValue(loc),
           label: locationLabel(loc),
+          hint: locationHint(loc),
         })),
-        { value: "view", label: "View MCP JSON" },
-        { value: "skip", label: "Skip" },
+        { value: "view", label: "Preview MCP JSON", hint: "Open source text" },
+        { value: "skip", label: "Skip", hint: "Leave this server alone" },
       ],
     });
     if (isCancel(selection) || selection === "skip") {
@@ -1232,12 +1304,15 @@ async function resolveMcpConfigConflictAndCopy({
         target: dest,
         consolidatedAt: new Date().toISOString(),
       };
-      note(`Copied to ${dest}`, `MCP config: ${basename(config.configPath)}`);
+      logConsolidateSuccess(
+        `MCP config ${basename(config.configPath)}`,
+        `Copied to ${dest}`
+      );
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
-      note(
-        `Copy failed: ${String(err?.message ?? e)}`,
-        `MCP config: ${config.configPath}`
+      logConsolidateError(
+        `MCP config ${basename(config.configPath)}`,
+        `Copy failed: ${String(err?.message ?? e)}`
       );
     }
     return;
@@ -1272,9 +1347,9 @@ async function resolveMcpConfigConflictAndCopy({
       target: dest,
       consolidatedAt: new Date().toISOString(),
     };
-    note(
-      `Kept existing MCP config at ${dest}`,
-      `MCP config: ${basename(dest)}`
+    logConsolidateStep(
+      `MCP config ${basename(dest)}`,
+      `Kept existing copy at ${dest}`
     );
     return;
   }
@@ -1282,7 +1357,7 @@ async function resolveMcpConfigConflictAndCopy({
   if (decision === "keep-incoming") {
     const backup = await archiveExisting(dest);
     if (backup) {
-      note(`Archived existing MCP config to ${backup}`, "MCP config");
+      logConsolidateWarn("MCP config", `Archived existing config to ${backup}`);
     }
     try {
       await Bun.write(dest, Bun.file(config.configPath));
@@ -1291,12 +1366,15 @@ async function resolveMcpConfigConflictAndCopy({
         target: dest,
         consolidatedAt: new Date().toISOString(),
       };
-      note(`Copied to ${dest}`, `MCP config: ${basename(config.configPath)}`);
+      logConsolidateSuccess(
+        `MCP config ${basename(config.configPath)}`,
+        `Copied to ${dest}`
+      );
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
-      note(
-        `Copy failed: ${String(err?.message ?? e)}`,
-        `MCP config: ${config.configPath}`
+      logConsolidateError(
+        `MCP config ${basename(config.configPath)}`,
+        `Copy failed: ${String(err?.message ?? e)}`
       );
     }
     return;
@@ -1319,12 +1397,12 @@ async function resolveMcpConfigConflictAndCopy({
       target: newDest,
       consolidatedAt: new Date().toISOString(),
     };
-    note(`Copied to ${newDest}`, `MCP config: ${newName}`);
+    logConsolidateSuccess(`MCP config ${newName}`, `Copied to ${newDest}`);
   } catch (e: unknown) {
     const err = e as { message?: string } | null;
-    note(
-      `Copy failed: ${String(err?.message ?? e)}`,
-      `MCP config: ${config.configPath}`
+    logConsolidateError(
+      `MCP config ${basename(config.configPath)}`,
+      `Copy failed: ${String(err?.message ?? e)}`
     );
   }
 }
@@ -1342,16 +1420,18 @@ async function consolidateMcpConfigFiles(
   for (const config of sorted) {
     const key = config.configPath;
     if (state.mcpConfigs[key] && !force) {
-      note(
-        `Already consolidated from ${state.mcpConfigs[key].source}`,
-        `MCP config: ${key}`
+      logConsolidateStep(
+        `MCP config ${basename(config.configPath)}`,
+        `Already consolidated from ${state.mcpConfigs[key].source}`
       );
       continue;
     }
     const dest = join(mcpDir, basename(config.configPath));
     if (!autoMode) {
       const ok = await confirm({
-        message: `Copy MCP config ${config.configPath} (modified ${formatDate(config.modified)})?`,
+        message: `Add MCP config "${basename(config.configPath)}" from this source?`,
+        active: "Add",
+        inactive: "Skip",
       });
       if (isCancel(ok) || !ok) {
         continue;
@@ -1382,9 +1462,9 @@ async function consolidateMcpServers(
 
   for (const serverName of serverNames) {
     if (state.mcpServers[serverName] && !force) {
-      note(
-        `Already consolidated from ${state.mcpServers[serverName].source}`,
-        `MCP server: ${serverName}`
+      logConsolidateStep(
+        `MCP server ${serverName}`,
+        `Already consolidated from ${state.mcpServers[serverName].source}`
       );
       continue;
     }
@@ -1598,12 +1678,30 @@ Options:
     const home = ctx.homeDir ?? homedir();
     const rootDir = ctx.rootDir ?? facultRootDir(home);
     intro("fclt consolidate");
+    log.step(
+      "Bring discovered skills and MCP configs into the canonical store."
+    );
+    if (autoMode) {
+      log.info(
+        `Auto mode: ${autoMode}. Conflicts will be resolved without prompts.`
+      );
+    } else {
+      log.info(
+        "Interactive mode: review each source and resolve conflicts as they appear."
+      );
+    }
+    if (scanOptions.from.length > 0) {
+      log.info(`Extra scan roots: ${scanOptions.from.join(", ")}`);
+    }
 
+    const scanSpinner = spinner();
+    scanSpinner.start("Scanning candidate sources...");
     const res = await scan([], {
       ...scanOptions,
       homeDir: home,
       cwd: ctx.cwd,
     });
+    scanSpinner.stop(`Found ${pluralize(res.sources.length, "source")}.`);
     const state = await loadState(home);
 
     const targets = {
@@ -1632,9 +1730,7 @@ Options:
     );
 
     await saveState(home, state);
-    outro(
-      `Consolidation complete. State saved to ${join(facultStateDir(home), "consolidated.json")}`
-    );
+    outro(`State saved to ${join(facultStateDir(home), "consolidated.json")}`);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;

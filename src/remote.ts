@@ -11,6 +11,14 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCancel, multiselect, select, text } from "@clack/prompts";
+import {
+  renderBullets,
+  renderCatalog,
+  renderCode,
+  renderKeyValue,
+  renderPage,
+  renderTable,
+} from "./cli-ui";
 import { buildIndex } from "./index-builder";
 import { facultRootDir, readFacultConfig } from "./paths";
 import {
@@ -49,6 +57,8 @@ const REMOTE_STATE_VERSION = 1;
 const VERSION_TOKEN_RE = /[A-Za-z]+|[0-9]+/g;
 const QUERY_SPLIT_RE = /\s+/;
 const MD_EXT_RE = /\.md$/i;
+const FILE_EXT_RE = /\.[A-Za-z0-9]+$/;
+const TRAILING_SLASH_RE = /\/+$/;
 const PROMPT_PATH_SPLIT_RE = /[,\n]/;
 const GIT_WORKTREE_LINE_RE = /\r?\n/;
 
@@ -229,6 +239,38 @@ Use this skill when the task repeatedly follows a known workflow and you want co
           },
           enabledFor: [],
         },
+      },
+    },
+    {
+      id: "agent-template",
+      type: "agent",
+      title: "Canonical Agent Template",
+      description:
+        "Starter canonical subagent scaffold for focused, reviewable specialist behavior.",
+      version: "1.0.0",
+      tags: ["template", "dx", "agent"],
+      agent: {
+        fileName: "agent.toml",
+        content: `name = "{{name}}"
+description = "Describe the focused responsibility for {{name}}."
+
+developer_instructions = """
+You are {{name}}.
+
+Operate with a tight scope.
+
+Prioritize:
+- one clear responsibility
+- concrete evidence over vague summaries
+- explicit assumptions and blockers
+- outputs that are easy for the calling agent to apply
+
+Return:
+- what you changed or found
+- what you verified
+- what still needs a decision
+"""
+`,
       },
     },
     {
@@ -589,7 +631,11 @@ function normalizeCwdList(raw: string | null | undefined): string[] {
 
 function isInteractiveOutputRequested(args: string[]): boolean {
   return (
-    !args.includes("--json") &&
+    !(
+      args.includes("--json") ||
+      args.includes("--yes") ||
+      args.includes("--non-interactive")
+    ) &&
     process.stdin.isTTY === true &&
     process.stdout.isTTY === true
   );
@@ -1895,6 +1941,18 @@ async function installMcpItem(args: {
   };
 }
 
+function deriveAgentTemplateName(fileName: string): string {
+  const normalized = fileName.replaceAll("\\", "/");
+  const base = basename(normalized);
+  if (base.toLowerCase() === "agent.toml") {
+    const parent = basename(dirname(normalized));
+    if (parent && parent !== ".") {
+      return parent;
+    }
+  }
+  return base.replace(FILE_EXT_RE, "");
+}
+
 async function installAgentItem(args: {
   item: RemoteAgentItem;
   installAs?: string;
@@ -1918,12 +1976,14 @@ async function installAgentItem(args: {
     );
   }
 
+  const agentName = deriveAgentTemplateName(fileName);
+
   if (!args.dryRun) {
     await mkdir(dirname(filePath), { recursive: true });
     await Bun.write(
       filePath,
       renderTemplate(args.item.agent.content, {
-        name: fileName.replace(MD_EXT_RE, ""),
+        name: agentName,
       })
     );
   }
@@ -2488,84 +2548,159 @@ async function verifySource(args: {
 }
 
 function printSearchHelp() {
-  console.log(`fclt search — search configured remote indices
-
-Usage:
-  fclt search <query> [--index <name>] [--limit <n>] [--json]
-
-Notes:
-  - Builtin index "${BUILTIN_INDEX_NAME}" is always available.
-  - Builtin provider aliases: "${SMITHERY_INDEX_NAME}", "${GLAMA_INDEX_NAME}", "${SKILLS_SH_INDEX_NAME}", "${CLAWHUB_INDEX_NAME}".
-  - Optional custom indices can be configured in ~/.ai/.facult/indices.json.
-`);
+  console.log(
+    renderPage({
+      title: "fclt search",
+      subtitle: "Search configured remote indices.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode(
+              "fclt search <query> [--index <name>] [--limit <n>] [--json]"
+            ),
+          ]),
+        },
+        {
+          title: "Notes",
+          lines: renderBullets([
+            `Builtin index ${renderCode(BUILTIN_INDEX_NAME)} is always available.`,
+            `Builtin provider aliases: ${SMITHERY_INDEX_NAME}, ${GLAMA_INDEX_NAME}, ${SKILLS_SH_INDEX_NAME}, ${CLAWHUB_INDEX_NAME}.`,
+            "Optional custom indices can be configured in ~/.ai/.facult/indices.json.",
+          ]),
+        },
+      ],
+    })
+  );
 }
 
 function printInstallHelp() {
-  console.log(`fclt install — install an item from a remote index
-
-Usage:
-  fclt install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust] [--json]
-
-Examples:
-  fclt install facult:skill-template --as my-skill
-  fclt install facult:mcp-stdio-template --as github
-  fclt install smithery:github
-  fclt install glama:systeminit/si --as system-initiative
-  fclt install skills.sh:owner/repo --as my-skill
-  fclt install clawhub:my-skill
-`);
+  console.log(
+    renderPage({
+      title: "fclt install",
+      subtitle: "Install an item from a remote index into canonical state.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode(
+              "fclt install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust] [--json]"
+            ),
+          ]),
+        },
+        {
+          title: "Examples",
+          lines: renderBullets([
+            renderCode("fclt install facult:skill-template --as my-skill"),
+            renderCode(
+              "fclt install facult:agent-template --as reviewer/agent.toml"
+            ),
+            renderCode("fclt install facult:mcp-stdio-template --as github"),
+            renderCode("fclt install smithery:github"),
+          ]),
+        },
+      ],
+    })
+  );
 }
 
 function printUpdateHelp() {
-  console.log(`fclt update — check for updates to remotely installed items
-
-Usage:
-  fclt update [--apply] [--strict-source-trust] [--json]
-
-Options:
-  --apply                Install available updates
-  --strict-source-trust  Block review-level sources unless explicitly trusted
-`);
+  console.log(
+    renderPage({
+      title: "fclt update",
+      subtitle: "Check for updates to remotely installed items.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode(
+              "fclt update [--apply] [--strict-source-trust] [--json]"
+            ),
+          ]),
+        },
+        {
+          title: "Options",
+          lines: renderTable({
+            headers: ["Option", "Meaning"],
+            rows: [
+              ["--apply", "Install available updates"],
+              [
+                "--strict-source-trust",
+                "Block review-level sources unless explicitly trusted",
+              ],
+            ],
+          }),
+        },
+      ],
+    })
+  );
 }
 
 function printTemplatesHelp() {
-  console.log(`fclt templates — DX-first local scaffolding for skills/instructions/MCP/snippets
-
-Usage:
-  fclt templates list [--json]
-  fclt templates init skill <name> [--force] [--dry-run]
-  fclt templates init mcp <name> [--force] [--dry-run]
-  fclt templates init snippet <marker> [--force] [--dry-run]
-  fclt templates init agents [--force] [--dry-run]
-  fclt templates init claude [--force] [--dry-run]
-  fclt templates init project-ai [--force] [--dry-run]
-  fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>]
-    --status [PAUSED|ACTIVE] [--force] [--dry-run]
-
-  Notes:
-  - Templates are powered by the builtin remote index (${BUILTIN_INDEX_NAME}).
-  - Automation templates scaffold Codex automation files under ~/.codex/automations/.
-  - scope=global|wide creates a wide automation. Provide --cwds for explicit repo roots.
-    Without --cwds, wide/global automation has no cwds by default.
-  - scope=project creates an automation scoped to one project root.
-  - If --scope (or --project-root / --cwds) is omitted and the command runs in an
-    interactive terminal, you will be prompted to choose scope and candidate paths.
-    Without explicit answers, project scope falls back to current git project and
-    wide/global scope can be left empty.
-`);
+  console.log(
+    renderPage({
+      title: "fclt templates",
+      subtitle:
+        "Scaffold canonical skills, MCP, agents, snippets, docs, and automation.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode("fclt templates list [--json]"),
+            renderCode(
+              "fclt templates init skill <name> [--force] [--dry-run]"
+            ),
+            renderCode("fclt templates init mcp <name> [--force] [--dry-run]"),
+            renderCode(
+              "fclt templates init agent <name> [--force] [--dry-run]"
+            ),
+            renderCode(
+              "fclt templates init snippet <marker> [--force] [--dry-run]"
+            ),
+            renderCode("fclt templates init agents [--force] [--dry-run]"),
+            renderCode("fclt templates init project-ai [--force] [--dry-run]"),
+            renderCode(
+              "fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE] [--yes] [--dry-run]"
+            ),
+          ]),
+        },
+        {
+          title: "Notes",
+          lines: renderBullets([
+            `Templates are powered by the builtin ${renderCode(BUILTIN_INDEX_NAME)} index.`,
+            "Automation templates scaffold Codex automation files under ~/.codex/automations/.",
+            `${renderCode("--yes")} and ${renderCode("--non-interactive")} skip scope prompts and use inferred defaults when possible.`,
+            "Use project scope for one repo root, wide/global scope for many explicit roots.",
+          ]),
+        },
+      ],
+    })
+  );
 }
 
 function printVerifySourceHelp() {
-  console.log(`fclt verify-source — verify source trust/integrity/signature status
-
-Usage:
-  fclt verify-source <name> [--json]
-
-Examples:
-  fclt verify-source facult
-  fclt verify-source smithery
-  fclt verify-source local-index --json
-`);
+  console.log(
+    renderPage({
+      title: "fclt verify-source",
+      subtitle: "Verify source trust, integrity, and signature status.",
+      sections: [
+        {
+          title: "Usage",
+          lines: renderBullets([
+            renderCode("fclt verify-source <name> [--json]"),
+          ]),
+        },
+        {
+          title: "Examples",
+          lines: renderBullets([
+            renderCode("fclt verify-source facult"),
+            renderCode("fclt verify-source smithery"),
+            renderCode("fclt verify-source local-index --json"),
+          ]),
+        },
+      ],
+    })
+  );
 }
 
 function parseLongFlag(argv: string[], flag: string): string | null {
@@ -2644,16 +2779,34 @@ export async function searchCommand(
       return;
     }
     if (!results.length) {
-      console.log("(no results)");
+      console.log(
+        renderPage({
+          title: "fclt search",
+          subtitle: `No remote results for "${query}".`,
+          sections: [],
+        })
+      );
       return;
     }
-    for (const row of results) {
-      const version = row.item.version ?? "-";
-      const title = row.item.title ?? row.item.description ?? "";
-      console.log(
-        `${row.index}:${row.item.id}\t${row.item.type}\t${version}\t${title}`
-      );
-    }
+    console.log(
+      renderPage({
+        title: "fclt search",
+        subtitle: `${results.length} remote match${results.length === 1 ? "" : "es"} for "${query}"`,
+        sections: [
+          {
+            title: "Results",
+            lines: renderCatalog(
+              results.map((row) => ({
+                title: `${row.index}:${row.item.id}`,
+                meta: `${row.item.type} • v${row.item.version ?? "-"}`,
+                description:
+                  row.item.title ?? row.item.description ?? "No title.",
+              }))
+            ),
+          },
+        ],
+      })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -2704,15 +2857,37 @@ export async function installCommand(
       return;
     }
     const action = dryRun ? "Would install" : "Installed";
-    console.log(`${action} ${result.ref} as ${result.installedAs}`);
-    if (result.sourceTrustLevel === "review" && !strictSourceTrust) {
-      console.log(
-        "  ! source policy: review (use --strict-source-trust to enforce trust-only installs)"
-      );
-    }
-    for (const path of result.changedPaths) {
-      console.log(`  - ${path}`);
-    }
+    console.log(
+      renderPage({
+        title: "fclt install",
+        subtitle: `${action} ${result.ref} as ${result.installedAs}`,
+        sections: [
+          {
+            title: "Result",
+            lines: renderKeyValue([
+              ["type", result.type],
+              [
+                "source trust",
+                result.sourceTrustLevel === "trusted"
+                  ? "trusted"
+                  : result.sourceTrustLevel,
+              ],
+              ["path", result.path],
+            ]),
+          },
+          {
+            title: "Changed Paths",
+            lines: renderBullets(result.changedPaths),
+          },
+        ],
+        footer:
+          result.sourceTrustLevel === "review" && !strictSourceTrust
+            ? [
+                "Source policy is review. Use --strict-source-trust to require explicit trust.",
+              ]
+            : undefined,
+      })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -2747,19 +2922,39 @@ export async function updateCommand(
       return;
     }
     if (!report.checks.length) {
-      console.log("No remotely installed items found.");
+      console.log(
+        renderPage({
+          title: "fclt update",
+          subtitle: "No remotely installed items found.",
+          sections: [],
+        })
+      );
       return;
     }
-    for (const check of report.checks) {
-      const current = check.currentVersion ?? "-";
-      const latest = check.latestVersion ?? "-";
-      console.log(
-        `${check.installed.ref} (${check.installed.installedAs})\t${check.status}\t${current} -> ${latest}`
-      );
-    }
-    if (apply) {
-      console.log(`Applied ${report.applied.length} updates.`);
-    }
+    console.log(
+      renderPage({
+        title: "fclt update",
+        subtitle: `${report.checks.length} installed item${report.checks.length === 1 ? "" : "s"} checked`,
+        sections: [
+          {
+            title: "Checks",
+            lines: renderCatalog(
+              report.checks.map((check) => ({
+                title: check.installed.ref,
+                meta: check.status,
+                description: check.installed.installedAs,
+                details: [
+                  `Version ${check.currentVersion ?? "-"} -> ${check.latestVersion ?? "-"}`,
+                ],
+              }))
+            ),
+          },
+        ],
+        footer: apply
+          ? [`Applied ${report.applied.length} update(s).`]
+          : undefined,
+      })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -2802,14 +2997,31 @@ export async function verifySourceCommand(
     } else {
       const trustOrigin = report.trust.explicit ? "explicit" : "default";
       console.log(
-        `${report.source.name}\t${report.source.kind}\t${report.source.url}`
+        renderPage({
+          title: `fclt verify-source ${report.source.name}`,
+          subtitle: report.source.url,
+          sections: [
+            {
+              title: "Source",
+              lines: renderKeyValue([
+                ["kind", report.source.kind],
+                ["trust", `${report.trust.level} (${trustOrigin})`],
+                ["items", String(report.checks.items)],
+              ]),
+            },
+            {
+              title: "Checks",
+              lines: renderKeyValue([
+                ["fetch", report.checks.fetch],
+                ["parse", report.checks.parse],
+                ["integrity", report.checks.integrity],
+                ["signature", report.checks.signature],
+              ]),
+            },
+          ],
+          footer: report.error ? [`error: ${report.error}`] : undefined,
+        })
       );
-      console.log(
-        `trust=${report.trust.level} (${trustOrigin})\tfetch=${report.checks.fetch}\tparse=${report.checks.parse}\tintegrity=${report.checks.integrity}\tsignature=${report.checks.signature}\titems=${report.checks.items}`
-      );
-      if (report.error) {
-        console.log(`error: ${report.error}`);
-      }
     }
 
     if (report.error) {
@@ -2860,9 +3072,24 @@ export async function templatesCommand(
       console.log(JSON.stringify(rows, null, 2));
       return;
     }
-    for (const row of rows) {
-      console.log(`${row.id}\t${row.type}\t${row.version}\t${row.title}`);
-    }
+    console.log(
+      renderPage({
+        title: "fclt templates list",
+        subtitle: `${rows.length} available scaffold${rows.length === 1 ? "" : "s"}`,
+        sections: [
+          {
+            title: "Templates",
+            lines: renderCatalog(
+              rows.map((row) => ({
+                title: row.id,
+                meta: `${row.type} • ${row.version}`,
+                description: row.description || row.title,
+              }))
+            ),
+          },
+        ],
+      })
+    );
     return;
   }
   if (sub !== "init") {
@@ -2874,7 +3101,7 @@ export async function templatesCommand(
   const [kind, ...args] = rest;
   if (!kind) {
     console.error(
-      "templates init requires a kind (skill|mcp|snippet|agents|claude|project-ai|automation)"
+      "templates init requires a kind (skill|mcp|agent|snippet|agents|claude|project-ai|automation)"
     );
     process.exitCode = 2;
     return;
@@ -2897,10 +3124,18 @@ export async function templatesCommand(
         return;
       }
       const action = dryRun ? "Would scaffold" : "Scaffolded";
-      console.log(`${action} ${kind} template as ${result.installedAs}`);
-      for (const path of result.changedPaths) {
-        console.log(`  - ${path}`);
-      }
+      console.log(
+        renderPage({
+          title: `fclt templates init ${kind}`,
+          subtitle: `${action} ${result.installedAs}`,
+          sections: [
+            {
+              title: "Changed Paths",
+              lines: renderBullets(result.changedPaths),
+            },
+          ],
+        })
+      );
       return;
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
@@ -2927,6 +3162,20 @@ export async function templatesCommand(
       process.exitCode = 2;
       return;
     }
+  } else if (kind === "agent") {
+    ref = `${BUILTIN_INDEX_NAME}:agent-template`;
+    const rawName = positional[0];
+    if (!rawName) {
+      console.error("templates init agent requires a <name>");
+      process.exitCode = 2;
+      return;
+    }
+    const normalizedName = rawName
+      .replaceAll("\\", "/")
+      .replace(TRAILING_SLASH_RE, "");
+    as = normalizedName.endsWith(".toml")
+      ? normalizedName
+      : `${normalizedName}/agent.toml`;
   } else if (kind === "snippet") {
     ref = `${BUILTIN_INDEX_NAME}:snippet-template`;
     as = positional[0];
@@ -2999,11 +3248,24 @@ export async function templatesCommand(
       }
       const action = dryRun ? "Would scaffold" : "Scaffolded";
       console.log(
-        `${action} automation template as ${result.installedAs} (${result.path})`
+        renderPage({
+          title: "fclt templates init automation",
+          subtitle: `${action} ${result.installedAs}`,
+          sections: [
+            {
+              title: "Automation",
+              lines: renderKeyValue([
+                ["name", result.installedAs],
+                ["path", result.path],
+              ]),
+            },
+            {
+              title: "Changed Paths",
+              lines: renderBullets(result.changedPaths),
+            },
+          ],
+        })
       );
-      for (const path of result.changedPaths) {
-        console.log(`  - ${path}`);
-      }
       return;
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err));
@@ -3034,10 +3296,18 @@ export async function templatesCommand(
       return;
     }
     const action = dryRun ? "Would scaffold" : "Scaffolded";
-    console.log(`${action} ${kind} template as ${result.installedAs}`);
-    for (const path of result.changedPaths) {
-      console.log(`  - ${path}`);
-    }
+    console.log(
+      renderPage({
+        title: `fclt templates init ${kind}`,
+        subtitle: `${action} ${result.installedAs}`,
+        sections: [
+          {
+            title: "Changed Paths",
+            lines: renderBullets(result.changedPaths),
+          },
+        ],
+      })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;

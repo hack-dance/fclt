@@ -444,6 +444,7 @@ The canonical store can contain several distinct asset classes:
 - `agents/`: role-specific agent manifests
 - `skills/`: workflow-specific capability folders
 - `mcp/`: canonical MCP server definitions
+- `mcp/servers.local.json` or `mcp/mcp.local.json`: ignored machine-local MCP secret overlay
 - `tools/<tool>/config.toml`: canonical tool config
 - `tools/<tool>/config.local.toml`: machine-local tool config overlay
 - `tools/<tool>/rules/*.rules`: canonical tool rules
@@ -480,10 +481,13 @@ Built-ins currently include:
 Recommended split:
 - `~/.ai/config.toml` or `<repo>/.ai/config.toml`: tracked, portable, non-secret refs/defaults
 - `~/.ai/config.local.toml` or `<repo>/.ai/config.local.toml`: ignored, machine-local paths and secrets
+- `~/.ai/mcp/servers.json` or `<repo>/.ai/mcp/servers.json`: tracked canonical MCP definitions
+- `~/.ai/mcp/servers.local.json` or `<repo>/.ai/mcp/servers.local.json`: ignored machine-local MCP env overlay for secrets and per-machine auth
 - `~/.ai/tools/<tool>/config.toml` or `<repo>/.ai/tools/<tool>/config.toml`: tracked tool defaults
 - `~/.ai/tools/<tool>/config.local.toml` or `<repo>/.ai/tools/<tool>/config.local.toml`: ignored, machine-local tool overrides merged after tracked tool config during sync
 - `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
 - `fclt sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
+- `fclt audit fix ...`: move inline MCP secrets from tracked canonical config into the local MCP overlay and re-sync managed tool configs
 
 ### Snippets
 
