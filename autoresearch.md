@@ -5,12 +5,12 @@ Reduce the startup latency of `bun run ./src/index.ts --help` by cutting eager w
 
 ## Metrics
 - **Primary**: `help_ms` (`ms`, lower is better)
-- **Secondary**: `help_maxrss_kb` (`kb`, lower is better but only advisory)
+- **Secondary**: `help_peak_bytes` (`bytes`, lower is better but only advisory)
 
 ## How to Run
 `bash autoresearch.sh`
 
-The benchmark runs the help command multiple times via `/usr/bin/time -lp`, discards the first warm-up run, and reports the median wall-clock time in milliseconds plus median max RSS in KB.
+The benchmark runs the help command multiple times via `/usr/bin/time -lp`, discards the first warm-up run, and reports the median wall-clock time in milliseconds plus the median peak memory reading from the timing output.
 
 ## Files In Scope
 - `src/index.ts`: primary candidate; currently imports most command modules eagerly

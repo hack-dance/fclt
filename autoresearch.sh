@@ -14,10 +14,11 @@ time_path = Path(sys.argv[1])
 real = None
 maxrss = None
 for line in time_path.read_text().splitlines():
-    if line.startswith("real "):
-        real = float(line.split()[1])
-    elif line.startswith("maximum resident set size "):
-        maxrss = int(line.split()[-1])
+    stripped = line.strip()
+    if stripped.startswith("real "):
+        real = float(stripped.split()[1])
+    elif "maximum resident set size" in stripped:
+        maxrss = int(stripped.split()[0])
 
 if real is None or maxrss is None:
     raise SystemExit("failed to parse timing output")
@@ -63,4 +64,4 @@ PY
 )
 
 printf 'METRIC help_ms=%s\n' "$help_ms"
-printf 'METRIC help_maxrss_kb=%s\n' "$median_rss"
+printf 'METRIC help_peak_bytes=%s\n' "$median_rss"

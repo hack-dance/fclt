@@ -1,10 +1,6 @@
 #!/usr/bin/env bun
 
 import { join } from "node:path";
-import { getAllAdapters } from "./adapters";
-import { aiCommand } from "./ai";
-import { auditCommand } from "./audit";
-import { autosyncCommand } from "./autosync";
 import {
   type CapabilityScopeMode,
   parseCliContextArgs,
@@ -20,9 +16,6 @@ import {
   renderPage,
   renderTable,
 } from "./cli-ui";
-import { consolidateCommand } from "./consolidate";
-import { doctorCommand } from "./doctor";
-import { disableCommand, enableCommand } from "./enable-disable";
 import type { AssetScope, AssetSourceKind } from "./graph";
 import {
   graphDependencies,
@@ -38,14 +31,6 @@ import type {
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
-import { indexCommand } from "./index-builder";
-import {
-  manageCommand,
-  managedCommand,
-  syncCommand,
-  unmanageCommand,
-} from "./manage";
-import { migrateCommand } from "./migrate";
 import type { QueryFilters } from "./query";
 import {
   filterAgents,
@@ -56,18 +41,6 @@ import {
   findCapabilities,
   loadIndex,
 } from "./query";
-import {
-  installCommand,
-  searchCommand,
-  sourcesCommand,
-  templatesCommand,
-  updateCommand,
-  verifySourceCommand,
-} from "./remote";
-import { scanCommand } from "./scan";
-import { selfUpdateCommand } from "./self-update";
-import { snippetsCommand } from "./snippets-cli";
-import { trustCommand, untrustCommand } from "./trust";
 import { parseJsonLenient } from "./util/json";
 
 type ListKind = "skills" | "mcp" | "agents" | "snippets" | "instructions";
@@ -1131,7 +1104,7 @@ async function graphCommand(argv: string[]) {
   }
 }
 
-function adaptersCommand(argv: string[]) {
+async function adaptersCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     console.log(
       renderPage({
@@ -1147,6 +1120,7 @@ function adaptersCommand(argv: string[]) {
     );
     return;
   }
+  const { getAllAdapters } = await import("./adapters");
   const adapters = getAllAdapters();
   if (!adapters.length) {
     console.log(
@@ -1186,28 +1160,35 @@ async function main(argv: string[]) {
 
   // Convenience: allow `fclt --show-duplicates` as shorthand for `fclt scan --show-duplicates`.
   if (cmd === "--show-duplicates") {
+    const { scanCommand } = await import("./scan");
     await scanCommand([cmd, ...rest]);
     return;
   }
 
   switch (cmd) {
     case "scan":
-      await scanCommand(rest);
+      await import("./scan").then(({ scanCommand }) => scanCommand(rest));
       return;
     case "audit":
-      await auditCommand(rest);
+      await import("./audit").then(({ auditCommand }) => auditCommand(rest));
       return;
     case "migrate":
-      await migrateCommand(rest);
+      await import("./migrate").then(({ migrateCommand }) =>
+        migrateCommand(rest)
+      );
       return;
     case "doctor":
-      await doctorCommand(rest);
+      await import("./doctor").then(({ doctorCommand }) => doctorCommand(rest));
       return;
     case "consolidate":
-      await consolidateCommand(rest);
+      await import("./consolidate").then(({ consolidateCommand }) =>
+        consolidateCommand(rest)
+      );
       return;
     case "index":
-      await indexCommand(rest);
+      await import("./index-builder").then(({ indexCommand }) =>
+        indexCommand(rest)
+      );
       return;
     case "list":
       await listCommand(rest);
@@ -1222,65 +1203,91 @@ async function main(argv: string[]) {
       await graphCommand(rest);
       return;
     case "ai":
-      await aiCommand(rest);
+      await import("./ai").then(({ aiCommand }) => aiCommand(rest));
       return;
     case "adapters":
       await adaptersCommand(rest);
       return;
     case "trust":
-      await trustCommand(rest);
+      await import("./trust").then(({ trustCommand }) => trustCommand(rest));
       return;
     case "untrust":
-      await untrustCommand(rest);
+      await import("./trust").then(({ untrustCommand }) =>
+        untrustCommand(rest)
+      );
       return;
     case "manage":
-      await manageCommand(rest);
+      await import("./manage").then(({ manageCommand }) => manageCommand(rest));
       return;
     case "unmanage":
-      await unmanageCommand(rest);
+      await import("./manage").then(({ unmanageCommand }) =>
+        unmanageCommand(rest)
+      );
       return;
     case "managed":
-      await managedCommand(rest);
+      await import("./manage").then(({ managedCommand }) =>
+        managedCommand(rest)
+      );
       return;
     case "enable":
-      await enableCommand(rest);
+      await import("./enable-disable").then(({ enableCommand }) =>
+        enableCommand(rest)
+      );
       return;
     case "disable":
-      await disableCommand(rest);
+      await import("./enable-disable").then(({ disableCommand }) =>
+        disableCommand(rest)
+      );
       return;
     case "sync":
-      await syncCommand(rest);
+      await import("./manage").then(({ syncCommand }) => syncCommand(rest));
       return;
     case "autosync":
-      await autosyncCommand(rest);
+      await import("./autosync").then(({ autosyncCommand }) =>
+        autosyncCommand(rest)
+      );
       return;
     case "search":
-      await searchCommand(rest);
+      await import("./remote").then(({ searchCommand }) => searchCommand(rest));
       return;
     case "install":
-      await installCommand(rest);
+      await import("./remote").then(({ installCommand }) =>
+        installCommand(rest)
+      );
       return;
     case "update":
       if (rest.includes("--self")) {
-        await selfUpdateCommand(rest.filter((arg) => arg !== "--self"));
+        await import("./self-update").then(({ selfUpdateCommand }) =>
+          selfUpdateCommand(rest.filter((arg) => arg !== "--self"))
+        );
         return;
       }
-      await updateCommand(rest);
+      await import("./remote").then(({ updateCommand }) => updateCommand(rest));
       return;
     case "self-update":
-      await selfUpdateCommand(rest);
+      await import("./self-update").then(({ selfUpdateCommand }) =>
+        selfUpdateCommand(rest)
+      );
       return;
     case "verify-source":
-      await verifySourceCommand(rest);
+      await import("./remote").then(({ verifySourceCommand }) =>
+        verifySourceCommand(rest)
+      );
       return;
     case "templates":
-      await templatesCommand(rest);
+      await import("./remote").then(({ templatesCommand }) =>
+        templatesCommand(rest)
+      );
       return;
     case "sources":
-      await sourcesCommand(rest);
+      await import("./remote").then(({ sourcesCommand }) =>
+        sourcesCommand(rest)
+      );
       return;
     case "snippets":
-      await snippetsCommand(rest);
+      await import("./snippets-cli").then(({ snippetsCommand }) =>
+        snippetsCommand(rest)
+      );
       return;
     default:
       console.error(`Unknown command: ${cmd}`);
