@@ -1171,7 +1171,15 @@ describe("syncManagedTools", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@project/instructions/WRITING.md"\n'
+      [
+        "version = 1",
+        "",
+        "[refs]",
+        'writing_rule = "@project/instructions/WRITING.md"',
+        "",
+        "[project_sync.codex]",
+        'agents = ["alpha"]',
+      ].join("\n")
     );
     await Bun.write(
       join(rootDir, "instructions", "WRITING.md"),
@@ -1227,6 +1235,63 @@ describe("syncManagedTools", () => {
       ).exists()
     ).toBe(false);
     expect(await Bun.file(join(projectRoot, "plugins")).exists()).toBe(false);
+  });
+
+  it("does not sync global skills into project-managed codex without explicit opt-in", async () => {
+    const home = await createTempDir();
+    const globalRoot = join(home, ".ai");
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(globalRoot, "skills", "global-alpha"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(globalRoot, "skills", "global-alpha", "SKILL.md"),
+      "---\ndescription: Global alpha\n---\n\n# Global alpha\n"
+    );
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    expect(
+      await Bun.file(
+        join(projectRoot, ".agents", "skills", "global-alpha", "SKILL.md")
+      ).exists()
+    ).toBe(false);
+  });
+
+  it("can explicitly sync allowlisted skills into project-managed codex", async () => {
+    const home = await createTempDir();
+    const globalRoot = join(home, ".ai");
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(globalRoot, "skills", "global-alpha"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(globalRoot, "skills", "global-alpha", "SKILL.md"),
+      "---\ndescription: Global alpha\n---\n\n# Global alpha\n"
+    );
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[project_sync.codex]\nskills = ["global-alpha"]\n'
+    );
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    const skillLink = join(projectRoot, ".agents", "skills", "global-alpha");
+    const skillStat = await lstat(skillLink);
+    expect(skillStat.isSymbolicLink()).toBe(true);
+    expect(await readlink(skillLink)).toBe(
+      join(globalRoot, "skills", "global-alpha")
+    );
   });
 
   it("reconciles rendered codex agents on sync", async () => {

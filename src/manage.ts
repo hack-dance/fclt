@@ -44,6 +44,7 @@ import {
   legacyFacultStateDirForRoot,
   projectRootFromAiRoot,
 } from "./paths";
+import { loadProjectToolSyncPolicy } from "./project-sync";
 
 export interface ManagedToolState {
   tool: string;
@@ -860,6 +861,7 @@ async function loadEnabledSkillEntries(args: {
   tool: string;
 }): Promise<{ name: string; path: string }[]> {
   const index = await loadMergedIndex(args.homeDir, args.rootDir);
+  const projectPolicy = await loadProjectToolSyncPolicy(args);
   const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
     args.rootDir,
     args.homeDir
@@ -881,11 +883,24 @@ async function loadEnabledSkillEntries(args: {
     ) {
       continue;
     }
+    if (
+      projectPolicy &&
+      !(
+        projectPolicy.skills.includes("*") ||
+        projectPolicy.skills.includes(name)
+      )
+    ) {
+      continue;
+    }
     out.push({ name, path: skill.path });
   }
 
   if (out.length > 0) {
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  if (projectPolicy) {
+    return [];
   }
 
   return (await listSkillDirs(join(args.rootDir, "skills"))).map((name) => ({
@@ -897,8 +912,10 @@ async function loadEnabledSkillEntries(args: {
 async function loadManagedAgentEntries(args: {
   homeDir: string;
   rootDir: string;
+  tool: string;
 }): Promise<{ name: string; sourcePath: string; raw: string }[]> {
   const index = await loadMergedIndex(args.homeDir, args.rootDir);
+  const projectPolicy = await loadProjectToolSyncPolicy(args);
   const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
     args.rootDir,
     args.homeDir
@@ -914,6 +931,15 @@ async function loadManagedAgentEntries(args: {
     ) {
       continue;
     }
+    if (
+      projectPolicy &&
+      !(
+        projectPolicy.agents.includes("*") ||
+        projectPolicy.agents.includes(name)
+      )
+    ) {
+      continue;
+    }
     const raw = await readTextIfExists(agent.path);
     if (raw == null) {
       continue;
@@ -923,6 +949,10 @@ async function loadManagedAgentEntries(args: {
 
   if (out.length > 0) {
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  if (projectPolicy) {
+    return [];
   }
 
   return await loadCanonicalAgents(args.rootDir);
@@ -944,7 +974,7 @@ async function planAgentFileChanges({
   contents: Map<string, string>;
   sources: Map<string, string>;
 }> {
-  const agents = await loadManagedAgentEntries({ homeDir, rootDir });
+  const agents = await loadManagedAgentEntries({ homeDir, rootDir, tool });
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
@@ -1151,17 +1181,33 @@ function canonicalServerToToolConfig(server: unknown): unknown {
   return out;
 }
 
-function filterServersForTool(
-  servers: Record<string, unknown>,
-  tool: string
-): Record<string, unknown> {
+async function filterServersForTool(args: {
+  homeDir: string;
+  rootDir: string;
+  servers: Record<string, unknown>;
+  tool: string;
+}): Promise<Record<string, unknown>> {
+  const projectPolicy = await loadProjectToolSyncPolicy({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    tool: args.tool,
+  });
   const out: Record<string, unknown> = {};
-  for (const [name, cfg] of Object.entries(servers)) {
+  for (const [name, cfg] of Object.entries(args.servers)) {
     if (isPlainObject(cfg)) {
       const enabledFor = cfg.enabledFor;
-      if (Array.isArray(enabledFor) && !enabledFor.includes(tool)) {
+      if (Array.isArray(enabledFor) && !enabledFor.includes(args.tool)) {
         continue;
       }
+    }
+    if (
+      projectPolicy &&
+      !(
+        projectPolicy.mcpServers.includes("*") ||
+        projectPolicy.mcpServers.includes(name)
+      )
+    ) {
+      continue;
     }
     out[name] = canonicalServerToToolConfig(cfg);
   }
@@ -2224,10 +2270,12 @@ async function syncSkillSymlinks({
 }
 
 async function planMcpWrite({
+  homeDir,
   mcpConfigPath,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
@@ -2235,7 +2283,12 @@ async function planMcpWrite({
   const { servers } = await loadCanonicalMcpState(rootDir, {
     includeLocal: true,
   });
-  const filtered = filterServersForTool(servers, tool);
+  const filtered = await filterServersForTool({
+    homeDir,
+    rootDir,
+    servers,
+    tool,
+  });
   const contents = `${JSON.stringify({ mcpServers: filtered }, null, 2)}\n`;
 
   if (!(await fileExists(mcpConfigPath))) {
@@ -2250,17 +2303,19 @@ async function planMcpWrite({
 }
 
 async function syncMcpConfig({
+  homeDir,
   mcpConfigPath,
   rootDir,
   tool,
   dryRun,
 }: {
+  homeDir: string;
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
   dryRun?: boolean;
 }): Promise<{ needsWrite: boolean }> {
-  const plan = await planMcpWrite({ mcpConfigPath, rootDir, tool });
+  const plan = await planMcpWrite({ homeDir, mcpConfigPath, rootDir, tool });
   if (dryRun) {
     return { needsWrite: plan.needsWrite };
   }
@@ -2272,10 +2327,12 @@ async function syncMcpConfig({
 }
 
 async function writeToolMcpConfig({
+  homeDir,
   mcpConfigPath,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
@@ -2283,7 +2340,12 @@ async function writeToolMcpConfig({
   const { servers } = await loadCanonicalMcpState(rootDir, {
     includeLocal: true,
   });
-  const filtered = filterServersForTool(servers, tool);
+  const filtered = await filterServersForTool({
+    homeDir,
+    rootDir,
+    servers,
+    tool,
+  });
   await ensureDir(dirname(mcpConfigPath));
   await Bun.write(
     mcpConfigPath,
@@ -2669,6 +2731,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
 
   if (toolPaths.mcpConfig) {
     await writeToolMcpConfig({
+      homeDir: home,
       mcpConfigPath: toolPaths.mcpConfig,
       rootDir,
       tool,
@@ -3947,6 +4010,7 @@ async function syncManagedToolEntry({
 
   const mcpPlan = entry.mcpConfig
     ? await syncMcpConfig({
+        homeDir,
         mcpConfigPath: entry.mcpConfig,
         rootDir,
         tool,

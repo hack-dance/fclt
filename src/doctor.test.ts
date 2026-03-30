@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { manageTool } from "./manage";
 import { facultAiIndexPath } from "./paths";
 
 async function writeJson(p: string, data: unknown) {
@@ -205,6 +206,101 @@ test("doctor --repair migrates legacy codex skill and plugin layouts into .agent
       "utf8"
     );
     expect(marketplace).toContain('"path": "./plugins/autoresearch"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor --repair materializes explicit project sync config for managed project roots", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-project-sync-"));
+  const projectRoot = join(dir, "work", "repo");
+  const aiRoot = join(projectRoot, ".ai");
+
+  try {
+    await mkdir(join(aiRoot, "skills", "project-skill"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, "skills", "project-skill", "SKILL.md"),
+      "---\ndescription: Project skill\n---\n\n# Project skill\n"
+    );
+
+    await mkdir(join(aiRoot, "agents", "reviewer"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, "agents", "reviewer", "agent.toml"),
+      'name = "reviewer"\n'
+    );
+
+    await mkdir(join(aiRoot, "mcp"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, "mcp", "servers.json"),
+      JSON.stringify(
+        {
+          servers: {
+            "project-server": {
+              command: "node",
+              args: ["server.js"],
+            },
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    await Bun.write(join(aiRoot, "AGENTS.global.md"), "# Project docs\n");
+    await mkdir(join(aiRoot, "tools", "codex", "rules"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, "tools", "codex", "rules", "project.rules"),
+      "Project rules.\n"
+    );
+    await Bun.write(
+      join(aiRoot, "tools", "codex", "config.toml"),
+      'approval_policy = "never"\n'
+    );
+
+    await manageTool("codex", { homeDir: dir, rootDir: aiRoot });
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--repair", "--root", aiRoot],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("Materialized explicit project sync policy");
+
+    const config = Bun.TOML.parse(
+      await readFile(join(aiRoot, "config.local.toml"), "utf8")
+    ) as {
+      project_sync?: {
+        codex?: {
+          skills?: string[];
+          agents?: string[];
+          mcp_servers?: string[];
+          global_docs?: boolean;
+          tool_rules?: boolean;
+          tool_config?: boolean;
+        };
+      };
+    };
+
+    expect(config.project_sync?.codex?.skills).toEqual(["project-skill"]);
+    expect(config.project_sync?.codex?.agents).toEqual(["reviewer"]);
+    expect(config.project_sync?.codex?.mcp_servers).toEqual(["project-server"]);
+    expect(config.project_sync?.codex?.global_docs).toBe(true);
+    expect(config.project_sync?.codex?.tool_rules).toBe(true);
+    expect(config.project_sync?.codex?.tool_config).toBe(true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

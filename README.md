@@ -332,8 +332,25 @@ Recommended split:
 - `~/.ai/tools/<tool>/config.toml` or `<repo>/.ai/tools/<tool>/config.toml`: tracked tool defaults
 - `~/.ai/tools/<tool>/config.local.toml` or `<repo>/.ai/tools/<tool>/config.local.toml`: ignored, machine-local tool overrides merged after tracked tool config during sync
 - `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
+- `[project_sync.<tool>]`: explicit project-managed allowlist for assets that may render into repo-local tool outputs
 - `fclt sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
 - `fclt audit fix ...`: move inline MCP secrets from tracked canonical config into the local MCP overlay and re-sync managed tool configs
+
+For project-local `.ai` roots, tool sync is default-deny. Nothing flows into repo-local managed tool outputs unless the repo explicitly opts in. Use `config.toml` or `config.local.toml` under the project root:
+
+```toml
+version = 1
+
+[project_sync.codex]
+skills = ["hack-cli", "hack-tickets"]
+agents = ["review-operator"]
+mcp_servers = ["github"]
+global_docs = true
+tool_rules = true
+tool_config = true
+```
+
+That policy applies to project-managed tool renders, including assets inherited from the merged global index. If you want a global skill inside a repo-local managed Codex output, name it explicitly here. `fclt doctor --repair` can materialize repo-local project assets into `config.local.toml` for already-managed project roots.
 
 ### Snippets
 
