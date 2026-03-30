@@ -1198,9 +1198,10 @@ describe("syncManagedTools", () => {
       managedStatePathForRoot(home, rootDir),
       "utf8"
     );
-    expect(JSON.parse(managedRaw).tools.codex.agentsDir).toBe(
-      join(projectRoot, ".codex", "agents")
-    );
+    const managed = JSON.parse(managedRaw).tools.codex;
+    expect(managed.agentsDir).toBe(join(projectRoot, ".codex", "agents"));
+    expect(managed.pluginsDir).toBeUndefined();
+    expect(managed.pluginMarketplacePath).toBeUndefined();
     expect(
       await Bun.file(
         join(
@@ -1220,6 +1221,12 @@ describe("syncManagedTools", () => {
     expect(
       await Bun.file(join(projectRoot, ".codex", "AGENTS.md")).exists()
     ).toBe(false);
+    expect(
+      await Bun.file(
+        join(projectRoot, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
+    expect(await Bun.file(join(projectRoot, "plugins")).exists()).toBe(false);
   });
 
   it("reconciles rendered codex agents on sync", async () => {

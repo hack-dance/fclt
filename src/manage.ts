@@ -276,8 +276,10 @@ function defaultToolPaths(
       skillsDir: codexSkillsDir(home, rootDir),
       mcpConfig: toolBase(".codex", "mcp.json"),
       agentsDir: toolBase(".codex", "agents"),
-      pluginsDir: codexPluginsDir(home, rootDir),
-      pluginMarketplacePath: codexPluginMarketplacePath(home, rootDir),
+      pluginsDir: projectRoot ? undefined : codexPluginsDir(home, rootDir),
+      pluginMarketplacePath: projectRoot
+        ? undefined
+        : codexPluginMarketplacePath(home, rootDir),
       automationDir: homePath(home, ".codex", "automations"),
       toolHome: toolBase(".codex"),
       rulesDir: toolBase(".codex", "rules"),
@@ -3070,6 +3072,22 @@ async function repairManagedToolEntry(args: {
       next.pluginMarketplacePath = toolPaths.pluginMarketplacePath;
       changed = true;
     }
+  }
+
+  if (
+    tool === "codex" &&
+    !toolPaths.pluginsDir &&
+    !toolPaths.pluginMarketplacePath &&
+    (next.pluginsDir ||
+      next.pluginMarketplacePath ||
+      next.pluginsBackup ||
+      next.pluginMarketplaceBackup)
+  ) {
+    next.pluginsDir = undefined;
+    next.pluginMarketplacePath = undefined;
+    next.pluginsBackup = undefined;
+    next.pluginMarketplaceBackup = undefined;
+    changed = true;
   }
 
   if (toolPaths.toolHome && !next.toolHome) {

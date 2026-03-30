@@ -188,7 +188,7 @@ Useful AI behavior is composable. You need small reusable parts, a clean way to 
 - agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
 - skills such as `capability-evolution` and `project-operating-layer-design`
 
-Those built-in defaults become live when you manage a tool. Once you manage Codex, Claude, or Cursor, `fclt` renders the bundled docs, agents, and skills into that tool’s live files.
+Those built-in defaults become live when you manage a tool. Global tool management renders the bundled docs, agents, and skills into that tool’s live files. Project-local `.ai` roots do not sync the built-in operating-model layer unless you explicitly enable it.
 
 If you want to disable default built-in sync for one canonical root:
 
