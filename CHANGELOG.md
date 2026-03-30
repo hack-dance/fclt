@@ -1,3 +1,13 @@
+## [2.7.1](https://github.com/hack-dance/fclt/compare/v2.7.0...v2.7.1) (2026-03-30)
+
+### Bug Fixes
+
+* tighten project sync and codex plugin migration safety ([f897373](https://github.com/hack-dance/fclt/commit/f897373570bccd6801b92030c4009ba0ad6b8279))
+
+### Performance Improvements
+
+* lazy load CLI command modules ([c05b185](https://github.com/hack-dance/fclt/commit/c05b18581c62bc39f66dc9fae71873fcb624bcf3))
+
 ## [2.7.0](https://github.com/hack-dance/fclt/compare/v2.6.0...v2.7.0) (2026-03-26)
 
 ### Features
