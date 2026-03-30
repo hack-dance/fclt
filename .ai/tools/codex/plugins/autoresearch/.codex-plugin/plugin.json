@@ -1,0 +1,21 @@
+{
+  "name": "autoresearch",
+  "version": "0.1.0",
+  "description": "Codex-native benchmark-driven autoresearch workflows and finalization tools.",
+  "license": "MIT",
+  "keywords": ["autoresearch", "benchmarking", "optimization", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Autoresearch",
+    "shortDescription": "Benchmark-guided optimization workflows",
+    "longDescription": "Run repeated benchmark-driven optimization loops and split successful experiment branches into reviewable changes.",
+    "developerName": "Hack",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Use the autoresearch plugin to set up a benchmark-driven optimization loop in this repo.",
+      "Use the autoresearch plugin to finalize the current autoresearch branch into reviewable branches."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

@@ -30,6 +30,7 @@ import {
   facultStateDir,
   legacyExternalFacultStateDir,
   legacyFacultStateDirForRoot,
+  projectRootFromAiRoot,
 } from "./paths";
 
 function legacyDefaultRoot(home: string): string {
@@ -223,6 +224,89 @@ async function repairLegacyState(args: {
   return { changed, conflicts };
 }
 
+function normalizeCodexMarketplaceText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return text.endsWith("\n") ? text : `${text}\n`;
+    }
+    const plugins = Array.isArray((parsed as { plugins?: unknown[] }).plugins)
+      ? ((parsed as { plugins: unknown[] }).plugins ?? [])
+      : null;
+    if (plugins) {
+      (parsed as { plugins: unknown[] }).plugins = plugins.map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return entry;
+        }
+        const source =
+          "source" in entry &&
+          (entry as { source?: unknown }).source &&
+          typeof (entry as { source?: unknown }).source === "object" &&
+          !Array.isArray((entry as { source?: unknown }).source)
+            ? {
+                ...((entry as { source: Record<string, unknown> }).source ??
+                  {}),
+              }
+            : null;
+        if (
+          source?.source === "local" &&
+          typeof source.path === "string" &&
+          source.path.startsWith("./.codex/plugins/")
+        ) {
+          source.path = source.path.replace("./.codex/plugins/", "./plugins/");
+        }
+        return source
+          ? { ...(entry as Record<string, unknown>), source }
+          : entry;
+      });
+    }
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return text.endsWith("\n") ? text : `${text}\n`;
+  }
+}
+
+async function repairLegacyCodexAuthoringLayout(args: {
+  home: string;
+  rootDir: string;
+}): Promise<{ changed: boolean; conflicts: string[] }> {
+  const liveRoot = projectRootFromAiRoot(args.rootDir, args.home) ?? args.home;
+  const legacySkillsDir = join(liveRoot, ".codex", "skills");
+  const preferredSkillsDir = join(liveRoot, ".agents", "skills");
+  const legacyPluginsDir = join(liveRoot, ".codex", "plugins");
+  const preferredPluginsDir = join(liveRoot, "plugins");
+  const marketplacePath = join(
+    liveRoot,
+    ".agents",
+    "plugins",
+    "marketplace.json"
+  );
+  const conflicts: string[] = [];
+  let changed = false;
+
+  if (await moveMissingTree(legacySkillsDir, preferredSkillsDir, conflicts)) {
+    changed = true;
+  }
+
+  if (await moveMissingTree(legacyPluginsDir, preferredPluginsDir, conflicts)) {
+    changed = true;
+  }
+
+  try {
+    const current = await readFile(marketplacePath, "utf8");
+    const normalized = normalizeCodexMarketplaceText(current);
+    if (normalized !== current) {
+      await mkdir(dirname(marketplacePath), { recursive: true });
+      await writeFile(marketplacePath, normalized, "utf8");
+      changed = true;
+    }
+  } catch {
+    // Ignore missing or unreadable marketplace files.
+  }
+
+  return { changed, conflicts };
+}
+
 function printHelp() {
   console.log(`fclt doctor — inspect and repair local fclt state
 
@@ -258,6 +342,8 @@ export async function doctorCommand(argv: string[]) {
     let stateRepaired = false;
     let stateConflicts: string[] = [];
     let autosyncRepaired = false;
+    let codexAuthoringRepaired = false;
+    let codexAuthoringConflicts: string[] = [];
     if (repair) {
       rootConfigRepaired = await repairLegacyRootConfig(home);
     }
@@ -266,6 +352,12 @@ export async function doctorCommand(argv: string[]) {
       stateRepaired = stateRepair.changed;
       stateConflicts = stateRepair.conflicts;
       autosyncRepaired = await repairAutosyncServices(home, rootDir);
+      const authoringRepair = await repairLegacyCodexAuthoringLayout({
+        home,
+        rootDir,
+      });
+      codexAuthoringRepaired = authoringRepair.changed;
+      codexAuthoringConflicts = authoringRepair.conflicts;
     }
     const generated = facultAiIndexPath(home, rootDir);
     const generatedGraph = facultAiGraphPath(home, rootDir);
@@ -299,6 +391,17 @@ export async function doctorCommand(argv: string[]) {
     }
     if (autosyncRepaired) {
       console.log("Repaired autosync launch agent configuration.");
+    }
+    if (codexAuthoringRepaired) {
+      console.log(
+        "Migrated legacy Codex authoring paths to .agents/skills, .agents/plugins/marketplace.json, and plugins/."
+      );
+    }
+    if (codexAuthoringConflicts.length) {
+      console.log("Skipped conflicting Codex authoring paths:");
+      for (const conflict of codexAuthoringConflicts) {
+        console.log(`- ${conflict}`);
+      }
     }
 
     if (result.source === "generated") {

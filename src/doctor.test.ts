@@ -103,3 +103,109 @@ test("doctor --repair updates legacy root config to ~/.ai when present", async (
     await rm(dir, { recursive: true, force: true });
   }
 }, 10_000);
+
+test("doctor --repair migrates legacy codex skill and plugin layouts into .agents and plugins", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-codex-layout-"));
+  const aiRoot = join(dir, ".ai");
+
+  try {
+    await mkdir(join(aiRoot, "mcp"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, "mcp", "servers.json"),
+      JSON.stringify({ servers: {} }, null, 2)
+    );
+
+    await mkdir(join(dir, ".codex", "skills", "legacy-skill"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(dir, ".codex", "skills", "legacy-skill", "SKILL.md"),
+      "# Legacy Skill\n"
+    );
+
+    await mkdir(
+      join(dir, ".codex", "plugins", "autoresearch", ".codex-plugin"),
+      {
+        recursive: true,
+      }
+    );
+    await Bun.write(
+      join(
+        dir,
+        ".codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      JSON.stringify({ name: "autoresearch", version: "0.1.0" }, null, 2)
+    );
+
+    await mkdir(join(dir, ".agents", "plugins"), { recursive: true });
+    await Bun.write(
+      join(dir, ".agents", "plugins", "marketplace.json"),
+      JSON.stringify(
+        {
+          name: "local",
+          interface: { displayName: "Local Plugins" },
+          plugins: [
+            {
+              name: "autoresearch",
+              source: {
+                source: "local",
+                path: "./.codex/plugins/autoresearch",
+              },
+              policy: {
+                installation: "AVAILABLE",
+                authentication: "ON_INSTALL",
+              },
+              category: "Productivity",
+            },
+          ],
+        },
+        null,
+        2
+      )
+    );
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--repair"],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("Migrated legacy Codex authoring paths");
+
+    expect(
+      await Bun.file(
+        join(dir, ".agents", "skills", "legacy-skill", "SKILL.md")
+      ).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(
+        join(dir, "plugins", "autoresearch", ".codex-plugin", "plugin.json")
+      ).exists()
+    ).toBe(true);
+
+    const marketplace = await readFile(
+      join(dir, ".agents", "plugins", "marketplace.json"),
+      "utf8"
+    );
+    expect(marketplace).toContain('"path": "./plugins/autoresearch"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
