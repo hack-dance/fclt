@@ -10,7 +10,7 @@ export const codexAdapter: ToolAdapter = {
   detectVersion: detectExplicitVersion,
   getDefaultPaths: () => ({
     mcp: "~/.codex/mcp.json",
-    skills: "~/.codex/skills",
+    skills: ["~/.agents/skills", "~/.codex/skills"],
     agents: "~/.codex/agents",
     config: "~/.config/openai/codex.json",
   }),

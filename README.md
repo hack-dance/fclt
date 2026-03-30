@@ -125,6 +125,12 @@ fclt sync
 
 Use `--dry-run` first if the live tool already has local content. If the tool already contains skills, agents, rules, docs, config, or MCP definitions, rerun with `--adopt-existing` and add `--existing-conflicts keep-canonical|keep-existing` if names collide.
 
+Codex path policy:
+- skills render to `.agents/skills`
+- local plugin marketplaces render to `.agents/plugins/marketplace.json`
+- local plugin bundles render to `plugins/`
+- Codex runtime config, rules, agents, and automations still render under `.codex/`
+
 If you run these commands inside a repo that has `<repo>/.ai`, `fclt` targets the project-local canonical store and repo-local tool outputs by default.
 
 ### 5. Inspect and evolve
@@ -247,6 +253,8 @@ Typical layout:
   tools/
     codex/
       config.toml
+      plugins/
+        marketplace.json
       rules/
 <repo>/
   .ai/
@@ -261,6 +269,8 @@ Typical layout:
         index.json
         graph.json
   .codex/
+  .agents/
+  plugins/
   .claude/
 ```
 
@@ -753,8 +763,11 @@ Not as a first-party `fclt mcp serve` runtime.
 
 Yes. The core model now includes:
 - canonical personal AI source in `~/.ai`
-- rendered managed outputs in tool homes such as `~/.codex`
+- rendered managed outputs in tool homes such as `~/.codex`, `~/.agents`, and `~/plugins`
 - global instruction docs such as `AGENTS.global.md`, rendered by default into `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and `~/.cursor/AGENTS.md`
+- Codex-authored skills in `~/.agents/skills`
+- Codex local plugin marketplaces in `~/.agents/plugins/marketplace.json`
+- Codex local plugin bundles in `~/plugins/<plugin-name>`
 - tool-native configs such as `~/.codex/config.toml`
 - tool-native rule files such as `~/.codex/rules/*.rules`
 

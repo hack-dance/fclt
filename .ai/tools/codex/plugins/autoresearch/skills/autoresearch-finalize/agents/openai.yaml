@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autoresearch Finalize"
+  short_description: "Split autoresearch work into reviewable branches"
+  default_prompt: "Use $autoresearch-finalize to turn the current autoresearch branch into clean reviewable branches."

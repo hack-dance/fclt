@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autoresearch"
+  short_description: "Benchmark-guided autonomous optimization loop"
+  default_prompt: "Use $autoresearch to set up and run a benchmark-driven optimization loop in this repo."
