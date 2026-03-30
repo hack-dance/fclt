@@ -125,6 +125,12 @@ fclt sync
 
 Use `--dry-run` first if the live tool already has local content. If the tool already contains skills, agents, rules, docs, config, or MCP definitions, rerun with `--adopt-existing` and add `--existing-conflicts keep-canonical|keep-existing` if names collide.
 
+Codex path policy:
+- skills render to `.agents/skills`
+- local plugin marketplaces render to `.agents/plugins/marketplace.json`
+- local plugin bundles render to `plugins/`
+- Codex runtime config, rules, agents, and automations still render under `.codex/`
+
 If you run these commands inside a repo that has `<repo>/.ai`, `fclt` targets the project-local canonical store and repo-local tool outputs by default.
 
 ### 5. Inspect and evolve
@@ -182,7 +188,7 @@ Useful AI behavior is composable. You need small reusable parts, a clean way to 
 - agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
 - skills such as `capability-evolution` and `project-operating-layer-design`
 
-Those built-in defaults become live when you manage a tool. Once you manage Codex, Claude, or Cursor, `fclt` renders the bundled docs, agents, and skills into that tool’s live files.
+Those built-in defaults become live when you manage a tool. Global tool management renders the bundled docs, agents, and skills into that tool’s live files. Project-local `.ai` roots do not sync the built-in operating-model layer unless you explicitly enable it.
 
 If you want to disable default built-in sync for one canonical root:
 
@@ -247,6 +253,8 @@ Typical layout:
   tools/
     codex/
       config.toml
+      plugins/
+        marketplace.json
       rules/
 <repo>/
   .ai/
@@ -261,6 +269,8 @@ Typical layout:
         index.json
         graph.json
   .codex/
+  .agents/
+  plugins/
   .claude/
 ```
 
@@ -322,8 +332,25 @@ Recommended split:
 - `~/.ai/tools/<tool>/config.toml` or `<repo>/.ai/tools/<tool>/config.toml`: tracked tool defaults
 - `~/.ai/tools/<tool>/config.local.toml` or `<repo>/.ai/tools/<tool>/config.local.toml`: ignored, machine-local tool overrides merged after tracked tool config during sync
 - `[builtin].sync_defaults = false`: disable builtin default sync/materialization for this root
+- `[project_sync.<tool>]`: explicit project-managed allowlist for assets that may render into repo-local tool outputs
 - `fclt sync --builtin-conflicts overwrite`: allow packaged builtin defaults to overwrite locally modified generated targets
 - `fclt audit fix ...`: move inline MCP secrets from tracked canonical config into the local MCP overlay and re-sync managed tool configs
+
+For project-local `.ai` roots, tool sync is default-deny. Nothing flows into repo-local managed tool outputs unless the repo explicitly opts in. Use `config.toml` or `config.local.toml` under the project root:
+
+```toml
+version = 1
+
+[project_sync.codex]
+skills = ["hack-cli", "hack-tickets"]
+agents = ["review-operator"]
+mcp_servers = ["github"]
+global_docs = true
+tool_rules = true
+tool_config = true
+```
+
+That policy applies to project-managed tool renders, including assets inherited from the merged global index. If you want a global skill inside a repo-local managed Codex output, name it explicitly here. `fclt doctor --repair` can materialize repo-local project assets into `config.local.toml` for already-managed project roots.
 
 ### Snippets
 
@@ -753,8 +780,11 @@ Not as a first-party `fclt mcp serve` runtime.
 
 Yes. The core model now includes:
 - canonical personal AI source in `~/.ai`
-- rendered managed outputs in tool homes such as `~/.codex`
+- rendered managed outputs in tool homes such as `~/.codex`, `~/.agents`, and `~/plugins`
 - global instruction docs such as `AGENTS.global.md`, rendered by default into `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and `~/.cursor/AGENTS.md`
+- Codex-authored skills in `~/.agents/skills`
+- Codex local plugin marketplaces in `~/.agents/plugins/marketplace.json`
+- Codex local plugin bundles in `~/plugins/<plugin-name>`
 - tool-native configs such as `~/.codex/config.toml`
 - tool-native rule files such as `~/.codex/rules/*.rules`
 

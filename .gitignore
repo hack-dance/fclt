@@ -43,11 +43,20 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .vscode/
 .cursor/
 .claude/
+.ai/
+.agents/
+/plugins/
 
 # locally managed facult canonical artifacts (can include secrets)
+.ai/.facult/
 .ai/mcp/*.local.json
+.codex/AGENTS.md
+.codex/agents/
+.codex/automations/
 .codex/config.toml
 .codex/index.json
+.codex/mcp.json
+.codex/mcp.json.bak*
 .codex/mcp/
 .codex/skills/*
 !.codex/skills/hack-cli/
@@ -61,3 +70,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # internal planning/docs (local only)
 _internal/
 docs/plans/
+
+# local autoresearch session artifacts
+/autoresearch.md
+/autoresearch.sh
+/autoresearch.checks.sh
+/autoresearch.ideas.md
+/autoresearch.jsonl

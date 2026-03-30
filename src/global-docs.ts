@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { renderCanonicalText } from "./agents";
 import { builtinSyncDefaultsEnabled, facultBuiltinPackRoot } from "./builtin";
 import { projectRootFromAiRoot } from "./paths";
+import { projectSyncAllowsToolSurface } from "./project-sync";
 import { renderSnippetText } from "./snippets";
 
 export interface GlobalDocPlan {
@@ -156,13 +157,24 @@ function stringifyTomlObject(obj: Record<string, unknown>): string {
 }
 
 async function listGlobalDocSources(args: {
+  homeDir: string;
   rootDir: string;
   tool: string;
   toolHome: string;
 }): Promise<SourceTarget[]> {
-  const { rootDir, tool, toolHome } = args;
+  const { homeDir, rootDir, tool, toolHome } = args;
+  if (
+    !(await projectSyncAllowsToolSurface({
+      homeDir,
+      rootDir,
+      tool,
+      surface: "globalDocs",
+    }))
+  ) {
+    return [];
+  }
   const targets = globalDocTargetPaths(tool, toolHome);
-  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(rootDir);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(rootDir, homeDir);
 
   const candidates: SourceTarget[] = [];
   const base = join(rootDir, "AGENTS.global.md");
@@ -309,9 +321,20 @@ export async function syncToolGlobalDocs(args: {
 }
 
 async function listToolRules(args: {
+  homeDir: string;
   rootDir: string;
   tool: string;
 }): Promise<{ sourcePath: string; targetPath: string }[]> {
+  if (
+    !(await projectSyncAllowsToolSurface({
+      homeDir: args.homeDir,
+      rootDir: args.rootDir,
+      tool: args.tool,
+      surface: "toolRules",
+    }))
+  ) {
+    return [];
+  }
   const sourceRoot = join(args.rootDir, "tools", args.tool, "rules");
   const entries = await readdir(sourceRoot, { withFileTypes: true }).catch(
     () => [] as import("node:fs").Dirent[]
@@ -425,6 +448,24 @@ export async function planToolConfigSync(args: {
   existingConfigPath?: string;
   previouslyManaged?: boolean;
 }): Promise<ToolConfigPlan> {
+  if (
+    !(await projectSyncAllowsToolSurface({
+      homeDir: args.homeDir,
+      rootDir: args.rootDir,
+      tool: args.tool,
+      surface: "toolConfig",
+    }))
+  ) {
+    return {
+      targetPath: args.toolConfigPath,
+      write: false,
+      remove: false,
+      contents: null,
+      sourcePath: join(args.rootDir, "tools", args.tool, "config.toml"),
+      managedConfig: false,
+    };
+  }
+
   const sourcePath = join(args.rootDir, "tools", args.tool, "config.toml");
   const localSourcePath = join(
     args.rootDir,

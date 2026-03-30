@@ -218,6 +218,114 @@ describe("managed state", () => {
     );
   });
 
+  it("renders codex plugins into plugins/ and writes the .agents marketplace", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin"
+      ),
+      {
+        recursive: true,
+      }
+    );
+    await Bun.write(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      JSON.stringify(
+        {
+          name: "autoresearch",
+          version: "0.1.0",
+          interface: { displayName: "Autoresearch" },
+        },
+        null,
+        2
+      )
+    );
+    await mkdir(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        "skills",
+        "autoresearch"
+      ),
+      { recursive: true }
+    );
+    await Bun.write(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        "skills",
+        "autoresearch",
+        "SKILL.md"
+      ),
+      "# Autoresearch\n"
+    );
+    await Bun.write(
+      join(rootDir, "tools", "codex", "plugins", "marketplace.json"),
+      JSON.stringify(
+        {
+          name: "local",
+          interface: { displayName: "Local Plugins" },
+          plugins: [
+            {
+              name: "autoresearch",
+              source: { source: "local", path: "./plugins/autoresearch" },
+              policy: {
+                installation: "AVAILABLE",
+                authentication: "ON_INSTALL",
+              },
+              category: "Productivity",
+            },
+          ],
+        },
+        null,
+        2
+      )
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    const managed = await loadManagedState(home);
+    expect(managed.tools.codex?.pluginsDir).toBe(join(home, "plugins"));
+    expect(managed.tools.codex?.pluginMarketplacePath).toBe(
+      join(home, ".agents", "plugins", "marketplace.json")
+    );
+
+    const marketplace = await readFile(
+      join(home, ".agents", "plugins", "marketplace.json"),
+      "utf8"
+    );
+    expect(marketplace).toContain('"path": "./plugins/autoresearch"');
+
+    const livePluginManifest = await readFile(
+      join(home, "plugins", "autoresearch", ".codex-plugin", "plugin.json"),
+      "utf8"
+    );
+    expect(livePluginManifest).toContain('"name": "autoresearch"');
+  });
+
   it("syncs builtin operating-model skills, agents, and global docs by default", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
@@ -228,7 +336,7 @@ describe("managed state", () => {
       rootDir,
     });
 
-    const skillLink = join(home, ".codex", "skills", "capability-evolution");
+    const skillLink = join(home, ".agents", "skills", "capability-evolution");
     const skillStat = await lstat(skillLink);
     expect(skillStat.isSymbolicLink()).toBe(true);
     expect(await readlink(skillLink)).toContain(
@@ -272,7 +380,7 @@ describe("managed state", () => {
 
     expect(
       await Bun.file(
-        join(home, ".codex", "skills", "capability-evolution", "SKILL.md")
+        join(home, ".agents", "skills", "capability-evolution", "SKILL.md")
       ).exists()
     ).toBe(false);
     expect(
@@ -283,6 +391,26 @@ describe("managed state", () => {
     expect(await Bun.file(join(home, ".codex", "AGENTS.md")).exists()).toBe(
       false
     );
+  });
+
+  it("does not create codex plugin output dirs when no canonical plugin content exists", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    expect(await Bun.file(join(home, "plugins")).exists()).toBe(false);
+    expect(
+      await Bun.file(
+        join(home, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
   });
 
   it("preserves local edits on builtin-backed global docs unless overwrite is requested", async () => {
@@ -487,7 +615,7 @@ describe("manage/unmanage", () => {
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
 
-    const toolSkills = join(home, ".codex", "skills");
+    const toolSkills = join(home, ".agents", "skills");
     await mkdir(join(toolSkills, "legacy-skill"), { recursive: true });
     await Bun.write(
       join(toolSkills, "legacy-skill", "SKILL.md"),
@@ -1063,7 +1191,15 @@ describe("syncManagedTools", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@project/instructions/WRITING.md"\n'
+      [
+        "version = 1",
+        "",
+        "[refs]",
+        'writing_rule = "@project/instructions/WRITING.md"',
+        "",
+        "[project_sync.codex]",
+        'agents = ["alpha"]',
+      ].join("\n")
     );
     await Bun.write(
       join(rootDir, "instructions", "WRITING.md"),
@@ -1090,8 +1226,134 @@ describe("syncManagedTools", () => {
       managedStatePathForRoot(home, rootDir),
       "utf8"
     );
-    expect(JSON.parse(managedRaw).tools.codex.agentsDir).toBe(
-      join(projectRoot, ".codex", "agents")
+    const managed = JSON.parse(managedRaw).tools.codex;
+    expect(managed.agentsDir).toBe(join(projectRoot, ".codex", "agents"));
+    expect(managed.pluginsDir).toBeUndefined();
+    expect(managed.pluginMarketplacePath).toBeUndefined();
+    expect(
+      await Bun.file(
+        join(
+          projectRoot,
+          ".agents",
+          "skills",
+          "capability-evolution",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        join(projectRoot, ".codex", "agents", "writeback-curator.toml")
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(join(projectRoot, ".codex", "AGENTS.md")).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        join(projectRoot, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
+    expect(await Bun.file(join(projectRoot, "plugins")).exists()).toBe(false);
+  });
+
+  it("ignores repo-local codex plugin payloads when managing a project root", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await mkdir(
+      join(projectRoot, ".codex", "plugins", "legacy-plugin", ".codex-plugin"),
+      {
+        recursive: true,
+      }
+    );
+    await Bun.write(
+      join(
+        projectRoot,
+        ".codex",
+        "plugins",
+        "legacy-plugin",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      JSON.stringify({ name: "legacy-plugin", version: "0.1.0" }, null, 2)
+    );
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    expect(
+      await Bun.file(
+        join(
+          rootDir,
+          "tools",
+          "codex",
+          "plugins",
+          "legacy-plugin",
+          ".codex-plugin",
+          "plugin.json"
+        )
+      ).exists()
+    ).toBe(false);
+    expect(await Bun.file(join(projectRoot, "plugins")).exists()).toBe(false);
+  });
+
+  it("does not sync global skills into project-managed codex without explicit opt-in", async () => {
+    const home = await createTempDir();
+    const globalRoot = join(home, ".ai");
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(globalRoot, "skills", "global-alpha"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(globalRoot, "skills", "global-alpha", "SKILL.md"),
+      "---\ndescription: Global alpha\n---\n\n# Global alpha\n"
+    );
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    expect(
+      await Bun.file(
+        join(projectRoot, ".agents", "skills", "global-alpha", "SKILL.md")
+      ).exists()
+    ).toBe(false);
+  });
+
+  it("can explicitly sync allowlisted skills into project-managed codex", async () => {
+    const home = await createTempDir();
+    const globalRoot = join(home, ".ai");
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(globalRoot, "skills", "global-alpha"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(globalRoot, "skills", "global-alpha", "SKILL.md"),
+      "---\ndescription: Global alpha\n---\n\n# Global alpha\n"
+    );
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[project_sync.codex]\nskills = ["global-alpha"]\n'
+    );
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    const skillLink = join(projectRoot, ".agents", "skills", "global-alpha");
+    const skillStat = await lstat(skillLink);
+    expect(skillStat.isSymbolicLink()).toBe(true);
+    expect(await readlink(skillLink)).toBe(
+      join(globalRoot, "skills", "global-alpha")
     );
   });
 
@@ -1326,6 +1588,59 @@ describe("syncManagedTools", () => {
       join(rootDir, "tools", "codex", "rules", "default.rules"),
       'prefix_rule(pattern = ["gh"], decision = "prompt")\n'
     );
+    await mkdir(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin"
+      ),
+      { recursive: true }
+    );
+    await Bun.write(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      JSON.stringify(
+        {
+          name: "autoresearch",
+          version: "0.1.0",
+          interface: { displayName: "Autoresearch" },
+        },
+        null,
+        2
+      )
+    );
+    await Bun.write(
+      join(rootDir, "tools", "codex", "plugins", "marketplace.json"),
+      JSON.stringify(
+        {
+          name: "local",
+          interface: { displayName: "Local Plugins" },
+          plugins: [
+            {
+              name: "autoresearch",
+              source: { source: "local", path: "./plugins/autoresearch" },
+              policy: {
+                installation: "AVAILABLE",
+                authentication: "ON_INSTALL",
+              },
+              category: "Productivity",
+            },
+          ],
+        },
+        null,
+        2
+      )
+    );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
 
@@ -1437,6 +1752,59 @@ describe("syncManagedTools", () => {
       join(rootDir, "tools", "codex", "rules", "default.rules"),
       'prefix_rule(pattern = ["gh"], decision = "prompt")\n'
     );
+    await mkdir(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin"
+      ),
+      { recursive: true }
+    );
+    await Bun.write(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      JSON.stringify(
+        {
+          name: "autoresearch",
+          version: "0.1.0",
+          interface: { displayName: "Autoresearch" },
+        },
+        null,
+        2
+      )
+    );
+    await Bun.write(
+      join(rootDir, "tools", "codex", "plugins", "marketplace.json"),
+      JSON.stringify(
+        {
+          name: "local",
+          interface: { displayName: "Local Plugins" },
+          plugins: [
+            {
+              name: "autoresearch",
+              source: { source: "local", path: "./plugins/autoresearch" },
+              policy: {
+                installation: "AVAILABLE",
+                authentication: "ON_INSTALL",
+              },
+              category: "Productivity",
+            },
+          ],
+        },
+        null,
+        2
+      )
+    );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
 
@@ -1477,6 +1845,13 @@ describe("syncManagedTools", () => {
     expect(repairedState.tools.codex?.rulesDir).toBe(
       join(home, ".codex", "rules")
     );
+    expect(repairedState.tools.codex?.pluginsDir).toBe(join(home, "plugins"));
+    expect(repairedState.tools.codex?.pluginMarketplacePath).toBe(
+      join(home, ".agents", "plugins", "marketplace.json")
+    );
+    expect(repairedState.tools.codex?.skillsBackup).toBe(
+      join(home, ".codex", "skills.bak")
+    );
 
     const globalAgents = await readFile(
       join(home, ".codex", "AGENTS.md"),
@@ -1496,6 +1871,18 @@ describe("syncManagedTools", () => {
       "utf8"
     );
     expect(rulesFile).toContain('pattern = ["gh"]');
+
+    const pluginMarketplace = await readFile(
+      join(home, ".agents", "plugins", "marketplace.json"),
+      "utf8"
+    );
+    expect(pluginMarketplace).toContain('"path": "./plugins/autoresearch"');
+
+    expect(
+      await Bun.file(
+        join(home, "plugins", "autoresearch", ".codex-plugin", "plugin.json")
+      ).exists()
+    ).toBe(true);
   });
 
   it("adopts backed-up managed skills back into the canonical store during sync repair", async () => {

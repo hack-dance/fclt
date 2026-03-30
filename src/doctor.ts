@@ -22,6 +22,8 @@ import {
 } from "./ai-state";
 import { repairAutosyncServices } from "./autosync";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import { loadManagedState } from "./manage";
+import { extractServersObject } from "./mcp-config";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
@@ -30,7 +32,14 @@ import {
   facultStateDir,
   legacyExternalFacultStateDir,
   legacyFacultStateDirForRoot,
+  projectRootFromAiRoot,
 } from "./paths";
+import {
+  loadConfiguredProjectSyncTools,
+  writeProjectSyncPolicy,
+} from "./project-sync";
+
+const TOML_FILE_SUFFIX_RE = /\.toml$/;
 
 function legacyDefaultRoot(home: string): string {
   return join(home, "agents", ".facult");
@@ -223,6 +232,275 @@ async function repairLegacyState(args: {
   return { changed, conflicts };
 }
 
+function normalizeCodexMarketplaceText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return text.endsWith("\n") ? text : `${text}\n`;
+    }
+    const plugins = Array.isArray((parsed as { plugins?: unknown[] }).plugins)
+      ? ((parsed as { plugins: unknown[] }).plugins ?? [])
+      : null;
+    if (plugins) {
+      (parsed as { plugins: unknown[] }).plugins = plugins.map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return entry;
+        }
+        const source =
+          "source" in entry &&
+          (entry as { source?: unknown }).source &&
+          typeof (entry as { source?: unknown }).source === "object" &&
+          !Array.isArray((entry as { source?: unknown }).source)
+            ? {
+                ...((entry as { source: Record<string, unknown> }).source ??
+                  {}),
+              }
+            : null;
+        if (
+          source?.source === "local" &&
+          typeof source.path === "string" &&
+          source.path.startsWith("./.codex/plugins/")
+        ) {
+          source.path = source.path.replace("./.codex/plugins/", "./plugins/");
+        }
+        return source
+          ? { ...(entry as Record<string, unknown>), source }
+          : entry;
+      });
+    }
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return text.endsWith("\n") ? text : `${text}\n`;
+  }
+}
+
+async function repairLegacyCodexAuthoringLayout(args: {
+  home: string;
+  rootDir: string;
+}): Promise<{ changed: boolean; conflicts: string[] }> {
+  const liveRoot = projectRootFromAiRoot(args.rootDir, args.home) ?? args.home;
+  const legacySkillsDir = join(liveRoot, ".codex", "skills");
+  const preferredSkillsDir = join(liveRoot, ".agents", "skills");
+  const legacyPluginsDir = join(liveRoot, ".codex", "plugins");
+  const preferredPluginsDir = join(liveRoot, "plugins");
+  const marketplacePath = join(
+    liveRoot,
+    ".agents",
+    "plugins",
+    "marketplace.json"
+  );
+  const conflicts: string[] = [];
+  let changed = false;
+
+  if (await moveMissingTree(legacySkillsDir, preferredSkillsDir, conflicts)) {
+    changed = true;
+  }
+
+  if (await moveMissingTree(legacyPluginsDir, preferredPluginsDir, conflicts)) {
+    changed = true;
+  }
+
+  try {
+    const current = await readFile(marketplacePath, "utf8");
+    const normalized = normalizeCodexMarketplaceText(current);
+    if (normalized !== current) {
+      await mkdir(dirname(marketplacePath), { recursive: true });
+      await writeFile(marketplacePath, normalized, "utf8");
+      changed = true;
+    }
+  } catch {
+    // Ignore missing or unreadable marketplace files.
+  }
+
+  return { changed, conflicts };
+}
+
+async function listProjectSkillNames(rootDir: string): Promise<string[]> {
+  const skillsDir = join(rootDir, "skills");
+  const entries = await readdir(skillsDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function listProjectAgentNames(rootDir: string): Promise<string[]> {
+  const agentsDir = join(rootDir, "agents");
+  const entries = await readdir(agentsDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  return entries
+    .flatMap((entry) => {
+      if (entry.isDirectory() && !entry.name.startsWith(".")) {
+        return [entry.name];
+      }
+      if (entry.isFile() && entry.name.endsWith(".toml")) {
+        return [entry.name.replace(TOML_FILE_SUFFIX_RE, "")];
+      }
+      return [];
+    })
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function listProjectMcpNames(rootDir: string): Promise<string[]> {
+  const trackedPaths = [
+    join(rootDir, "mcp", "servers.json"),
+    join(rootDir, "mcp", "mcp.json"),
+  ];
+
+  for (const candidate of trackedPaths) {
+    try {
+      const raw = await Bun.file(candidate).text();
+      const parsed = JSON.parse(raw) as unknown;
+      const servers = extractServersObject(parsed) ?? {};
+      return Object.keys(servers).sort((a, b) => a.localeCompare(b));
+    } catch {
+      // Try next candidate.
+    }
+  }
+
+  return [];
+}
+
+async function hasProjectGlobalDocs(rootDir: string): Promise<boolean> {
+  return (
+    (await pathExists(join(rootDir, "AGENTS.global.md"))) ||
+    (await pathExists(join(rootDir, "AGENTS.override.global.md")))
+  );
+}
+
+async function hasProjectToolRules(
+  rootDir: string,
+  tool: string
+): Promise<boolean> {
+  const rulesDir = join(rootDir, "tools", tool, "rules");
+  const entries = await readdir(rulesDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  return entries.some(
+    (entry) => entry.isFile() && entry.name.endsWith(".rules")
+  );
+}
+
+async function hasProjectToolConfig(
+  rootDir: string,
+  tool: string
+): Promise<boolean> {
+  return (
+    (await pathExists(join(rootDir, "tools", tool, "config.toml"))) ||
+    (await pathExists(join(rootDir, "tools", tool, "config.local.toml")))
+  );
+}
+
+async function planProjectSyncPolicyRepair(args: {
+  home: string;
+  rootDir: string;
+}): Promise<{
+  needed: boolean;
+  toolPolicies: Record<
+    string,
+    {
+      skills?: string[];
+      agents?: string[];
+      mcpServers?: string[];
+      globalDocs?: boolean;
+      toolRules?: boolean;
+      toolConfig?: boolean;
+    }
+  >;
+}> {
+  if (projectRootFromAiRoot(args.rootDir, args.home) == null) {
+    return { needed: false, toolPolicies: {} };
+  }
+
+  const managedState = await loadManagedState(args.home, args.rootDir);
+  const managedTools = Object.keys(managedState.tools).sort((a, b) =>
+    a.localeCompare(b)
+  );
+  if (managedTools.length === 0) {
+    return { needed: false, toolPolicies: {} };
+  }
+
+  const configuredTools = new Set(
+    await loadConfiguredProjectSyncTools({ rootDir: args.rootDir })
+  );
+  const [skills, agents, mcpServers, globalDocs] = await Promise.all([
+    listProjectSkillNames(args.rootDir),
+    listProjectAgentNames(args.rootDir),
+    listProjectMcpNames(args.rootDir),
+    hasProjectGlobalDocs(args.rootDir),
+  ]);
+
+  const toolPolicies: Record<
+    string,
+    {
+      skills?: string[];
+      agents?: string[];
+      mcpServers?: string[];
+      globalDocs?: boolean;
+      toolRules?: boolean;
+      toolConfig?: boolean;
+    }
+  > = {};
+
+  for (const tool of managedTools) {
+    if (configuredTools.has(tool)) {
+      continue;
+    }
+    const [toolRules, toolConfig] = await Promise.all([
+      hasProjectToolRules(args.rootDir, tool),
+      hasProjectToolConfig(args.rootDir, tool),
+    ]);
+
+    if (
+      skills.length === 0 &&
+      agents.length === 0 &&
+      mcpServers.length === 0 &&
+      !globalDocs &&
+      !toolRules &&
+      !toolConfig
+    ) {
+      continue;
+    }
+
+    toolPolicies[tool] = {
+      ...(skills.length > 0 ? { skills } : {}),
+      ...(agents.length > 0 ? { agents } : {}),
+      ...(mcpServers.length > 0 ? { mcpServers } : {}),
+      ...(globalDocs ? { globalDocs: true } : {}),
+      ...(toolRules ? { toolRules: true } : {}),
+      ...(toolConfig ? { toolConfig: true } : {}),
+    };
+  }
+
+  return {
+    needed: Object.keys(toolPolicies).length > 0,
+    toolPolicies,
+  };
+}
+
+async function repairProjectSyncPolicy(args: {
+  home: string;
+  rootDir: string;
+}): Promise<{ changed: boolean; path?: string; tools: string[] }> {
+  const plan = await planProjectSyncPolicyRepair(args);
+  if (!plan.needed) {
+    return { changed: false, tools: [] };
+  }
+  const result = await writeProjectSyncPolicy({
+    rootDir: args.rootDir,
+    toolPolicies: plan.toolPolicies,
+    targetFile: "config.local.toml",
+  });
+  return {
+    changed: result.changed,
+    path: result.path,
+    tools: Object.keys(plan.toolPolicies).sort((a, b) => a.localeCompare(b)),
+  };
+}
+
 function printHelp() {
   console.log(`fclt doctor — inspect and repair local fclt state
 
@@ -258,6 +536,12 @@ export async function doctorCommand(argv: string[]) {
     let stateRepaired = false;
     let stateConflicts: string[] = [];
     let autosyncRepaired = false;
+    let codexAuthoringRepaired = false;
+    let codexAuthoringConflicts: string[] = [];
+    let projectSyncRepairNeeded = false;
+    let projectSyncRepaired = false;
+    let projectSyncRepairTools: string[] = [];
+    let projectSyncRepairPath: string | undefined;
     if (repair) {
       rootConfigRepaired = await repairLegacyRootConfig(home);
     }
@@ -266,6 +550,28 @@ export async function doctorCommand(argv: string[]) {
       stateRepaired = stateRepair.changed;
       stateConflicts = stateRepair.conflicts;
       autosyncRepaired = await repairAutosyncServices(home, rootDir);
+      const authoringRepair = await repairLegacyCodexAuthoringLayout({
+        home,
+        rootDir,
+      });
+      codexAuthoringRepaired = authoringRepair.changed;
+      codexAuthoringConflicts = authoringRepair.conflicts;
+      const projectSyncRepair = await repairProjectSyncPolicy({
+        home,
+        rootDir,
+      });
+      projectSyncRepaired = projectSyncRepair.changed;
+      projectSyncRepairTools = projectSyncRepair.tools;
+      projectSyncRepairPath = projectSyncRepair.path;
+    } else {
+      const projectSyncPlan = await planProjectSyncPolicyRepair({
+        home,
+        rootDir,
+      });
+      projectSyncRepairNeeded = projectSyncPlan.needed;
+      projectSyncRepairTools = Object.keys(projectSyncPlan.toolPolicies).sort(
+        (a, b) => a.localeCompare(b)
+      );
     }
     const generated = facultAiIndexPath(home, rootDir);
     const generatedGraph = facultAiGraphPath(home, rootDir);
@@ -299,6 +605,27 @@ export async function doctorCommand(argv: string[]) {
     }
     if (autosyncRepaired) {
       console.log("Repaired autosync launch agent configuration.");
+    }
+    if (codexAuthoringRepaired) {
+      console.log(
+        "Migrated legacy Codex authoring paths to .agents/skills, .agents/plugins/marketplace.json, and plugins/."
+      );
+    }
+    if (codexAuthoringConflicts.length) {
+      console.log("Skipped conflicting Codex authoring paths:");
+      for (const conflict of codexAuthoringConflicts) {
+        console.log(`- ${conflict}`);
+      }
+    }
+    if (projectSyncRepaired && projectSyncRepairPath) {
+      console.log(
+        `Materialized explicit project sync policy in ${projectSyncRepairPath} for: ${projectSyncRepairTools.join(", ")}`
+      );
+    }
+    if (!repair && projectSyncRepairNeeded) {
+      console.log(
+        `Project sync is still implicit for managed tools (${projectSyncRepairTools.join(", ")}). Run \`fclt doctor --repair\` to write explicit [project_sync.<tool>] entries.`
+      );
     }
 
     if (result.source === "generated") {

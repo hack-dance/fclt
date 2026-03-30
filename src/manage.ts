@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   cp,
   lstat,
@@ -43,6 +44,7 @@ import {
   legacyFacultStateDirForRoot,
   projectRootFromAiRoot,
 } from "./paths";
+import { loadProjectToolSyncPolicy } from "./project-sync";
 
 export interface ManagedToolState {
   tool: string;
@@ -50,6 +52,8 @@ export interface ManagedToolState {
   skillsDir?: string;
   mcpConfig?: string;
   agentsDir?: string;
+  pluginsDir?: string;
+  pluginMarketplacePath?: string;
   automationDir?: string;
   toolHome?: string;
   globalAgentsPath?: string;
@@ -59,6 +63,8 @@ export interface ManagedToolState {
   skillsBackup?: string | null;
   mcpBackup?: string | null;
   agentsBackup?: string | null;
+  pluginsBackup?: string | null;
+  pluginMarketplaceBackup?: string | null;
   globalAgentsBackup?: string | null;
   globalAgentsOverrideBackup?: string | null;
   rulesBackup?: string | null;
@@ -82,6 +88,8 @@ export interface ToolPaths {
   skillsDir?: string;
   mcpConfig?: string;
   agentsDir?: string;
+  pluginsDir?: string;
+  pluginMarketplacePath?: string;
   automationDir?: string;
   toolHome?: string;
   rulesDir?: string;
@@ -115,6 +123,44 @@ function nowIso(now?: () => Date): string {
 
 function homePath(home: string, ...parts: string[]): string {
   return join(home, ...parts);
+}
+
+function codexLiveRoot(home: string, rootDir?: string): string {
+  const projectRoot = rootDir ? projectRootFromAiRoot(rootDir, home) : null;
+  return projectRoot ?? home;
+}
+
+function codexPluginsDir(home: string, rootDir?: string): string {
+  return join(codexLiveRoot(home, rootDir), "plugins");
+}
+
+function codexSkillsDir(home: string, rootDir?: string): string {
+  return join(codexLiveRoot(home, rootDir), ".agents", "skills");
+}
+
+function codexPluginMarketplacePath(home: string, rootDir?: string): string {
+  return join(
+    codexLiveRoot(home, rootDir),
+    ".agents",
+    "plugins",
+    "marketplace.json"
+  );
+}
+
+function codexLegacySkillsDir(home: string, rootDir?: string): string {
+  return join(codexLiveRoot(home, rootDir), ".codex", "skills");
+}
+
+function codexLegacyPluginsDir(home: string, rootDir?: string): string {
+  return join(codexLiveRoot(home, rootDir), ".codex", "plugins");
+}
+
+function codexCanonicalPluginsRoot(rootDir: string): string {
+  return join(rootDir, "tools", "codex", "plugins");
+}
+
+function codexCanonicalPluginMarketplacePath(rootDir: string): string {
+  return join(codexCanonicalPluginsRoot(rootDir), "marketplace.json");
 }
 
 function expandHomePath(pathValue: string, home: string): string {
@@ -152,6 +198,79 @@ function renderedHash(text: string): string {
   return contentHash(normalizeText(text));
 }
 
+type ManagedTargetContent = string | Uint8Array;
+
+function byteHash(content: Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function targetContentHash(
+  content: ManagedTargetContent,
+  options?: { normalizeText?: boolean }
+): string {
+  if (typeof content === "string") {
+    return options?.normalizeText === false
+      ? byteHash(Buffer.from(content))
+      : renderedHash(content);
+  }
+  return byteHash(content);
+}
+
+async function readTargetHash(
+  pathValue: string,
+  options?: { normalizeText?: boolean }
+): Promise<string | null> {
+  if (!(await fileExists(pathValue))) {
+    return null;
+  }
+  if (options?.normalizeText === false) {
+    return byteHash(await Bun.file(pathValue).bytes());
+  }
+  return renderedHash(await Bun.file(pathValue).text());
+}
+
+function normalizeCodexMarketplaceText(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isPlainObject(parsed)) {
+      return text.endsWith("\n") ? text : `${text}\n`;
+    }
+    const plugins = Array.isArray(parsed.plugins) ? parsed.plugins : null;
+    if (plugins) {
+      parsed.plugins = plugins.map((entry) => {
+        if (!isPlainObject(entry)) {
+          return entry;
+        }
+        const source = isPlainObject(entry.source) ? { ...entry.source } : null;
+        if (
+          source?.source === "local" &&
+          typeof source.path === "string" &&
+          source.path.startsWith("./.codex/plugins/")
+        ) {
+          source.path = source.path.replace("./.codex/plugins/", "./plugins/");
+        }
+        return source ? { ...entry, source } : entry;
+      });
+    }
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return text.endsWith("\n") ? text : `${text}\n`;
+  }
+}
+
+function isSafeCodexPluginName(name: string): boolean {
+  const trimmed = name.trim();
+  return (
+    trimmed.length > 0 &&
+    trimmed !== "." &&
+    trimmed !== ".." &&
+    !trimmed.includes("..") &&
+    !trimmed.includes("/") &&
+    !trimmed.includes("\\") &&
+    basename(trimmed) === trimmed
+  );
+}
+
 function defaultToolPaths(
   home: string,
   rootDir?: string
@@ -168,9 +287,13 @@ function defaultToolPaths(
     },
     codex: {
       tool: "codex",
-      skillsDir: toolBase(".codex", "skills"),
+      skillsDir: codexSkillsDir(home, rootDir),
       mcpConfig: toolBase(".codex", "mcp.json"),
       agentsDir: toolBase(".codex", "agents"),
+      pluginsDir: projectRoot ? undefined : codexPluginsDir(home, rootDir),
+      pluginMarketplacePath: projectRoot
+        ? undefined
+        : codexPluginMarketplacePath(home, rootDir),
       automationDir: homePath(home, ".codex", "automations"),
       toolHome: toolBase(".codex"),
       rulesDir: toolBase(".codex", "rules"),
@@ -270,6 +393,7 @@ async function resolveToolPaths(
   override?: Record<string, ToolPaths>
 ): Promise<ToolPaths | null> {
   const defaults = defaultToolPaths(home, rootDir);
+  const projectRoot = rootDir ? projectRootFromAiRoot(rootDir, home) : null;
   if (override?.[tool]) {
     const base = defaults[tool] ?? null;
     return base ? { ...base, ...override[tool] } : (override[tool] ?? null);
@@ -283,6 +407,10 @@ async function resolveToolPaths(
     // locations. Claude and Cursor have built-in global doc locations through
     // the base defaults above. Other tools can still opt into additional
     // file-backed surfaces explicitly via toolPaths overrides.
+    return base;
+  }
+
+  if (projectRoot) {
     return base;
   }
 
@@ -635,6 +763,96 @@ async function canonicalAutomationsExist(rootDir: string): Promise<boolean> {
   }
 }
 
+interface CanonicalPluginEntry {
+  name: string;
+  sourceDir: string;
+  files: Map<string, Uint8Array>;
+}
+
+async function listRelativeFilesWithDotfiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+
+  async function visit(currentDir: string, prefix = ""): Promise<void> {
+    const entries = await readdir(currentDir, { withFileTypes: true }).catch(
+      () => [] as import("node:fs").Dirent[]
+    );
+    for (const entry of entries) {
+      const relPath = prefix ? join(prefix, entry.name) : entry.name;
+      const fullPath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath, relPath);
+        continue;
+      }
+      if (entry.isFile()) {
+        out.push(relPath);
+      }
+    }
+  }
+
+  await visit(root);
+  return out.sort();
+}
+
+async function loadCanonicalCodexPlugins(
+  rootDir: string
+): Promise<CanonicalPluginEntry[]> {
+  const pluginsRoot = codexCanonicalPluginsRoot(rootDir);
+  const entries = await readdir(pluginsRoot, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  const out: CanonicalPluginEntry[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    const sourceDir = join(pluginsRoot, entry.name);
+    if (!(await fileExists(join(sourceDir, ".codex-plugin", "plugin.json")))) {
+      continue;
+    }
+    const files = new Map<string, Uint8Array>();
+    for (const relPath of await listRelativeFilesWithDotfiles(sourceDir)) {
+      files.set(relPath, await Bun.file(join(sourceDir, relPath)).bytes());
+    }
+    out.push({ name: entry.name, sourceDir, files });
+  }
+
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function canonicalCodexPluginsExist(rootDir: string): Promise<boolean> {
+  if (await fileExists(codexCanonicalPluginMarketplacePath(rootDir))) {
+    return true;
+  }
+  return (await loadCanonicalCodexPlugins(rootDir)).length > 0;
+}
+
+async function loadCanonicalCodexMarketplaceText(
+  rootDir: string
+): Promise<{ text: string | null; sourcePath: string }> {
+  const sourcePath = codexCanonicalPluginMarketplacePath(rootDir);
+  const raw = await readTextOrNull(sourcePath);
+  return {
+    text: raw == null ? null : normalizeCodexMarketplaceText(raw),
+    sourcePath,
+  };
+}
+
+async function hashDirectoryTree(root: string): Promise<string | null> {
+  if (!(await fileExists(root))) {
+    return null;
+  }
+  const files = await listRelativeFilesWithDotfiles(root);
+  const hash = createHash("sha256");
+  for (const relPath of files) {
+    hash.update(relPath);
+    hash.update("\0");
+    hash.update(await Bun.file(join(root, relPath)).bytes());
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
 async function loadMergedIndex(
   homeDir: string,
   rootDir: string
@@ -656,7 +874,11 @@ async function loadEnabledSkillEntries(args: {
   tool: string;
 }): Promise<{ name: string; path: string }[]> {
   const index = await loadMergedIndex(args.homeDir, args.rootDir);
-  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(args.rootDir);
+  const projectPolicy = await loadProjectToolSyncPolicy(args);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
+    args.rootDir,
+    args.homeDir
+  );
   const out: { name: string; path: string }[] = [];
 
   for (const [name, entry] of Object.entries(index.skills)) {
@@ -674,11 +896,24 @@ async function loadEnabledSkillEntries(args: {
     ) {
       continue;
     }
+    if (
+      projectPolicy &&
+      !(
+        projectPolicy.skills.includes("*") ||
+        projectPolicy.skills.includes(name)
+      )
+    ) {
+      continue;
+    }
     out.push({ name, path: skill.path });
   }
 
   if (out.length > 0) {
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  if (projectPolicy) {
+    return [];
   }
 
   return (await listSkillDirs(join(args.rootDir, "skills"))).map((name) => ({
@@ -690,9 +925,14 @@ async function loadEnabledSkillEntries(args: {
 async function loadManagedAgentEntries(args: {
   homeDir: string;
   rootDir: string;
+  tool: string;
 }): Promise<{ name: string; sourcePath: string; raw: string }[]> {
   const index = await loadMergedIndex(args.homeDir, args.rootDir);
-  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(args.rootDir);
+  const projectPolicy = await loadProjectToolSyncPolicy(args);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
+    args.rootDir,
+    args.homeDir
+  );
   const out: { name: string; sourcePath: string; raw: string }[] = [];
 
   for (const [name, entry] of Object.entries(index.agents)) {
@@ -701,6 +941,15 @@ async function loadManagedAgentEntries(args: {
       !useBuiltinDefaults &&
       agent.sourceKind === "builtin" &&
       agent.sourceRoot?.includes("facult-operating-model")
+    ) {
+      continue;
+    }
+    if (
+      projectPolicy &&
+      !(
+        projectPolicy.agents.includes("*") ||
+        projectPolicy.agents.includes(name)
+      )
     ) {
       continue;
     }
@@ -713,6 +962,10 @@ async function loadManagedAgentEntries(args: {
 
   if (out.length > 0) {
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  if (projectPolicy) {
+    return [];
   }
 
   return await loadCanonicalAgents(args.rootDir);
@@ -734,7 +987,7 @@ async function planAgentFileChanges({
   contents: Map<string, string>;
   sources: Map<string, string>;
 }> {
-  const agents = await loadManagedAgentEntries({ homeDir, rootDir });
+  const agents = await loadManagedAgentEntries({ homeDir, rootDir, tool });
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
@@ -896,6 +1149,10 @@ async function listSkillDirs(skillsRoot: string): Promise<string[]> {
   }
 }
 
+async function canonicalSkillsExist(rootDir: string): Promise<boolean> {
+  return (await listSkillDirs(join(rootDir, "skills"))).length > 0;
+}
+
 async function loadEnabledSkillNames({
   homeDir,
   rootDir,
@@ -937,17 +1194,33 @@ function canonicalServerToToolConfig(server: unknown): unknown {
   return out;
 }
 
-function filterServersForTool(
-  servers: Record<string, unknown>,
-  tool: string
-): Record<string, unknown> {
+async function filterServersForTool(args: {
+  homeDir: string;
+  rootDir: string;
+  servers: Record<string, unknown>;
+  tool: string;
+}): Promise<Record<string, unknown>> {
+  const projectPolicy = await loadProjectToolSyncPolicy({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    tool: args.tool,
+  });
   const out: Record<string, unknown> = {};
-  for (const [name, cfg] of Object.entries(servers)) {
+  for (const [name, cfg] of Object.entries(args.servers)) {
     if (isPlainObject(cfg)) {
       const enabledFor = cfg.enabledFor;
-      if (Array.isArray(enabledFor) && !enabledFor.includes(tool)) {
+      if (Array.isArray(enabledFor) && !enabledFor.includes(args.tool)) {
         continue;
       }
+    }
+    if (
+      projectPolicy &&
+      !(
+        projectPolicy.mcpServers.includes("*") ||
+        projectPolicy.mcpServers.includes(name)
+      )
+    ) {
+      continue;
     }
     out[name] = canonicalServerToToolConfig(cfg);
   }
@@ -1178,6 +1451,8 @@ interface ExistingManagedItem {
     | "skill"
     | "agent"
     | "automation"
+    | "plugin"
+    | "plugin-marketplace"
     | "global-doc"
     | "rule"
     | "tool-config"
@@ -2008,10 +2283,12 @@ async function syncSkillSymlinks({
 }
 
 async function planMcpWrite({
+  homeDir,
   mcpConfigPath,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
@@ -2019,7 +2296,12 @@ async function planMcpWrite({
   const { servers } = await loadCanonicalMcpState(rootDir, {
     includeLocal: true,
   });
-  const filtered = filterServersForTool(servers, tool);
+  const filtered = await filterServersForTool({
+    homeDir,
+    rootDir,
+    servers,
+    tool,
+  });
   const contents = `${JSON.stringify({ mcpServers: filtered }, null, 2)}\n`;
 
   if (!(await fileExists(mcpConfigPath))) {
@@ -2034,17 +2316,19 @@ async function planMcpWrite({
 }
 
 async function syncMcpConfig({
+  homeDir,
   mcpConfigPath,
   rootDir,
   tool,
   dryRun,
 }: {
+  homeDir: string;
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
   dryRun?: boolean;
 }): Promise<{ needsWrite: boolean }> {
-  const plan = await planMcpWrite({ mcpConfigPath, rootDir, tool });
+  const plan = await planMcpWrite({ homeDir, mcpConfigPath, rootDir, tool });
   if (dryRun) {
     return { needsWrite: plan.needsWrite };
   }
@@ -2056,10 +2340,12 @@ async function syncMcpConfig({
 }
 
 async function writeToolMcpConfig({
+  homeDir,
   mcpConfigPath,
   rootDir,
   tool,
 }: {
+  homeDir: string;
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
@@ -2067,7 +2353,12 @@ async function writeToolMcpConfig({
   const { servers } = await loadCanonicalMcpState(rootDir, {
     includeLocal: true,
   });
-  const filtered = filterServersForTool(servers, tool);
+  const filtered = await filterServersForTool({
+    homeDir,
+    rootDir,
+    servers,
+    tool,
+  });
   await ensureDir(dirname(mcpConfigPath));
   await Bun.write(
     mcpConfigPath,
@@ -2089,19 +2380,34 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     throw new Error(`Unknown tool: ${tool}`);
   }
 
-  const existingSkillPlan = toolPaths.skillsDir
-    ? await planExistingToolSkillAdoption({
-        rootDir,
-        toolSkillsDir: toolPaths.skillsDir,
-      })
-    : {
-        adopt: [],
-        identical: [],
-        conflicts: [],
-        ignored: [],
-      };
+  const existingSkillPlan =
+    toolPaths.skillsDir || tool === "codex"
+      ? mergeManagedImportPlans(
+          asManagedSkillPlan(
+            toolPaths.skillsDir
+              ? await planExistingToolSkillAdoption({
+                  rootDir,
+                  toolSkillsDir: toolPaths.skillsDir,
+                })
+              : {
+                  adopt: [],
+                  identical: [],
+                  conflicts: [],
+                  ignored: [],
+                }
+          ),
+          tool === "codex"
+            ? asManagedSkillPlan(
+                await planExistingToolSkillAdoption({
+                  rootDir,
+                  toolSkillsDir: codexLegacySkillsDir(home, rootDir),
+                })
+              )
+            : emptyManagedImportPlan()
+        )
+      : emptyManagedImportPlan();
   const existingImportPlan = mergeManagedImportPlans(
-    asManagedSkillPlan(existingSkillPlan),
+    existingSkillPlan,
     toolPaths.agentsDir
       ? await planExistingToolAgentAdoption({
           tool,
@@ -2136,6 +2442,15 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
           toolConfigPath: toolPaths.toolConfig,
         })
       : emptyManagedImportPlan(),
+    tool === "codex" &&
+      (toolPaths.pluginsDir || toolPaths.pluginMarketplacePath)
+      ? await planExistingCodexPluginAdoption({
+          homeDir: home,
+          rootDir,
+          pluginsDir: toolPaths.pluginsDir,
+          pluginMarketplacePath: toolPaths.pluginMarketplacePath,
+        })
+      : emptyManagedImportPlan(),
     toolPaths.mcpConfig
       ? await planExistingMcpAdoption({
           rootDir,
@@ -2157,6 +2472,8 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
       toolPaths.toolHome ||
       toolPaths.rulesDir ||
       toolPaths.toolConfig ||
+      toolPaths.pluginsDir ||
+      toolPaths.pluginMarketplacePath ||
       toolPaths.mcpConfig) &&
     !opts.adoptExisting &&
     (existingImportPlan.adopt.length > 0 ||
@@ -2203,7 +2520,10 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     ? await adoptSkillsIntoCanonicalStore({
         homeDir: home,
         rootDir,
-        skillSourceDirs: [toolPaths.skillsDir],
+        skillSourceDirs: [
+          toolPaths.skillsDir,
+          ...(tool === "codex" ? [codexLegacySkillsDir(home, rootDir)] : []),
+        ],
       })
     : [];
 
@@ -2211,6 +2531,26 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     const result = await adoptExistingToolSkills({
       rootDir,
       toolSkillsDir: toolPaths.skillsDir,
+      conflictMode: importConflictMode,
+    });
+    for (const name of result.adopted) {
+      if (!adoptedSkills.includes(name)) {
+        adoptedSkills.push(name);
+      }
+    }
+    if (result.adopted.length > 0) {
+      await buildIndex({
+        homeDir: home,
+        rootDir,
+        force: false,
+      });
+    }
+  }
+  if (tool === "codex" && opts.adoptExisting) {
+    const legacySkillsDir = codexLegacySkillsDir(home, rootDir);
+    const result = await adoptExistingToolSkills({
+      rootDir,
+      toolSkillsDir: legacySkillsDir,
       conflictMode: importConflictMode,
     });
     for (const name of result.adopted) {
@@ -2279,6 +2619,20 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     });
     adoptedSkills.push(...result.map((item) => `${item.kind}:${item.name}`));
   }
+  if (
+    tool === "codex" &&
+    opts.adoptExisting &&
+    (toolPaths.pluginsDir || toolPaths.pluginMarketplacePath)
+  ) {
+    const result = await adoptExistingCodexPlugins({
+      homeDir: home,
+      rootDir,
+      pluginsDir: toolPaths.pluginsDir,
+      pluginMarketplacePath: toolPaths.pluginMarketplacePath,
+      conflictMode: importConflictMode,
+    });
+    adoptedSkills.push(...result.map((item) => `${item.kind}:${item.name}`));
+  }
   if (adoptedSkills.length > 0) {
     await buildIndex({
       homeDir: home,
@@ -2327,6 +2681,14 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
         toolConfigPath: toolPaths.toolConfig,
       })
     : null;
+  const pluginPreview =
+    tool === "codex" && toolPaths.pluginsDir && toolPaths.pluginMarketplacePath
+      ? await planCodexPluginFileChanges({
+          rootDir,
+          pluginsDir: toolPaths.pluginsDir,
+          pluginMarketplacePath: toolPaths.pluginMarketplacePath,
+        })
+      : null;
 
   const skillsBackup = toolPaths.skillsDir
     ? await backupPath(toolPaths.skillsDir, opts.now)
@@ -2357,6 +2719,15 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     toolPaths.toolConfig && toolConfigPreview?.managedConfig
       ? await backupPath(toolPaths.toolConfig, opts.now)
       : null;
+  const pluginsBackup =
+    toolPaths.pluginsDir && pluginPreview?.contents.size
+      ? await backupPath(toolPaths.pluginsDir, opts.now)
+      : null;
+  const pluginMarketplaceBackup =
+    toolPaths.pluginMarketplacePath &&
+    pluginPreview?.contents.has(toolPaths.pluginMarketplacePath)
+      ? await backupPath(toolPaths.pluginMarketplacePath, opts.now)
+      : null;
 
   if (toolPaths.skillsDir) {
     await ensureEmptyDir(toolPaths.skillsDir);
@@ -2378,6 +2749,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
 
   if (toolPaths.mcpConfig) {
     await writeToolMcpConfig({
+      homeDir: home,
       mcpConfigPath: toolPaths.mcpConfig,
       rootDir,
       tool,
@@ -2433,12 +2805,41 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     });
   }
 
+  if (
+    pluginPreview &&
+    toolPaths.pluginsDir &&
+    (pluginPreview.contents.size > 0 || pluginPreview.remove.length > 0)
+  ) {
+    await ensureDir(toolPaths.pluginsDir);
+    if (
+      toolPaths.pluginMarketplacePath &&
+      pluginPreview.contents.has(toolPaths.pluginMarketplacePath)
+    ) {
+      await ensureDir(dirname(toolPaths.pluginMarketplacePath));
+    }
+    await applyRenderedRemoves(pluginPreview.remove);
+    await applyRenderedWrites({
+      contents: pluginPreview.contents,
+      targets: Array.from(pluginPreview.contents.keys()),
+    });
+    await pruneEmptyParents(pluginPreview.remove, toolPaths.pluginsDir);
+  }
+
   state.tools[tool] = {
     tool,
     managedAt: nowIso(opts.now),
     skillsDir: toolPaths.skillsDir,
     mcpConfig: toolPaths.mcpConfig,
     agentsDir: toolPaths.agentsDir,
+    pluginsDir:
+      pluginPreview?.contents.size && toolPaths.pluginsDir
+        ? toolPaths.pluginsDir
+        : undefined,
+    pluginMarketplacePath:
+      toolPaths.pluginMarketplacePath &&
+      pluginPreview?.contents.has(toolPaths.pluginMarketplacePath)
+        ? toolPaths.pluginMarketplacePath
+        : undefined,
     automationDir: toolPaths.automationDir,
     toolHome: globalDocsPreview?.managedTargets.length
       ? toolPaths.toolHome
@@ -2460,6 +2861,8 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
     skillsBackup,
     mcpBackup,
     agentsBackup,
+    pluginsBackup,
+    pluginMarketplaceBackup,
     globalAgentsBackup,
     globalAgentsOverrideBackup,
     rulesBackup,
@@ -2522,6 +2925,17 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
           ? [[toolConfigPreview.targetPath, toolConfigPreview.sourcePath]]
           : []
       ),
+    });
+  }
+
+  if (pluginPreview) {
+    updateRenderedTargetState({
+      entry: managedEntry,
+      writtenTargets: Array.from(pluginPreview.contents.keys()),
+      removedTargets: pluginPreview.remove,
+      contents: pluginPreview.contents,
+      sources: pluginPreview.sources,
+      normalizeText: false,
     });
   }
 
@@ -2598,6 +3012,20 @@ export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
     await restoreBackup({
       original: entry.agentsDir,
       backup: entry.agentsBackup ?? null,
+    });
+  }
+
+  if (entry.pluginsDir) {
+    await restoreBackup({
+      original: entry.pluginsDir,
+      backup: entry.pluginsBackup ?? null,
+    });
+  }
+
+  if (entry.pluginMarketplacePath) {
+    await restoreBackup({
+      original: entry.pluginMarketplacePath,
+      backup: entry.pluginMarketplaceBackup ?? null,
     });
   }
 
@@ -2682,6 +3110,19 @@ async function repairManagedToolEntry(args: {
   let changed = false;
 
   if (
+    tool === "codex" &&
+    toolPaths.skillsDir &&
+    (await canonicalSkillsExist(rootDir)) &&
+    next.skillsDir !== toolPaths.skillsDir
+  ) {
+    if (!next.skillsBackup) {
+      next.skillsBackup = await backupPath(toolPaths.skillsDir);
+    }
+    next.skillsDir = toolPaths.skillsDir;
+    changed = true;
+  }
+
+  if (
     !next.agentsDir &&
     toolPaths.agentsDir &&
     (await canonicalAgentsExist(rootDir))
@@ -2697,6 +3138,43 @@ async function repairManagedToolEntry(args: {
     (await canonicalAutomationsExist(rootDir))
   ) {
     next.automationDir = toolPaths.automationDir;
+    changed = true;
+  }
+
+  if (
+    tool === "codex" &&
+    !(next.pluginsDir && next.pluginMarketplacePath) &&
+    toolPaths.pluginsDir &&
+    toolPaths.pluginMarketplacePath &&
+    (await canonicalCodexPluginsExist(rootDir))
+  ) {
+    if (!next.pluginsDir) {
+      next.pluginsBackup = await backupPath(toolPaths.pluginsDir);
+      next.pluginsDir = toolPaths.pluginsDir;
+      changed = true;
+    }
+    if (!next.pluginMarketplacePath) {
+      next.pluginMarketplaceBackup = await backupPath(
+        toolPaths.pluginMarketplacePath
+      );
+      next.pluginMarketplacePath = toolPaths.pluginMarketplacePath;
+      changed = true;
+    }
+  }
+
+  if (
+    tool === "codex" &&
+    !toolPaths.pluginsDir &&
+    !toolPaths.pluginMarketplacePath &&
+    (next.pluginsDir ||
+      next.pluginMarketplacePath ||
+      next.pluginsBackup ||
+      next.pluginMarketplaceBackup)
+  ) {
+    next.pluginsDir = undefined;
+    next.pluginMarketplacePath = undefined;
+    next.pluginsBackup = undefined;
+    next.pluginMarketplaceBackup = undefined;
     changed = true;
   }
 
@@ -2783,10 +3261,11 @@ async function planRenderedTargetConflicts(args: {
   entry: ManagedToolState;
   desiredWrites: string[];
   desiredRemoves: string[];
-  desiredContents: Map<string, string>;
+  desiredContents: Map<string, ManagedTargetContent>;
   desiredSources: Map<string, string>;
   conflictMode?: "warn" | "overwrite";
   protectAllSources?: boolean;
+  normalizeText?: boolean;
 }): Promise<RenderedApplyPlan> {
   if (args.conflictMode === "overwrite") {
     return {
@@ -2824,17 +3303,19 @@ async function planRenderedTargetConflicts(args: {
     }
 
     const prior = previous[targetPath];
-    const current = await readTextIfExists(targetPath);
-    if (current == null) {
+    const currentHash = await readTargetHash(targetPath, {
+      normalizeText: args.normalizeText,
+    });
+    if (currentHash == null) {
       if (args.desiredWrites.includes(targetPath)) {
         write.push(targetPath);
       }
       continue;
     }
-
-    const currentHash = renderedHash(current);
     const desiredHash = args.desiredContents.get(targetPath)
-      ? renderedHash(args.desiredContents.get(targetPath)!)
+      ? targetContentHash(args.desiredContents.get(targetPath)!, {
+          normalizeText: args.normalizeText,
+        })
       : null;
     if (prior?.hash) {
       if (
@@ -2907,7 +3388,7 @@ function logRenderedConflicts(
 }
 
 async function applyRenderedWrites(args: {
-  contents: Map<string, string>;
+  contents: Map<string, ManagedTargetContent>;
   targets: string[];
 }) {
   for (const pathValue of args.targets) {
@@ -2918,7 +3399,9 @@ async function applyRenderedWrites(args: {
     await mkdir(dirname(pathValue), { recursive: true });
     await Bun.write(
       pathValue,
-      desired.endsWith("\n") ? desired : `${desired}\n`
+      typeof desired === "string" && !desired.endsWith("\n")
+        ? `${desired}\n`
+        : desired
     );
   }
 }
@@ -2951,8 +3434,9 @@ function updateRenderedTargetState(args: {
   entry: ManagedToolState;
   writtenTargets: string[];
   removedTargets: string[];
-  contents: Map<string, string>;
+  contents: Map<string, ManagedTargetContent>;
   sources: Map<string, string>;
+  normalizeText?: boolean;
 }) {
   const next = { ...(args.entry.renderedTargets ?? {}) };
   for (const pathValue of args.removedTargets) {
@@ -2965,7 +3449,9 @@ function updateRenderedTargetState(args: {
       continue;
     }
     next[pathValue] = {
-      hash: renderedHash(contents),
+      hash: targetContentHash(contents, {
+        normalizeText: args.normalizeText,
+      }),
       sourcePath,
       sourceKind: renderedSourceKindForPath(sourcePath),
     };
@@ -3012,6 +3498,8 @@ function logSyncDryRun({
   rulesConflicts,
   configPlan,
   configConflicts,
+  pluginPlan,
+  pluginConflicts,
 }: {
   tool: string;
   entry: ManagedToolState;
@@ -3027,6 +3515,8 @@ function logSyncDryRun({
   rulesConflicts: RenderedConflict[];
   configPlan: { write: boolean; remove: boolean; targetPath: string };
   configConflicts: RenderedConflict[];
+  pluginPlan: { write: string[]; remove: string[] };
+  pluginConflicts: RenderedConflict[];
 }) {
   for (const name of skillPlan.add) {
     console.log(`${tool}: would add skill ${name}`);
@@ -3069,6 +3559,13 @@ function logSyncDryRun({
     console.log(`${tool}: would remove tool config ${configPlan.targetPath}`);
   }
   logRenderedConflicts(tool, configConflicts, true);
+  for (const p of pluginPlan.write) {
+    console.log(`${tool}: would write plugin asset ${p}`);
+  }
+  for (const p of pluginPlan.remove) {
+    console.log(`${tool}: would remove plugin asset ${p}`);
+  }
+  logRenderedConflicts(tool, pluginConflicts, true);
   if (mcpPlan.needsWrite && entry.mcpConfig) {
     console.log(`${tool}: would update mcp config ${entry.mcpConfig}`);
   }
@@ -3085,12 +3582,15 @@ function logSyncDryRun({
     rulesPlan.remove.length === 0 &&
     !configPlan.write &&
     !configPlan.remove &&
+    pluginPlan.write.length === 0 &&
+    pluginPlan.remove.length === 0 &&
     !mcpPlan.needsWrite &&
     agentConflicts.length === 0 &&
     automationConflicts.length === 0 &&
     globalDocsConflicts.length === 0 &&
     rulesConflicts.length === 0 &&
-    configConflicts.length === 0
+    configConflicts.length === 0 &&
+    pluginConflicts.length === 0
   ) {
     console.log(`${tool}: no changes`);
   }
@@ -3175,6 +3675,24 @@ async function repairManagedCanonicalContent(args: {
     adopted.push(...items.map((item) => `${item.kind}:${item.name}`));
   }
 
+  if (
+    args.tool === "codex" &&
+    (args.entry.pluginsBackup ||
+      args.entry.pluginsDir ||
+      args.entry.pluginMarketplaceBackup ||
+      args.entry.pluginMarketplacePath)
+  ) {
+    const items = await adoptExistingCodexPlugins({
+      homeDir: args.homeDir,
+      rootDir: args.rootDir,
+      pluginsDir: args.entry.pluginsBackup ?? args.entry.pluginsDir,
+      pluginMarketplacePath:
+        args.entry.pluginMarketplaceBackup ?? args.entry.pluginMarketplacePath,
+      conflictMode: "keep-canonical",
+    });
+    adopted.push(...items.map((item) => `${item.kind}:${item.name}`));
+  }
+
   if (adopted.length > 0) {
     await buildIndex({
       homeDir: args.homeDir,
@@ -3184,6 +3702,289 @@ async function repairManagedCanonicalContent(args: {
   }
 
   return adopted;
+}
+
+async function discoverExistingCodexPluginEntries(args: {
+  homeDir: string;
+  rootDir: string;
+  pluginMarketplacePath?: string;
+  pluginsDir?: string;
+}): Promise<
+  {
+    name: string;
+    livePath: string;
+    sourcePath: string;
+  }[]
+> {
+  if (projectRootFromAiRoot(args.rootDir, args.homeDir) != null) {
+    return [];
+  }
+
+  const results = new Map<
+    string,
+    { name: string; livePath: string; sourcePath: string }
+  >();
+  const liveRoot = codexLiveRoot(args.homeDir, args.rootDir);
+  const marketplaceRaw = args.pluginMarketplacePath
+    ? await readTextOrNull(args.pluginMarketplacePath)
+    : null;
+  if (marketplaceRaw) {
+    try {
+      const parsed = JSON.parse(marketplaceRaw) as unknown;
+      const plugins =
+        isPlainObject(parsed) && Array.isArray(parsed.plugins)
+          ? parsed.plugins
+          : [];
+      for (const entry of plugins) {
+        if (
+          !isPlainObject(entry) ||
+          typeof entry.name !== "string" ||
+          !isSafeCodexPluginName(entry.name)
+        ) {
+          continue;
+        }
+        const source = isPlainObject(entry.source) ? entry.source : null;
+        if (!(source?.source === "local" && typeof source.path === "string")) {
+          continue;
+        }
+        const pathValue = source.path.trim();
+        if (
+          !(
+            pathValue === `./plugins/${entry.name}` ||
+            pathValue === `./.codex/plugins/${entry.name}`
+          )
+        ) {
+          continue;
+        }
+        const livePath = join(liveRoot, pathValue.slice(2));
+        if (
+          !(await fileExists(join(livePath, ".codex-plugin", "plugin.json")))
+        ) {
+          continue;
+        }
+        results.set(entry.name, {
+          name: entry.name,
+          livePath,
+          sourcePath: pathValue,
+        });
+      }
+    } catch {
+      // Ignore malformed marketplace files during adoption planning.
+    }
+  }
+
+  for (const candidateRoot of [
+    args.pluginsDir,
+    codexLegacyPluginsDir(args.homeDir, args.rootDir),
+  ]) {
+    if (!(candidateRoot && (await fileExists(candidateRoot)))) {
+      continue;
+    }
+    const entries = await readdir(candidateRoot, { withFileTypes: true }).catch(
+      () => [] as import("node:fs").Dirent[]
+    );
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) {
+        continue;
+      }
+      const livePath = join(candidateRoot, entry.name);
+      if (!(await fileExists(join(livePath, ".codex-plugin", "plugin.json")))) {
+        continue;
+      }
+      if (results.has(entry.name)) {
+        continue;
+      }
+      const relativePrefix =
+        candidateRoot === args.pluginsDir ? "./plugins/" : "./.codex/plugins/";
+      results.set(entry.name, {
+        name: entry.name,
+        livePath,
+        sourcePath: `${relativePrefix}${entry.name}`,
+      });
+    }
+  }
+
+  return Array.from(results.values()).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+}
+
+async function planExistingCodexPluginAdoption(args: {
+  homeDir: string;
+  rootDir: string;
+  pluginMarketplacePath?: string;
+  pluginsDir?: string;
+}): Promise<ExistingManagedImportPlan> {
+  const plan = emptyManagedImportPlan();
+  const canonicalMarketplacePath = codexCanonicalPluginMarketplacePath(
+    args.rootDir
+  );
+  const marketplaceRaw = args.pluginMarketplacePath
+    ? await readTextOrNull(args.pluginMarketplacePath)
+    : null;
+  if (marketplaceRaw != null) {
+    const normalizedLive = normalizeCodexMarketplaceText(marketplaceRaw);
+    const canonicalRaw = await readTextOrNull(canonicalMarketplacePath);
+    const item: ExistingManagedItem = {
+      kind: "plugin-marketplace",
+      name: "codex/plugins/marketplace.json",
+      livePath: args.pluginMarketplacePath!,
+      canonicalPath: canonicalMarketplacePath,
+    };
+    if (canonicalRaw == null) {
+      plan.adopt.push(item);
+    } else if (normalizeCodexMarketplaceText(canonicalRaw) === normalizedLive) {
+      plan.identical.push(item);
+    } else {
+      plan.conflicts.push(item);
+    }
+  }
+
+  for (const plugin of await discoverExistingCodexPluginEntries(args)) {
+    const canonicalPath = join(
+      codexCanonicalPluginsRoot(args.rootDir),
+      plugin.name
+    );
+    const canonicalHash = await hashDirectoryTree(canonicalPath);
+    const liveHash = await hashDirectoryTree(plugin.livePath);
+    const item: ExistingManagedItem = {
+      kind: "plugin",
+      name: plugin.name,
+      livePath: plugin.livePath,
+      canonicalPath,
+    };
+    if (canonicalHash == null) {
+      plan.adopt.push(item);
+    } else if (canonicalHash === liveHash) {
+      plan.identical.push(item);
+    } else {
+      plan.conflicts.push(item);
+    }
+  }
+
+  return mergeManagedImportPlans(plan);
+}
+
+async function adoptExistingCodexPlugins(args: {
+  homeDir: string;
+  rootDir: string;
+  pluginMarketplacePath?: string;
+  pluginsDir?: string;
+  conflictMode: "keep-canonical" | "keep-existing";
+}): Promise<ExistingManagedItem[]> {
+  const adopted: ExistingManagedItem[] = [];
+  const canonicalMarketplacePath = codexCanonicalPluginMarketplacePath(
+    args.rootDir
+  );
+  const marketplaceRaw = args.pluginMarketplacePath
+    ? await readTextOrNull(args.pluginMarketplacePath)
+    : null;
+  if (marketplaceRaw != null) {
+    const normalizedLive = normalizeCodexMarketplaceText(marketplaceRaw);
+    const canonicalRaw = await readTextOrNull(canonicalMarketplacePath);
+    if (canonicalRaw == null || args.conflictMode === "keep-existing") {
+      await ensureDir(dirname(canonicalMarketplacePath));
+      await Bun.write(canonicalMarketplacePath, normalizedLive);
+      adopted.push({
+        kind: "plugin-marketplace",
+        name: "codex/plugins/marketplace.json",
+        livePath: args.pluginMarketplacePath!,
+        canonicalPath: canonicalMarketplacePath,
+      });
+    }
+  }
+
+  for (const plugin of await discoverExistingCodexPluginEntries(args)) {
+    const canonicalPath = join(
+      codexCanonicalPluginsRoot(args.rootDir),
+      plugin.name
+    );
+    const canonicalHash = await hashDirectoryTree(canonicalPath);
+    const liveHash = await hashDirectoryTree(plugin.livePath);
+    if (
+      canonicalHash != null &&
+      canonicalHash !== liveHash &&
+      args.conflictMode !== "keep-existing"
+    ) {
+      continue;
+    }
+    await ensureDir(dirname(canonicalPath));
+    await rm(canonicalPath, { recursive: true, force: true });
+    await cp(plugin.livePath, canonicalPath, { recursive: true });
+    adopted.push({
+      kind: "plugin",
+      name: plugin.name,
+      livePath: plugin.livePath,
+      canonicalPath,
+    });
+  }
+
+  return adopted;
+}
+
+async function planCodexPluginFileChanges(args: {
+  rootDir: string;
+  pluginsDir: string;
+  pluginMarketplacePath?: string;
+  previouslyManagedTargets?: string[];
+}): Promise<{
+  add: string[];
+  remove: string[];
+  contents: Map<string, ManagedTargetContent>;
+  sources: Map<string, string>;
+}> {
+  const contents = new Map<string, ManagedTargetContent>();
+  const sources = new Map<string, string>();
+  const desiredPaths = new Set<string>();
+
+  const marketplace = await loadCanonicalCodexMarketplaceText(args.rootDir);
+  if (marketplace.text != null && args.pluginMarketplacePath) {
+    desiredPaths.add(args.pluginMarketplacePath);
+    contents.set(args.pluginMarketplacePath, marketplace.text);
+    sources.set(args.pluginMarketplacePath, marketplace.sourcePath);
+  }
+
+  for (const plugin of await loadCanonicalCodexPlugins(args.rootDir)) {
+    for (const [relPath, bytes] of plugin.files.entries()) {
+      const targetPath = join(args.pluginsDir, plugin.name, relPath);
+      desiredPaths.add(targetPath);
+      contents.set(targetPath, bytes);
+      sources.set(targetPath, join(plugin.sourceDir, relPath));
+    }
+  }
+
+  const add = new Set<string>();
+  for (const targetPath of desiredPaths) {
+    const currentHash = await readTargetHash(targetPath, {
+      normalizeText: false,
+    });
+    const desired = contents.get(targetPath);
+    if (desired == null) {
+      continue;
+    }
+    if (currentHash !== targetContentHash(desired, { normalizeText: false })) {
+      add.add(targetPath);
+    }
+  }
+
+  const remove = Array.from(
+    new Set(
+      (args.previouslyManagedTargets ?? []).filter((targetPath) => {
+        const inManagedRoot =
+          (args.pluginMarketplacePath != null &&
+            targetPath === args.pluginMarketplacePath) ||
+          targetPath.startsWith(join(args.pluginsDir, ""));
+        return inManagedRoot && !desiredPaths.has(targetPath);
+      })
+    )
+  ).sort();
+
+  return {
+    add: Array.from(add).sort(),
+    remove,
+    contents,
+    sources,
+  };
 }
 
 async function syncManagedToolEntry({
@@ -3243,6 +4044,7 @@ async function syncManagedToolEntry({
 
   const mcpPlan = entry.mcpConfig
     ? await syncMcpConfig({
+        homeDir,
         mcpConfigPath: entry.mcpConfig,
         rootDir,
         tool,
@@ -3302,6 +4104,15 @@ async function syncManagedToolEntry({
         managedConfig: false,
         targetPath: "",
       };
+  const pluginPlan =
+    tool === "codex" && entry.pluginsDir
+      ? await planCodexPluginFileChanges({
+          rootDir,
+          pluginsDir: entry.pluginsDir,
+          pluginMarketplacePath: entry.pluginMarketplacePath,
+          previouslyManagedTargets: Object.keys(entry.renderedTargets ?? {}),
+        })
+      : { add: [], remove: [], contents: new Map(), sources: new Map() };
 
   const agentRendered = await planRenderedTargetConflicts({
     entry,
@@ -3355,6 +4166,16 @@ async function syncManagedToolEntry({
     desiredSources: configSources,
     conflictMode: builtinConflictMode,
   });
+  const pluginRendered = await planRenderedTargetConflicts({
+    entry,
+    desiredWrites: pluginPlan.add,
+    desiredRemoves: pluginPlan.remove,
+    desiredContents: pluginPlan.contents,
+    desiredSources: pluginPlan.sources,
+    conflictMode: builtinConflictMode,
+    protectAllSources: true,
+    normalizeText: false,
+  });
 
   if (dryRun) {
     logSyncDryRun({
@@ -3382,6 +4203,11 @@ async function syncManagedToolEntry({
         targetPath: configPlan.targetPath,
       },
       configConflicts: configRendered.conflicts,
+      pluginPlan: {
+        write: pluginRendered.write,
+        remove: pluginRendered.remove,
+      },
+      pluginConflicts: pluginRendered.conflicts,
     });
   } else {
     await applyRenderedRemoves(agentRendered.remove);
@@ -3412,11 +4238,20 @@ async function syncManagedToolEntry({
       contents: configContents,
       targets: configRendered.write,
     });
+    await applyRenderedRemoves(pluginRendered.remove);
+    await applyRenderedWrites({
+      contents: pluginPlan.contents,
+      targets: pluginRendered.write,
+    });
+    if (entry.pluginsDir) {
+      await pruneEmptyParents(pluginRendered.remove, entry.pluginsDir);
+    }
     logRenderedConflicts(tool, agentRendered.conflicts);
     logRenderedConflicts(tool, automationRendered.conflicts);
     logRenderedConflicts(tool, globalDocsRendered.conflicts);
     logRenderedConflicts(tool, rulesRendered.conflicts);
     logRenderedConflicts(tool, configRendered.conflicts);
+    logRenderedConflicts(tool, pluginRendered.conflicts);
 
     updateRenderedTargetState({
       entry,
@@ -3452,6 +4287,14 @@ async function syncManagedToolEntry({
       removedTargets: configRendered.remove,
       contents: configContents,
       sources: configSources,
+    });
+    updateRenderedTargetState({
+      entry,
+      writtenTargets: pluginRendered.write,
+      removedTargets: pluginRendered.remove,
+      contents: pluginPlan.contents,
+      sources: pluginPlan.sources,
+      normalizeText: false,
     });
 
     for (const name of adoptedSkills) {
