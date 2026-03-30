@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { projectRootFromAiRoot } from "./paths";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -39,7 +40,8 @@ function readBooleanConfig(
 }
 
 export async function builtinSyncDefaultsEnabled(
-  rootDir: string
+  rootDir: string,
+  homeDir?: string
 ): Promise<boolean> {
   const [tracked, local] = await Promise.all([
     readTomlObject(join(rootDir, "config.toml")),
@@ -55,6 +57,10 @@ export async function builtinSyncDefaultsEnabled(
     if (legacy != null) {
       return legacy;
     }
+  }
+
+  if (projectRootFromAiRoot(rootDir, homeDir) != null) {
+    return false;
   }
 
   return true;

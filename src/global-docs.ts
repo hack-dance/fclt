@@ -156,13 +156,14 @@ function stringifyTomlObject(obj: Record<string, unknown>): string {
 }
 
 async function listGlobalDocSources(args: {
+  homeDir: string;
   rootDir: string;
   tool: string;
   toolHome: string;
 }): Promise<SourceTarget[]> {
-  const { rootDir, tool, toolHome } = args;
+  const { homeDir, rootDir, tool, toolHome } = args;
   const targets = globalDocTargetPaths(tool, toolHome);
-  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(rootDir);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(rootDir, homeDir);
 
   const candidates: SourceTarget[] = [];
   const base = join(rootDir, "AGENTS.global.md");

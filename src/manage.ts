@@ -858,7 +858,10 @@ async function loadEnabledSkillEntries(args: {
   tool: string;
 }): Promise<{ name: string; path: string }[]> {
   const index = await loadMergedIndex(args.homeDir, args.rootDir);
-  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(args.rootDir);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
+    args.rootDir,
+    args.homeDir
+  );
   const out: { name: string; path: string }[] = [];
 
   for (const [name, entry] of Object.entries(index.skills)) {
@@ -894,7 +897,10 @@ async function loadManagedAgentEntries(args: {
   rootDir: string;
 }): Promise<{ name: string; sourcePath: string; raw: string }[]> {
   const index = await loadMergedIndex(args.homeDir, args.rootDir);
-  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(args.rootDir);
+  const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
+    args.rootDir,
+    args.homeDir
+  );
   const out: { name: string; sourcePath: string; raw: string }[] = [];
 
   for (const [name, entry] of Object.entries(index.agents)) {

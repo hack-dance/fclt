@@ -1201,6 +1201,25 @@ describe("syncManagedTools", () => {
     expect(JSON.parse(managedRaw).tools.codex.agentsDir).toBe(
       join(projectRoot, ".codex", "agents")
     );
+    expect(
+      await Bun.file(
+        join(
+          projectRoot,
+          ".agents",
+          "skills",
+          "capability-evolution",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        join(projectRoot, ".codex", "agents", "writeback-curator.toml")
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(join(projectRoot, ".codex", "AGENTS.md")).exists()
+    ).toBe(false);
   });
 
   it("reconciles rendered codex agents on sync", async () => {
