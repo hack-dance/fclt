@@ -393,6 +393,26 @@ describe("managed state", () => {
     );
   });
 
+  it("does not create codex plugin output dirs when no canonical plugin content exists", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    expect(await Bun.file(join(home, "plugins")).exists()).toBe(false);
+    expect(
+      await Bun.file(
+        join(home, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
+  });
+
   it("preserves local edits on builtin-backed global docs unless overwrite is requested", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
@@ -1237,6 +1257,49 @@ describe("syncManagedTools", () => {
     expect(await Bun.file(join(projectRoot, "plugins")).exists()).toBe(false);
   });
 
+  it("ignores repo-local codex plugin payloads when managing a project root", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await mkdir(
+      join(projectRoot, ".codex", "plugins", "legacy-plugin", ".codex-plugin"),
+      {
+        recursive: true,
+      }
+    );
+    await Bun.write(
+      join(
+        projectRoot,
+        ".codex",
+        "plugins",
+        "legacy-plugin",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      JSON.stringify({ name: "legacy-plugin", version: "0.1.0" }, null, 2)
+    );
+
+    await manageTool("codex", { homeDir: home, rootDir });
+
+    expect(
+      await Bun.file(
+        join(
+          rootDir,
+          "tools",
+          "codex",
+          "plugins",
+          "legacy-plugin",
+          ".codex-plugin",
+          "plugin.json"
+        )
+      ).exists()
+    ).toBe(false);
+    expect(await Bun.file(join(projectRoot, "plugins")).exists()).toBe(false);
+  });
+
   it("does not sync global skills into project-managed codex without explicit opt-in", async () => {
     const home = await createTempDir();
     const globalRoot = join(home, ".ai");
@@ -1785,6 +1848,9 @@ describe("syncManagedTools", () => {
     expect(repairedState.tools.codex?.pluginsDir).toBe(join(home, "plugins"));
     expect(repairedState.tools.codex?.pluginMarketplacePath).toBe(
       join(home, ".agents", "plugins", "marketplace.json")
+    );
+    expect(repairedState.tools.codex?.skillsBackup).toBe(
+      join(home, ".codex", "skills.bak")
     );
 
     const globalAgents = await readFile(

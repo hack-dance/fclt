@@ -354,9 +354,8 @@ async function listProjectMcpNames(rootDir: string): Promise<string[]> {
     try {
       const raw = await Bun.file(candidate).text();
       const parsed = JSON.parse(raw) as unknown;
-      return Object.keys(extractServersObject(parsed)).sort((a, b) =>
-        a.localeCompare(b)
-      );
+      const servers = extractServersObject(parsed) ?? {};
+      return Object.keys(servers).sort((a, b) => a.localeCompare(b));
     } catch {
       // Try next candidate.
     }
