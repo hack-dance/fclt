@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildIndex } from "./index-builder";
@@ -24,34 +25,33 @@ async function newestPathMtime(path: string): Promise<number> {
     if (!st.isDirectory()) {
       return 0;
     }
-  } catch {
-    return 0;
-  }
+    let newest = st.mtimeMs;
+    let entries: Dirent<string>[] = [];
+    try {
+      entries = await readdir(path, { withFileTypes: true, encoding: "utf8" });
+    } catch {
+      return newest;
+    }
 
-  let newest = 0;
-  let entries: Awaited<ReturnType<typeof readdir>> = [];
-  try {
-    entries = await readdir(path, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
-  for (const entry of entries) {
-    const child = join(path, entry.name);
-    if (entry.isFile()) {
-      try {
-        const st = await stat(child);
-        newest = Math.max(newest, st.mtimeMs);
-      } catch {
-        // ignore unreadable children
+    for (const entry of entries) {
+      const child = join(path, entry.name);
+      if (entry.isFile()) {
+        try {
+          const childStat = await stat(child);
+          newest = Math.max(newest, childStat.mtimeMs);
+        } catch {
+          // ignore unreadable children
+        }
+        continue;
       }
-      continue;
+      if (entry.isDirectory()) {
+        newest = Math.max(newest, await newestPathMtime(child));
+      }
     }
-    if (entry.isDirectory()) {
-      newest = Math.max(newest, await newestPathMtime(child));
-    }
+    return newest;
+  } catch {
+    return 0;
   }
-  return newest;
 }
 
 async function canonicalAssetsNewerThanIndex(args: {
@@ -67,6 +67,7 @@ async function canonicalAssetsNewerThanIndex(args: {
 
   const watchRoots = [
     "AGENTS.global.md",
+    "AGENTS.override.global.md",
     "agents",
     "instructions",
     "skills",

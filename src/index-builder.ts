@@ -69,6 +69,12 @@ export interface AgentEntry {
   path: string;
   description?: string;
   lastModifiedAt?: string;
+  enabledFor?: string[];
+  trusted?: boolean;
+  trustedAt?: string;
+  trustedBy?: string;
+  auditStatus?: "pending" | "passed" | "flagged";
+  lastAuditAt?: string;
 }
 
 export interface SnippetEntry {
