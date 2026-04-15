@@ -28,6 +28,87 @@ afterEach(async () => {
 });
 
 describe("ai-state freshness repair", () => {
+  it("rebuilds a project index when merged global assets change", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const globalRoot = join(tempHome, ".ai");
+    const projectRoot = join(tempHome, "work", "repo", ".ai");
+    const globalAgentDir = join(globalRoot, "agents", "global-agent");
+    await mkdir(globalAgentDir, { recursive: true });
+    await mkdir(projectRoot, { recursive: true });
+    await Bun.write(
+      join(globalAgentDir, "agent.toml"),
+      'description = "Global agent"\n'
+    );
+    await Bun.write(join(projectRoot, "AGENTS.global.md"), "Project guidance\n");
+
+    await buildIndex({ rootDir: projectRoot, homeDir: tempHome });
+    const indexPath = facultAiIndexPath(tempHome, projectRoot);
+    const now = Date.now();
+    await utimes(indexPath, now / 1000 - 120, now / 1000 - 120);
+    await Bun.write(
+      join(globalAgentDir, "agent.toml"),
+      'description = "Updated global agent"\n'
+    );
+    await utimes(join(globalAgentDir, "agent.toml"), now / 1000, now / 1000);
+
+    const result = await ensureAiIndexPath({
+      homeDir: tempHome,
+      rootDir: projectRoot,
+      repair: true,
+    });
+
+    expect(result).toEqual({
+      path: facultAiIndexPath(tempHome, projectRoot),
+      repaired: true,
+      source: "rebuilt",
+    });
+  });
+
+  it("rebuilds a project graph when merged global assets change", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const globalRoot = join(tempHome, ".ai");
+    const projectRoot = join(tempHome, "work", "repo", ".ai");
+    const globalInstructionDir = join(globalRoot, "instructions");
+    await mkdir(globalInstructionDir, { recursive: true });
+    await mkdir(projectRoot, { recursive: true });
+    await Bun.write(
+      join(globalInstructionDir, "GLOBAL.md"),
+      "# Global\n\nInitial global instruction.\n"
+    );
+    await Bun.write(join(projectRoot, "AGENTS.global.md"), "Project guidance\n");
+
+    await buildIndex({ rootDir: projectRoot, homeDir: tempHome });
+    const graphPath = facultAiGraphPath(tempHome, projectRoot);
+    const indexPath = facultAiIndexPath(tempHome, projectRoot);
+    const now = Date.now();
+    await utimes(graphPath, now / 1000 - 120, now / 1000 - 120);
+    await utimes(indexPath, now / 1000 - 120, now / 1000 - 120);
+    await Bun.write(
+      join(globalInstructionDir, "GLOBAL.md"),
+      "# Global\n\nUpdated global instruction.\n"
+    );
+    await utimes(
+      join(globalInstructionDir, "GLOBAL.md"),
+      now / 1000,
+      now / 1000
+    );
+
+    const result = await ensureAiGraphPath({
+      homeDir: tempHome,
+      rootDir: projectRoot,
+      repair: true,
+    });
+
+    expect(result).toEqual({
+      path: facultAiGraphPath(tempHome, projectRoot),
+      rebuilt: true,
+    });
+  });
+
   it("rebuilds the graph when AGENTS.override.global.md changes", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

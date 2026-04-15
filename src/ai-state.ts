@@ -6,6 +6,8 @@ import {
   facultAiGraphPath,
   facultAiIndexPath,
   legacyFacultStateDirForRoot,
+  preferredGlobalAiRoot,
+  projectRootFromAiRoot,
 } from "./paths";
 
 async function fileExists(path: string): Promise<boolean> {
@@ -67,6 +69,7 @@ async function watchedPathMtime(path: string): Promise<number> {
 }
 
 async function canonicalAssetsNewerThanIndex(args: {
+  homeDir: string;
   rootDir: string;
   indexPath: string;
 }): Promise<boolean> {
@@ -77,7 +80,7 @@ async function canonicalAssetsNewerThanIndex(args: {
     return true;
   }
 
-  const watchRoots = [
+  const watchedRelPaths = [
     "AGENTS.global.md",
     "AGENTS.override.global.md",
     "agents",
@@ -87,11 +90,21 @@ async function canonicalAssetsNewerThanIndex(args: {
     "skills",
     "snippets",
     "tools",
-  ].map((rel) => join(args.rootDir, rel));
+  ];
+  const watchedRoots = [args.rootDir];
 
-  for (const watchRoot of watchRoots) {
-    if ((await watchedPathMtime(watchRoot)) > indexMtimeMs) {
-      return true;
+  if (projectRootFromAiRoot(args.rootDir, args.homeDir)) {
+    const globalRoot = preferredGlobalAiRoot(args.homeDir);
+    if (globalRoot !== args.rootDir) {
+      watchedRoots.push(globalRoot);
+    }
+  }
+
+  for (const root of watchedRoots) {
+    for (const rel of watchedRelPaths) {
+      if ((await watchedPathMtime(join(root, rel))) > indexMtimeMs) {
+        return true;
+      }
     }
   }
 
@@ -132,6 +145,7 @@ export async function ensureAiIndexPath(args: {
     if (
       args.repair !== false &&
       (await canonicalAssetsNewerThanIndex({
+        homeDir: args.homeDir,
         rootDir: args.rootDir,
         indexPath: generatedPath,
       }))
@@ -204,6 +218,7 @@ export async function ensureAiGraphPath(args: {
     if (
       args.repair !== false &&
       (await canonicalAssetsNewerThanIndex({
+        homeDir: args.homeDir,
         rootDir: args.rootDir,
         indexPath: freshnessAnchor,
       }))
