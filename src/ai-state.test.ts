@@ -41,7 +41,10 @@ describe("ai-state freshness repair", () => {
       join(globalAgentDir, "agent.toml"),
       'description = "Global agent"\n'
     );
-    await Bun.write(join(projectRoot, "AGENTS.global.md"), "Project guidance\n");
+    await Bun.write(
+      join(projectRoot, "AGENTS.global.md"),
+      "Project guidance\n"
+    );
 
     await buildIndex({ rootDir: projectRoot, homeDir: tempHome });
     const indexPath = facultAiIndexPath(tempHome, projectRoot);
@@ -79,7 +82,10 @@ describe("ai-state freshness repair", () => {
       join(globalInstructionDir, "GLOBAL.md"),
       "# Global\n\nInitial global instruction.\n"
     );
-    await Bun.write(join(projectRoot, "AGENTS.global.md"), "Project guidance\n");
+    await Bun.write(
+      join(projectRoot, "AGENTS.global.md"),
+      "Project guidance\n"
+    );
 
     await buildIndex({ rootDir: projectRoot, homeDir: tempHome });
     const graphPath = facultAiGraphPath(tempHome, projectRoot);
