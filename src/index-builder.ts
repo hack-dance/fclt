@@ -205,18 +205,20 @@ function extractIndexMeta(entry: unknown): {
 
 function findPreviousEntryByCanonicalRef(
   previous: Record<string, unknown> | undefined,
-  canonicalRef: string,
+  canonicalRef: string | undefined,
   fallbackName: string
 ): unknown {
   if (!previous) {
     return undefined;
   }
-  for (const value of Object.values(previous)) {
-    if (!isPlainObject(value)) {
-      continue;
-    }
-    if (value.canonicalRef === canonicalRef) {
-      return value;
+  if (typeof canonicalRef === "string") {
+    for (const value of Object.values(previous)) {
+      if (!isPlainObject(value)) {
+        continue;
+      }
+      if (value.canonicalRef === canonicalRef) {
+        return value;
+      }
     }
   }
   const legacyFallback = previous[fallbackName];
@@ -231,7 +233,7 @@ function findPreviousEntryByCanonicalRef(
 
 function findPreviousMcpEntry(
   previous: Record<string, unknown> | undefined,
-  canonicalRef: string,
+  canonicalRef: string | undefined,
   name: string
 ): unknown {
   if (!previous) {
@@ -242,7 +244,8 @@ function findPreviousMcpEntry(
     return undefined;
   }
   return typeof candidate.canonicalRef !== "string" ||
-    candidate.canonicalRef === canonicalRef
+    (typeof canonicalRef === "string" &&
+      candidate.canonicalRef === canonicalRef)
     ? candidate
     : undefined;
 }
