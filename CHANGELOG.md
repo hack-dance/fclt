@@ -1,3 +1,16 @@
+## [2.7.2](https://github.com/hack-dance/fclt/compare/v2.7.1...v2.7.2) (2026-04-15)
+
+### Bug Fixes
+
+* accept missing canonical refs in index carry-forward ([188482b](https://github.com/hack-dance/fclt/commit/188482baf548b279a720a89ec57e59f534d89bea))
+* harden stale ai state rebuilds ([7425e87](https://github.com/hack-dance/fclt/commit/7425e87d853013892c780aaa2d83588f8046b2d5))
+* keep agent metadata scoped to canonical refs ([7979fcc](https://github.com/hack-dance/fclt/commit/7979fcc9cfd0b84635a7acaa167aaef7395d51ce))
+* preserve ai metadata on stale rebuild ([e419942](https://github.com/hack-dance/fclt/commit/e4199424599c9e11f163379a433edae02c8d0fec))
+* preserve mcp metadata per server ([0f2b356](https://github.com/hack-dance/fclt/commit/0f2b3567e39a7fb06b4f39b630fa15dba4044c95))
+* rebuild stale generated ai indexes ([f6ba099](https://github.com/hack-dance/fclt/commit/f6ba099a2389fb54ae6e76ee7de62c1846a12387))
+* watch global ai inputs for project rebuilds ([2d9a435](https://github.com/hack-dance/fclt/commit/2d9a435f880ee6068592fb288d18f4af4e934f6b))
+* watch graph config and tool inputs ([d8169b2](https://github.com/hack-dance/fclt/commit/d8169b24d02c447cc76badf79003535e754e8785))
+
 ## [2.7.1](https://github.com/hack-dance/fclt/compare/v2.7.0...v2.7.1) (2026-03-30)
 
 ### Bug Fixes
