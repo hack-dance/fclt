@@ -1,10 +1,13 @@
-import { copyFile, mkdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildIndex } from "./index-builder";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
   legacyFacultStateDirForRoot,
+  preferredGlobalAiRoot,
+  projectRootFromAiRoot,
 } from "./paths";
 
 async function fileExists(path: string): Promise<boolean> {
@@ -13,6 +16,99 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function newestPathMtime(path: string): Promise<number> {
+  try {
+    const st = await stat(path);
+    if (st.isFile()) {
+      return st.mtimeMs;
+    }
+    if (!st.isDirectory()) {
+      return 0;
+    }
+    let newest = st.mtimeMs;
+    let entries: Dirent<string>[] = [];
+    try {
+      entries = await readdir(path, { withFileTypes: true, encoding: "utf8" });
+    } catch {
+      return newest;
+    }
+
+    for (const entry of entries) {
+      const child = join(path, entry.name);
+      if (entry.isFile()) {
+        try {
+          const childStat = await stat(child);
+          newest = Math.max(newest, childStat.mtimeMs);
+        } catch {
+          // ignore unreadable children
+        }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        newest = Math.max(newest, await newestPathMtime(child));
+      }
+    }
+    return newest;
+  } catch {
+    return 0;
+  }
+}
+
+async function watchedPathMtime(path: string): Promise<number> {
+  const newest = await newestPathMtime(path);
+  if (newest > 0) {
+    return newest;
+  }
+  try {
+    return (await stat(dirname(path))).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+async function canonicalAssetsNewerThanIndex(args: {
+  homeDir: string;
+  rootDir: string;
+  indexPath: string;
+}): Promise<boolean> {
+  let indexMtimeMs = 0;
+  try {
+    indexMtimeMs = (await stat(args.indexPath)).mtimeMs;
+  } catch {
+    return true;
+  }
+
+  const watchedRelPaths = [
+    "AGENTS.global.md",
+    "AGENTS.override.global.md",
+    "agents",
+    "config.toml",
+    "instructions",
+    "mcp",
+    "skills",
+    "snippets",
+    "tools",
+  ];
+  const watchedRoots = [args.rootDir];
+
+  if (projectRootFromAiRoot(args.rootDir, args.homeDir)) {
+    const globalRoot = preferredGlobalAiRoot(args.homeDir);
+    if (globalRoot !== args.rootDir) {
+      watchedRoots.push(globalRoot);
+    }
+  }
+
+  for (const root of watchedRoots) {
+    for (const rel of watchedRelPaths) {
+      if ((await watchedPathMtime(join(root, rel))) > indexMtimeMs) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 export function legacyAiIndexPath(rootDir: string): string {
@@ -46,6 +142,21 @@ export async function ensureAiIndexPath(args: {
 }> {
   const generatedPath = facultAiIndexPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
+    if (
+      args.repair !== false &&
+      (await canonicalAssetsNewerThanIndex({
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+        indexPath: generatedPath,
+      }))
+    ) {
+      const { outputPath } = await buildIndex({
+        rootDir: args.rootDir,
+        homeDir: args.homeDir,
+        force: false,
+      });
+      return { path: outputPath, repaired: true, source: "rebuilt" };
+    }
     return { path: generatedPath, repaired: false, source: "generated" };
   }
 
@@ -100,6 +211,25 @@ export async function ensureAiGraphPath(args: {
 }> {
   const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
+    const generatedIndexPath = facultAiIndexPath(args.homeDir, args.rootDir);
+    const freshnessAnchor = (await fileExists(generatedIndexPath))
+      ? generatedIndexPath
+      : generatedPath;
+    if (
+      args.repair !== false &&
+      (await canonicalAssetsNewerThanIndex({
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+        indexPath: freshnessAnchor,
+      }))
+    ) {
+      const { graphPath } = await buildIndex({
+        rootDir: args.rootDir,
+        homeDir: args.homeDir,
+        force: false,
+      });
+      return { path: graphPath, rebuilt: true };
+    }
     return { path: generatedPath, rebuilt: false };
   }
 

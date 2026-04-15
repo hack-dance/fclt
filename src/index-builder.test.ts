@@ -181,6 +181,94 @@ describe("buildIndex", () => {
     expect(rebuilt.mcp.servers["my-server"].auditStatus).toBe("passed");
   });
 
+  it("preserves MCP metadata per server when multiple servers share one config file", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = facultRootDir(tempHome);
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "mcp", "servers.json"),
+      JSON.stringify(
+        {
+          servers: {
+            alpha: { command: "node", args: ["alpha"] },
+            beta: { command: "node", args: ["beta"] },
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const first = await buildIndex({ rootDir });
+    const parsed = JSON.parse(await Bun.file(first.outputPath).text()) as any;
+    parsed.mcp.servers.alpha.enabledFor = ["cursor"];
+    parsed.mcp.servers.alpha.trusted = true;
+    parsed.mcp.servers.alpha.auditStatus = "passed";
+    parsed.mcp.servers.beta.enabledFor = ["codex"];
+    parsed.mcp.servers.beta.trusted = false;
+    parsed.mcp.servers.beta.auditStatus = "flagged";
+    await Bun.write(first.outputPath, `${JSON.stringify(parsed, null, 2)}\n`);
+
+    const second = await buildIndex({ rootDir });
+    const rebuilt = JSON.parse(await Bun.file(second.outputPath).text()) as any;
+
+    expect(rebuilt.mcp.servers.alpha.enabledFor).toEqual(["cursor"]);
+    expect(rebuilt.mcp.servers.alpha.trusted).toBe(true);
+    expect(rebuilt.mcp.servers.alpha.auditStatus).toBe("passed");
+    expect(rebuilt.mcp.servers.beta.enabledFor).toEqual(["codex"]);
+    expect(rebuilt.mcp.servers.beta.trusted).toBe(false);
+    expect(rebuilt.mcp.servers.beta.auditStatus).toBe("flagged");
+  });
+
+  it("does not leak agent trust metadata across source layers that share a name", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const globalRoot = join(tempHome, ".ai");
+    await mkdir(join(globalRoot, "agents", "shared-agent"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(globalRoot, "agents", "shared-agent", "agent.toml"),
+      'description = "Global agent"\n'
+    );
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(rootDir, { recursive: true });
+
+    const first = await buildIndex({ rootDir, homeDir: tempHome });
+    const firstParsed = JSON.parse(
+      await Bun.file(first.outputPath).text()
+    ) as any;
+    firstParsed.agents["shared-agent"].trusted = true;
+    firstParsed.agents["shared-agent"].trustedAt = "2026-02-08T00:00:00.000Z";
+    firstParsed.agents["shared-agent"].trustedBy = "user";
+    await Bun.write(
+      first.outputPath,
+      `${JSON.stringify(firstParsed, null, 2)}\n`
+    );
+
+    await mkdir(join(rootDir, "agents", "shared-agent"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "agents", "shared-agent", "agent.toml"),
+      'description = "Project agent"\n'
+    );
+
+    const second = await buildIndex({ rootDir, homeDir: tempHome });
+    const rebuilt = JSON.parse(await Bun.file(second.outputPath).text()) as any;
+
+    expect(rebuilt.agents["shared-agent"].sourceKind).toBe("project");
+    expect(rebuilt.agents["shared-agent"].trusted).toBe(false);
+    expect(rebuilt.agents["shared-agent"].trustedAt).toBeUndefined();
+    expect(rebuilt.agents["shared-agent"].trustedBy).toBeUndefined();
+    expect(rebuilt.agents["shared-agent"].canonicalRef).toBe(
+      "@project/agents/shared-agent/agent.toml"
+    );
+  });
+
   it("builds a project-scoped merged index and graph with builtin, global, and project provenance", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

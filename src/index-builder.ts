@@ -69,6 +69,12 @@ export interface AgentEntry {
   path: string;
   description?: string;
   lastModifiedAt?: string;
+  enabledFor?: string[];
+  trusted?: boolean;
+  trustedAt?: string;
+  trustedBy?: string;
+  auditStatus?: "pending" | "passed" | "flagged";
+  lastAuditAt?: string;
 }
 
 export interface SnippetEntry {
@@ -195,6 +201,53 @@ function extractIndexMeta(entry: unknown): {
     auditStatus,
     lastAuditAt,
   };
+}
+
+function findPreviousEntryByCanonicalRef(
+  previous: Record<string, unknown> | undefined,
+  canonicalRef: string | undefined,
+  fallbackName: string
+): unknown {
+  if (!previous) {
+    return undefined;
+  }
+  if (typeof canonicalRef === "string") {
+    for (const value of Object.values(previous)) {
+      if (!isPlainObject(value)) {
+        continue;
+      }
+      if (value.canonicalRef === canonicalRef) {
+        return value;
+      }
+    }
+  }
+  const legacyFallback = previous[fallbackName];
+  if (
+    isPlainObject(legacyFallback) &&
+    typeof legacyFallback.canonicalRef !== "string"
+  ) {
+    return legacyFallback;
+  }
+  return undefined;
+}
+
+function findPreviousMcpEntry(
+  previous: Record<string, unknown> | undefined,
+  canonicalRef: string | undefined,
+  name: string
+): unknown {
+  if (!previous) {
+    return undefined;
+  }
+  const candidate = previous[name];
+  if (!isPlainObject(candidate)) {
+    return undefined;
+  }
+  return typeof candidate.canonicalRef !== "string" ||
+    (typeof canonicalRef === "string" &&
+      candidate.canonicalRef === canonicalRef)
+    ? candidate
+    : undefined;
 }
 
 function stripQuotes(s: string): string {
@@ -489,8 +542,12 @@ async function indexSkills(
       const md = await Bun.file(skillMd).text();
       const { description, tags } = parseSkillMarkdown(md);
       const name = basename(d);
-
-      const prev = previous?.[name];
+      const canonicalRef = canonicalRefForPath(source, "skills", d);
+      const prev = findPreviousEntryByCanonicalRef(
+        previous,
+        canonicalRef,
+        name
+      );
       const meta = extractIndexMeta(prev);
 
       out[name] = {
@@ -498,7 +555,7 @@ async function indexSkills(
         path: d,
         description,
         tags,
-        canonicalRef: canonicalRefForPath(source, "skills", d),
+        canonicalRef,
         lastModifiedAt: await statIsoTime(skillMd),
         enabledFor: meta.enabledFor,
         trusted: meta.trusted ?? false,
@@ -550,12 +607,13 @@ async function indexMcpServers(
 
     const lm = await statIsoTime(mcpConfigPath);
     for (const name of Object.keys(serversObj).sort()) {
-      const prev = previous?.[name];
+      const canonicalRef = canonicalRefForPath(source, "mcp", mcpConfigPath);
+      const prev = findPreviousMcpEntry(previous, canonicalRef, name);
       const meta = extractIndexMeta(prev);
       out[name] = {
         name,
         path: mcpConfigPath,
-        canonicalRef: canonicalRefForPath(source, "mcp", mcpConfigPath),
+        canonicalRef,
         lastModifiedAt: lm,
         definition: serversObj[name],
         enabledFor: meta.enabledFor,
@@ -576,7 +634,8 @@ async function indexMcpServers(
 
 async function indexAgents(
   agentsDir: string,
-  source: IndexedSource
+  source: IndexedSource,
+  previous?: Record<string, unknown>
 ): Promise<Record<string, AgentEntry>> {
   const out: Record<string, AgentEntry> = {};
   const files: string[] = [];
@@ -596,6 +655,9 @@ async function indexAgents(
   for (const p of files) {
     const name =
       basename(p) === "agent.toml" ? basename(dirname(p)) : basename(p);
+    const canonicalRef = canonicalRefForPath(source, "agents", p);
+    const prev = findPreviousEntryByCanonicalRef(previous, canonicalRef, name);
+    const meta = extractIndexMeta(prev);
     let description: string | undefined;
     try {
       const raw = await Bun.file(p).text();
@@ -611,8 +673,14 @@ async function indexAgents(
       name,
       path: p,
       description,
-      canonicalRef: canonicalRefForPath(source, "agents", p),
+      canonicalRef,
       lastModifiedAt: await statIsoTime(p),
+      enabledFor: meta.enabledFor,
+      trusted: meta.trusted ?? false,
+      trustedAt: meta.trustedAt,
+      trustedBy: meta.trustedBy,
+      auditStatus: meta.auditStatus ?? "pending",
+      lastAuditAt: meta.lastAuditAt,
       ...entryScopeMeta(source),
     };
   }
@@ -782,6 +850,9 @@ async function indexSourceAssets(
   const prevSkills = isPlainObject(previousIndex?.skills)
     ? (previousIndex?.skills as Record<string, unknown>)
     : undefined;
+  const prevAgents = isPlainObject(previousIndex?.agents)
+    ? (previousIndex?.agents as Record<string, unknown>)
+    : undefined;
   const prevMcpMap =
     isPlainObject(previousIndex?.mcp) &&
     isPlainObject((previousIndex.mcp as Record<string, unknown>).servers)
@@ -795,7 +866,7 @@ async function indexSourceAssets(
     await Promise.all([
       indexSkills(skillsDir, source, prevSkills),
       indexMcpServers(canonicalMcpPath, source, prevMcpMap),
-      indexAgents(agentsDir, source),
+      indexAgents(agentsDir, source, prevAgents),
       indexSnippets(snippetsDir, source),
       indexInstructions(instructionsDir, source),
       indexToolAssets(toolsDir, source),
