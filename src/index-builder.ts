@@ -229,6 +229,24 @@ function findPreviousEntryByCanonicalRef(
   return undefined;
 }
 
+function findPreviousMcpEntry(
+  previous: Record<string, unknown> | undefined,
+  canonicalRef: string,
+  name: string
+): unknown {
+  if (!previous) {
+    return undefined;
+  }
+  const candidate = previous[name];
+  if (!isPlainObject(candidate)) {
+    return undefined;
+  }
+  return typeof candidate.canonicalRef !== "string" ||
+    candidate.canonicalRef === canonicalRef
+    ? candidate
+    : undefined;
+}
+
 function stripQuotes(s: string): string {
   const t = s.trim();
   if (
@@ -587,11 +605,7 @@ async function indexMcpServers(
     const lm = await statIsoTime(mcpConfigPath);
     for (const name of Object.keys(serversObj).sort()) {
       const canonicalRef = canonicalRefForPath(source, "mcp", mcpConfigPath);
-      const prev = findPreviousEntryByCanonicalRef(
-        previous,
-        canonicalRef,
-        name
-      );
+      const prev = findPreviousMcpEntry(previous, canonicalRef, name);
       const meta = extractIndexMeta(prev);
       out[name] = {
         name,

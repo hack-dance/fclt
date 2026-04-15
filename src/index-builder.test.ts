@@ -181,6 +181,47 @@ describe("buildIndex", () => {
     expect(rebuilt.mcp.servers["my-server"].auditStatus).toBe("passed");
   });
 
+  it("preserves MCP metadata per server when multiple servers share one config file", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = facultRootDir(tempHome);
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "mcp", "servers.json"),
+      JSON.stringify(
+        {
+          servers: {
+            alpha: { command: "node", args: ["alpha"] },
+            beta: { command: "node", args: ["beta"] },
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const first = await buildIndex({ rootDir });
+    const parsed = JSON.parse(await Bun.file(first.outputPath).text()) as any;
+    parsed.mcp.servers.alpha.enabledFor = ["cursor"];
+    parsed.mcp.servers.alpha.trusted = true;
+    parsed.mcp.servers.alpha.auditStatus = "passed";
+    parsed.mcp.servers.beta.enabledFor = ["codex"];
+    parsed.mcp.servers.beta.trusted = false;
+    parsed.mcp.servers.beta.auditStatus = "flagged";
+    await Bun.write(first.outputPath, `${JSON.stringify(parsed, null, 2)}\n`);
+
+    const second = await buildIndex({ rootDir });
+    const rebuilt = JSON.parse(await Bun.file(second.outputPath).text()) as any;
+
+    expect(rebuilt.mcp.servers.alpha.enabledFor).toEqual(["cursor"]);
+    expect(rebuilt.mcp.servers.alpha.trusted).toBe(true);
+    expect(rebuilt.mcp.servers.alpha.auditStatus).toBe("passed");
+    expect(rebuilt.mcp.servers.beta.enabledFor).toEqual(["codex"]);
+    expect(rebuilt.mcp.servers.beta.trusted).toBe(false);
+    expect(rebuilt.mcp.servers.beta.auditStatus).toBe("flagged");
+  });
+
   it("does not leak agent trust metadata across source layers that share a name", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
