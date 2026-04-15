@@ -68,6 +68,105 @@ describe("ai-state freshness repair", () => {
     });
   });
 
+  it("rebuilds the graph when AGENTS.override.global.md is removed", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(join(rootDir, "AGENTS.global.md"), "Global guidance\n");
+    const overridePath = join(rootDir, "AGENTS.override.global.md");
+    await Bun.write(overridePath, "Initial override guidance\n");
+
+    await buildIndex({ rootDir, homeDir: tempHome });
+    const graphPath = facultAiGraphPath(tempHome, rootDir);
+    const indexPath = facultAiIndexPath(tempHome, rootDir);
+    const now = Date.now();
+    await utimes(graphPath, now / 1000 - 120, now / 1000 - 120);
+    await utimes(indexPath, now / 1000 - 120, now / 1000 - 120);
+    await rm(overridePath);
+
+    const result = await ensureAiGraphPath({
+      homeDir: tempHome,
+      rootDir,
+      repair: true,
+    });
+
+    expect(result).toEqual({
+      path: facultAiGraphPath(tempHome, rootDir),
+      rebuilt: true,
+    });
+  });
+
+  it("rebuilds the graph when config.toml changes", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(join(rootDir, "AGENTS.global.md"), "Global guidance\n");
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      '[refs]\npolicy = "@ai/instructions/WRITING.md"\n'
+    );
+
+    await buildIndex({ rootDir, homeDir: tempHome });
+    const graphPath = facultAiGraphPath(tempHome, rootDir);
+    const indexPath = facultAiIndexPath(tempHome, rootDir);
+    const now = Date.now();
+    await utimes(graphPath, now / 1000 - 120, now / 1000 - 120);
+    await utimes(indexPath, now / 1000 - 120, now / 1000 - 120);
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      '[refs]\npolicy = "@ai/instructions/VERIFICATION.md"\n'
+    );
+    await utimes(join(rootDir, "config.toml"), now / 1000, now / 1000);
+
+    const result = await ensureAiGraphPath({
+      homeDir: tempHome,
+      rootDir,
+      repair: true,
+    });
+
+    expect(result).toEqual({
+      path: facultAiGraphPath(tempHome, rootDir),
+      rebuilt: true,
+    });
+  });
+
+  it("rebuilds the graph when tool assets change", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    const toolDir = join(rootDir, "tools", "codex");
+    const ruleDir = join(toolDir, "rules");
+    await mkdir(ruleDir, { recursive: true });
+    await Bun.write(join(rootDir, "AGENTS.global.md"), "Global guidance\n");
+    await Bun.write(join(toolDir, "config.toml"), 'name = "Codex"\n');
+    await Bun.write(join(ruleDir, "default.rules"), "Rule one\n");
+
+    await buildIndex({ rootDir, homeDir: tempHome });
+    const graphPath = facultAiGraphPath(tempHome, rootDir);
+    const indexPath = facultAiIndexPath(tempHome, rootDir);
+    const now = Date.now();
+    await utimes(graphPath, now / 1000 - 120, now / 1000 - 120);
+    await utimes(indexPath, now / 1000 - 120, now / 1000 - 120);
+    await Bun.write(join(ruleDir, "default.rules"), "Rule two\n");
+    await utimes(join(ruleDir, "default.rules"), now / 1000, now / 1000);
+
+    const result = await ensureAiGraphPath({
+      homeDir: tempHome,
+      rootDir,
+      repair: true,
+    });
+
+    expect(result).toEqual({
+      path: facultAiGraphPath(tempHome, rootDir),
+      rebuilt: true,
+    });
+  });
+
   it("rebuilds the generated index when an agent manifest is removed", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

@@ -54,6 +54,18 @@ async function newestPathMtime(path: string): Promise<number> {
   }
 }
 
+async function watchedPathMtime(path: string): Promise<number> {
+  const newest = await newestPathMtime(path);
+  if (newest > 0) {
+    return newest;
+  }
+  try {
+    return (await stat(dirname(path))).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 async function canonicalAssetsNewerThanIndex(args: {
   rootDir: string;
   indexPath: string;
@@ -69,14 +81,16 @@ async function canonicalAssetsNewerThanIndex(args: {
     "AGENTS.global.md",
     "AGENTS.override.global.md",
     "agents",
+    "config.toml",
     "instructions",
+    "mcp",
     "skills",
     "snippets",
-    "mcp",
+    "tools",
   ].map((rel) => join(args.rootDir, rel));
 
   for (const watchRoot of watchRoots) {
-    if ((await newestPathMtime(watchRoot)) > indexMtimeMs) {
+    if ((await watchedPathMtime(watchRoot)) > indexMtimeMs) {
       return true;
     }
   }
