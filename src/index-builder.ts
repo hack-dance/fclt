@@ -203,6 +203,32 @@ function extractIndexMeta(entry: unknown): {
   };
 }
 
+function findPreviousEntryByCanonicalRef(
+  previous: Record<string, unknown> | undefined,
+  canonicalRef: string,
+  fallbackName: string
+): unknown {
+  if (!previous) {
+    return undefined;
+  }
+  for (const value of Object.values(previous)) {
+    if (!isPlainObject(value)) {
+      continue;
+    }
+    if (value.canonicalRef === canonicalRef) {
+      return value;
+    }
+  }
+  const legacyFallback = previous[fallbackName];
+  if (
+    isPlainObject(legacyFallback) &&
+    typeof legacyFallback.canonicalRef !== "string"
+  ) {
+    return legacyFallback;
+  }
+  return undefined;
+}
+
 function stripQuotes(s: string): string {
   const t = s.trim();
   if (
@@ -495,8 +521,12 @@ async function indexSkills(
       const md = await Bun.file(skillMd).text();
       const { description, tags } = parseSkillMarkdown(md);
       const name = basename(d);
-
-      const prev = previous?.[name];
+      const canonicalRef = canonicalRefForPath(source, "skills", d);
+      const prev = findPreviousEntryByCanonicalRef(
+        previous,
+        canonicalRef,
+        name
+      );
       const meta = extractIndexMeta(prev);
 
       out[name] = {
@@ -504,7 +534,7 @@ async function indexSkills(
         path: d,
         description,
         tags,
-        canonicalRef: canonicalRefForPath(source, "skills", d),
+        canonicalRef,
         lastModifiedAt: await statIsoTime(skillMd),
         enabledFor: meta.enabledFor,
         trusted: meta.trusted ?? false,
@@ -556,12 +586,17 @@ async function indexMcpServers(
 
     const lm = await statIsoTime(mcpConfigPath);
     for (const name of Object.keys(serversObj).sort()) {
-      const prev = previous?.[name];
+      const canonicalRef = canonicalRefForPath(source, "mcp", mcpConfigPath);
+      const prev = findPreviousEntryByCanonicalRef(
+        previous,
+        canonicalRef,
+        name
+      );
       const meta = extractIndexMeta(prev);
       out[name] = {
         name,
         path: mcpConfigPath,
-        canonicalRef: canonicalRefForPath(source, "mcp", mcpConfigPath),
+        canonicalRef,
         lastModifiedAt: lm,
         definition: serversObj[name],
         enabledFor: meta.enabledFor,
@@ -603,7 +638,8 @@ async function indexAgents(
   for (const p of files) {
     const name =
       basename(p) === "agent.toml" ? basename(dirname(p)) : basename(p);
-    const prev = previous?.[name];
+    const canonicalRef = canonicalRefForPath(source, "agents", p);
+    const prev = findPreviousEntryByCanonicalRef(previous, canonicalRef, name);
     const meta = extractIndexMeta(prev);
     let description: string | undefined;
     try {
@@ -620,7 +656,7 @@ async function indexAgents(
       name,
       path: p,
       description,
-      canonicalRef: canonicalRefForPath(source, "agents", p),
+      canonicalRef,
       lastModifiedAt: await statIsoTime(p),
       enabledFor: meta.enabledFor,
       trusted: meta.trusted ?? false,
