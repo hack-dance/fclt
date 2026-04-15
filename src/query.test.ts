@@ -314,6 +314,7 @@ describe("query filters", () => {
 
     const generatedPath = facultAiIndexPath(tempHome, rootDir);
     await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+    const now = Date.now();
 
     const staleIndex: FacultIndex = {
       version: 1,
@@ -325,21 +326,35 @@ describe("query filters", () => {
           name: "alpha",
           path: join(alphaDir, "agent.toml"),
           description: "Alpha agent",
+          enabledFor: ["codex"],
+          trusted: true,
+          trustedAt: new Date(now - 5000).toISOString(),
+          trustedBy: "tester",
+          auditStatus: "passed",
+          lastAuditAt: new Date(now - 4000).toISOString(),
         },
       },
       snippets: {},
       instructions: {},
     };
     await Bun.write(generatedPath, JSON.stringify(staleIndex));
-
-    const now = Date.now();
     await utimes(generatedPath, now / 1000 - 120, now / 1000 - 120);
-    await utimes(join(alphaDir, "agent.toml"), now / 1000 - 60, now / 1000 - 60);
+    await utimes(
+      join(alphaDir, "agent.toml"),
+      now / 1000 - 60,
+      now / 1000 - 60
+    );
     await utimes(join(betaDir, "agent.toml"), now / 1000, now / 1000);
 
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     expect(Object.keys(loaded.agents)).toContain("alpha");
     expect(Object.keys(loaded.agents)).toContain("beta");
+    expect(loaded.agents.alpha).toMatchObject({
+      enabledFor: ["codex"],
+      trusted: true,
+      trustedBy: "tester",
+      auditStatus: "passed",
+    });
   });
 
   it("filters instructions and finds capabilities across asset types", () => {

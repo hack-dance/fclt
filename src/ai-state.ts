@@ -124,7 +124,7 @@ export async function ensureAiIndexPath(args: {
       const { outputPath } = await buildIndex({
         rootDir: args.rootDir,
         homeDir: args.homeDir,
-        force: true,
+        force: false,
       });
       return { path: outputPath, repaired: true, source: "rebuilt" };
     }
@@ -182,17 +182,21 @@ export async function ensureAiGraphPath(args: {
 }> {
   const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
+    const generatedIndexPath = facultAiIndexPath(args.homeDir, args.rootDir);
+    const freshnessAnchor = (await fileExists(generatedIndexPath))
+      ? generatedIndexPath
+      : generatedPath;
     if (
       args.repair !== false &&
       (await canonicalAssetsNewerThanIndex({
         rootDir: args.rootDir,
-        indexPath: facultAiIndexPath(args.homeDir, args.rootDir),
+        indexPath: freshnessAnchor,
       }))
     ) {
       const { graphPath } = await buildIndex({
         rootDir: args.rootDir,
         homeDir: args.homeDir,
-        force: true,
+        force: false,
       });
       return { path: graphPath, rebuilt: true };
     }

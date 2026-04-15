@@ -576,7 +576,8 @@ async function indexMcpServers(
 
 async function indexAgents(
   agentsDir: string,
-  source: IndexedSource
+  source: IndexedSource,
+  previous?: Record<string, unknown>
 ): Promise<Record<string, AgentEntry>> {
   const out: Record<string, AgentEntry> = {};
   const files: string[] = [];
@@ -596,6 +597,8 @@ async function indexAgents(
   for (const p of files) {
     const name =
       basename(p) === "agent.toml" ? basename(dirname(p)) : basename(p);
+    const prev = previous?.[name];
+    const meta = extractIndexMeta(prev);
     let description: string | undefined;
     try {
       const raw = await Bun.file(p).text();
@@ -613,6 +616,12 @@ async function indexAgents(
       description,
       canonicalRef: canonicalRefForPath(source, "agents", p),
       lastModifiedAt: await statIsoTime(p),
+      enabledFor: meta.enabledFor,
+      trusted: meta.trusted ?? false,
+      trustedAt: meta.trustedAt,
+      trustedBy: meta.trustedBy,
+      auditStatus: meta.auditStatus ?? "pending",
+      lastAuditAt: meta.lastAuditAt,
       ...entryScopeMeta(source),
     };
   }
@@ -782,6 +791,9 @@ async function indexSourceAssets(
   const prevSkills = isPlainObject(previousIndex?.skills)
     ? (previousIndex?.skills as Record<string, unknown>)
     : undefined;
+  const prevAgents = isPlainObject(previousIndex?.agents)
+    ? (previousIndex?.agents as Record<string, unknown>)
+    : undefined;
   const prevMcpMap =
     isPlainObject(previousIndex?.mcp) &&
     isPlainObject((previousIndex.mcp as Record<string, unknown>).servers)
@@ -795,7 +807,7 @@ async function indexSourceAssets(
     await Promise.all([
       indexSkills(skillsDir, source, prevSkills),
       indexMcpServers(canonicalMcpPath, source, prevMcpMap),
-      indexAgents(agentsDir, source),
+      indexAgents(agentsDir, source, prevAgents),
       indexSnippets(snippetsDir, source),
       indexInstructions(instructionsDir, source),
       indexToolAssets(toolsDir, source),
