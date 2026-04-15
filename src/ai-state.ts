@@ -1,4 +1,4 @@
-import { copyFile, mkdir, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildIndex } from "./index-builder";
 import {
@@ -13,6 +13,74 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function newestPathMtime(path: string): Promise<number> {
+  try {
+    const st = await stat(path);
+    if (st.isFile()) {
+      return st.mtimeMs;
+    }
+    if (!st.isDirectory()) {
+      return 0;
+    }
+  } catch {
+    return 0;
+  }
+
+  let newest = 0;
+  let entries: Awaited<ReturnType<typeof readdir>> = [];
+  try {
+    entries = await readdir(path, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  for (const entry of entries) {
+    const child = join(path, entry.name);
+    if (entry.isFile()) {
+      try {
+        const st = await stat(child);
+        newest = Math.max(newest, st.mtimeMs);
+      } catch {
+        // ignore unreadable children
+      }
+      continue;
+    }
+    if (entry.isDirectory()) {
+      newest = Math.max(newest, await newestPathMtime(child));
+    }
+  }
+  return newest;
+}
+
+async function canonicalAssetsNewerThanIndex(args: {
+  rootDir: string;
+  indexPath: string;
+}): Promise<boolean> {
+  let indexMtimeMs = 0;
+  try {
+    indexMtimeMs = (await stat(args.indexPath)).mtimeMs;
+  } catch {
+    return true;
+  }
+
+  const watchRoots = [
+    "AGENTS.global.md",
+    "agents",
+    "instructions",
+    "skills",
+    "snippets",
+    "mcp",
+  ].map((rel) => join(args.rootDir, rel));
+
+  for (const watchRoot of watchRoots) {
+    if ((await newestPathMtime(watchRoot)) > indexMtimeMs) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function legacyAiIndexPath(rootDir: string): string {
@@ -46,6 +114,20 @@ export async function ensureAiIndexPath(args: {
 }> {
   const generatedPath = facultAiIndexPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
+    if (
+      args.repair !== false &&
+      (await canonicalAssetsNewerThanIndex({
+        rootDir: args.rootDir,
+        indexPath: generatedPath,
+      }))
+    ) {
+      const { outputPath } = await buildIndex({
+        rootDir: args.rootDir,
+        homeDir: args.homeDir,
+        force: true,
+      });
+      return { path: outputPath, repaired: true, source: "rebuilt" };
+    }
     return { path: generatedPath, repaired: false, source: "generated" };
   }
 
@@ -100,6 +182,20 @@ export async function ensureAiGraphPath(args: {
 }> {
   const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
+    if (
+      args.repair !== false &&
+      (await canonicalAssetsNewerThanIndex({
+        rootDir: args.rootDir,
+        indexPath: facultAiIndexPath(args.homeDir, args.rootDir),
+      }))
+    ) {
+      const { graphPath } = await buildIndex({
+        rootDir: args.rootDir,
+        homeDir: args.homeDir,
+        force: true,
+      });
+      return { path: graphPath, rebuilt: true };
+    }
     return { path: generatedPath, rebuilt: false };
   }
 

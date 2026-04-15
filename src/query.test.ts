@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import type { FacultIndex, SkillEntry } from "./index-builder";
 import { facultAiIndexPath } from "./paths";
@@ -291,6 +291,55 @@ describe("query filters", () => {
       await Bun.file(facultAiIndexPath(tempHome, rootDir)).text()
     ) as FacultIndex;
     expect(Object.keys(repaired.skills)).toEqual(["alpha"]);
+  });
+
+  it("rebuilds a stale generated index when canonical agent manifests are newer", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    const alphaDir = join(rootDir, "agents", "alpha");
+    const betaDir = join(rootDir, "agents", "beta");
+    await mkdir(alphaDir, { recursive: true });
+    await mkdir(betaDir, { recursive: true });
+
+    await Bun.write(
+      join(alphaDir, "agent.toml"),
+      'name = "alpha"\ndescription = "Alpha agent"\n'
+    );
+    await Bun.write(
+      join(betaDir, "agent.toml"),
+      'name = "beta"\ndescription = "Beta agent"\n'
+    );
+
+    const generatedPath = facultAiIndexPath(tempHome, rootDir);
+    await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+
+    const staleIndex: FacultIndex = {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      skills: {},
+      mcp: { servers: {} },
+      agents: {
+        alpha: {
+          name: "alpha",
+          path: join(alphaDir, "agent.toml"),
+          description: "Alpha agent",
+        },
+      },
+      snippets: {},
+      instructions: {},
+    };
+    await Bun.write(generatedPath, JSON.stringify(staleIndex));
+
+    const now = Date.now();
+    await utimes(generatedPath, now / 1000 - 120, now / 1000 - 120);
+    await utimes(join(alphaDir, "agent.toml"), now / 1000 - 60, now / 1000 - 60);
+    await utimes(join(betaDir, "agent.toml"), now / 1000, now / 1000);
+
+    const loaded = await loadIndex({ rootDir, homeDir: tempHome });
+    expect(Object.keys(loaded.agents)).toContain("alpha");
+    expect(Object.keys(loaded.agents)).toContain("beta");
   });
 
   it("filters instructions and finds capabilities across asset types", () => {
