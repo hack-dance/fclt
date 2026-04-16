@@ -111,6 +111,52 @@ describe("ai writeback", () => {
     expect(journal).toContain('"kind":"writeback_recorded"');
   });
 
+  it("resolves automation graph nodes for writeback targeting", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(join(rootDir, "automations", "learning-review"), {
+      recursive: true,
+    });
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-03-18T00:00:00.000Z",
+      nodes: {
+        "automation:global:global:learning-review": {
+          id: "automation:global:global:learning-review",
+          kind: "automation",
+          name: "learning-review",
+          sourceKind: "global",
+          scope: "global",
+          canonicalRef: "@ai/automations/learning-review/automation.toml",
+          path: join(
+            rootDir,
+            "automations",
+            "learning-review",
+            "automation.toml"
+          ),
+        },
+      },
+      edges: [],
+    });
+
+    const record = await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "bad_default",
+      summary: "Learning review attribution requires stronger source guidance.",
+      asset: "automation:learning-review",
+      evidence: proposalEvidence("automation-asset"),
+    });
+
+    expect(record.assetRef).toBe(
+      "@ai/automations/learning-review/automation.toml"
+    );
+    expect(record.assetId).toBe("automation:global:global:learning-review");
+    expect(record.assetType).toBe("automation");
+  });
+
   it("stores project-scoped runtime state under the repo .ai/.fclt tree", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

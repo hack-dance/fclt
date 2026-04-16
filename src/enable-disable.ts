@@ -36,6 +36,7 @@ function ensureIndexStructure(index: FacultIndex): FacultIndex {
     skills: index.skills ?? {},
     mcp: index.mcp ?? { servers: {} },
     agents: index.agents ?? {},
+    automations: index.automations ?? {},
     snippets: index.snippets ?? {},
     instructions: index.instructions ?? {},
   };

@@ -234,6 +234,7 @@ export async function applyOrgTrustList(
       }),
     },
     agents: index.agents ?? {},
+    automations: index.automations ?? {},
     snippets: index.snippets ?? {},
     instructions: index.instructions ?? {},
   };

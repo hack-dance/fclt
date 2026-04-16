@@ -12,6 +12,7 @@ type QueryableGraphKind =
   | GraphNodeKind
   | "skills"
   | "agents"
+  | "automations"
   | "snippets"
   | "instructions"
   | "docs"
@@ -34,6 +35,8 @@ const KIND_ALIASES: Record<QueryableGraphKind, GraphNodeKind> = {
   skills: "skill",
   agent: "agent",
   agents: "agent",
+  automation: "automation",
+  automations: "automation",
   snippet: "snippet",
   snippets: "snippet",
   instruction: "instruction",

@@ -11,6 +11,7 @@ export type GraphNodeKind =
   | "skill"
   | "mcp"
   | "agent"
+  | "automation"
   | "snippet"
   | "instruction"
   | "doc"

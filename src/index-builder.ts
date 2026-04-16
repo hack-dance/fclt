@@ -77,6 +77,12 @@ export interface AgentEntry {
   lastAuditAt?: string;
 }
 
+export interface AutomationEntry {
+  name: string;
+  path: string;
+  lastModifiedAt?: string;
+}
+
 export interface SnippetEntry {
   name: string;
   path: string;
@@ -102,6 +108,7 @@ interface ToolAssetEntry extends AssetEntryBase {
 export interface SkillEntry extends AssetEntryBase {}
 export interface McpEntry extends AssetEntryBase {}
 export interface AgentEntry extends AssetEntryBase {}
+export interface AutomationEntry extends AssetEntryBase {}
 export interface SnippetEntry extends AssetEntryBase {}
 export interface InstructionEntry extends AssetEntryBase {}
 
@@ -111,6 +118,7 @@ export interface FacultIndex {
   skills: Record<string, SkillEntry>;
   mcp: { servers: Record<string, McpEntry> };
   agents: Record<string, AgentEntry>;
+  automations?: Record<string, AutomationEntry>;
   snippets: Record<string, SnippetEntry>;
   instructions: Record<string, InstructionEntry>;
 }
@@ -127,6 +135,7 @@ interface SourceAssets {
   skills: Record<string, SkillEntry>;
   mcpServers: Record<string, McpEntry>;
   agents: Record<string, AgentEntry>;
+  automations: Record<string, AutomationEntry>;
   snippets: Record<string, SnippetEntry>;
   instructions: Record<string, InstructionEntry>;
   toolConfigs: Record<string, ToolAssetEntry>;
@@ -460,6 +469,7 @@ function canonicalRefForPath(
   category:
     | "skills"
     | "agents"
+    | "automations"
     | "snippets"
     | "instructions"
     | "mcp"
@@ -687,6 +697,39 @@ async function indexAgents(
   return out;
 }
 
+async function indexAutomations(
+  automationsDir: string,
+  source: IndexedSource
+): Promise<Record<string, AutomationEntry>> {
+  const out: Record<string, AutomationEntry> = {};
+  const dirs = await listSubdirs(automationsDir);
+  for (const d of dirs) {
+    const automationToml = join(d, "automation.toml");
+    try {
+      const st = await Bun.file(automationToml).stat();
+      if (!st.isFile()) {
+        continue;
+      }
+
+      const name = basename(d);
+      out[name] = {
+        name,
+        path: automationToml,
+        canonicalRef: canonicalRefForPath(
+          source,
+          "automations",
+          automationToml
+        ),
+        lastModifiedAt: await statIsoTime(automationToml),
+        ...entryScopeMeta(source),
+      };
+    } catch {
+      // Ignore malformed automation entries.
+    }
+  }
+  return out;
+}
+
 async function indexSnippets(
   snippetsDir: string,
   source: IndexedSource
@@ -838,6 +881,7 @@ async function indexSourceAssets(
 ): Promise<SourceAssets> {
   const skillsDir = join(source.rootDir, "skills");
   const agentsDir = join(source.rootDir, "agents");
+  const automationsDir = join(source.rootDir, "automations");
   const snippetsDir = join(source.rootDir, "snippets");
   const instructionsDir = join(source.rootDir, "instructions");
   const toolsDir = join(source.rootDir, "tools");
@@ -862,20 +906,29 @@ async function indexSourceAssets(
         >)
       : undefined;
 
-  const [skills, mcpServers, agents, snippets, instructions, toolAssets] =
-    await Promise.all([
-      indexSkills(skillsDir, source, prevSkills),
-      indexMcpServers(canonicalMcpPath, source, prevMcpMap),
-      indexAgents(agentsDir, source, prevAgents),
-      indexSnippets(snippetsDir, source),
-      indexInstructions(instructionsDir, source),
-      indexToolAssets(toolsDir, source),
-    ]);
+  const [
+    skills,
+    mcpServers,
+    agents,
+    automations,
+    snippets,
+    instructions,
+    toolAssets,
+  ] = await Promise.all([
+    indexSkills(skillsDir, source, prevSkills),
+    indexMcpServers(canonicalMcpPath, source, prevMcpMap),
+    indexAgents(agentsDir, source, prevAgents),
+    indexAutomations(automationsDir, source),
+    indexSnippets(snippetsDir, source),
+    indexInstructions(instructionsDir, source),
+    indexToolAssets(toolsDir, source),
+  ]);
 
   return {
     skills,
     mcpServers,
     agents,
+    automations,
     snippets,
     instructions,
     toolConfigs: toolAssets.toolConfigs,
@@ -907,6 +960,7 @@ function registerGraphEntries<
     | "skill"
     | "mcp"
     | "agent"
+    | "automation"
     | "snippet"
     | "instruction"
     | "doc"
@@ -1006,6 +1060,11 @@ function buildActiveEntryMap(
     for (const [name, entry] of Object.entries(sourceEntry.assets.agents)) {
       active.set(activeEntryKey("agent", name), sourceIdentity(entry));
     }
+    for (const [name, entry] of Object.entries(
+      sourceEntry.assets.automations
+    )) {
+      active.set(activeEntryKey("automation", name), sourceIdentity(entry));
+    }
     for (const [name, entry] of Object.entries(sourceEntry.assets.snippets)) {
       active.set(activeEntryKey("snippet", name), sourceIdentity(entry));
     }
@@ -1089,6 +1148,7 @@ async function addReferenceEdgesForEntries<
   kind:
     | "skill"
     | "agent"
+    | "automation"
     | "snippet"
     | "instruction"
     | "doc"
@@ -1243,6 +1303,7 @@ function sourceNodeIdForEntry(args: {
     | "skill"
     | "mcp"
     | "agent"
+    | "automation"
     | "snippet"
     | "instruction"
     | "doc"
@@ -1534,6 +1595,9 @@ export async function buildIndex(opts?: {
     sourceIndexes.map((entry) => entry.assets.mcpServers)
   );
   const agents = mergeByName(sourceIndexes.map((entry) => entry.assets.agents));
+  const automations = mergeByName(
+    sourceIndexes.map((entry) => entry.assets.automations)
+  );
   const snippets = mergeByName(
     sourceIndexes.map((entry) => entry.assets.snippets)
   );
@@ -1547,6 +1611,7 @@ export async function buildIndex(opts?: {
     skills,
     mcp: { servers },
     agents,
+    automations,
     snippets,
     instructions,
   };
@@ -1577,6 +1642,12 @@ export async function buildIndex(opts?: {
       graph,
       sourceEntry.assets.agents,
       "agent",
+      activeSelections
+    );
+    registerGraphEntries(
+      graph,
+      sourceEntry.assets.automations,
+      "automation",
       activeSelections
     );
     registerGraphEntries(
@@ -1631,6 +1702,12 @@ export async function buildIndex(opts?: {
       graph,
       sourceEntry.assets.agents,
       "agent",
+      refsByRoot
+    );
+    await addReferenceEdgesForEntries(
+      graph,
+      sourceEntry.assets.automations,
+      "automation",
       refsByRoot
     );
     await addReferenceEdgesForEntries(

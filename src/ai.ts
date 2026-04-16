@@ -308,6 +308,7 @@ function mapGraphNodeKind(kind: GraphNodeKind): string {
     case "agent":
     case "skill":
     case "mcp":
+    case "automation":
     case "doc":
     case "rendered-target":
       return kind;

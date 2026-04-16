@@ -141,6 +141,55 @@ describe("buildIndex", () => {
     ]);
   });
 
+  it("indexes canonical automations into the graph and resolves their refs", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = facultRootDir(tempHome);
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "instructions", "FEEDBACK_LOOPS.md"),
+      "---\ndescription: Feedback loop doctrine\ntags: [feedback]\n---\n\nUse short loops.\n"
+    );
+
+    await mkdir(join(rootDir, "automations", "learning-review"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "automations", "learning-review", "automation.toml"),
+      [
+        'name = "Learning Review"',
+        'prompt = "Read @ai/instructions/FEEDBACK_LOOPS.md before reviewing."',
+      ].join("\n")
+    );
+
+    const { index, graph, graphPath } = await buildIndex({ rootDir });
+
+    expect(index.automations?.["learning-review"]?.path).toBe(
+      join(rootDir, "automations", "learning-review", "automation.toml")
+    );
+
+    const nodeId = "automation:global:global:learning-review";
+    expect(graph.nodes[nodeId]).toEqual(
+      expect.objectContaining({
+        id: nodeId,
+        kind: "automation",
+        canonicalRef: "@ai/automations/learning-review/automation.toml",
+      })
+    );
+    expect(graph.edges).toContainEqual({
+      from: nodeId,
+      to: "instruction:global:global:FEEDBACK_LOOPS",
+      kind: "canonical_ref",
+      locator: "@ai/instructions/FEEDBACK_LOOPS.md",
+    });
+
+    const writtenGraph = JSON.parse(
+      await Bun.file(graphPath).text()
+    ) as typeof graph;
+    expect(writtenGraph.nodes[nodeId]?.kind).toBe("automation");
+  });
+
   it("preserves enabledFor/trust/audit metadata when rebuilding an existing index", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
