@@ -1,3 +1,9 @@
+## [2.7.3](https://github.com/hack-dance/fclt/compare/v2.7.2...v2.7.3) (2026-04-16)
+
+### Bug Fixes
+
+* **graph:** index automations in AI graph ([d42563b](https://github.com/hack-dance/fclt/commit/d42563b3c29f5e77f5558da989433dca77c59bf8))
+
 ## [2.7.2](https://github.com/hack-dance/fclt/compare/v2.7.1...v2.7.2) (2026-04-15)
 
 ### Bug Fixes
