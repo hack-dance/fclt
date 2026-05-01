@@ -147,6 +147,26 @@ function looksLikeFacultRoot(root: string): boolean {
   );
 }
 
+function isProjectAiRoot(root: string): boolean {
+  if (!dirExists(root)) {
+    return false;
+  }
+
+  if (looksLikeFacultRoot(root)) {
+    return true;
+  }
+
+  if (fileExists(join(root, "config.toml"))) {
+    return true;
+  }
+
+  if (dirExists(join(root, ".facult", "ai"))) {
+    return true;
+  }
+
+  return false;
+}
+
 function detectLegacyStoreUnderAgents(home: string): string | null {
   const agentsDir = join(home, "agents");
   let entries: any[];
@@ -497,7 +517,7 @@ export function findNearestProjectAiRoot(start: string): string | null {
   let current = resolve(start);
   while (true) {
     const candidate = join(current, ".ai");
-    if (looksLikeFacultRoot(candidate)) {
+    if (isProjectAiRoot(candidate)) {
       return candidate;
     }
     const parent = dirname(current);

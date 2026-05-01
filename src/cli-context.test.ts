@@ -53,6 +53,18 @@ describe("resolveCliContextRoot", () => {
     expect(rootDir).toBe(join(homeDir, "work", "repo", ".ai"));
   });
 
+  it("accepts a lightweight project .ai root that only has config.toml", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const projectRoot = join(homeDir, "work", "repo");
+    const cwd = join(projectRoot, "src");
+    await mkdir(join(projectRoot, ".ai"), { recursive: true });
+    await Bun.write(join(projectRoot, ".ai", "config.toml"), "version = 1\n");
+
+    const rootDir = resolveCliContextRoot({ homeDir, cwd, scope: "project" });
+    expect(rootDir).toBe(join(projectRoot, ".ai"));
+  });
+
   it("resolves global scope to the global canonical root", () => {
     const homeDir = "/tmp/home";
     const cwd = "/tmp/home/work/repo";

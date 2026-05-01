@@ -132,6 +132,39 @@ describe("paths", () => {
     ).toBe(rootDir);
   });
 
+  it("treats a repo-local .ai with config.toml as a project AI root", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await writeFile(join(rootDir, "config.toml"), "version = 1\n", "utf8");
+
+    expect(
+      facultContextRootDir({
+        home: tempHome,
+        cwd: join(projectRoot, "src"),
+      })
+    ).toBe(rootDir);
+  });
+
+  it("treats a repo-local .ai with generated .facult state as a project AI root", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+
+    expect(
+      facultContextRootDir({
+        home: tempHome,
+        cwd: join(projectRoot, "src"),
+      })
+    ).toBe(rootDir);
+  });
+
   it("stores machine-local install state and runtime cache outside the canonical .ai tree", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
