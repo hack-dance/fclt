@@ -1,3 +1,9 @@
+## [2.7.4](https://github.com/hack-dance/fclt/compare/v2.7.3...v2.7.4) (2026-05-01)
+
+### Bug Fixes
+
+* **project-ai:** detect lightweight repo AI roots ([a1fdd9e](https://github.com/hack-dance/fclt/commit/a1fdd9e3ec1a4b369d135099562428f54311ae30))
+
 ## [2.7.3](https://github.com/hack-dance/fclt/compare/v2.7.2...v2.7.3) (2026-04-16)
 
 ### Bug Fixes
