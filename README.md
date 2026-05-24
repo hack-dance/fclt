@@ -344,13 +344,14 @@ version = 1
 [project_sync.codex]
 skills = ["hack-cli", "hack-tickets"]
 agents = ["review-operator"]
+automations = ["project-check"]
 mcp_servers = ["github"]
 global_docs = true
 tool_rules = true
 tool_config = true
 ```
 
-That policy applies to project-managed tool renders, including assets inherited from the merged global index. If you want a global skill inside a repo-local managed Codex output, name it explicitly here. `fclt doctor --repair` can materialize repo-local project assets into `config.local.toml` for already-managed project roots.
+That policy applies to project-managed tool renders, including assets inherited from the merged global index. If you want a global skill or shared Codex automation inside project-managed output, name it explicitly here. `fclt doctor --repair` can materialize repo-local project assets into `config.local.toml` for already-managed project roots.
 
 ### Snippets
 
@@ -603,7 +604,7 @@ When Codex is in managed mode, canonical automation sources live under:
 - `~/.ai/automations/<name>/...` for global automation state
 - `<repo>/.ai/automations/<name>/...` for project-scoped canonical state
 
-Managed sync renders those canonical automation directories into the shared live Codex automation store at `~/.codex/automations/` and only removes automation files that were previously rendered by the same canonical root.
+Managed sync renders global canonical automation directories into the shared live Codex automation store at `~/.codex/automations/` and only removes automation files that were previously rendered by the same canonical root. Project-scoped automation sources are default-deny; add their names to `[project_sync.codex].automations` before project managed sync can render them into that shared live store.
 
 Example project automation:
 
