@@ -1,3 +1,9 @@
+## [2.7.5](https://github.com/hack-dance/fclt/compare/v2.7.4...v2.7.5) (2026-05-24)
+
+### Bug Fixes
+
+* protect managed sync from destructive drift ([0ed2fda](https://github.com/hack-dance/fclt/commit/0ed2fdaea9d86bd99fb37f97dd6d00036422af2c))
+
 ## [2.7.4](https://github.com/hack-dance/fclt/compare/v2.7.3...v2.7.4) (2026-05-01)
 
 ### Bug Fixes
