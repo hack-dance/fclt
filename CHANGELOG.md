@@ -1,3 +1,9 @@
+## [2.8.0](https://github.com/hack-dance/fclt/compare/v2.7.7...v2.8.0) (2026-05-24)
+
+### Features
+
+* harden agent inventory surfaces ([666a876](https://github.com/hack-dance/fclt/commit/666a876c4634a11ba4ca422f406ae34570656bf5))
+
 ## [2.7.7](https://github.com/hack-dance/fclt/compare/v2.7.6...v2.7.7) (2026-05-24)
 
 ### Bug Fixes
