@@ -89,9 +89,12 @@ fclt self-update --version 0.0.1
 
 ```bash
 fclt scan --show-duplicates
+fclt inventory --json
 ```
 
 `scan` is read-only. It inspects local configs and reports what `fclt` found without changing files.
+
+`inventory` is the stable machine-readable discovery surface for agent harnesses. It returns a JSON catalog of discovered MCP servers, skills, and instruction/rule assets across known tool configs and configured scan roots. MCP definitions are redacted by default but include safe auth metadata such as env keys, env references, and whether inline secret values were found.
 
 If you want a repo-local `.ai`:
 
@@ -137,6 +140,7 @@ If you run these commands inside a repo that has `<repo>/.ai`, `fclt` targets th
 
 ```bash
 fclt list skills
+fclt inventory --json
 fclt show instruction:WRITING
 fclt show mcp:github
 fclt find verification
@@ -514,6 +518,7 @@ Recommended security flow:
 - Inventory and discovery
 ```bash
 fclt scan [--from <path>] [--json] [--show-duplicates]
+fclt inventory [--from <path>] [--json] [--show-secrets]
 fclt list [skills|mcp|agents|snippets|instructions] [--enabled-for <tool>] [--untrusted] [--flagged] [--pending]
 fclt show <name>
 fclt show instruction:<name>

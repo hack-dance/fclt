@@ -109,6 +109,10 @@ function printHelp() {
             rows: [
               ["scan", "Scan local tool configs and discovered assets"],
               [
+                "inventory",
+                "Print a JSON inventory of usable skills, instructions, and MCP servers",
+              ],
+              [
                 "audit",
                 "Run security audits with interactive or scripted flows",
               ],
@@ -1263,6 +1267,11 @@ async function main(argv: string[]) {
   switch (cmd) {
     case "scan":
       await import("./scan").then(({ scanCommand }) => scanCommand(rest));
+      return;
+    case "inventory":
+      await import("./inventory").then(({ inventoryCommand }) =>
+        inventoryCommand(rest)
+      );
       return;
     case "audit":
       await import("./audit").then(({ auditCommand }) => auditCommand(rest));

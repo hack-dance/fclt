@@ -98,6 +98,49 @@ describe("CLI output contracts", () => {
     expect(parsed.some((entry) => entry.id === "codex")).toBe(true);
   });
 
+  it("inventory --json emits valid JSON", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facult-cli-inventory-"));
+    const rootDir = join(dir, ".ai");
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "mcp", "servers.json"),
+      JSON.stringify({ servers: { github: { command: "gh" } } }, null, 2)
+    );
+
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "inventory",
+        "--json",
+        "--no-config-from",
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, HOME: dir },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    const parsed = JSON.parse(out) as {
+      version: number;
+      mcpServers: { name: string }[];
+    };
+    expect(parsed.version).toBe(1);
+    expect(parsed.mcpServers.some((entry) => entry.name === "github")).toBe(
+      true
+    );
+  });
+
   it("show accepts explicit skill selectors", async () => {
     const dir = await mkdtemp(join(tmpdir(), "facult-cli-show-"));
     const rootDir = join(dir, ".ai");

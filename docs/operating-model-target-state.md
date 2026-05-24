@@ -832,6 +832,14 @@ edited managed docs/config from automatic overwrite.
    active executable on `PATH`, managed install path, persisted install state,
    and managed install mode.
 
+8. Agents now have a JSON-first cross-harness inventory surface.
+
+   Current proof: `fclt inventory --json` returns discovered MCP servers,
+   skills, and instruction/rule assets across known tool configs and configured
+   scan roots. MCP definitions are redacted by default while still reporting
+   safe auth metadata such as env keys, env references, and inline-secret
+   presence.
+
 ### Ledger Implementation
 
 Managed sync now writes an append-only JSONL ledger for actual sync apply events
