@@ -55,6 +55,48 @@ test("scan includeConfigFrom reads scanFrom roots from ~/.ai/.facult/config.json
   ).toBe(true);
 });
 
+test("scan --json does not persist global scan state unless requested", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-scan-json-"));
+  const home = join(dir, "home");
+  const repo = join(dir, "repo");
+
+  await mkdir(repo, { recursive: true });
+  await Bun.write(join(repo, "AGENTS.md"), "Hello\n");
+
+  const proc = Bun.spawn(
+    [
+      "bun",
+      "run",
+      "./src/index.ts",
+      "scan",
+      "--from",
+      repo,
+      "--from-max-visits",
+      "10",
+      "--json",
+    ],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, HOME: home },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
+  );
+
+  const [code, out, err] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  expect(code).toBe(0);
+  expect(err).toBe("");
+  expect(JSON.parse(out).sources.length).toBeGreaterThan(0);
+  expect(
+    await Bun.file(join(home, ".ai", ".facult", "sources.json")).exists()
+  ).toBe(false);
+});
+
 test("scan does not read scanFrom roots when includeConfigFrom is false", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-scan-"));
   const home = join(dir, "home");

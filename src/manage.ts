@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  appendFile,
   cp,
   lstat,
   mkdir,
@@ -81,6 +82,29 @@ interface ManagedRenderedTargetState {
 export interface ManagedState {
   version: 1;
   tools: Record<string, ManagedToolState>;
+}
+
+type SyncLedgerAction = "add" | "adopt" | "remove" | "skip" | "write";
+
+interface SyncLedgerEvent {
+  version: 1;
+  id: string;
+  correlationId: string;
+  ts: string;
+  command: "sync";
+  phase: "plan" | "apply";
+  dryRun: boolean;
+  tool: string;
+  rootDir: string;
+  scope: "global" | "project";
+  actor: string;
+  action: SyncLedgerAction;
+  targetPath?: string;
+  name?: string;
+  sourcePath?: string;
+  oldHash?: string;
+  newHash?: string;
+  reason: string;
 }
 
 export interface ToolPaths {
@@ -184,6 +208,50 @@ async function fileExists(p: string): Promise<boolean> {
 
 async function ensureDir(p: string) {
   await mkdir(p, { recursive: true });
+}
+
+async function hasCanonicalSource(rootDir: string): Promise<boolean> {
+  const fileCandidates = [
+    "config.toml",
+    "config.local.toml",
+    "AGENTS.global.md",
+    "AGENTS.override.global.md",
+  ];
+  for (const relPath of fileCandidates) {
+    if (await fileExists(join(rootDir, relPath))) {
+      return true;
+    }
+  }
+
+  const dirCandidates = [
+    "agents",
+    "automations",
+    "instructions",
+    "mcp",
+    "skills",
+    "snippets",
+    "tools",
+  ];
+  for (const relPath of dirCandidates) {
+    const entries = await readdir(join(rootDir, relPath)).catch(
+      () => [] as string[]
+    );
+    if (entries.some((entry) => !entry.startsWith("."))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function isGeneratedOnlyProjectRoot(args: {
+  homeDir: string;
+  rootDir: string;
+}): Promise<boolean> {
+  if (projectRootFromAiRoot(args.rootDir, args.homeDir) == null) {
+    return false;
+  }
+  return !(await hasCanonicalSource(args.rootDir));
 }
 
 function renderedSourceKindForPath(
@@ -414,13 +482,7 @@ async function resolveToolPaths(
     return base;
   }
 
-  const adapterPaths = getAdapter("codex")?.getDefaultPaths?.();
-  const adapterConfig = adapterPaths?.config
-    ? expandHomePath(adapterPaths.config, home)
-    : null;
-
   const candidates = [
-    adapterConfig,
     homePath(home, ".config", "openai", "codex.json"),
     homePath(home, ".codex", "config.json"),
     homePath(home, ".codex", "mcp.json"),
@@ -444,6 +506,30 @@ export function managedStatePathForRoot(
   rootDir?: string
 ): string {
   return join(facultMachineStateDir(home, rootDir), "managed.json");
+}
+
+function syncLedgerPathForRoot(
+  home: string = homedir(),
+  rootDir?: string
+): string {
+  return join(facultMachineStateDir(home, rootDir), "ledger", "sync.jsonl");
+}
+
+async function appendSyncLedgerEvents(args: {
+  homeDir: string;
+  rootDir: string;
+  events: SyncLedgerEvent[];
+}) {
+  if (args.events.length === 0) {
+    return;
+  }
+  const pathValue = syncLedgerPathForRoot(args.homeDir, args.rootDir);
+  await ensureDir(dirname(pathValue));
+  await appendFile(
+    pathValue,
+    `${args.events.map((event) => JSON.stringify(event)).join("\n")}\n`,
+    "utf8"
+  );
 }
 
 function legacyManagedStatePathForRoot(
@@ -839,7 +925,12 @@ async function loadCanonicalCodexMarketplaceText(
 }
 
 async function hashDirectoryTree(root: string): Promise<string | null> {
-  if (!(await fileExists(root))) {
+  try {
+    const st = await lstat(root);
+    if (!st.isDirectory()) {
+      return null;
+    }
+  } catch {
     return null;
   }
   const files = await listRelativeFilesWithDotfiles(root);
@@ -2136,6 +2227,20 @@ function isPreservedToolSkillEntry(name: string): boolean {
   return name.startsWith(".");
 }
 
+interface SkillSymlinkConflict {
+  name: string;
+  livePath: string;
+  canonicalPath?: string;
+  reason: "modified" | "unmanaged";
+}
+
+interface SkillSymlinkPlan {
+  add: string[];
+  remove: string[];
+  conflicts: SkillSymlinkConflict[];
+  adopted: SkillSymlinkConflict[];
+}
+
 async function restorePreservedToolSkillEntries({
   backupDir,
   toolSkillsDir,
@@ -2170,7 +2275,7 @@ async function planSkillSymlinkChanges({
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
-}): Promise<{ add: string[]; remove: string[] }> {
+}): Promise<SkillSymlinkPlan> {
   const desiredEntries = await loadEnabledSkillEntries({
     homeDir,
     rootDir,
@@ -2186,16 +2291,28 @@ async function planSkillSymlinkChanges({
 
   const remove: string[] = [];
   const add: string[] = [];
+  const conflicts: SkillSymlinkConflict[] = [];
 
   for (const entry of existing) {
     if (isPreservedToolSkillEntry(entry.name)) {
       continue;
     }
+    const linkPath = join(toolSkillsDir, entry.name);
     if (!desiredSet.has(entry.name)) {
+      if (
+        entry.isDirectory() &&
+        (await fileExists(join(linkPath, "SKILL.md")))
+      ) {
+        conflicts.push({
+          name: entry.name,
+          livePath: linkPath,
+          reason: "unmanaged",
+        });
+        continue;
+      }
       remove.push(entry.name);
       continue;
     }
-    const linkPath = join(toolSkillsDir, entry.name);
     const target = desiredTargets.get(entry.name);
     if (!target) {
       remove.push(entry.name);
@@ -2204,6 +2321,27 @@ async function planSkillSymlinkChanges({
     try {
       const st = await lstat(linkPath);
       if (!st.isSymbolicLink()) {
+        if (
+          st.isDirectory() &&
+          (await fileExists(join(linkPath, "SKILL.md")))
+        ) {
+          const [liveHash, canonicalHash] = await Promise.all([
+            hashDirectoryTree(linkPath),
+            hashDirectoryTree(target),
+          ]);
+          if (
+            liveHash != null &&
+            (canonicalHash == null || liveHash !== canonicalHash)
+          ) {
+            conflicts.push({
+              name: entry.name,
+              livePath: linkPath,
+              canonicalPath: target,
+              reason: canonicalHash == null ? "unmanaged" : "modified",
+            });
+            continue;
+          }
+        }
         remove.push(entry.name);
         add.push(entry.name);
         continue;
@@ -2230,6 +2368,8 @@ async function planSkillSymlinkChanges({
   return {
     add: Array.from(new Set(add)).sort(),
     remove: Array.from(new Set(remove)).sort(),
+    conflicts: conflicts.sort((a, b) => a.name.localeCompare(b.name)),
+    adopted: [],
   };
 }
 
@@ -2245,7 +2385,7 @@ async function syncSkillSymlinks({
   rootDir: string;
   tool: string;
   dryRun?: boolean;
-}): Promise<{ add: string[]; remove: string[] }> {
+}): Promise<SkillSymlinkPlan> {
   const plan = await planSkillSymlinkChanges({
     homeDir,
     toolSkillsDir,
@@ -2256,6 +2396,17 @@ async function syncSkillSymlinks({
     return plan;
   }
 
+  const adoptedConflicts = await adoptSkillSymlinkConflictsIntoCanonical({
+    rootDir,
+    conflicts: plan.conflicts,
+  });
+  if (adoptedConflicts.length > 0) {
+    await buildIndex({
+      homeDir,
+      rootDir,
+      force: false,
+    });
+  }
   const desiredSkills = new Map(
     (
       await loadEnabledSkillEntries({
@@ -2267,19 +2418,30 @@ async function syncSkillSymlinks({
   );
 
   await ensureDir(toolSkillsDir);
-  for (const name of plan.remove) {
+  const remove = Array.from(
+    new Set([...plan.remove, ...adoptedConflicts.map(({ name }) => name)])
+  ).sort();
+  const add = Array.from(
+    new Set([...plan.add, ...adoptedConflicts.map(({ name }) => name)])
+  ).sort();
+  for (const name of remove) {
     const linkPath = join(toolSkillsDir, name);
     await rm(linkPath, { recursive: true, force: true });
   }
-  for (const name of plan.add) {
-    const target = desiredSkills.get(name);
+  for (const name of add) {
+    const target = desiredSkills.get(name) ?? join(rootDir, "skills", name);
     if (!(target && (await fileExists(target)))) {
       continue;
     }
     const linkPath = join(toolSkillsDir, name);
     await symlink(target, linkPath, "dir");
   }
-  return plan;
+  return {
+    add,
+    remove,
+    conflicts: [],
+    adopted: adoptedConflicts,
+  };
 }
 
 async function planMcpWrite({
@@ -2292,10 +2454,14 @@ async function planMcpWrite({
   mcpConfigPath: string;
   rootDir: string;
   tool: string;
-}): Promise<{ needsWrite: boolean; contents: string }> {
-  const { servers } = await loadCanonicalMcpState(rootDir, {
-    includeLocal: true,
-  });
+}): Promise<{ needsWrite: boolean; contents: string; sourcePath: string }> {
+  const { localPath, servers, trackedPath } = await loadCanonicalMcpState(
+    rootDir,
+    {
+      includeLocal: true,
+    }
+  );
+  const sourcePath = (await fileExists(localPath)) ? localPath : trackedPath;
   const filtered = await filterServersForTool({
     homeDir,
     rootDir,
@@ -2305,38 +2471,40 @@ async function planMcpWrite({
   const contents = `${JSON.stringify({ mcpServers: filtered }, null, 2)}\n`;
 
   if (!(await fileExists(mcpConfigPath))) {
-    return { needsWrite: true, contents };
+    return {
+      needsWrite: true,
+      contents,
+      sourcePath,
+    };
   }
   try {
     const current = await Bun.file(mcpConfigPath).text();
-    return { needsWrite: current !== contents, contents };
+    return {
+      needsWrite: current !== contents,
+      contents,
+      sourcePath,
+    };
   } catch {
-    return { needsWrite: true, contents };
+    return {
+      needsWrite: true,
+      contents,
+      sourcePath,
+    };
   }
 }
 
-async function syncMcpConfig({
-  homeDir,
-  mcpConfigPath,
-  rootDir,
-  tool,
-  dryRun,
-}: {
-  homeDir: string;
-  mcpConfigPath: string;
-  rootDir: string;
-  tool: string;
-  dryRun?: boolean;
-}): Promise<{ needsWrite: boolean }> {
-  const plan = await planMcpWrite({ homeDir, mcpConfigPath, rootDir, tool });
-  if (dryRun) {
-    return { needsWrite: plan.needsWrite };
+async function isEmptyGeneratedMcpConfig(pathValue: string): Promise<boolean> {
+  const text = await readTextIfExists(pathValue);
+  if (text == null) {
+    return false;
   }
-  if (plan.needsWrite) {
-    await ensureDir(dirname(mcpConfigPath));
-    await Bun.write(mcpConfigPath, plan.contents);
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    const servers = extractServersObject(parsed);
+    return servers != null && Object.keys(servers).length === 0;
+  } catch {
+    return false;
   }
-  return { needsWrite: plan.needsWrite };
 }
 
 async function writeToolMcpConfig({
@@ -2648,6 +2816,14 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
         tool,
       })
     : null;
+  const mcpPreview = toolPaths.mcpConfig
+    ? await planMcpWrite({
+        homeDir: home,
+        mcpConfigPath: toolPaths.mcpConfig,
+        rootDir,
+        tool,
+      })
+    : null;
   const automationPreview = toolPaths.automationDir
     ? await planAutomationFileChanges({
         automationDir: toolPaths.automationDir,
@@ -2925,6 +3101,15 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
           ? [[toolConfigPreview.targetPath, toolConfigPreview.sourcePath]]
           : []
       ),
+    });
+  }
+  if (toolPaths.mcpConfig && mcpPreview) {
+    updateRenderedTargetState({
+      entry: managedEntry,
+      writtenTargets: [toolPaths.mcpConfig],
+      removedTargets: [],
+      contents: new Map([[toolPaths.mcpConfig, mcpPreview.contents]]),
+      sources: new Map([[toolPaths.mcpConfig, mcpPreview.sourcePath]]),
     });
   }
 
@@ -3248,7 +3433,7 @@ interface RenderedConflict {
   targetPath: string;
   sourcePath: string;
   sourceKind: ManagedRenderedTargetState["sourceKind"];
-  reason: "modified" | "unknown_state";
+  reason: "modified" | "unknown_state" | "missing_source";
 }
 
 interface RenderedApplyPlan {
@@ -3265,16 +3450,9 @@ async function planRenderedTargetConflicts(args: {
   desiredSources: Map<string, string>;
   conflictMode?: "warn" | "overwrite";
   protectAllSources?: boolean;
+  protectMissingSources?: boolean;
   normalizeText?: boolean;
 }): Promise<RenderedApplyPlan> {
-  if (args.conflictMode === "overwrite") {
-    return {
-      write: args.desiredWrites,
-      remove: args.desiredRemoves,
-      conflicts: [],
-    };
-  }
-
   const previous = args.entry.renderedTargets ?? {};
   const write: string[] = [];
   const remove: string[] = [];
@@ -3293,7 +3471,15 @@ async function planRenderedTargetConflicts(args: {
       continue;
     }
     const sourceKind = renderedSourceKindForPath(sourcePath);
-    if (sourceKind !== "builtin" && !args.protectAllSources) {
+    if (args.conflictMode === "overwrite" && sourceKind === "builtin") {
+      if (args.desiredWrites.includes(targetPath)) {
+        write.push(targetPath);
+      } else {
+        remove.push(targetPath);
+      }
+      continue;
+    }
+    if (sourceKind !== "builtin" && args.protectAllSources === false) {
       if (args.desiredWrites.includes(targetPath)) {
         write.push(targetPath);
       } else {
@@ -3303,6 +3489,20 @@ async function planRenderedTargetConflicts(args: {
     }
 
     const prior = previous[targetPath];
+    if (
+      args.protectMissingSources &&
+      args.desiredRemoves.includes(targetPath) &&
+      prior?.sourcePath &&
+      !(await fileExists(prior.sourcePath))
+    ) {
+      conflicts.push({
+        targetPath,
+        sourcePath: prior.sourcePath,
+        sourceKind,
+        reason: "missing_source",
+      });
+      continue;
+    }
     const currentHash = await readTargetHash(targetPath, {
       normalizeText: args.normalizeText,
     });
@@ -3372,9 +3572,11 @@ function logRenderedConflicts(
   for (const conflict of conflicts) {
     const verb = dryRun ? "would skip" : "skipped";
     const state =
-      conflict.reason === "unknown_state"
-        ? "no prior managed hash is recorded"
-        : "local edits were detected";
+      conflict.reason === "missing_source"
+        ? `canonical source is missing at ${conflict.sourcePath}`
+        : conflict.reason === "unknown_state"
+          ? "no prior managed hash is recorded"
+          : "local edits were detected";
     const surface =
       conflict.sourceKind === "builtin"
         ? "builtin-backed target"
@@ -3385,6 +3587,45 @@ function logRenderedConflicts(
         : `${tool}: ${verb} ${surface} ${conflict.targetPath} because ${state}.`
     );
   }
+}
+
+function logSkillSymlinkConflicts(
+  tool: string,
+  conflicts: SkillSymlinkConflict[],
+  dryRun?: boolean
+) {
+  for (const conflict of conflicts) {
+    const verb = dryRun ? "would adopt" : "adopted";
+    const state =
+      conflict.reason === "unmanaged"
+        ? "it is not in canonical skill state"
+        : "local skill content differs from canonical state";
+    const canonical = conflict.canonicalPath
+      ? ` (canonical ${conflict.canonicalPath})`
+      : "";
+    console.warn(
+      `${tool}: ${verb} skill ${conflict.name} from ${conflict.livePath}${canonical} because ${state}.`
+    );
+  }
+}
+
+async function adoptSkillSymlinkConflictsIntoCanonical(args: {
+  rootDir: string;
+  conflicts: SkillSymlinkConflict[];
+}): Promise<SkillSymlinkConflict[]> {
+  const adopted: SkillSymlinkConflict[] = [];
+  for (const conflict of args.conflicts) {
+    const canonicalPath =
+      conflict.canonicalPath ?? join(args.rootDir, "skills", conflict.name);
+    if (!(await fileExists(join(conflict.livePath, "SKILL.md")))) {
+      continue;
+    }
+    await rm(canonicalPath, { recursive: true, force: true });
+    await ensureDir(dirname(canonicalPath));
+    await cp(conflict.livePath, canonicalPath, { recursive: true });
+    adopted.push({ ...conflict, canonicalPath });
+  }
+  return adopted.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 async function applyRenderedWrites(args: {
@@ -3485,9 +3726,9 @@ function pruneAutomationRuntimeRenderedTargets(args: {
 
 function logSyncDryRun({
   tool,
-  entry,
   skillPlan,
   mcpPlan,
+  mcpConflicts,
   agentPlan,
   agentConflicts,
   automationPlan,
@@ -3502,9 +3743,9 @@ function logSyncDryRun({
   pluginConflicts,
 }: {
   tool: string;
-  entry: ManagedToolState;
-  skillPlan: { add: string[]; remove: string[] };
-  mcpPlan: { needsWrite: boolean };
+  skillPlan: SkillSymlinkPlan;
+  mcpPlan: { write: boolean; targetPath: string };
+  mcpConflicts: RenderedConflict[];
   agentPlan: { add: string[]; remove: string[] };
   agentConflicts: RenderedConflict[];
   automationPlan: { write: string[]; remove: string[] };
@@ -3524,6 +3765,7 @@ function logSyncDryRun({
   for (const name of skillPlan.remove) {
     console.log(`${tool}: would remove skill ${name}`);
   }
+  logSkillSymlinkConflicts(tool, skillPlan.conflicts, true);
   for (const p of agentPlan.add) {
     console.log(`${tool}: would write agent ${p}`);
   }
@@ -3566,12 +3808,14 @@ function logSyncDryRun({
     console.log(`${tool}: would remove plugin asset ${p}`);
   }
   logRenderedConflicts(tool, pluginConflicts, true);
-  if (mcpPlan.needsWrite && entry.mcpConfig) {
-    console.log(`${tool}: would update mcp config ${entry.mcpConfig}`);
+  if (mcpPlan.write) {
+    console.log(`${tool}: would update mcp config ${mcpPlan.targetPath}`);
   }
+  logRenderedConflicts(tool, mcpConflicts, true);
   if (
     skillPlan.add.length === 0 &&
     skillPlan.remove.length === 0 &&
+    skillPlan.conflicts.length === 0 &&
     agentPlan.add.length === 0 &&
     agentPlan.remove.length === 0 &&
     automationPlan.write.length === 0 &&
@@ -3584,7 +3828,8 @@ function logSyncDryRun({
     !configPlan.remove &&
     pluginPlan.write.length === 0 &&
     pluginPlan.remove.length === 0 &&
-    !mcpPlan.needsWrite &&
+    !mcpPlan.write &&
+    mcpConflicts.length === 0 &&
     agentConflicts.length === 0 &&
     automationConflicts.length === 0 &&
     globalDocsConflicts.length === 0 &&
@@ -3594,6 +3839,171 @@ function logSyncDryRun({
   ) {
     console.log(`${tool}: no changes`);
   }
+}
+
+function syncLedgerBase(args: {
+  correlationId: string;
+  dryRun: boolean;
+  homeDir: string;
+  rootDir: string;
+  tool: string;
+}): Omit<
+  SyncLedgerEvent,
+  | "action"
+  | "id"
+  | "name"
+  | "newHash"
+  | "oldHash"
+  | "reason"
+  | "sourcePath"
+  | "targetPath"
+> {
+  return {
+    version: 1,
+    correlationId: args.correlationId,
+    ts: new Date().toISOString(),
+    command: "sync",
+    phase: args.dryRun ? "plan" : "apply",
+    dryRun: args.dryRun,
+    tool: args.tool,
+    rootDir: args.rootDir,
+    scope: projectRootFromAiRoot(args.rootDir, args.homeDir)
+      ? "project"
+      : "global",
+    actor: process.env.USER ?? "unknown",
+  };
+}
+
+function renderedDesiredHash(args: {
+  contents: Map<string, ManagedTargetContent>;
+  normalizeText?: boolean;
+  targetPath: string;
+}): string | undefined {
+  const contents = args.contents.get(args.targetPath);
+  return contents
+    ? targetContentHash(contents, { normalizeText: args.normalizeText })
+    : undefined;
+}
+
+function collectRenderedLedgerEvents(args: {
+  base: Omit<
+    SyncLedgerEvent,
+    | "action"
+    | "id"
+    | "name"
+    | "newHash"
+    | "oldHash"
+    | "reason"
+    | "sourcePath"
+    | "targetPath"
+  >;
+  conflicts: RenderedConflict[];
+  contents: Map<string, ManagedTargetContent>;
+  entry: ManagedToolState;
+  normalizeText?: boolean;
+  plan: RenderedApplyPlan;
+  reason: string;
+  sources: Map<string, string>;
+}): SyncLedgerEvent[] {
+  const previous = args.entry.renderedTargets ?? {};
+  const events: SyncLedgerEvent[] = [];
+  for (const targetPath of args.plan.write) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "write",
+      targetPath,
+      sourcePath: args.sources.get(targetPath),
+      oldHash: previous[targetPath]?.hash,
+      newHash: renderedDesiredHash({
+        contents: args.contents,
+        normalizeText: args.normalizeText,
+        targetPath,
+      }),
+      reason: args.reason,
+    });
+  }
+  for (const targetPath of args.plan.remove) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "remove",
+      targetPath,
+      sourcePath: previous[targetPath]?.sourcePath,
+      oldHash: previous[targetPath]?.hash,
+      reason: args.reason,
+    });
+  }
+  for (const conflict of args.conflicts) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "skip",
+      targetPath: conflict.targetPath,
+      sourcePath: conflict.sourcePath,
+      oldHash: previous[conflict.targetPath]?.hash,
+      reason: conflict.reason,
+    });
+  }
+  return events;
+}
+
+function collectSkillLedgerEvents(args: {
+  base: Omit<
+    SyncLedgerEvent,
+    | "action"
+    | "id"
+    | "name"
+    | "newHash"
+    | "oldHash"
+    | "reason"
+    | "sourcePath"
+    | "targetPath"
+  >;
+  plan: SkillSymlinkPlan;
+}): SyncLedgerEvent[] {
+  const events: SyncLedgerEvent[] = [];
+  for (const name of args.plan.add) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "add",
+      name,
+      reason: "skill_symlink",
+    });
+  }
+  for (const name of args.plan.remove) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "remove",
+      name,
+      reason: "skill_symlink",
+    });
+  }
+  for (const conflict of args.plan.conflicts) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "skip",
+      name: conflict.name,
+      targetPath: conflict.livePath,
+      sourcePath: conflict.canonicalPath,
+      reason: `skill_${conflict.reason}`,
+    });
+  }
+  for (const conflict of args.plan.adopted) {
+    events.push({
+      ...args.base,
+      id: randomUUID(),
+      action: "adopt",
+      name: conflict.name,
+      targetPath: conflict.livePath,
+      sourcePath: conflict.canonicalPath,
+      reason: `skill_${conflict.reason}`,
+    });
+  }
+  return events;
 }
 
 async function repairManagedCanonicalContent(args: {
@@ -4002,6 +4412,38 @@ async function syncManagedToolEntry({
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
 }) {
+  const correlationId = randomUUID();
+  const baseLedger = syncLedgerBase({
+    correlationId,
+    dryRun: Boolean(dryRun),
+    homeDir,
+    rootDir,
+    tool,
+  });
+  if (await isGeneratedOnlyProjectRoot({ homeDir, rootDir })) {
+    const message = `${tool}: ${dryRun ? "would skip" : "skipped"} sync because project .ai contains generated state only and no canonical source. Initialize or restore project .ai source before syncing managed project output.`;
+    if (dryRun) {
+      console.log(message);
+    } else {
+      console.warn(message);
+    }
+    if (!dryRun) {
+      await appendSyncLedgerEvents({
+        homeDir,
+        rootDir,
+        events: [
+          {
+            ...baseLedger,
+            id: randomUUID(),
+            action: "skip",
+            reason: "generated_only_project_root",
+          },
+        ],
+      });
+    }
+    return;
+  }
+
   pruneAutomationRuntimeRenderedTargets({
     entry,
     automationDir: entry.automationDir,
@@ -4024,7 +4466,18 @@ async function syncManagedToolEntry({
         tool,
         dryRun,
       })
-    : { add: [], remove: [] };
+    : { add: [], remove: [], conflicts: [], adopted: [] };
+  const skillLedgerEvents = collectSkillLedgerEvents({
+    base: baseLedger,
+    plan: skillPlan,
+  });
+  if (!dryRun) {
+    await appendSyncLedgerEvents({
+      homeDir,
+      rootDir,
+      events: skillLedgerEvents,
+    });
+  }
 
   const agentPlan = entry.agentsDir
     ? await planAgentFileChanges({
@@ -4043,14 +4496,13 @@ async function syncManagedToolEntry({
     : { add: [], remove: [], contents: new Map(), sources: new Map() };
 
   const mcpPlan = entry.mcpConfig
-    ? await syncMcpConfig({
+    ? await planMcpWrite({
         homeDir,
         mcpConfigPath: entry.mcpConfig,
         rootDir,
         tool,
-        dryRun,
       })
-    : { needsWrite: false };
+    : null;
 
   const globalDocsPlan = entry.toolHome
     ? await planToolGlobalDocsSync({
@@ -4113,6 +4565,7 @@ async function syncManagedToolEntry({
           previouslyManagedTargets: Object.keys(entry.renderedTargets ?? {}),
         })
       : { add: [], remove: [], contents: new Map(), sources: new Map() };
+  const protectMissingSources = projectRootFromAiRoot(rootDir, homeDir) != null;
 
   const agentRendered = await planRenderedTargetConflicts({
     entry,
@@ -4121,6 +4574,7 @@ async function syncManagedToolEntry({
     desiredContents: agentPlan.contents,
     desiredSources: agentPlan.sources,
     conflictMode: builtinConflictMode,
+    protectMissingSources,
   });
   const globalDocsRendered = await planRenderedTargetConflicts({
     entry,
@@ -4129,6 +4583,7 @@ async function syncManagedToolEntry({
     desiredContents: globalDocsPlan.contents,
     desiredSources: globalDocsPlan.sources,
     conflictMode: builtinConflictMode,
+    protectMissingSources,
   });
   const automationRendered = await planRenderedTargetConflicts({
     entry,
@@ -4138,6 +4593,7 @@ async function syncManagedToolEntry({
     desiredSources: automationPlan.sources,
     conflictMode: builtinConflictMode,
     protectAllSources: true,
+    protectMissingSources,
   });
   const rulesRendered = await planRenderedTargetConflicts({
     entry,
@@ -4146,6 +4602,7 @@ async function syncManagedToolEntry({
     desiredContents: rulesPlan.contents,
     desiredSources: rulesPlan.sources,
     conflictMode: builtinConflictMode,
+    protectMissingSources,
   });
   const configContents =
     configPlan.contents != null
@@ -4165,6 +4622,7 @@ async function syncManagedToolEntry({
     desiredContents: configContents,
     desiredSources: configSources,
     conflictMode: builtinConflictMode,
+    protectMissingSources,
   });
   const pluginRendered = await planRenderedTargetConflicts({
     entry,
@@ -4175,14 +4633,126 @@ async function syncManagedToolEntry({
     conflictMode: builtinConflictMode,
     protectAllSources: true,
     normalizeText: false,
+    protectMissingSources,
   });
+  const mcpContents =
+    entry.mcpConfig && mcpPlan
+      ? new Map<string, ManagedTargetContent>([
+          [entry.mcpConfig, mcpPlan.contents],
+        ])
+      : new Map<string, ManagedTargetContent>();
+  const mcpSources =
+    entry.mcpConfig && mcpPlan
+      ? new Map<string, string>([[entry.mcpConfig, mcpPlan.sourcePath]])
+      : new Map<string, string>();
+  const mcpRendered = await planRenderedTargetConflicts({
+    entry,
+    desiredWrites:
+      entry.mcpConfig && mcpPlan?.needsWrite ? [entry.mcpConfig] : [],
+    desiredRemoves: [],
+    desiredContents: mcpContents,
+    desiredSources: mcpSources,
+    conflictMode: builtinConflictMode,
+    protectMissingSources,
+  });
+  if (
+    entry.mcpConfig &&
+    mcpRendered.conflicts.some(
+      (conflict) =>
+        conflict.targetPath === entry.mcpConfig &&
+        conflict.reason === "unknown_state"
+    ) &&
+    (await isEmptyGeneratedMcpConfig(entry.mcpConfig))
+  ) {
+    mcpRendered.conflicts = mcpRendered.conflicts.filter(
+      (conflict) => conflict.targetPath !== entry.mcpConfig
+    );
+    mcpRendered.write.push(entry.mcpConfig);
+    mcpRendered.write.sort();
+  }
+
+  const ledgerEvents = [
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: agentRendered.conflicts,
+      contents: agentPlan.contents,
+      entry,
+      normalizeText: true,
+      plan: agentRendered,
+      reason: "agent_render",
+      sources: agentPlan.sources,
+    }),
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: automationRendered.conflicts,
+      contents: automationPlan.contents,
+      entry,
+      normalizeText: true,
+      plan: automationRendered,
+      reason: "automation_render",
+      sources: automationPlan.sources,
+    }),
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: globalDocsRendered.conflicts,
+      contents: globalDocsPlan.contents,
+      entry,
+      normalizeText: true,
+      plan: globalDocsRendered,
+      reason: "global_doc_render",
+      sources: globalDocsPlan.sources,
+    }),
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: rulesRendered.conflicts,
+      contents: rulesPlan.contents,
+      entry,
+      normalizeText: true,
+      plan: rulesRendered,
+      reason: "rule_render",
+      sources: rulesPlan.sources,
+    }),
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: configRendered.conflicts,
+      contents: configContents,
+      entry,
+      normalizeText: true,
+      plan: configRendered,
+      reason: "tool_config_render",
+      sources: configSources,
+    }),
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: mcpRendered.conflicts,
+      contents: mcpContents,
+      entry,
+      normalizeText: true,
+      plan: mcpRendered,
+      reason: "mcp_render",
+      sources: mcpSources,
+    }),
+    ...collectRenderedLedgerEvents({
+      base: baseLedger,
+      conflicts: pluginRendered.conflicts,
+      contents: pluginPlan.contents,
+      entry,
+      normalizeText: false,
+      plan: pluginRendered,
+      reason: "plugin_render",
+      sources: pluginPlan.sources,
+    }),
+  ];
 
   if (dryRun) {
     logSyncDryRun({
       tool,
-      entry,
       skillPlan,
-      mcpPlan,
+      mcpPlan: {
+        write: mcpRendered.write.length > 0,
+        targetPath: entry.mcpConfig ?? "",
+      },
+      mcpConflicts: mcpRendered.conflicts,
       agentPlan: { add: agentRendered.write, remove: agentRendered.remove },
       agentConflicts: agentRendered.conflicts,
       automationPlan: {
@@ -4238,6 +4808,10 @@ async function syncManagedToolEntry({
       contents: configContents,
       targets: configRendered.write,
     });
+    await applyRenderedWrites({
+      contents: mcpContents,
+      targets: mcpRendered.write,
+    });
     await applyRenderedRemoves(pluginRendered.remove);
     await applyRenderedWrites({
       contents: pluginPlan.contents,
@@ -4251,7 +4825,10 @@ async function syncManagedToolEntry({
     logRenderedConflicts(tool, globalDocsRendered.conflicts);
     logRenderedConflicts(tool, rulesRendered.conflicts);
     logRenderedConflicts(tool, configRendered.conflicts);
+    logRenderedConflicts(tool, mcpRendered.conflicts);
     logRenderedConflicts(tool, pluginRendered.conflicts);
+    logSkillSymlinkConflicts(tool, skillPlan.adopted);
+    logSkillSymlinkConflicts(tool, skillPlan.conflicts);
 
     updateRenderedTargetState({
       entry,
@@ -4290,6 +4867,13 @@ async function syncManagedToolEntry({
     });
     updateRenderedTargetState({
       entry,
+      writtenTargets: mcpRendered.write,
+      removedTargets: mcpRendered.remove,
+      contents: mcpContents,
+      sources: mcpSources,
+    });
+    updateRenderedTargetState({
+      entry,
       writtenTargets: pluginRendered.write,
       removedTargets: pluginRendered.remove,
       contents: pluginPlan.contents,
@@ -4302,6 +4886,7 @@ async function syncManagedToolEntry({
         `${tool}: adopted existing content ${name} into canonical store`
       );
     }
+    await appendSyncLedgerEvents({ homeDir, rootDir, events: ledgerEvents });
     console.log(`${tool} synced`);
   }
 }

@@ -19,6 +19,7 @@ import {
   syncManagedTools,
   unmanageTool,
 } from "./manage";
+import { facultMachineStateDir } from "./paths";
 
 const DOLLAR = "$";
 
@@ -442,6 +443,35 @@ describe("managed state", () => {
     expect(overwritten).toContain(
       join(facultBuiltinPackRoot(), "instructions", "EVOLUTION.md")
     );
+  });
+
+  it("preserves local edits on canonical-backed global docs even when builtin overwrite is requested", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(join(rootDir, "AGENTS.global.md"), "Canonical doc.\n");
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const targetPath = join(home, ".codex", "AGENTS.md");
+    await Bun.write(targetPath, "User-edited live doc.\n");
+    await Bun.write(
+      join(rootDir, "AGENTS.global.md"),
+      "Updated canonical doc.\n"
+    );
+
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      builtinConflictMode: "overwrite",
+    });
+
+    const preserved = await readFile(targetPath, "utf8");
+    expect(preserved).toBe("User-edited live doc.\n");
   });
 
   it("renders and reconciles Claude global docs via the default CLAUDE.md surface", async () => {
@@ -1183,6 +1213,245 @@ describe("syncManagedTools", () => {
     ).toBe(false);
   });
 
+  it("adopts manually edited live skill directories before replacing them with managed links", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "skills", "shared-skill"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "skills", "shared-skill", "SKILL.md"),
+      "# Canonical Skill\n"
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    const codexSkillsDir = join(home, ".agents", "skills");
+    await mkdir(join(codexSkillsDir, "shared-skill"), { recursive: true });
+    await Bun.write(
+      join(codexSkillsDir, "shared-skill", "SKILL.md"),
+      "# User Edited Skill\n"
+    );
+
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-03-19T00:13:23.457Z",
+            skillsDir: codexSkillsDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    const liveSkillPath = join(codexSkillsDir, "shared-skill");
+    const liveSkillStat = await lstat(liveSkillPath);
+    expect(liveSkillStat.isSymbolicLink()).toBe(true);
+    expect(
+      await readFile(
+        join(rootDir, "skills", "shared-skill", "SKILL.md"),
+        "utf8"
+      )
+    ).toBe("# User Edited Skill\n");
+
+    const ledger = (
+      await readFile(
+        join(facultMachineStateDir(home, rootDir), "ledger", "sync.jsonl"),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { action: string; reason: string });
+    expect(
+      ledger.some(
+        (event) => event.action === "adopt" && event.reason === "skill_modified"
+      )
+    ).toBe(true);
+  });
+
+  it("adopts unmanaged live skill directories before replacing them with managed links", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    const codexSkillsDir = join(home, ".agents", "skills");
+    await mkdir(join(codexSkillsDir, "new-skill"), { recursive: true });
+    await Bun.write(
+      join(codexSkillsDir, "new-skill", "SKILL.md"),
+      "# New Skill\n"
+    );
+
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-03-19T00:13:23.457Z",
+            skillsDir: codexSkillsDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    const liveSkillPath = join(codexSkillsDir, "new-skill");
+    const liveSkillStat = await lstat(liveSkillPath);
+    expect(liveSkillStat.isSymbolicLink()).toBe(true);
+    expect(
+      await readFile(join(rootDir, "skills", "new-skill", "SKILL.md"), "utf8")
+    ).toBe("# New Skill\n");
+  });
+
+  it("skips local edits to canonical-backed rendered docs without writing rendered text back to source", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+    );
+    await Bun.write(
+      join(rootDir, "instructions", "WRITING.md"),
+      "Write directly.\n"
+    );
+    await Bun.write(
+      join(rootDir, "AGENTS.global.md"),
+      `Read ${REFS_WRITING_RULE}.\n`
+    );
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const targetPath = join(home, ".codex", "AGENTS.md");
+    await Bun.write(targetPath, "# Live Edited Global\n");
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    expect(await readFile(join(rootDir, "AGENTS.global.md"), "utf8")).toBe(
+      `Read ${REFS_WRITING_RULE}.\n`
+    );
+    expect(await readFile(targetPath, "utf8")).toBe("# Live Edited Global\n");
+  });
+
+  it("skips local edits to managed mcp config instead of overwriting them", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), {
+      servers: { canonical: { command: "node", args: ["canonical.js"] } },
+    });
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const targetPath = join(home, ".codex", "mcp.json");
+    const liveEdited = {
+      mcpServers: { live: { command: "node", args: ["live.js"] } },
+    };
+    await writeJson(targetPath, liveEdited);
+    await writeJson(join(rootDir, "mcp", "servers.json"), {
+      servers: { canonical: { command: "node", args: ["updated.js"] } },
+    });
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual(liveEdited);
+  });
+
+  it("skips project sync entirely when the project .ai root is generated-only", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const targetPath = join(projectRoot, ".codex", "AGENTS.md");
+
+    await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+    await mkdir(dirname(targetPath), { recursive: true });
+    await Bun.write(targetPath, "# Rendered project docs\n");
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-05-24T00:00:00.000Z",
+            toolHome: join(projectRoot, ".codex"),
+            globalAgentsPath: targetPath,
+            renderedTargets: {
+              [targetPath]: {
+                hash: "existing-hash",
+                sourcePath: join(rootDir, "AGENTS.global.md"),
+                sourceKind: "canonical",
+              },
+            },
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+    });
+
+    expect(await readFile(targetPath, "utf8")).toBe(
+      "# Rendered project docs\n"
+    );
+    const ledger = await readFile(
+      join(facultMachineStateDir(home, rootDir), "ledger", "sync.jsonl"),
+      "utf8"
+    );
+    expect(ledger).toContain("generated_only_project_root");
+  });
+
+  it("skips rendered target removal when the previous canonical source is missing", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(rootDir, "agents", "alpha"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "agents", "alpha", "agent.toml"),
+      'name = "alpha"\n'
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[project_sync.codex]\nagents = ["alpha"]\n'
+    );
+
+    await manageTool("codex", { homeDir: home, rootDir });
+    const targetPath = join(projectRoot, ".codex", "agents", "alpha.toml");
+
+    await rm(join(rootDir, "agents", "alpha"), {
+      recursive: true,
+      force: true,
+    });
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    expect(await Bun.file(targetPath).exists()).toBe(true);
+  });
+
   it("manages project-local codex artifacts from a repo-local .ai root", async () => {
     const home = await createTempDir();
     const projectRoot = join(home, "work", "repo");
@@ -1401,6 +1670,26 @@ describe("syncManagedTools", () => {
       join(home, ".codex", "agents", "beta.toml")
     ).exists();
     expect(betaExists).toBe(false);
+
+    const ledger = (
+      await readFile(
+        join(facultMachineStateDir(home, rootDir), "ledger", "sync.jsonl"),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { action: string; reason: string });
+    expect(
+      ledger.some(
+        (event) => event.action === "write" && event.reason === "agent_render"
+      )
+    ).toBe(true);
+    expect(
+      ledger.some(
+        (event) => event.action === "remove" && event.reason === "agent_render"
+      )
+    ).toBe(true);
   });
 
   it("reconciles managed codex automations without removing unrelated live automations", async () => {

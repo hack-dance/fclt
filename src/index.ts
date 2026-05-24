@@ -25,6 +25,7 @@ import {
 } from "./graph-query";
 import type {
   AgentEntry,
+  AutomationEntry,
   FacultIndex,
   InstructionEntry,
   McpEntry,
@@ -43,12 +44,19 @@ import {
 } from "./query";
 import { parseJsonLenient } from "./util/json";
 
-type ListKind = "skills" | "mcp" | "agents" | "snippets" | "instructions";
+type ListKind =
+  | "skills"
+  | "mcp"
+  | "agents"
+  | "automations"
+  | "snippets"
+  | "instructions";
 
 const LIST_KINDS: ListKind[] = [
   "skills",
   "mcp",
   "agents",
+  "automations",
   "snippets",
   "instructions",
 ];
@@ -65,6 +73,7 @@ export interface FindCommandOptions {
 }
 
 type GraphCommandKind = "show" | "deps" | "dependents";
+type ShowKind = ListKind | "mcp";
 
 interface ContextualCommandOptions {
   rootArg?: string;
@@ -177,7 +186,7 @@ function printListHelp() {
           title: "Usage",
           lines: renderBullets([
             renderCode(
-              "fclt list [skills|mcp|agents|snippets|instructions] [options]"
+              "fclt list [skills|mcp|agents|automations|snippets|instructions] [options]"
             ),
             renderCode("fclt list"),
           ]),
@@ -494,6 +503,32 @@ function auditBadge(status?: string): string {
   return renderBadge("audit pending", "warn");
 }
 
+function showKindForToken(token: string): ShowKind | null {
+  switch (token) {
+    case "agent":
+    case "agents":
+      return "agents";
+    case "automation":
+    case "automations":
+      return "automations";
+    case "instruction":
+    case "instructions":
+      return "instructions";
+    case "mcp":
+    case "mcp-server":
+    case "mcp-servers":
+      return "mcp";
+    case "skill":
+    case "skills":
+      return "skills";
+    case "snippet":
+    case "snippets":
+      return "snippets";
+    default:
+      return null;
+  }
+}
+
 function displayDescription(value?: string): string {
   const normalized = value
     ?.trim()
@@ -571,6 +606,7 @@ async function listCommand(argv: string[]) {
     | SkillEntry[]
     | McpEntry[]
     | AgentEntry[]
+    | AutomationEntry[]
     | SnippetEntry[]
     | InstructionEntry[] = [];
 
@@ -583,6 +619,20 @@ async function listCommand(argv: string[]) {
       break;
     case "agents":
       entries = filterAgents(index.agents ?? {}, opts.filters);
+      break;
+    case "automations":
+      entries = Object.values(index.automations ?? {}).filter((entry) => {
+        if (
+          opts.filters.sourceKind &&
+          entry.sourceKind !== opts.filters.sourceKind
+        ) {
+          return false;
+        }
+        if (opts.filters.scope && entry.scope !== opts.filters.scope) {
+          return false;
+        }
+        return true;
+      });
       break;
     case "snippets":
       entries = filterSnippets(index.snippets ?? {}, opts.filters);
@@ -646,11 +696,17 @@ async function listCommand(argv: string[]) {
       };
     }
 
-    const detailEntry = entry as AgentEntry | SnippetEntry | InstructionEntry;
+    const detailEntry = entry as
+      | AgentEntry
+      | AutomationEntry
+      | SnippetEntry
+      | InstructionEntry;
     return {
       title: entry.name,
       meta: sourceLabel(entry),
-      description: displayDescription(detailEntry.description),
+      description: displayDescription(
+        "description" in detailEntry ? detailEntry.description : undefined
+      ),
     };
   });
 
@@ -834,45 +890,59 @@ async function showCommand(argv: string[]) {
     return;
   }
 
+  const rootDir = resolveCliContextRoot({
+    rootArg: context.rootArg,
+    scope: context.scopeMode,
+    cwd: process.cwd(),
+  });
+
   let index: FacultIndex;
   try {
-    index = await loadIndex({
-      rootDir: resolveCliContextRoot({
-        rootArg: context.rootArg,
-        scope: context.scopeMode,
-        cwd: process.cwd(),
-      }),
-    });
+    index = await loadIndex({ rootDir });
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return;
   }
 
-  let kind: ListKind | "mcp" = "skills";
+  let kind: ShowKind = "skills";
   let name = raw;
+  const colonIndex = raw.indexOf(":");
+  if (colonIndex > 0) {
+    const tokenKind = showKindForToken(raw.slice(0, colonIndex));
+    if (tokenKind) {
+      kind = tokenKind;
+      name = raw.slice(colonIndex + 1);
+    }
+  }
 
-  if (raw.startsWith("mcp:")) {
-    kind = "mcp";
-    name = raw.slice("mcp:".length);
-  } else if (raw.startsWith("instruction:")) {
-    kind = "instructions";
-    name = raw.slice("instruction:".length);
-  } else if (raw.startsWith("instructions:")) {
-    kind = "instructions";
-    name = raw.slice("instructions:".length);
+  try {
+    const graph = await loadGraph({ rootDir });
+    const node = resolveGraphNode(graph, raw, {
+      sourceKind: context.sourceKind,
+      scope: scopeFilterForMode(context.scopeMode),
+    });
+    const graphKind = node ? showKindForToken(node.kind) : null;
+    if (node && graphKind) {
+      kind = graphKind;
+      name = node.name;
+    }
+  } catch {
+    // A missing or stale graph should not make basic index-backed show fail.
   }
 
   let entry:
     | SkillEntry
     | McpEntry
     | AgentEntry
+    | AutomationEntry
     | SnippetEntry
     | InstructionEntry
     | null = null;
   const skill = index.skills[name];
   const mcpServer = index.mcp?.servers?.[name];
   const agent = index.agents?.[name];
+  const automation = index.automations?.[name];
   const snippet = index.snippets?.[name];
   const instruction = index.instructions?.[name];
   const matchesContext = (candidate: {
@@ -896,6 +966,15 @@ async function showCommand(argv: string[]) {
   } else if (kind === "skills" && agent && matchesContext(agent)) {
     kind = "agents";
     entry = agent;
+  } else if (
+    kind === "automations" &&
+    automation &&
+    matchesContext(automation)
+  ) {
+    entry = automation;
+  } else if (kind === "skills" && automation && matchesContext(automation)) {
+    kind = "automations";
+    entry = automation;
   } else if (kind === "skills" && snippet && matchesContext(snippet)) {
     kind = "snippets";
     entry = snippet;
@@ -1105,6 +1184,7 @@ async function graphCommand(argv: string[]) {
 }
 
 async function adaptersCommand(argv: string[]) {
+  const json = argv.includes("--json");
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     console.log(
       renderPage({
@@ -1122,6 +1202,21 @@ async function adaptersCommand(argv: string[]) {
   }
   const { getAllAdapters } = await import("./adapters");
   const adapters = getAllAdapters();
+  if (json) {
+    console.log(
+      JSON.stringify(
+        adapters.map((adapter) => ({
+          id: adapter.id,
+          name: adapter.name,
+          versions: adapter.versions,
+          defaultPaths: adapter.getDefaultPaths?.() ?? {},
+        })),
+        null,
+        2
+      )
+    );
+    return;
+  }
   if (!adapters.length) {
     console.log(
       renderPage({

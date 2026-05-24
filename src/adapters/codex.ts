@@ -12,7 +12,7 @@ export const codexAdapter: ToolAdapter = {
     mcp: "~/.codex/mcp.json",
     skills: ["~/.agents/skills", "~/.codex/skills"],
     agents: "~/.codex/agents",
-    config: "~/.config/openai/codex.json",
+    config: "~/.codex/config.toml",
   }),
   parseMcp: (config) => parseMcpConfig(config),
   generateMcp: (canonical) => generateMcpConfig(canonical, "mcpServers"),

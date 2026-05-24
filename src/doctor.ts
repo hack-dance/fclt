@@ -103,6 +103,50 @@ async function pathExists(pathValue: string): Promise<boolean> {
   }
 }
 
+async function hasCanonicalSource(rootDir: string): Promise<boolean> {
+  const fileCandidates = [
+    "config.toml",
+    "config.local.toml",
+    "AGENTS.global.md",
+    "AGENTS.override.global.md",
+  ];
+  for (const relPath of fileCandidates) {
+    if (await pathExists(join(rootDir, relPath))) {
+      return true;
+    }
+  }
+
+  const dirCandidates = [
+    "agents",
+    "automations",
+    "instructions",
+    "mcp",
+    "skills",
+    "snippets",
+    "tools",
+  ];
+  for (const relPath of dirCandidates) {
+    const entries = await readdir(join(rootDir, relPath)).catch(
+      () => [] as string[]
+    );
+    if (entries.some((entry) => !entry.startsWith("."))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function isGeneratedOnlyProjectRoot(args: {
+  home: string;
+  rootDir: string;
+}): Promise<boolean> {
+  if (projectRootFromAiRoot(args.rootDir, args.home) == null) {
+    return false;
+  }
+  return !(await hasCanonicalSource(args.rootDir));
+}
+
 async function hashFile(pathValue: string): Promise<string> {
   const data = await readFile(pathValue);
   return createHash("sha256").update(data).digest("hex");
@@ -626,6 +670,13 @@ export async function doctorCommand(argv: string[]) {
       console.log(
         `Project sync is still implicit for managed tools (${projectSyncRepairTools.join(", ")}). Run \`fclt doctor --repair\` to write explicit [project_sync.<tool>] entries.`
       );
+    }
+    if (await isGeneratedOnlyProjectRoot({ home, rootDir })) {
+      console.log(
+        "Project .ai root contains generated state only. Canonical project source is missing, so managed project sync should be treated as unsafe until source is initialized, restored, or management is detached."
+      );
+      process.exitCode = 1;
+      return;
     }
 
     if (result.source === "generated") {
