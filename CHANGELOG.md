@@ -1,3 +1,9 @@
+## [2.7.6](https://github.com/hack-dance/fclt/compare/v2.7.5...v2.7.6) (2026-05-24)
+
+### Bug Fixes
+
+* require project automation sync opt-in ([1c21721](https://github.com/hack-dance/fclt/commit/1c21721bd57f74d9bb542faedf93658d14947174))
+
 ## [2.7.5](https://github.com/hack-dance/fclt/compare/v2.7.4...v2.7.5) (2026-05-24)
 
 ### Bug Fixes
