@@ -1,3 +1,9 @@
+## [2.7.7](https://github.com/hack-dance/fclt/compare/v2.7.6...v2.7.7) (2026-05-24)
+
+### Bug Fixes
+
+* align managed adoption with project sync policy ([0600604](https://github.com/hack-dance/fclt/commit/060060407394d9fd33462eda77f456504caad863))
+
 ## [2.7.6](https://github.com/hack-dance/fclt/compare/v2.7.5...v2.7.6) (2026-05-24)
 
 ### Bug Fixes
