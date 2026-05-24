@@ -141,12 +141,12 @@ jobs:
       - name: Verify binary (unix)
         if: runner.os != 'Windows'
         shell: bash
-        run: ./dist/fclt --help
+        run: bun run scripts/verify-binary.ts ./dist/fclt
 
       - name: Verify binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./dist/fclt.exe --help
+        run: bun run scripts/verify-binary.ts ./dist/fclt.exe
 
       - name: Prepare asset (unix)
         if: runner.os != 'Windows'
@@ -365,6 +365,7 @@ jobs:
           HOME="$(mktemp -d)"
           export HOME
           node ./bin/fclt.cjs --help
+          node ./bin/fclt.cjs --version
 
       - name: Smoke test release install script against release asset
         shell: bash
@@ -377,6 +378,8 @@ jobs:
           HOME="$TMP_HOME" \
           bash ./scripts/install.sh
           "$TMP_BIN/fclt" --help
+          "$TMP_BIN/fclt" --version
+          "$TMP_BIN/fclt" status --json >/dev/null
           "$TMP_BIN/facult" --help
 
       - name: Ensure NPM_TOKEN is configured

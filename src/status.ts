@@ -13,6 +13,8 @@ import {
 } from "./paths";
 import { parseJsonLenient } from "./util/json";
 
+declare const FCLT_COMPILED_VERSION: string | undefined;
+
 export interface StatusIssue {
   severity: "info" | "warning" | "error";
   code: string;
@@ -120,8 +122,25 @@ async function countActiveProposals(
 }
 
 export async function packageVersion(): Promise<string> {
+  const envVersion =
+    process.env.FACULT_NPM_PACKAGE_VERSION ?? process.env.npm_package_version;
+  if (envVersion?.trim()) {
+    return envVersion.trim();
+  }
+
+  if (
+    typeof FCLT_COMPILED_VERSION === "string" &&
+    FCLT_COMPILED_VERSION.trim()
+  ) {
+    return FCLT_COMPILED_VERSION.trim();
+  }
+
   const packagePath = join(dirname(import.meta.dir), "package.json");
-  const parsed = parseJsonLenient(await Bun.file(packagePath).text());
+  const parsed = parseJsonLenient(
+    await Bun.file(packagePath)
+      .text()
+      .catch(() => "{}")
+  );
   if (
     parsed &&
     typeof parsed === "object" &&
