@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { ensureAiGraphPath } from "./ai-state";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import type { AssetScope, GraphNodeKind } from "./graph";
@@ -242,7 +243,17 @@ function canonicalRefToPath(args: {
     return join(facultRootDir(args.homeDir), args.ref.slice("@ai/".length));
   }
   if (args.ref.startsWith("@project/")) {
-    return join(args.rootDir, args.ref.slice("@project/".length));
+    const relPath = args.ref.slice("@project/".length);
+    const canonicalPath = join(args.rootDir, relPath);
+    const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
+    if (projectRoot) {
+      const projectPath = join(projectRoot, relPath);
+      if (existsSync(canonicalPath)) {
+        return canonicalPath;
+      }
+      return existsSync(projectPath) ? projectPath : canonicalPath;
+    }
+    return canonicalPath;
   }
   return null;
 }
@@ -337,7 +348,27 @@ async function resolveAssetSelection(args: {
   });
   const node = resolveGraphNode(graph, args.asset);
   if (!node) {
-    throw new Error(`Asset not found in graph: ${args.asset}`);
+    const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
+    if (projectRoot) {
+      const resolvedPath = resolve(projectRoot, args.asset);
+      const relPath = relative(projectRoot, resolvedPath);
+      if (
+        relPath &&
+        !relPath.startsWith("..") &&
+        !relPath.includes("\0") &&
+        (await fileExists(resolvedPath))
+      ) {
+        const normalizedRef = relPath.replaceAll("\\", "/");
+        return {
+          assetRef: `@project/${normalizedRef}`,
+          assetId: `file:project:${normalizedRef}`,
+          assetType: "file",
+        };
+      }
+    }
+    throw new Error(
+      `Asset not found in graph: ${args.asset}. Run "fclt graph show <selector>" to check indexed assets, or use a project-relative file path that exists.`
+    );
   }
   return {
     assetRef: node.canonicalRef ?? node.id,

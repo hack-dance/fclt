@@ -2268,6 +2268,7 @@ Notes:
 
 Options:
   --json              Print full JSON (ScanResult)
+  --persist           Persist scan state when using --json
   --show-duplicates   Print duplicates for skills, MCP servers, and hook assets
   --tui               Render scan output in an interactive TUI (skills list)
   --no-config-from    Disable default scan roots from ~/.ai/.facult/config.json (scanFrom)
@@ -2287,6 +2288,7 @@ export async function scanCommand(argv: string[]) {
   }
 
   const json = argv.includes("--json");
+  const persist = argv.includes("--persist") || !json;
   const showDuplicates = argv.includes("--show-duplicates");
   const tui = argv.includes("--tui");
   const noConfigFrom = argv.includes("--no-config-from");
@@ -2427,7 +2429,9 @@ export async function scanCommand(argv: string[]) {
       maxResults: fromMaxResults,
     },
   });
-  await writeState(res);
+  if (persist) {
+    await writeState(res);
+  }
 
   if (json) {
     if (tui) {

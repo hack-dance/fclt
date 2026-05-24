@@ -157,6 +157,36 @@ describe("ai writeback", () => {
     expect(record.assetType).toBe("automation");
   });
 
+  it("records writebacks against existing project files outside the graph", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+    await mkdir(join(projectRoot, "docs"), { recursive: true });
+    await Bun.write(join(projectRoot, "docs", "target.md"), "# Target\n");
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-05-24T00:00:00.000Z",
+      nodes: {},
+      edges: [],
+    });
+
+    const record = await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "missing_context",
+      summary: "The target-state doc needs a follow-up note.",
+      asset: "docs/target.md",
+      evidence: proposalEvidence("project-doc-writeback"),
+    });
+
+    expect(record.assetRef).toBe("@project/docs/target.md");
+    expect(record.assetId).toBe("file:project:docs/target.md");
+    expect(record.assetType).toBe("file");
+  });
+
   it("stores project-scoped runtime state under the repo .ai/.fclt tree", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
