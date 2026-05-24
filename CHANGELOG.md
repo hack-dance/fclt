@@ -1,3 +1,9 @@
+## [2.8.1](https://github.com/hack-dance/fclt/compare/v2.8.0...v2.8.1) (2026-05-24)
+
+### Bug Fixes
+
+* embed version in compiled status ([f2a1276](https://github.com/hack-dance/fclt/commit/f2a127692fbcf9c574bf2205a90227709795284a))
+
 ## [2.8.0](https://github.com/hack-dance/fclt/compare/v2.7.7...v2.8.0) (2026-05-24)
 
 ### Features
