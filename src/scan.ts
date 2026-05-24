@@ -1189,6 +1189,44 @@ async function buildFromRootResult(args: {
     }
   };
 
+  const scanAiDir = async (aiDir: string) => {
+    await scanToolDotDir(aiDir);
+
+    for (const name of ["servers.json", "mcp.json"]) {
+      const p = join(aiDir, "mcp", name);
+      if ((await statSafe(p))?.isFile) {
+        if (addResult(1)) {
+          mcpConfigPaths.add(p);
+        } else {
+          return;
+        }
+      }
+    }
+
+    for (const name of ["AGENTS.global.md", "AGENTS.override.global.md"]) {
+      const p = join(aiDir, name);
+      if ((await statSafe(p))?.isFile) {
+        addAsset("agents-instructions", p);
+      }
+    }
+
+    const instructionsDir = join(aiDir, "instructions");
+    if ((await statSafe(instructionsDir))?.isDir) {
+      const files = await listFilesRecursive(instructionsDir, {
+        ignore: args.opts.ignoreDirNames,
+        maxFiles: 2000,
+      });
+      for (const f of files) {
+        if (f.endsWith(".md")) {
+          addAsset("canonical-instruction", f);
+        }
+        if (truncated) {
+          break;
+        }
+      }
+    }
+  };
+
   const MCP_NAMES = new Set([
     "mcp.json",
     "mcp.config.json",
@@ -1315,6 +1353,10 @@ async function buildFromRootResult(args: {
         name === ".factory"
       ) {
         await scanToolDotDir(child);
+        continue;
+      }
+      if (name === ".ai") {
+        await scanAiDir(child);
         continue;
       }
 

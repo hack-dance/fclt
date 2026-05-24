@@ -32,6 +32,11 @@ export function extractServersObject(
     return null;
   }
   const raw = parsed as Record<string, unknown>;
+  for (const [key, value] of Object.entries(raw)) {
+    if (key.endsWith(".mcpServers") && isPlainObject(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
   const servers =
     (raw.servers as Record<string, unknown> | undefined) ??
     (raw.mcpServers as Record<string, unknown> | undefined) ??

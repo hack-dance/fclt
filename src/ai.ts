@@ -1545,6 +1545,11 @@ async function writebackCommand(argv: string[]) {
     return;
   }
 
+  if (parsed.argv.includes("--help") || parsed.argv.includes("-h")) {
+    console.log(writebackHelp());
+    return;
+  }
+
   const rootDir = resolveCliContextRoot({
     rootArg: parsed.rootArg,
     scope: parsed.scope,
@@ -1652,6 +1657,11 @@ async function evolveCommand(argv: string[]) {
   const parsed = parseCliContextArgs(rest);
 
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    console.log(evolveHelp());
+    return;
+  }
+
+  if (parsed.argv.includes("--help") || parsed.argv.includes("-h")) {
     console.log(evolveHelp());
     return;
   }
