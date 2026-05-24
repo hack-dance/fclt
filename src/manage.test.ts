@@ -257,6 +257,53 @@ describe("managed state", () => {
     ).toBe(false);
   });
 
+  it("ignores default-denied project automations during managed-mode adoption preflight", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const automationName = "project-check";
+
+    await mkdir(join(rootDir, "automations", automationName), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "automations", automationName, "automation.toml"),
+      [
+        "version = 1",
+        `id = "${automationName}"`,
+        'name = "Project check"',
+        'prompt = "Canonical prompt"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await mkdir(join(home, ".codex", "automations", automationName), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(home, ".codex", "automations", automationName, "automation.toml"),
+      [
+        "version = 1",
+        `id = "${automationName}"`,
+        'name = "Project check"',
+        'prompt = "Live prompt"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const canonicalToml = await readFile(
+      join(rootDir, "automations", automationName, "automation.toml"),
+      "utf8"
+    );
+    expect(canonicalToml).toContain('prompt = "Canonical prompt"');
+  });
+
   it("renders codex plugins into plugins/ and writes the .agents marketplace", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
@@ -1251,6 +1298,57 @@ describe("syncManagedTools", () => {
     ).toBe(false);
   });
 
+  it("does not overwrite disabled canonical skills when live unmanaged copies differ", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const codexSkillsDir = join(home, ".codex", "skills");
+
+    await mkdir(join(rootDir, "skills", "disabled-skill"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "skills", "disabled-skill", "SKILL.md"),
+      "# Canonical Disabled Skill\n"
+    );
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      "version = 1\n\n[project_sync.codex]\nskills = []\n"
+    );
+    await mkdir(join(codexSkillsDir, "disabled-skill"), { recursive: true });
+    await Bun.write(
+      join(codexSkillsDir, "disabled-skill", "SKILL.md"),
+      "# Live Unmanaged Skill\n"
+    );
+
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-03-19T00:13:23.457Z",
+            skillsDir: codexSkillsDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    expect(
+      await readFile(
+        join(rootDir, "skills", "disabled-skill", "SKILL.md"),
+        "utf8"
+      )
+    ).toBe("# Canonical Disabled Skill\n");
+    expect(
+      await readFile(join(codexSkillsDir, "disabled-skill", "SKILL.md"), "utf8")
+    ).toBe("# Live Unmanaged Skill\n");
+  });
+
   it("adopts manually edited live skill directories before replacing them with managed links", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
@@ -1459,6 +1557,52 @@ describe("syncManagedTools", () => {
       "utf8"
     );
     expect(ledger).toContain("generated_only_project_root");
+  });
+
+  it("does not treat project roots with rules as generated-only", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const targetPath = join(projectRoot, ".codex", "AGENTS.md");
+
+    await mkdir(join(rootDir, "rules"), { recursive: true });
+    await Bun.write(join(rootDir, "rules", "POLICY.md"), "Project policy.\n");
+    await mkdir(dirname(targetPath), { recursive: true });
+    await Bun.write(targetPath, "# Rendered project docs\n");
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-05-24T00:00:00.000Z",
+            toolHome: join(projectRoot, ".codex"),
+            globalAgentsPath: targetPath,
+            renderedTargets: {
+              [targetPath]: {
+                hash: "existing-hash",
+                sourcePath: join(rootDir, "AGENTS.global.md"),
+                sourceKind: "canonical",
+              },
+            },
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+    });
+
+    const ledger = await readFile(
+      join(facultMachineStateDir(home, rootDir), "ledger", "sync.jsonl"),
+      "utf8"
+    );
+    expect(ledger).not.toContain("generated_only_project_root");
   });
 
   it("skips rendered target removal when the previous canonical source is missing", async () => {

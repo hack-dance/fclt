@@ -121,6 +121,7 @@ async function hasCanonicalSource(rootDir: string): Promise<boolean> {
     "automations",
     "instructions",
     "mcp",
+    "rules",
     "skills",
     "snippets",
     "tools",
