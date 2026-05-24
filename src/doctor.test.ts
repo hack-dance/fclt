@@ -370,3 +370,54 @@ test("doctor flags generated-only project ai roots as unsafe", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 10_000);
+
+test("doctor does not flag project ai roots with rules as generated-only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-rules-source-"));
+  const projectRoot = join(dir, "work", "repo");
+  const aiRoot = join(projectRoot, ".ai");
+
+  try {
+    await mkdir(join(aiRoot, ".facult", "ai"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, ".facult", "ai", "index.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          skills: {},
+          mcp: { servers: {} },
+          agents: {},
+          snippets: {},
+          instructions: {},
+        },
+        null,
+        2
+      )
+    );
+    await mkdir(join(aiRoot, "rules"), { recursive: true });
+    await Bun.write(join(aiRoot, "rules", "POLICY.md"), "Project policy.\n");
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--root", aiRoot],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).not.toContain("generated state only");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);

@@ -228,6 +228,7 @@ async function hasCanonicalSource(rootDir: string): Promise<boolean> {
     "automations",
     "instructions",
     "mcp",
+    "rules",
     "skills",
     "snippets",
     "tools",
@@ -806,6 +807,23 @@ async function loadCanonicalAutomations(
   return await loadAutomationEntries(join(rootDir, "automations"));
 }
 
+async function loadRenderableCanonicalAutomations(args: {
+  homeDir: string;
+  rootDir: string;
+  tool: string;
+}): Promise<AutomationEntry[]> {
+  const policy = await loadProjectToolSyncPolicy(args);
+  const automations = await loadCanonicalAutomations(args.rootDir);
+  if (!policy) {
+    return automations;
+  }
+  return automations.filter(
+    (automation) =>
+      policy.automations.includes("*") ||
+      policy.automations.includes(automation.name)
+  );
+}
+
 function isAutomationRuntimeRelativePath(relPath: string): boolean {
   return relPath === "memory.md";
 }
@@ -1183,17 +1201,7 @@ async function planAutomationFileChanges(args: {
   contents: Map<string, string>;
   sources: Map<string, string>;
 }> {
-  const policy = await loadProjectToolSyncPolicy({
-    homeDir: args.homeDir,
-    rootDir: args.rootDir,
-    tool: args.tool,
-  });
-  const automations = (await loadCanonicalAutomations(args.rootDir)).filter(
-    (automation) =>
-      !policy ||
-      policy.automations.includes("*") ||
-      policy.automations.includes(automation.name)
-  );
+  const automations = await loadRenderableCanonicalAutomations(args);
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
@@ -1743,13 +1751,15 @@ async function adoptExistingToolAgents(args: {
 }
 
 async function planExistingAutomationAdoption(args: {
+  homeDir: string;
   rootDir: string;
+  tool: string;
   automationDir: string;
 }): Promise<ExistingManagedImportPlan> {
   const plan = emptyManagedImportPlan();
   const liveAutomations = await loadAutomationEntries(args.automationDir);
   const canonicalAutomations = new Map(
-    (await loadCanonicalAutomations(args.rootDir)).map((entry) => [
+    (await loadRenderableCanonicalAutomations(args)).map((entry) => [
       entry.name,
       entry,
     ])
@@ -1777,7 +1787,9 @@ async function planExistingAutomationAdoption(args: {
 }
 
 async function adoptExistingAutomations(args: {
+  homeDir: string;
   rootDir: string;
+  tool: string;
   automationDir: string;
   conflictMode: "keep-canonical" | "keep-existing";
 }): Promise<ExistingManagedItem[]> {
@@ -1788,7 +1800,7 @@ async function adoptExistingAutomations(args: {
   const adopted: ExistingManagedItem[] = [];
   const liveAutomations = await loadAutomationEntries(args.automationDir);
   const canonicalAutomations = new Map(
-    (await loadCanonicalAutomations(args.rootDir)).map((entry) => [
+    (await loadRenderableCanonicalAutomations(args)).map((entry) => [
       entry.name,
       entry,
     ])
@@ -2243,7 +2255,7 @@ interface SkillSymlinkConflict {
   name: string;
   livePath: string;
   canonicalPath?: string;
-  reason: "modified" | "unmanaged";
+  reason: "modified" | "unmanaged" | "disabled";
 }
 
 interface SkillSymlinkPlan {
@@ -2315,6 +2327,24 @@ async function planSkillSymlinkChanges({
         entry.isDirectory() &&
         (await fileExists(join(linkPath, "SKILL.md")))
       ) {
+        const disabledCanonicalPath = join(rootDir, "skills", entry.name);
+        const [liveHash, canonicalHash] = await Promise.all([
+          hashDirectoryTree(linkPath),
+          hashDirectoryTree(disabledCanonicalPath),
+        ]);
+        if (canonicalHash != null) {
+          if (liveHash === canonicalHash) {
+            remove.push(entry.name);
+            continue;
+          }
+          conflicts.push({
+            name: entry.name,
+            livePath: linkPath,
+            canonicalPath: disabledCanonicalPath,
+            reason: "disabled",
+          });
+          continue;
+        }
         conflicts.push({
           name: entry.name,
           livePath: linkPath,
@@ -2412,6 +2442,12 @@ async function syncSkillSymlinks({
     rootDir,
     conflicts: plan.conflicts,
   });
+  const adoptedNames = new Set(
+    adoptedConflicts.map((conflict) => conflict.name)
+  );
+  const unresolvedConflicts = plan.conflicts.filter(
+    (conflict) => !adoptedNames.has(conflict.name)
+  );
   if (adoptedConflicts.length > 0) {
     await buildIndex({
       homeDir,
@@ -2451,7 +2487,7 @@ async function syncSkillSymlinks({
   return {
     add,
     remove,
-    conflicts: [],
+    conflicts: unresolvedConflicts,
     adopted: adoptedConflicts,
   };
 }
@@ -2597,7 +2633,9 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
       : emptyManagedImportPlan(),
     toolPaths.automationDir
       ? await planExistingAutomationAdoption({
+          homeDir: home,
           rootDir,
+          tool,
           automationDir: toolPaths.automationDir,
         })
       : emptyManagedImportPlan(),
@@ -2757,7 +2795,9 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   }
   if (toolPaths.automationDir && opts.adoptExisting) {
     const result = await adoptExistingAutomations({
+      homeDir: home,
       rootDir,
+      tool,
       automationDir: toolPaths.automationDir,
       conflictMode: importConflictMode,
     });
@@ -3609,11 +3649,20 @@ function logSkillSymlinkConflicts(
   dryRun?: boolean
 ) {
   for (const conflict of conflicts) {
-    const verb = dryRun ? "would adopt" : "adopted";
+    const verb =
+      conflict.reason === "disabled"
+        ? dryRun
+          ? "would preserve"
+          : "preserved"
+        : dryRun
+          ? "would adopt"
+          : "adopted";
     const state =
       conflict.reason === "unmanaged"
         ? "it is not in canonical skill state"
-        : "local skill content differs from canonical state";
+        : conflict.reason === "disabled"
+          ? "it maps to a disabled canonical skill"
+          : "local skill content differs from canonical state";
     const canonical = conflict.canonicalPath
       ? ` (canonical ${conflict.canonicalPath})`
       : "";
@@ -3629,6 +3678,9 @@ async function adoptSkillSymlinkConflictsIntoCanonical(args: {
 }): Promise<SkillSymlinkConflict[]> {
   const adopted: SkillSymlinkConflict[] = [];
   for (const conflict of args.conflicts) {
+    if (conflict.reason === "disabled") {
+      continue;
+    }
     const canonicalPath =
       conflict.canonicalPath ?? join(args.rootDir, "skills", conflict.name);
     if (!(await fileExists(join(conflict.livePath, "SKILL.md")))) {
