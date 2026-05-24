@@ -7,6 +7,14 @@ const repoRoot = resolve(import.meta.dir, "..");
 const distDir = join(repoRoot, "dist");
 const binaryBasePath = join(distDir, "fclt");
 const compatibilityPath = join(distDir, "facult");
+const packageJson = (await Bun.file(join(repoRoot, "package.json")).json()) as {
+  version?: string;
+};
+const version = packageJson.version?.trim();
+
+if (!version) {
+  throw new Error("package.json is missing a version");
+}
 
 await mkdir(distDir, { recursive: true });
 
@@ -16,6 +24,8 @@ const build = Bun.spawnSync({
     "build",
     "./src/index.ts",
     "--compile",
+    "--define",
+    `FCLT_COMPILED_VERSION=${JSON.stringify(version)}`,
     "--outfile",
     binaryBasePath,
   ],

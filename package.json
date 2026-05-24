@@ -43,7 +43,7 @@
     "facult": "bun run ./src/index.ts",
     "scan": "bun run ./src/index.ts scan",
     "build": "bun run scripts/build-binary.ts",
-    "build:verify": "./dist/fclt --help",
+    "build:verify": "bun run scripts/verify-binary.ts",
     "install:dev": "bun run scripts/install-cli.ts --mode=dev --force",
     "install:bin": "bun run build && bun run scripts/install-cli.ts --mode=bin --force",
     "install:status": "bun run scripts/install-status.ts",
