@@ -1173,7 +1173,9 @@ async function syncAgentFiles({
 
 async function planAutomationFileChanges(args: {
   automationDir: string;
+  homeDir: string;
   rootDir: string;
+  tool: string;
   previouslyManagedTargets?: string[];
 }): Promise<{
   add: string[];
@@ -1181,7 +1183,17 @@ async function planAutomationFileChanges(args: {
   contents: Map<string, string>;
   sources: Map<string, string>;
 }> {
-  const automations = await loadCanonicalAutomations(args.rootDir);
+  const policy = await loadProjectToolSyncPolicy({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    tool: args.tool,
+  });
+  const automations = (await loadCanonicalAutomations(args.rootDir)).filter(
+    (automation) =>
+      !policy ||
+      policy.automations.includes("*") ||
+      policy.automations.includes(automation.name)
+  );
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
@@ -2827,7 +2839,9 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   const automationPreview = toolPaths.automationDir
     ? await planAutomationFileChanges({
         automationDir: toolPaths.automationDir,
+        homeDir: home,
         rootDir,
+        tool,
       })
     : null;
   const globalDocsPreview = toolPaths.toolHome
@@ -4490,7 +4504,9 @@ async function syncManagedToolEntry({
   const automationPlan = entry.automationDir
     ? await planAutomationFileChanges({
         automationDir: entry.automationDir,
+        homeDir,
         rootDir,
+        tool,
         previouslyManagedTargets: Object.keys(entry.renderedTargets ?? {}),
       })
     : { add: [], remove: [], contents: new Map(), sources: new Map() };

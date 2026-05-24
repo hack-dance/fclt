@@ -258,6 +258,7 @@ Current config:
 [project_sync.codex]
 skills = ["hack-cli", "hack-tickets"]
 agents = ["review-operator"]
+automations = ["project-check"]
 mcp_servers = ["github"]
 global_docs = true
 tool_rules = true
@@ -376,7 +377,7 @@ Plugin assets should be visible in:
 
 ### 13. Automations Need Clear Ownership
 
-Automations render into `~/.codex/automations`, even for project-scoped canonical sources. That can be correct, but it is surprising.
+Automations render into `~/.codex/automations`, even for project-scoped canonical sources. That can be correct, but it is surprising. Project-scoped automation render is now default-deny and requires `[project_sync.codex].automations` entries so one managed repo does not silently publish shared live automations.
 
 Target behavior:
 

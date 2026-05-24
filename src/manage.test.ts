@@ -192,6 +192,10 @@ describe("managed state", () => {
     );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      'version = 1\n\n[project_sync.codex]\nautomations = ["project-check"]\n'
+    );
 
     await manageTool("codex", {
       homeDir: home,
@@ -217,6 +221,40 @@ describe("managed state", () => {
     expect(parsed.tools.codex?.automationDir).toBe(
       join(home, ".codex", "automations")
     );
+  });
+
+  it("does not render project codex automations without explicit project sync opt-in", async () => {
+    const home = await createTempDir();
+    const projectRoot = join(home, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+
+    await mkdir(join(rootDir, "automations", "project-check"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "automations", "project-check", "automation.toml"),
+      [
+        "version = 1",
+        'id = "project-check"',
+        'name = "Project check"',
+        'prompt = "Inspect the repo"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    expect(
+      await Bun.file(
+        join(home, ".codex", "automations", "project-check", "automation.toml")
+      ).exists()
+    ).toBe(false);
   });
 
   it("renders codex plugins into plugins/ and writes the .agents marketplace", async () => {

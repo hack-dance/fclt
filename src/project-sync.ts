@@ -2,12 +2,17 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { projectRootFromAiRoot } from "./paths";
 
-type ProjectSyncNamedSurface = "skills" | "agents" | "mcpServers";
+type ProjectSyncNamedSurface =
+  | "skills"
+  | "agents"
+  | "automations"
+  | "mcpServers";
 type ProjectSyncToolSurface = "globalDocs" | "toolRules" | "toolConfig";
 
 interface ProjectSyncToolPolicy {
   skills: string[];
   agents: string[];
+  automations: string[];
   mcpServers: string[];
   globalDocs: boolean;
   toolRules: boolean;
@@ -69,6 +74,7 @@ function projectSyncToolPolicyFromObject(
   return {
     skills: parseStringList(table.skills),
     agents: parseStringList(table.agents),
+    automations: parseStringList(table.automations ?? table.automation),
     mcpServers: parseStringList(table.mcp_servers ?? table.mcp),
     globalDocs: parseBoolean(table.global_docs ?? table.docs),
     toolRules: parseBoolean(table.tool_rules ?? table.rules),
@@ -104,6 +110,7 @@ function emptyPolicy(): ProjectSyncToolPolicy {
   return {
     skills: [],
     agents: [],
+    automations: [],
     mcpServers: [],
     globalDocs: false,
     toolRules: false,
@@ -150,7 +157,9 @@ export async function projectSyncAllowsNamedAsset(args: {
       ? policy.skills
       : args.surface === "agents"
         ? policy.agents
-        : policy.mcpServers;
+        : args.surface === "automations"
+          ? policy.automations
+          : policy.mcpServers;
   return includesExplicitName(allowed, args.name);
 }
 
@@ -256,6 +265,9 @@ export async function writeProjectSyncPolicy(args: {
     const mergedPolicy: ProjectSyncToolPolicy = {
       skills: parseStringList(partialPolicy.skills ?? previousPolicy.skills),
       agents: parseStringList(partialPolicy.agents ?? previousPolicy.agents),
+      automations: parseStringList(
+        partialPolicy.automations ?? previousPolicy.automations
+      ),
       mcpServers: parseStringList(
         partialPolicy.mcpServers ?? previousPolicy.mcpServers
       ),
@@ -267,6 +279,7 @@ export async function writeProjectSyncPolicy(args: {
     projectSync[tool] = {
       skills: mergedPolicy.skills,
       agents: mergedPolicy.agents,
+      automations: mergedPolicy.automations,
       mcp_servers: mergedPolicy.mcpServers,
       global_docs: mergedPolicy.globalDocs,
       tool_rules: mergedPolicy.toolRules,

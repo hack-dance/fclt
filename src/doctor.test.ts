@@ -228,6 +228,20 @@ test("doctor --repair materializes explicit project sync config for managed proj
       join(aiRoot, "agents", "reviewer", "agent.toml"),
       'name = "reviewer"\n'
     );
+    await mkdir(join(aiRoot, "automations", "project-check"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(aiRoot, "automations", "project-check", "automation.toml"),
+      [
+        "version = 1",
+        'id = "project-check"',
+        'name = "Project check"',
+        'prompt = "Inspect the repo"',
+        'status = "ACTIVE"',
+        'rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"',
+      ].join("\n")
+    );
 
     await mkdir(join(aiRoot, "mcp"), { recursive: true });
     await Bun.write(
@@ -287,6 +301,7 @@ test("doctor --repair materializes explicit project sync config for managed proj
         codex?: {
           skills?: string[];
           agents?: string[];
+          automations?: string[];
           mcp_servers?: string[];
           global_docs?: boolean;
           tool_rules?: boolean;
@@ -297,6 +312,7 @@ test("doctor --repair materializes explicit project sync config for managed proj
 
     expect(config.project_sync?.codex?.skills).toEqual(["project-skill"]);
     expect(config.project_sync?.codex?.agents).toEqual(["reviewer"]);
+    expect(config.project_sync?.codex?.automations).toEqual(["project-check"]);
     expect(config.project_sync?.codex?.mcp_servers).toEqual(["project-server"]);
     expect(config.project_sync?.codex?.global_docs).toBe(true);
     expect(config.project_sync?.codex?.tool_rules).toBe(true);

@@ -388,6 +388,23 @@ async function listProjectAgentNames(rootDir: string): Promise<string[]> {
     .sort((a, b) => a.localeCompare(b));
 }
 
+async function listProjectAutomationNames(rootDir: string): Promise<string[]> {
+  const automationsDir = join(rootDir, "automations");
+  const entries = await readdir(automationsDir, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    if (await pathExists(join(automationsDir, entry.name, "automation.toml"))) {
+      names.push(entry.name);
+    }
+  }
+  return names.sort((a, b) => a.localeCompare(b));
+}
+
 async function listProjectMcpNames(rootDir: string): Promise<string[]> {
   const trackedPaths = [
     join(rootDir, "mcp", "servers.json"),
@@ -448,6 +465,7 @@ async function planProjectSyncPolicyRepair(args: {
     {
       skills?: string[];
       agents?: string[];
+      automations?: string[];
       mcpServers?: string[];
       globalDocs?: boolean;
       toolRules?: boolean;
@@ -470,18 +488,21 @@ async function planProjectSyncPolicyRepair(args: {
   const configuredTools = new Set(
     await loadConfiguredProjectSyncTools({ rootDir: args.rootDir })
   );
-  const [skills, agents, mcpServers, globalDocs] = await Promise.all([
-    listProjectSkillNames(args.rootDir),
-    listProjectAgentNames(args.rootDir),
-    listProjectMcpNames(args.rootDir),
-    hasProjectGlobalDocs(args.rootDir),
-  ]);
+  const [skills, agents, automations, mcpServers, globalDocs] =
+    await Promise.all([
+      listProjectSkillNames(args.rootDir),
+      listProjectAgentNames(args.rootDir),
+      listProjectAutomationNames(args.rootDir),
+      listProjectMcpNames(args.rootDir),
+      hasProjectGlobalDocs(args.rootDir),
+    ]);
 
   const toolPolicies: Record<
     string,
     {
       skills?: string[];
       agents?: string[];
+      automations?: string[];
       mcpServers?: string[];
       globalDocs?: boolean;
       toolRules?: boolean;
@@ -501,6 +522,7 @@ async function planProjectSyncPolicyRepair(args: {
     if (
       skills.length === 0 &&
       agents.length === 0 &&
+      automations.length === 0 &&
       mcpServers.length === 0 &&
       !globalDocs &&
       !toolRules &&
@@ -512,6 +534,7 @@ async function planProjectSyncPolicyRepair(args: {
     toolPolicies[tool] = {
       ...(skills.length > 0 ? { skills } : {}),
       ...(agents.length > 0 ? { agents } : {}),
+      ...(automations.length > 0 ? { automations } : {}),
       ...(mcpServers.length > 0 ? { mcpServers } : {}),
       ...(globalDocs ? { globalDocs: true } : {}),
       ...(toolRules ? { toolRules: true } : {}),
