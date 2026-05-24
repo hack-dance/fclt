@@ -22,7 +22,12 @@ test("inventory consolidates skills, instructions, and MCP auth metadata without
         servers: {
           github: {
             command: "gh",
-            args: ["mcp", "serve"],
+            args: [
+              "mcp",
+              "serve",
+              'API_KEY="0123456789abcdef0123456789abcdef"',
+              "https://example.com/mcp?token=abcdef0123456789",
+            ],
             env: {
               GITHUB_TOKEN: "github_pat_1234567890abcdef",
               PUBLIC_ENV: publicEnvRef,
@@ -56,9 +61,19 @@ test("inventory consolidates skills, instructions, and MCP auth metadata without
   );
   expect(github).toBeTruthy();
   expect(github?.auth.state).toBe("inline-secret");
-  expect(github?.auth.inlineSecretKeys).toEqual(["GITHUB_TOKEN"]);
+  expect(github?.auth.inlineSecretKeys).toContain("GITHUB_TOKEN");
+  expect(github?.auth.inlineSecretKeys).toContain("args[2]:API_KEY");
+  expect(github?.auth.inlineSecretKeys).toContain("args[3]:token");
   expect(github?.auth.envRefs).toEqual(["PUBLIC_ENV"]);
   expect(JSON.stringify(github)).not.toContain("github_pat_1234567890abcdef");
+  expect(JSON.stringify(github)).not.toContain(
+    "0123456789abcdef0123456789abcdef"
+  );
+  expect(JSON.stringify(github)).not.toContain("token=abcdef0123456789");
+  expect(github?.args?.[2]).toBe('API_KEY="<redacted>"');
+  expect(github?.args?.[3]).toBe("https://example.com/mcp?token=<redacted>");
+  expect(inventory.mcpCapabilities).toHaveLength(1);
+  expect(inventory.mcpCapabilities[0]?.preferred.name).toBe("github");
 });
 
 test("inventory reads Codex TOML MCP servers and reports env references", async () => {
@@ -121,6 +136,49 @@ test("inventory discovers repo-local .ai roots from explicit scan roots", async 
   ).toBe(true);
 });
 
+test("inventory filters machine inventory by project and tool sources", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-inventory-filters-"));
+  const home = join(dir, "home");
+  const repo = join(dir, "repo");
+  const globalRoot = join(home, ".ai");
+  const projectRoot = join(repo, ".ai");
+
+  await mkdir(join(globalRoot, "mcp"), { recursive: true });
+  await Bun.write(
+    join(globalRoot, "mcp", "servers.json"),
+    JSON.stringify({ servers: { global: { command: "global-mcp" } } })
+  );
+  await mkdir(join(projectRoot, "mcp"), { recursive: true });
+  await Bun.write(
+    join(projectRoot, "mcp", "servers.json"),
+    JSON.stringify({ servers: { project: { command: "project-mcp" } } })
+  );
+
+  const projectInventory = await buildAgentInventory({
+    cwd: repo,
+    homeDir: home,
+    includeConfigFrom: false,
+    sourceMode: "project",
+    from: [repo],
+  });
+  expect(projectInventory.mcpCapabilities.map((server) => server.name)).toEqual(
+    ["project"]
+  );
+
+  const codexInventory = await buildAgentInventory({
+    cwd: repo,
+    homeDir: home,
+    includeConfigFrom: false,
+    tool: "codex",
+    from: [repo],
+  });
+  expect(
+    codexInventory.sources.every(
+      (source) => source.id === "codex" || source.id === "codex-project"
+    )
+  ).toBe(true);
+});
+
 test("parseInventoryArgs supports JSON-first inventory options", () => {
   const parsed = parseInventoryArgs([
     "--json",
@@ -136,6 +194,8 @@ test("parseInventoryArgs supports JSON-first inventory options", () => {
     showSecrets: true,
     includeGitHooks: true,
     includeConfigFrom: false,
+    sourceMode: "machine",
+    tool: undefined,
     from: ["~/dev"],
   });
 });

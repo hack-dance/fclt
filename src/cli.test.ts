@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFindArgs, parseGraphArgs, parseListArgs } from "./index";
 
+const SEMVER_RE = /^\d+\.\d+\.\d+/;
+
 describe("parseListArgs", () => {
   it("parses list options and filters", () => {
     const opts = parseListArgs([
@@ -77,6 +79,77 @@ describe("parseGraphArgs", () => {
 });
 
 describe("CLI output contracts", () => {
+  it("--version prints the package version", async () => {
+    const proc = Bun.spawn(["bun", "run", "./src/index.ts", "--version"], {
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out.trim()).toMatch(SEMVER_RE);
+  });
+
+  it("status --json emits valid JSON", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facult-cli-status-"));
+
+    try {
+      const proc = Bun.spawn(
+        ["bun", "run", join(process.cwd(), "src/index.ts"), "status", "--json"],
+        {
+          cwd: dir,
+          env: { ...process.env, HOME: dir },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      const [code, out, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      const parsed = JSON.parse(out) as {
+        version: number;
+        packageVersion: string;
+        contextRoot: string;
+      };
+      expect(parsed.version).toBe(1);
+      expect(parsed.packageVersion).toMatch(SEMVER_RE);
+      expect(parsed.contextRoot).toBe(join(dir, ".ai"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ai writeback subcommand help exits cleanly", async () => {
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "ai", "writeback", "add", "--help"],
+      {
+        cwd: process.cwd(),
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("fclt ai writeback");
+  });
+
   it("adapters --json emits valid JSON", async () => {
     const proc = Bun.spawn(
       ["bun", "run", "./src/index.ts", "adapters", "--json"],

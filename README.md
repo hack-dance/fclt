@@ -43,6 +43,7 @@ Recommended global install:
 brew tap hack-dance/tap
 brew install hack-dance/tap/fclt
 fclt --help
+fclt --version
 ```
 
 Package-manager install:
@@ -89,12 +90,25 @@ fclt self-update --version 0.0.1
 
 ```bash
 fclt scan --show-duplicates
+fclt status
 fclt inventory --json
 ```
 
 `scan` is read-only. It inspects local configs and reports what `fclt` found without changing files.
 
-`inventory` is the stable machine-readable discovery surface for agent harnesses. It returns a JSON catalog of discovered MCP servers, skills, and instruction/rule assets across known tool configs and configured scan roots. MCP definitions are redacted by default but include safe auth metadata such as env keys, env references, and whether inline secret values were found.
+`status` reports the active canonical root, managed-tool state, generated index/graph state, writeback/proposal queue state, and high-signal sync risks.
+
+`inventory` is the stable machine-readable discovery surface for agent harnesses. It returns a JSON catalog of discovered MCP servers, skills, and instruction/rule assets across known tool configs and configured scan roots. MCP definitions are redacted by default, including env values, inline `KEY=value` args, bearer tokens, and secret-looking URL query params, but include safe auth metadata such as env keys, env references, and whether inline secret values were found.
+
+Useful inventory slices:
+
+```bash
+fclt inventory --json --global
+fclt inventory --json --project
+fclt inventory --json --tool codex
+```
+
+Use `mcpCapabilities` for the de-duplicated agent-facing MCP view. Use `mcpServers` when you need raw per-source occurrences for diagnostics.
 
 If you want a repo-local `.ai`:
 
@@ -141,6 +155,7 @@ If you run these commands inside a repo that has `<repo>/.ai`, `fclt` targets th
 ```bash
 fclt list skills
 fclt inventory --json
+fclt status --json
 fclt show instruction:WRITING
 fclt show mcp:github
 fclt find verification
