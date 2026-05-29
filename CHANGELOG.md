@@ -1,3 +1,9 @@
+## [2.8.2](https://github.com/hack-dance/fclt/compare/v2.8.1...v2.8.2) (2026-05-29)
+
+### Bug Fixes
+
+* keep project ai state machine-local ([7b92d74](https://github.com/hack-dance/fclt/commit/7b92d74dd1d75e140b2a1367cbfb63cf1a6c3988))
+
 ## [2.8.1](https://github.com/hack-dance/fclt/compare/v2.8.0...v2.8.1) (2026-05-24)
 
 ### Bug Fixes
