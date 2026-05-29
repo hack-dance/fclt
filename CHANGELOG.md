@@ -1,3 +1,9 @@
+## [2.8.3](https://github.com/hack-dance/fclt/compare/v2.8.2...v2.8.3) (2026-05-29)
+
+### Bug Fixes
+
+* preserve legacy project ai migration state ([50811a8](https://github.com/hack-dance/fclt/commit/50811a899083f021d80e316b0c7d9f18d840b522)), closes [#12](https://github.com/hack-dance/fclt/issues/12)
+
 ## [2.8.2](https://github.com/hack-dance/fclt/compare/v2.8.1...v2.8.2) (2026-05-29)
 
 ### Bug Fixes
