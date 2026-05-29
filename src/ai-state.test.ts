@@ -88,9 +88,11 @@ describe("ai-state freshness repair", () => {
     const projectRoot = join(tempHome, "work", "repo", ".ai");
     const legacyStateDir = join(projectRoot, ".facult", "ai");
     const globalInstructionDir = join(globalRoot, "instructions");
+    const globalSkillDir = join(globalRoot, "skills", "shared-skill");
     const projectSkillDir = join(projectRoot, "skills", "my-skill");
     await mkdir(legacyStateDir, { recursive: true });
     await mkdir(globalInstructionDir, { recursive: true });
+    await mkdir(globalSkillDir, { recursive: true });
     await mkdir(projectSkillDir, { recursive: true });
     const legacyIndexPath = join(legacyStateDir, "index.json");
     await Bun.write(
@@ -112,6 +114,17 @@ describe("ai-state freshness repair", () => {
             trustedBy: "user",
             auditStatus: "flagged",
           },
+          "shared-skill": {
+            name: "shared-skill",
+            path: join(projectRoot, "skills", "shared-skill", "SKILL.md"),
+            description: "Removed project skill",
+            tags: [],
+            enabledFor: ["codex"],
+            trusted: true,
+            trustedAt: "2026-05-28T22:04:25.703Z",
+            trustedBy: "user",
+            auditStatus: "flagged",
+          },
         },
         mcp: { servers: {} },
         agents: {},
@@ -123,6 +136,10 @@ describe("ai-state freshness repair", () => {
     await Bun.write(
       join(projectSkillDir, "SKILL.md"),
       "---\ndescription: My skill\n---\n\nBody.\n"
+    );
+    await Bun.write(
+      join(globalSkillDir, "SKILL.md"),
+      "---\ndescription: Shared global skill\n---\n\nBody.\n"
     );
     await Bun.write(
       join(globalInstructionDir, "GLOBAL.md"),
@@ -152,6 +169,10 @@ describe("ai-state freshness repair", () => {
     expect(rebuilt.skills["my-skill"].enabledFor).toEqual(["codex"]);
     expect(rebuilt.skills["my-skill"].trusted).toBe(true);
     expect(rebuilt.skills["my-skill"].auditStatus).toBe("flagged");
+    expect(rebuilt.skills["shared-skill"].sourceKind).toBe("global");
+    expect(rebuilt.skills["shared-skill"].enabledFor).toBeUndefined();
+    expect(rebuilt.skills["shared-skill"].trusted).toBe(false);
+    expect(rebuilt.skills["shared-skill"].auditStatus).toBe("pending");
   });
 
   it("rebuilds a project index when merged global assets change", async () => {
