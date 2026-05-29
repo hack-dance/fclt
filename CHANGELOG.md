@@ -1,3 +1,9 @@
+## [2.8.5](https://github.com/hack-dance/fclt/compare/v2.8.4...v2.8.5) (2026-05-29)
+
+### Bug Fixes
+
+* guard legacy index metadata by source ([a53fb8f](https://github.com/hack-dance/fclt/commit/a53fb8f6c3d9d0130716c5b161e0bf60fae920d5))
+
 ## [2.8.4](https://github.com/hack-dance/fclt/compare/v2.8.3...v2.8.4) (2026-05-29)
 
 ### Bug Fixes
