@@ -203,6 +203,8 @@ export async function ensureAiIndexPath(args: {
             indexPath: legacyPath,
           })
         ) {
+          await mkdir(dirname(generatedPath), { recursive: true });
+          await copyFile(legacyPath, generatedPath);
           const { outputPath } = await buildIndex({
             rootDir: args.rootDir,
             homeDir: args.homeDir,
