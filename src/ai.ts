@@ -256,6 +256,24 @@ function aiJournalReadPaths(homeDir: string, rootDir: string): string[] {
   ];
 }
 
+function aiProposalReadDirs(homeDir: string, rootDir: string): string[] {
+  return uniqueStrings([
+    facultAiProposalDir(homeDir, rootDir),
+    ...legacyAiRuntimeScopeDirs(homeDir, rootDir).map((dir) =>
+      join(dir, "evolution", "proposals")
+    ),
+  ]);
+}
+
+async function firstExistingFile(paths: string[]): Promise<string | null> {
+  for (const pathValue of paths) {
+    if (await fileExists(pathValue)) {
+      return pathValue;
+    }
+  }
+  return null;
+}
+
 function supportedDraftTarget(pathValue: string): boolean {
   return pathValue.toLowerCase().endsWith(".md");
 }
@@ -645,11 +663,15 @@ async function nextProposalId(
   homeDir: string,
   rootDir: string
 ): Promise<string> {
-  const dir = facultAiProposalDir(homeDir, rootDir);
-  const entries = await readdir(dir).catch(() => [] as string[]);
-  const ids = entries
-    .filter((entry) => entry.endsWith(".json"))
-    .map((entry) => basename(entry, ".json"));
+  const ids: string[] = [];
+  for (const dir of aiProposalReadDirs(homeDir, rootDir)) {
+    const entries = await readdir(dir).catch(() => [] as string[]);
+    ids.push(
+      ...entries
+        .filter((entry) => entry.endsWith(".json"))
+        .map((entry) => basename(entry, ".json"))
+    );
+  }
   return nextId("EV", ids);
 }
 
@@ -842,18 +864,19 @@ export async function listProposals(args?: {
     throw new Error("listProposals requires a rootDir");
   }
   const homeDir = args?.homeDir ?? process.env.HOME ?? "";
-  const dir = facultAiProposalDir(homeDir, args?.rootDir);
-  const entries = await readdir(dir).catch(() => [] as string[]);
-  const out: AiProposalRecord[] = [];
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith(".json")) {
-      continue;
+  const byId = new Map<string, AiProposalRecord>();
+  for (const dir of [...aiProposalReadDirs(homeDir, args.rootDir)].reverse()) {
+    const entries = await readdir(dir).catch(() => [] as string[]);
+    for (const entry of entries.sort()) {
+      if (!entry.endsWith(".json")) {
+        continue;
+      }
+      const raw = await readFile(join(dir, entry), "utf8");
+      const parsed = JSON.parse(raw) as AiProposalRecord;
+      byId.set(parsed.id, parsed);
     }
-    const raw = await readFile(join(dir, entry), "utf8");
-    const parsed = JSON.parse(raw) as AiProposalRecord;
-    out.push(parsed);
   }
-  return out;
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export async function showProposal(
@@ -861,15 +884,15 @@ export async function showProposal(
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord | null> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
-  const pathValue = join(
-    facultAiProposalDir(homeDir, args.rootDir),
-    `${id}.json`
-  );
-  if (!(await fileExists(pathValue))) {
-    return null;
+  for (const dir of aiProposalReadDirs(homeDir, args.rootDir)) {
+    const pathValue = join(dir, `${id}.json`);
+    if (!(await fileExists(pathValue))) {
+      continue;
+    }
+    const raw = await readFile(pathValue, "utf8");
+    return JSON.parse(raw) as AiProposalRecord;
   }
-  const raw = await readFile(pathValue, "utf8");
-  return JSON.parse(raw) as AiProposalRecord;
+  return null;
 }
 
 function promoteTargetRef(target: string, to: "global"): string {
@@ -1122,9 +1145,13 @@ export async function draftProposal(
   const patchPath = patchRefForProposal(homeDir, args.rootDir, id);
   await mkdir(dirname(draftPath), { recursive: true });
   const generatedBody = renderDraftBody(current, writebacks);
+  const existingDraftPath = await firstExistingFile([
+    draftPath,
+    ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
+  ]);
   const priorDraft =
-    args.append && (await fileExists(draftPath))
-      ? await readFile(draftPath, "utf8")
+    args.append && existingDraftPath
+      ? await readFile(existingDraftPath, "utf8")
       : null;
   const draftBody = args.append
     ? `${(priorDraft ?? generatedBody).trimEnd()}\n\n## Draft Revision\n${args.append.trim()}\n`

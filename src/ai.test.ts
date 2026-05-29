@@ -263,6 +263,95 @@ describe("ai writeback", () => {
     );
   });
 
+  it("reads and updates legacy repo-local project evolution proposals", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const targetPath = join(projectRoot, "AGENTS.md");
+    const legacyProposalDir = join(
+      rootDir,
+      ".facult",
+      "ai",
+      "project",
+      "evolution",
+      "proposals"
+    );
+    const legacyDraftDir = join(
+      rootDir,
+      ".facult",
+      "ai",
+      "project",
+      "evolution",
+      "drafts"
+    );
+    const legacyDraftPath = join(legacyDraftDir, "EV-00009.md");
+    await mkdir(legacyProposalDir, { recursive: true });
+    await mkdir(legacyDraftDir, { recursive: true });
+    await mkdir(projectRoot, { recursive: true });
+    await Bun.write(targetPath, "# Project\n");
+    await Bun.write(
+      legacyDraftPath,
+      [
+        "# Generated Draft: EV-00009",
+        "",
+        "## Proposed Addition",
+        "<!-- facult:evolution:EV-00009:start -->",
+        "Legacy proposal content.",
+        "<!-- facult:evolution:EV-00009:end -->",
+        "",
+      ].join("\n")
+    );
+    await Bun.write(
+      join(legacyProposalDir, "EV-00009.json"),
+      `${JSON.stringify(
+        {
+          id: "EV-00009",
+          ts: "2026-05-28T22:04:57.770Z",
+          status: "drafted",
+          scope: "project",
+          projectSlug: "repo",
+          projectRoot,
+          kind: "update_asset",
+          targets: ["@project/AGENTS.md"],
+          sourceWritebacks: [],
+          summary: "Legacy proposal should remain visible.",
+          rationale: "Preserve existing project proposal state.",
+          confidence: "medium",
+          reviewRequired: false,
+          policyClass: "medium-risk",
+          draftRefs: [legacyDraftPath],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    const listed = await listProposals({ homeDir: tempHome, rootDir });
+    const shown = await showProposal("EV-00009", {
+      homeDir: tempHome,
+      rootDir,
+    });
+    const applied = await applyProposal("EV-00009", {
+      homeDir: tempHome,
+      rootDir,
+    });
+
+    expect(listed.map((entry) => entry.id)).toEqual(["EV-00009"]);
+    expect(shown?.summary).toBe("Legacy proposal should remain visible.");
+    expect(applied.status).toBe("applied");
+    expect(await readFile(targetPath, "utf8")).toContain(
+      "Legacy proposal content."
+    );
+    expect(
+      await readFile(
+        join(facultAiProposalDir(tempHome, rootDir), "EV-00009.json"),
+        "utf8"
+      )
+    ).toContain('"status": "applied"');
+  });
+
   it("supports dismiss and promote as append-only status transitions", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
