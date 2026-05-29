@@ -1,5 +1,5 @@
 import { mkdir, readdir } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAdapter } from "./adapters";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
@@ -215,7 +215,8 @@ function extractIndexMeta(entry: unknown): {
 function findPreviousEntryByCanonicalRef(
   previous: Record<string, unknown> | undefined,
   canonicalRef: string | undefined,
-  fallbackName: string
+  fallbackName: string,
+  source: IndexedSource
 ): unknown {
   if (!previous) {
     return undefined;
@@ -233,7 +234,8 @@ function findPreviousEntryByCanonicalRef(
   const legacyFallback = previous[fallbackName];
   if (
     isPlainObject(legacyFallback) &&
-    typeof legacyFallback.canonicalRef !== "string"
+    typeof legacyFallback.canonicalRef !== "string" &&
+    legacyFallbackMatchesSource(legacyFallback, source)
   ) {
     return legacyFallback;
   }
@@ -243,7 +245,8 @@ function findPreviousEntryByCanonicalRef(
 function findPreviousMcpEntry(
   previous: Record<string, unknown> | undefined,
   canonicalRef: string | undefined,
-  name: string
+  name: string,
+  source: IndexedSource
 ): unknown {
   if (!previous) {
     return undefined;
@@ -252,11 +255,73 @@ function findPreviousMcpEntry(
   if (!isPlainObject(candidate)) {
     return undefined;
   }
-  return typeof candidate.canonicalRef !== "string" ||
-    (typeof canonicalRef === "string" &&
-      candidate.canonicalRef === canonicalRef)
-    ? candidate
-    : undefined;
+  if (typeof candidate.canonicalRef !== "string") {
+    return legacyFallbackMatchesSource(candidate, source)
+      ? candidate
+      : undefined;
+  }
+  if (
+    typeof canonicalRef === "string" &&
+    candidate.canonicalRef === canonicalRef
+  ) {
+    return candidate;
+  }
+  return undefined;
+}
+
+function pathIsWithinRoot(pathValue: string, rootDir: string): boolean {
+  if (!isAbsolute(pathValue)) {
+    return false;
+  }
+  const rel = relative(rootDir, pathValue);
+  return rel === "" || !(rel.startsWith("..") || isAbsolute(rel));
+}
+
+function legacyFallbackMatchesSource(
+  entry: Record<string, unknown>,
+  source: IndexedSource
+): boolean {
+  let hasSourceSignal = false;
+
+  const entrySourceKind = entry.sourceKind;
+  if (typeof entrySourceKind === "string") {
+    hasSourceSignal = true;
+    if (entrySourceKind !== source.sourceKind) {
+      return false;
+    }
+  }
+
+  const entryScope = entry.scope;
+  if (typeof entryScope === "string") {
+    hasSourceSignal = true;
+    if (entryScope !== source.scope) {
+      return false;
+    }
+  }
+
+  const entryProjectRoot = entry.projectRoot;
+  if (typeof entryProjectRoot === "string") {
+    hasSourceSignal = true;
+    if (entryProjectRoot !== source.projectRoot) {
+      return false;
+    }
+  }
+
+  const entrySourceRoot = entry.sourceRoot;
+  if (typeof entrySourceRoot === "string") {
+    hasSourceSignal = true;
+    if (entrySourceRoot !== source.rootDir) {
+      return false;
+    }
+  }
+
+  const entryPath = entry.path;
+  if (typeof entryPath === "string") {
+    hasSourceSignal = true;
+    return pathIsWithinRoot(entryPath, source.rootDir);
+  }
+
+  return hasSourceSignal;
 }
 
 function stripQuotes(s: string): string {
@@ -556,7 +621,8 @@ async function indexSkills(
       const prev = findPreviousEntryByCanonicalRef(
         previous,
         canonicalRef,
-        name
+        name,
+        source
       );
       const meta = extractIndexMeta(prev);
 
@@ -618,7 +684,7 @@ async function indexMcpServers(
     const lm = await statIsoTime(mcpConfigPath);
     for (const name of Object.keys(serversObj).sort()) {
       const canonicalRef = canonicalRefForPath(source, "mcp", mcpConfigPath);
-      const prev = findPreviousMcpEntry(previous, canonicalRef, name);
+      const prev = findPreviousMcpEntry(previous, canonicalRef, name, source);
       const meta = extractIndexMeta(prev);
       out[name] = {
         name,
@@ -666,7 +732,12 @@ async function indexAgents(
     const name =
       basename(p) === "agent.toml" ? basename(dirname(p)) : basename(p);
     const canonicalRef = canonicalRefForPath(source, "agents", p);
-    const prev = findPreviousEntryByCanonicalRef(previous, canonicalRef, name);
+    const prev = findPreviousEntryByCanonicalRef(
+      previous,
+      canonicalRef,
+      name,
+      source
+    );
     const meta = extractIndexMeta(prev);
     let description: string | undefined;
     try {
