@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, rm, utimes } from "node:fs/promises";
+import { mkdir, readFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { ensureAiGraphPath, ensureAiIndexPath } from "./ai-state";
 import { buildIndex } from "./index-builder";
@@ -78,6 +78,57 @@ describe("ai-state freshness repair", () => {
       path: facultAiGraphPath(tempHome, projectRoot),
       rebuilt: true,
     });
+  });
+
+  it("rebuilds stale legacy repo-local project indexes during migration", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const globalRoot = join(tempHome, ".ai");
+    const projectRoot = join(tempHome, "work", "repo", ".ai");
+    const legacyStateDir = join(projectRoot, ".facult", "ai");
+    const globalInstructionDir = join(globalRoot, "instructions");
+    await mkdir(legacyStateDir, { recursive: true });
+    await mkdir(globalInstructionDir, { recursive: true });
+    await mkdir(projectRoot, { recursive: true });
+    const legacyIndexPath = join(legacyStateDir, "index.json");
+    await Bun.write(
+      legacyIndexPath,
+      `${JSON.stringify({
+        version: 1,
+        updatedAt: "2026-05-28T22:04:25.703Z",
+        skills: {},
+        mcp: { servers: {} },
+        agents: {},
+        automations: {},
+        snippets: {},
+        instructions: {},
+      })}\n`
+    );
+    await Bun.write(
+      join(globalInstructionDir, "GLOBAL.md"),
+      "# Global\n\nNewer global instruction.\n"
+    );
+    const now = Date.now();
+    await utimes(legacyIndexPath, now / 1000 - 120, now / 1000 - 120);
+    await utimes(
+      join(globalInstructionDir, "GLOBAL.md"),
+      now / 1000,
+      now / 1000
+    );
+
+    const result = await ensureAiIndexPath({
+      homeDir: tempHome,
+      rootDir: projectRoot,
+      repair: true,
+    });
+
+    expect(result).toEqual({
+      path: facultAiIndexPath(tempHome, projectRoot),
+      repaired: true,
+      source: "rebuilt",
+    });
+    expect(await readFile(result.path, "utf8")).toContain("GLOBAL.md");
   });
 
   it("rebuilds a project index when merged global assets change", async () => {

@@ -196,6 +196,20 @@ export async function ensureAiIndexPath(args: {
   )) {
     if (await fileExists(legacyPath)) {
       if (args.repair !== false) {
+        if (
+          await canonicalAssetsNewerThanIndex({
+            homeDir: args.homeDir,
+            rootDir: args.rootDir,
+            indexPath: legacyPath,
+          })
+        ) {
+          const { outputPath } = await buildIndex({
+            rootDir: args.rootDir,
+            homeDir: args.homeDir,
+            force: false,
+          });
+          return { path: outputPath, repaired: true, source: "rebuilt" };
+        }
         await mkdir(dirname(generatedPath), { recursive: true });
         await copyFile(legacyPath, generatedPath);
       }
@@ -257,6 +271,20 @@ export async function ensureAiGraphPath(args: {
   )) {
     if (await fileExists(legacyGeneratedPath)) {
       if (args.repair !== false) {
+        if (
+          await canonicalAssetsNewerThanIndex({
+            homeDir: args.homeDir,
+            rootDir: args.rootDir,
+            indexPath: legacyGeneratedPath,
+          })
+        ) {
+          const { graphPath } = await buildIndex({
+            rootDir: args.rootDir,
+            homeDir: args.homeDir,
+            force: false,
+          });
+          return { path: graphPath, rebuilt: true };
+        }
         await mkdir(dirname(generatedPath), { recursive: true });
         await copyFile(legacyGeneratedPath, generatedPath);
       }
