@@ -1,3 +1,9 @@
+## [2.8.4](https://github.com/hack-dance/fclt/compare/v2.8.3...v2.8.4) (2026-05-29)
+
+### Bug Fixes
+
+* preserve legacy ai index metadata ([c75a56e](https://github.com/hack-dance/fclt/commit/c75a56e966a23e924dc38fef65aa7b4bd1b9a169))
+
 ## [2.8.3](https://github.com/hack-dance/fclt/compare/v2.8.2...v2.8.3) (2026-05-29)
 
 ### Bug Fixes
