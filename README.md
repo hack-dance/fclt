@@ -295,10 +295,11 @@ Typical layout:
 
 Important split:
 - `.ai/` is canonical source
-- `.ai/.facult/ai/` is generated AI state that belongs with the canonical root
-- machine-local Facult state such as managed-tool state, autosync runtime/config, install metadata, and launcher caches lives outside `.ai/`
+- global `.ai/.facult/ai/` is generated AI state for the global canonical root
+- project generated AI state lives in machine-local per-project Facult state, outside the repo
+- machine-local Facult state such as project indexes, project graphs, managed-tool state, autosync runtime/config, install metadata, and launcher caches lives outside project `.ai/`
 - tool homes such as `.codex/` and `.claude/` are rendered outputs
-- the generated capability graph lives at `.ai/.facult/ai/graph.json`
+- the generated capability graph lives under the active generated AI state directory
 
 ### Asset types
 
@@ -442,11 +443,11 @@ fclt ai evolve promote EV-00003 --to global --project
 
 Runtime state stays generated and local inside the active canonical root:
 - global writeback state: `~/.ai/.facult/ai/global/...`
-- project writeback state: `<repo>/.ai/.facult/ai/project/...`
+- project writeback state: machine-local per-project Facult state under `.../projects/<slug-hash>/ai/project/...`
 
 That split is intentional:
 - canonical source remains in `~/.ai` or `<repo>/.ai`
-- writeback queues, journals, proposal records, trust state, autosync state, and other generated runtime/config state stay inside `.ai/.facult/`
+- global generated state stays inside `~/.ai/.facult/`; project generated state stays outside the repo in machine-local state
 - those records let agents inspect what changed, why it changed, and how it was reviewed
 
 Use writeback when:

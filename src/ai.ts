@@ -11,6 +11,7 @@ import {
   facultAiProposalDir,
   facultAiWritebackQueuePath,
   facultRootDir,
+  legacyFacultAiStateDirs,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
 } from "./paths";
@@ -218,6 +219,43 @@ async function readJsonLines<T>(pathValue: string): Promise<T[]> {
     .map((line) => JSON.parse(line) as T);
 }
 
+async function readJsonLinesFromPaths<T>(pathValues: string[]): Promise<T[]> {
+  const entries: T[] = [];
+  for (const pathValue of pathValues) {
+    entries.push(...(await readJsonLines<T>(pathValue)));
+  }
+  return entries;
+}
+
+function aiRuntimeScopeName(rootDir: string, homeDir: string): AssetScope {
+  return projectRootFromAiRoot(rootDir, homeDir) ? "project" : "global";
+}
+
+function legacyAiRuntimeScopeDirs(homeDir: string, rootDir: string): string[] {
+  const scope = aiRuntimeScopeName(rootDir, homeDir);
+  return legacyFacultAiStateDirs(homeDir, rootDir).map((dir) =>
+    join(dir, scope)
+  );
+}
+
+function aiWritebackQueueReadPaths(homeDir: string, rootDir: string): string[] {
+  return [
+    ...legacyAiRuntimeScopeDirs(homeDir, rootDir).map((dir) =>
+      join(dir, "writeback", "queue.jsonl")
+    ),
+    facultAiWritebackQueuePath(homeDir, rootDir),
+  ];
+}
+
+function aiJournalReadPaths(homeDir: string, rootDir: string): string[] {
+  return [
+    ...legacyAiRuntimeScopeDirs(homeDir, rootDir).map((dir) =>
+      join(dir, "journal", "events.jsonl")
+    ),
+    facultAiJournalPath(homeDir, rootDir),
+  ];
+}
+
 function supportedDraftTarget(pathValue: string): boolean {
   return pathValue.toLowerCase().endsWith(".md");
 }
@@ -285,8 +323,8 @@ async function latestWritebackMap(args: {
   homeDir: string;
   rootDir: string;
 }): Promise<Map<string, AiWritebackRecord>> {
-  const entries = await readJsonLines<AiWritebackRecord>(
-    facultAiWritebackQueuePath(args.homeDir, args.rootDir)
+  const entries = await readJsonLinesFromPaths<AiWritebackRecord>(
+    aiWritebackQueueReadPaths(args.homeDir, args.rootDir)
   );
   const latest = new Map<string, AiWritebackRecord>();
   for (const entry of entries) {
@@ -301,7 +339,9 @@ async function appendEvent(
   event: AiJournalEvent
 ): Promise<void> {
   const pathValue = facultAiJournalPath(homeDir, rootDir);
-  const existing = await readJsonLines<AiJournalEvent>(pathValue);
+  const existing = await readJsonLinesFromPaths<AiJournalEvent>(
+    aiJournalReadPaths(homeDir, rootDir)
+  );
   const next = {
     ...event,
     id: nextId(

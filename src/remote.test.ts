@@ -1431,9 +1431,7 @@ describe("templates command", () => {
     expect(skillText).toContain("Proposal Kind Selection");
     expect(skillText).toContain("fclt ai evolve draft EV-00001 --append");
     expect(
-      await Bun.file(
-        join(repoDir, ".ai", ".facult", "ai", "index.json")
-      ).exists()
+      await Bun.file(facultAiIndexPath(home, join(repoDir, ".ai"))).exists()
     ).toBe(true);
   });
 });

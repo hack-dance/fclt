@@ -28,6 +28,58 @@ afterEach(async () => {
 });
 
 describe("ai-state freshness repair", () => {
+  it("migrates legacy repo-local project index and graph state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo", ".ai");
+    const legacyStateDir = join(projectRoot, ".facult", "ai");
+    await mkdir(legacyStateDir, { recursive: true });
+    await Bun.write(
+      join(legacyStateDir, "index.json"),
+      `${JSON.stringify({
+        version: 1,
+        updatedAt: "2026-05-28T22:04:25.703Z",
+        skills: {},
+        mcp: { servers: {} },
+        agents: {},
+        automations: {},
+        snippets: {},
+        instructions: {},
+      })}\n`
+    );
+    await Bun.write(
+      join(legacyStateDir, "graph.json"),
+      `${JSON.stringify({
+        version: 1,
+        generatedAt: "2026-05-28T22:04:25.703Z",
+        nodes: {},
+        edges: [],
+      })}\n`
+    );
+
+    const indexResult = await ensureAiIndexPath({
+      homeDir: tempHome,
+      rootDir: projectRoot,
+      repair: true,
+    });
+    const graphResult = await ensureAiGraphPath({
+      homeDir: tempHome,
+      rootDir: projectRoot,
+      repair: true,
+    });
+
+    expect(indexResult).toEqual({
+      path: facultAiIndexPath(tempHome, projectRoot),
+      repaired: true,
+      source: "legacy",
+    });
+    expect(graphResult).toEqual({
+      path: facultAiGraphPath(tempHome, projectRoot),
+      rebuilt: true,
+    });
+  });
+
   it("rebuilds a project index when merged global assets change", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

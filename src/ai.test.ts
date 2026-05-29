@@ -24,6 +24,7 @@ import {
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
+  facultMachineStateDir,
 } from "./paths";
 
 let tempHome: string | null = null;
@@ -187,7 +188,7 @@ describe("ai writeback", () => {
     expect(record.assetType).toBe("file");
   });
 
-  it("stores project-scoped runtime state under the repo .ai/.fclt tree", async () => {
+  it("stores project-scoped runtime state under machine-local project state", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
@@ -212,14 +213,53 @@ describe("ai writeback", () => {
     expect(record.scope).toBe("project");
     expect(facultAiWritebackQueuePath(tempHome, rootDir)).toBe(
       join(
-        projectRoot,
-        ".ai",
-        ".facult",
+        facultMachineStateDir(tempHome, rootDir),
         "ai",
         "project",
         "writeback",
         "queue.jsonl"
       )
+    );
+  });
+
+  it("reads legacy repo-local project writeback state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const legacyQueuePath = join(
+      rootDir,
+      ".facult",
+      "ai",
+      "project",
+      "writeback",
+      "queue.jsonl"
+    );
+    await mkdir(dirname(legacyQueuePath), { recursive: true });
+    await Bun.write(
+      legacyQueuePath,
+      `${JSON.stringify({
+        id: "WB-00001",
+        ts: "2026-05-28T22:04:57.770Z",
+        scope: "project",
+        projectSlug: "repo",
+        projectRoot,
+        kind: "rule",
+        summary: "Legacy repo-local writeback should remain visible.",
+        evidence: [{ type: "commit", ref: "abc123" }],
+        confidence: "medium",
+        source: "facult:manual",
+        tags: [],
+        status: "recorded",
+      })}\n`
+    );
+
+    const rows = await listWritebacks({ homeDir: tempHome, rootDir });
+
+    expect(rows.map((entry) => entry.id)).toEqual(["WB-00001"]);
+    expect(rows[0]?.summary).toBe(
+      "Legacy repo-local writeback should remain visible."
     );
   });
 

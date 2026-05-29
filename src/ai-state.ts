@@ -5,6 +5,7 @@ import { buildIndex } from "./index-builder";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
+  legacyFacultAiStateDirs,
   legacyFacultStateDirForRoot,
   preferredGlobalAiRoot,
   projectRootFromAiRoot,
@@ -123,12 +124,41 @@ function legacyGeneratedAiIndexPath(homeDir: string, rootDir: string): string {
   );
 }
 
+function legacyGeneratedAiIndexPaths(
+  homeDir: string,
+  rootDir: string
+): string[] {
+  return [
+    ...new Set([
+      ...legacyFacultAiStateDirs(homeDir, rootDir).map((dir) =>
+        join(dir, "index.json")
+      ),
+      legacyGeneratedAiIndexPath(homeDir, rootDir),
+      legacyAiIndexPath(rootDir),
+    ]),
+  ];
+}
+
 function legacyGeneratedAiGraphPath(homeDir: string, rootDir: string): string {
   return join(
     legacyFacultStateDirForRoot(rootDir, homeDir),
     "ai",
     "graph.json"
   );
+}
+
+function legacyGeneratedAiGraphPaths(
+  homeDir: string,
+  rootDir: string
+): string[] {
+  return [
+    ...new Set([
+      ...legacyFacultAiStateDirs(homeDir, rootDir).map((dir) =>
+        join(dir, "graph.json")
+      ),
+      legacyGeneratedAiGraphPath(homeDir, rootDir),
+    ]),
+  ];
 }
 
 export async function ensureAiIndexPath(args: {
@@ -160,33 +190,21 @@ export async function ensureAiIndexPath(args: {
     return { path: generatedPath, repaired: false, source: "generated" };
   }
 
-  const legacyGeneratedPath = legacyGeneratedAiIndexPath(
+  for (const legacyPath of legacyGeneratedAiIndexPaths(
     args.homeDir,
     args.rootDir
-  );
-  if (await fileExists(legacyGeneratedPath)) {
-    if (args.repair !== false) {
-      await mkdir(dirname(generatedPath), { recursive: true });
-      await copyFile(legacyGeneratedPath, generatedPath);
+  )) {
+    if (await fileExists(legacyPath)) {
+      if (args.repair !== false) {
+        await mkdir(dirname(generatedPath), { recursive: true });
+        await copyFile(legacyPath, generatedPath);
+      }
+      return {
+        path: generatedPath,
+        repaired: args.repair !== false,
+        source: "legacy",
+      };
     }
-    return {
-      path: generatedPath,
-      repaired: args.repair !== false,
-      source: "legacy",
-    };
-  }
-
-  const legacyPath = legacyAiIndexPath(args.rootDir);
-  if (await fileExists(legacyPath)) {
-    if (args.repair !== false) {
-      await mkdir(dirname(generatedPath), { recursive: true });
-      await copyFile(legacyPath, generatedPath);
-    }
-    return {
-      path: generatedPath,
-      repaired: args.repair !== false,
-      source: "legacy",
-    };
   }
 
   if (args.repair !== false) {
@@ -233,16 +251,17 @@ export async function ensureAiGraphPath(args: {
     return { path: generatedPath, rebuilt: false };
   }
 
-  const legacyGeneratedPath = legacyGeneratedAiGraphPath(
+  for (const legacyGeneratedPath of legacyGeneratedAiGraphPaths(
     args.homeDir,
     args.rootDir
-  );
-  if (await fileExists(legacyGeneratedPath)) {
-    if (args.repair !== false) {
-      await mkdir(dirname(generatedPath), { recursive: true });
-      await copyFile(legacyGeneratedPath, generatedPath);
+  )) {
+    if (await fileExists(legacyGeneratedPath)) {
+      if (args.repair !== false) {
+        await mkdir(dirname(generatedPath), { recursive: true });
+        await copyFile(legacyGeneratedPath, generatedPath);
+      }
+      return { path: generatedPath, rebuilt: args.repair !== false };
     }
-    return { path: generatedPath, rebuilt: args.repair !== false };
   }
 
   if (args.repair !== false) {
