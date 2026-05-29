@@ -727,6 +727,17 @@ export async function doctorCommand(argv: string[]) {
       return;
     }
 
+    if (
+      result.source === "legacy" &&
+      projectRootFromAiRoot(rootDir, home) &&
+      (await hasCanonicalSource(rootDir))
+    ) {
+      console.log(
+        "Legacy repo-local generated AI state detected. Run `fclt doctor --repair` or `fclt index` to migrate it into machine-local project state."
+      );
+      return;
+    }
+
     if (result.source === "legacy") {
       console.log(
         "Legacy root index detected. Run `fclt doctor --repair` to reconcile it."

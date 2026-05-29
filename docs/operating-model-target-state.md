@@ -33,7 +33,7 @@ The package already has the right broad shape:
 - A canonical store model under `~/.ai` or `<repo>/.ai`.
 - Built-in operating-model pack assets under `assets/packs/facult-operating-model/`.
 - Tool adapters for Codex, Cursor, Claude CLI, Claude Desktop, Factory, Clawdbot, and a reference adapter.
-- Index and graph generation under `.ai/.facult/ai/`.
+- Index and graph generation under generated AI state.
 - Managed tool rendering for skills, agents, MCP, docs, rules, config, plugins, and automations.
 - Project sync policy via `[project_sync.<tool>]`.
 - Remote/template flows through `fclt search`, `install`, `update`, and `templates`.
@@ -54,9 +54,9 @@ Intended locations:
 
 Current repo observation:
 
-- The repo has a local `.ai/`, but it contains only generated `.ai/.facult/ai/index.json` and `graph.json`.
+- Older repo-local `.ai/` roots could contain only generated `.ai/.facult/ai/index.json` and `graph.json`.
 - It does not contain canonical `skills/`, `agents/`, `instructions/`, `tools/`, `mcp/`, or `config.toml`.
-- Because `.ai/.facult/ai` is enough for project-root detection, commands can treat the repo as project-managed even when canonical project assets are gone.
+- Because generated state used to be enough for project-root detection, commands could treat a repo as project-managed even when canonical project assets were gone.
 
 Problem: generated state can make a repo look like it has a project operating layer even when the canonical source no longer exists.
 
@@ -85,7 +85,7 @@ Observed state:
 
 - Global managed state lives under `~/Library/Application Support/fclt/global/managed.json`.
 - Project managed state lives under `~/Library/Application Support/fclt/projects/<key>/managed.json`.
-- Generated AI index and graph live under the active canonical root’s `.facult/ai/`.
+- Global generated AI index and graph live under `~/.ai/.facult/ai/`; project generated AI index and graph live under machine-local per-project state.
 - Scan and audit write state under `~/.ai/.facult/`.
 
 Problem: the runtime state is technically correct but invisible. The CLI should explain it. Users should not need to inspect `Application Support/fclt` or `.ai/.facult` to understand why a sync will remove files.
@@ -767,7 +767,7 @@ Expected outcome:
 - The user sees that canonical project source is missing or intentionally absent.
 - The user sees why sync would remove current rendered files.
 - The user gets a recommended repair path.
-- No one has to inspect `.ai/.facult/ai`, `Application Support/fclt`, or symlink targets by hand.
+- No one has to inspect `.ai/.facult/ai`, machine-local fclt state, or symlink targets by hand.
 
 ## 2026-05-24 Follow-Up Review
 

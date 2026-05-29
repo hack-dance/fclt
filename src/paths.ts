@@ -229,6 +229,9 @@ export function facultStateDir(
   rootDir?: string
 ): string {
   const resolvedRoot = rootDir ?? facultRootDir(home);
+  if (projectRootFromAiRoot(resolvedRoot, home)) {
+    return facultMachineStateDir(home, resolvedRoot);
+  }
   if (shouldUsePreferredGlobalStateDir(resolvedRoot, home)) {
     return preferredGlobalFacultStateDir(home);
   }
@@ -315,6 +318,36 @@ export function facultAiStateDir(
   rootDir?: string
 ): string {
   return join(facultGeneratedStateDir({ home, rootDir }), "ai");
+}
+
+export function legacyRepoLocalFacultAiStateDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string | null {
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  return projectRootFromAiRoot(resolvedRoot, home)
+    ? join(resolvedRoot, ".facult", "ai")
+    : null;
+}
+
+export function legacyFacultAiStateDirs(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string[] {
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  const current = resolve(facultAiStateDir(home, resolvedRoot));
+  const legacyDirs = [
+    legacyRepoLocalFacultAiStateDir(home, resolvedRoot),
+    join(legacyFacultStateDirForRoot(resolvedRoot, home), "ai"),
+  ];
+
+  return [
+    ...new Set(
+      legacyDirs
+        .filter((pathValue): pathValue is string => Boolean(pathValue))
+        .filter((pathValue) => resolve(pathValue) !== current)
+    ),
+  ];
 }
 
 export function facultAiIndexPath(

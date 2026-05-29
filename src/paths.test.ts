@@ -10,6 +10,7 @@ import {
   facultMachineStateDir,
   facultRootDir,
   facultRuntimeCacheDir,
+  legacyFacultAiStateDirs,
 } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -95,22 +96,27 @@ describe("paths", () => {
     );
   });
 
-  it("uses repo-local .ai/.facult/ai state for project roots", async () => {
+  it("uses machine-local generated AI state for project roots", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
     const projectRoot = join(tempHome, "work", "repo");
     const rootDir = join(projectRoot, ".ai");
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-
-    expect(facultAiStateDir(tempHome, rootDir)).toBe(
-      join(projectRoot, ".ai", ".facult", "ai")
+    const expectedAiStateDir = join(
+      facultMachineStateDir(tempHome, rootDir),
+      "ai"
     );
+
+    expect(facultAiStateDir(tempHome, rootDir)).toBe(expectedAiStateDir);
     expect(facultAiIndexPath(tempHome, rootDir)).toBe(
-      join(projectRoot, ".ai", ".facult", "ai", "index.json")
+      join(expectedAiStateDir, "index.json")
     );
     expect(facultAiGraphPath(tempHome, rootDir)).toBe(
-      join(projectRoot, ".ai", ".facult", "ai", "graph.json")
+      join(expectedAiStateDir, "graph.json")
+    );
+    expect(legacyFacultAiStateDirs(tempHome, rootDir)).toContain(
+      join(projectRoot, ".ai", ".facult", "ai")
     );
   });
 
