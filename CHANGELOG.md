@@ -1,3 +1,9 @@
+## [2.8.9](https://github.com/hack-dance/fclt/compare/v2.8.8...v2.8.9) (2026-06-19)
+
+### Bug Fixes
+
+* **pkg:** publish feedback loop defaults ([44bb9d0](https://github.com/hack-dance/fclt/commit/44bb9d0bff9200b6fb3b99d5076420ae4f2ed686))
+
 ## [2.8.8](https://github.com/hack-dance/fclt/compare/v2.8.7...v2.8.8) (2026-06-19)
 
 ### Bug Fixes
