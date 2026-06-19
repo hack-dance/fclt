@@ -1170,7 +1170,7 @@ describe("manage/unmanage", () => {
       `${[
         'approval_policy = "never"',
         "",
-        '[projects."/Users/hack/dev/hack-dance/facult"]',
+        '[projects."/workspace/facult"]',
         'trust_level = "trusted"',
       ].join("\n")}\n`
     );
@@ -1210,9 +1210,7 @@ describe("manage/unmanage", () => {
     expect(toolConfig).toContain("TEAM_GUIDE.md");
     expect(toolConfig).toContain("team_guide.md");
     expect(toolConfig).toContain("project_doc_max_bytes = 65536");
-    expect(toolConfig).toContain(
-      '[projects."/Users/hack/dev/hack-dance/facult"]'
-    );
+    expect(toolConfig).toContain('[projects."/workspace/facult"]');
     expect(toolConfig).toContain('trust_level = "trusted"');
 
     const legacyRuleExists = await Bun.file(
@@ -1235,7 +1233,7 @@ describe("manage/unmanage", () => {
       [
         'approval_policy = "never"',
         "",
-        '[projects."/Users/hack/dev/hack-dance/facult"]',
+        '[projects."/workspace/facult"]',
         'trust_level = "trusted"',
         "",
       ].join("\n")
