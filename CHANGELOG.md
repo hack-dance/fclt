@@ -1,3 +1,9 @@
+## [2.13.3](https://github.com/hack-dance/fclt/compare/v2.13.2...v2.13.3) (2026-06-19)
+
+### Bug Fixes
+
+* update mise-managed installs ([#17](https://github.com/hack-dance/fclt/issues/17)) ([7d6530a](https://github.com/hack-dance/fclt/commit/7d6530a561cf5f67c02477d4acd87d0e209408b6))
+
 ## [2.13.2](https://github.com/hack-dance/fclt/compare/v2.13.1...v2.13.2) (2026-06-19)
 
 ### Bug Fixes
