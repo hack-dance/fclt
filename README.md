@@ -25,6 +25,12 @@ It gives instructions, snippets, skills, agents, MCP definitions, automations, a
 
 Use it when AI setup has become scattered across dotfiles, tool homes, repos, prompts, skills, and one-off notes.
 
+<p align="center">
+  <img alt="fclt feedback loop: installed once, agents use canonical capability, work units create evidence, writebacks preserve signal, evolution proposals improve future agents" src="./docs/assets/fclt-feedback-loop.svg">
+</p>
+
+Most usage should be agent-led after setup. Humans install, inspect, audit, and approve broad changes. Agents use `fclt` to find the right capability, preserve friction as writeback, and turn repeated signal into reviewed improvements.
+
 ## What it does
 
 `fclt` helps you:
@@ -38,7 +44,7 @@ Use it when AI setup has become scattered across dotfiles, tool homes, repos, pr
 - turn repeated writeback into reviewable evolution proposals
 - audit local and remote capability before it spreads
 
-The default posture is read-first. Managed rendering is available, but it is not required for inventory, review, writeback, or evolution.
+The default posture is read-first. Managed rendering is available, but it is not required for inventory, review, writeback, or evolution. The goal is a background feedback loop, not another CLI users must babysit.
 
 ## Install
 
@@ -132,7 +138,7 @@ fclt templates init skill project-review
 fclt templates init agent review-operator
 ```
 
-### 3. Consolidate Existing Skills Or Config
+### 3. Consolidate existing skills or config
 
 Bring existing tool-native assets into a canonical root deliberately:
 

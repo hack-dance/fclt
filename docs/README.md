@@ -4,6 +4,8 @@ These docs explain how `fclt` stores, inspects, composes, renders, and improves 
 
 Start with the root [README](../README.md) for installation and first workflows. Use these guides when you need the model, safety rules, or command details.
 
+The concepts guide includes the [feedback-loop diagram](./assets/fclt-feedback-loop.svg) that explains why `fclt` exists: setup once, let agents preserve friction, then review the changes that should improve future work.
+
 ## Guides
 
 - [Concepts](./concepts.md): canonical roots, generated state, rendered outputs, scopes, and asset types.

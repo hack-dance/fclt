@@ -32,6 +32,7 @@
     "bin/fclt.cjs",
     "bin/facult.cjs",
     "docs/**/*.md",
+    "docs/**/*.svg",
     "src/**/*.ts",
     "!src/**/*.test.ts",
     "README.md",
