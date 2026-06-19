@@ -194,6 +194,9 @@ async function activeFcltUsesMiseNpmFacult(): Promise<boolean> {
   if (looksLikeMiseNpmFacultExecutable(fcltPath ?? "")) {
     return true;
   }
+  if (await miseHasCurrentFacultTool()) {
+    return true;
+  }
   if (!looksLikeMiseShim(fcltPath)) {
     return false;
   }
@@ -212,6 +215,17 @@ async function activeFcltUsesMiseNpmFacult(): Promise<boolean> {
     return false;
   }
   return looksLikeMiseNpmFacultExecutable(stdout.trim());
+}
+
+async function miseHasCurrentFacultTool(): Promise<boolean> {
+  const proc = Bun.spawn({
+    cmd: ["mise", "current", `npm:${PACKAGE_NAME}`],
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    env: process.env,
+  });
+  return (await proc.exited) === 0;
 }
 
 function resolvePlatformTarget(): {
