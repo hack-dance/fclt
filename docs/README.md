@@ -14,6 +14,7 @@ The concepts guide includes the [feedback-loop diagram](./assets/fclt-capability
 - [Project `.ai`](./project-ai.md): how repo-local capability works without leaking project review state into the repo.
 - [Built-in pack](./built-in-pack.md): the packaged operating-model layer for writeback and evolution.
 - [Built-in pack upgrades](./pack-upgrades.md): non-destructive refresh behavior for existing `.ai` roots.
+- [Codex plugin](./codex-plugin.md): installable Codex skills and MCP tools for fclt workflows.
 - [Writeback and evolution](./writeback-evolution.md): how real-work friction becomes reviewable capability changes.
 - [Managed mode](./managed-mode.md): when to let `fclt` write tool files, and how adoption works.
 - [Security and trust](./security-trust.md): source trust, audit, secrets, and commit hygiene.

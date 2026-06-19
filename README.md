@@ -15,10 +15,6 @@
   </a>
 </div>
 
-<p align="center">
-  <img alt="fclt demo" src="./Ghostty.gif">
-</p>
-
 `fclt` is a CLI for managing AI capability across tools and projects.
 
 It gives instructions, snippets, skills, agents, MCP definitions, automations, and tool config a shared home. It can inspect what already exists, consolidate duplicates, render selected capability into tools like Codex and Claude, and preserve real-work friction as writeback that can later become reviewed improvements.
@@ -143,6 +139,8 @@ fclt templates init operating-model --global
 fclt index --global
 ```
 
+On first install, `fclt` seeds `AGENTS.global.md` from existing global agent docs such as `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md` when they exist, then appends the Facult operating-model frame. The packaged template is only the fallback.
+
 Refresh an existing operating-model pack without overwriting local edits:
 
 ```bash
@@ -219,7 +217,7 @@ Canonical capability can include:
 - `mcp/`: MCP server definitions and overlays
 - `automations/`: scheduled review loops
 - `tools/<tool>/`: tool config and rules
-- `AGENTS.global.md`: composed agent guidance
+- `snippets/templates/agents-global.md`: source template materialized as `AGENTS.global.md`
 
 Refs let markdown point at canonical assets without hard-coding paths:
 
@@ -418,6 +416,7 @@ Start with:
 - [Project `.ai`](./docs/project-ai.md): repo-owned capability and project sync policy
 - [Built-in pack](./docs/built-in-pack.md): packaged work-unit, writeback, and evolution defaults
 - [Built-in pack upgrades](./docs/pack-upgrades.md): non-destructive refresh behavior for existing `.ai` roots
+- [Codex plugin](./docs/codex-plugin.md): installable Codex skills and MCP tools for fclt workflows
 - [Writeback and evolution](./docs/writeback-evolution.md): the feedback-loop workflow and review surfaces
 - [Managed mode](./docs/managed-mode.md): when to let `fclt` write tool files
 - [Roadmap](./docs/roadmap.md): current gaps and planned work
@@ -426,7 +425,7 @@ Start with:
 
 ### Does fclt run an MCP server?
 
-Not yet as a first-party runtime. Today, `fclt` is CLI-first. You can scaffold MCP definitions that delegate to the CLI, and a dedicated plugin/MCP surface is on the roadmap.
+The core product is still CLI-first. The first-party Codex plugin includes a small stdio MCP wrapper that delegates to the installed `fclt` binary for status, doctor, paths, setup, writeback, and evolution workflows. See [Codex plugin](./docs/codex-plugin.md).
 
 ### Does fclt have to manage Codex or Claude files?
 

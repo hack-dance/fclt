@@ -1,0 +1,31 @@
+{
+  "name": "fclt",
+  "version": "0.1.0",
+  "description": "Codex workflows and MCP tools for fclt setup, writeback, evolution, and capability review.",
+  "license": "MIT",
+  "keywords": [
+    "fclt",
+    "facult",
+    "codex",
+    "skills",
+    "mcp",
+    "writeback",
+    "evolution"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "fclt",
+    "shortDescription": "Capability loops for Codex",
+    "longDescription": "Install and operate fclt from Codex: initialize AI capability roots, inspect setup health, record writebacks, review evolution proposals, and keep skills, snippets, instructions, automations, and MCP surfaces improving over time.",
+    "developerName": "Hack Dance",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write", "MCP"],
+    "defaultPrompt": [
+      "Use fclt to check this repo's AI capability setup.",
+      "Record useful fclt writeback from this work.",
+      "Review fclt evolution proposals and next actions."
+    ],
+    "brandColor": "#166534"
+  }
+}

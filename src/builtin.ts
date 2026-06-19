@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import { BUILTIN_OPERATING_MODEL_FILES } from "./builtin-assets";
 import { projectRootFromAiRoot } from "./paths";
 
+export const OPERATING_MODEL_AGENTS_GLOBAL_TEMPLATE =
+  "snippets/templates/agents-global.md";
+export const OPERATING_MODEL_AGENTS_GLOBAL_TARGET = "AGENTS.global.md";
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -21,6 +25,24 @@ export function facultBuiltinPackRoot(
     return materializeBuiltinOperatingModelPack();
   }
   return sourceRoot;
+}
+
+export function facultBuiltinAgentsGlobalSourcePath(): string {
+  const root = facultBuiltinPackRoot();
+  const templatePath = join(root, OPERATING_MODEL_AGENTS_GLOBAL_TEMPLATE);
+  if (existsSync(templatePath)) {
+    return templatePath;
+  }
+  return join(root, OPERATING_MODEL_AGENTS_GLOBAL_TARGET);
+}
+
+export function builtinOperatingModelInstallRelPath(
+  relativePath: string
+): string {
+  if (relativePath === OPERATING_MODEL_AGENTS_GLOBAL_TEMPLATE) {
+    return OPERATING_MODEL_AGENTS_GLOBAL_TARGET;
+  }
+  return relativePath;
 }
 
 function materializeBuiltinOperatingModelPack(): string {

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "fclt": {
+      "command": "node",
+      "args": ["./scripts/fclt-mcp.js"],
+      "env": {
+        "FCLT_BIN": "fclt"
+      }
+    }
+  }
+}

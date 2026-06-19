@@ -54,7 +54,13 @@ Review skipped files before deciding whether to merge changes manually, keep the
 
 ## AGENTS.global.md
 
-The pack includes `AGENTS.global.md` as a composed entry template. It is not meant to hold every rule.
+The pack source stores the composed entry template at `snippets/templates/agents-global.md`. During install or update, `fclt` materializes that template as `AGENTS.global.md` in the target `.ai` root.
+
+That installed `AGENTS.global.md` is not meant to hold every rule.
+
+If first install finds existing agent guidance, `fclt` seeds `AGENTS.global.md` from it and appends the Facult operating-model frame. Global installs look for existing global tool docs such as `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`; project installs look for repo-local `AGENTS.md` or `CLAUDE.md`.
+
+Seeded files are user-owned. They are intentionally excluded from the pack manifest so `--update` skips them unless you explicitly replace them with `--force` or edit them manually.
 
 Use:
 

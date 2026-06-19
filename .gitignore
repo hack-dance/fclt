@@ -39,7 +39,9 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .claude/
 .ai/
 .agents/
-/plugins/
+/plugins/*
+!/plugins/fclt/
+!/plugins/fclt/**
 .hack/
 
 # locally managed facult canonical artifacts (can include secrets)

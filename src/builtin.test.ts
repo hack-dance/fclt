@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { facultBuiltinPackRoot } from "./builtin";
+import {
+  facultBuiltinPackRoot,
+  OPERATING_MODEL_AGENTS_GLOBAL_TEMPLATE,
+} from "./builtin";
 import { BUILTIN_OPERATING_MODEL_FILES } from "./builtin-assets";
 
 test("npm package includes builtin operating-model assets", async () => {
@@ -21,6 +24,14 @@ test("npm package includes builtin operating-model assets", async () => {
       join(facultBuiltinPackRoot(), "agents", "evolution-planner", "agent.toml")
     ).exists()
   ).toBe(true);
+  expect(
+    await Bun.file(
+      join(facultBuiltinPackRoot(), OPERATING_MODEL_AGENTS_GLOBAL_TEMPLATE)
+    ).exists()
+  ).toBe(true);
+  expect(
+    await Bun.file(join(facultBuiltinPackRoot(), "AGENTS.global.md")).exists()
+  ).toBe(false);
 });
 
 test("embedded builtin assets match source pack files", async () => {

@@ -22,7 +22,10 @@ import {
   legacyAiIndexPath,
 } from "./ai-state";
 import { repairAutosyncServices } from "./autosync";
-import { facultBuiltinPackRoot } from "./builtin";
+import {
+  facultBuiltinAgentsGlobalSourcePath,
+  facultBuiltinPackRoot,
+} from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { loadManagedState } from "./manage";
 import { extractServersObject } from "./mcp-config";
@@ -478,7 +481,7 @@ async function repairCanonicalGlobalDocs(args: {
     return { changed: false };
   }
 
-  const sourcePath = join(facultBuiltinPackRoot(), "AGENTS.global.md");
+  const sourcePath = facultBuiltinAgentsGlobalSourcePath();
   const targetPath = join(args.rootDir, "AGENTS.global.md");
   const backupPath = join(
     args.rootDir,

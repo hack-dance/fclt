@@ -11,7 +11,10 @@ import {
   resolve,
 } from "node:path";
 import { isCancel, multiselect, select, text } from "@clack/prompts";
-import { facultBuiltinPackRoot } from "./builtin";
+import {
+  builtinOperatingModelInstallRelPath,
+  facultBuiltinPackRoot,
+} from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import {
   renderBullets,
@@ -22,7 +25,11 @@ import {
   renderTable,
 } from "./cli-ui";
 import { buildIndex } from "./index-builder";
-import { facultRootDir, readFacultConfig } from "./paths";
+import {
+  facultRootDir,
+  projectRootFromAiRoot,
+  readFacultConfig,
+} from "./paths";
 import {
   assertManifestIntegrity,
   assertManifestSignature,
@@ -1341,6 +1348,84 @@ function serializeBuiltinPackManifest(manifest: BuiltinPackManifest): string {
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
+const OPERATING_MODEL_SNIPPET_FRAME = `## Working mode
+
+<!-- fclty:global/baseline -->
+<!-- /fclty:global/baseline -->
+
+<!-- fclty:global/core/work-units -->
+<!-- /fclty:global/core/work-units -->
+
+<!-- fclty:global/core/feedback-loops -->
+<!-- /fclty:global/core/feedback-loops -->
+
+<!-- fclty:global/core/verification -->
+<!-- /fclty:global/core/verification -->
+
+<!-- fclty:global/core/writeback -->
+<!-- /fclty:global/core/writeback -->
+
+## Shared instruction sources
+
+- For work-unit definition and scope clarification, read \${refs.work_units}.
+- For identifying, improving, and validating feedback loops, read \${refs.feedback_loops}.
+- For verification and anti-false-positive checks, read \${refs.verification}.
+- For checking integration boundaries, read \${refs.integration}.
+- For learning, decisions, and writeback, read \${refs.learning_writeback}.
+- For capability evolution, proposal kinds, and \`facult ai\` workflow, read \${refs.evolution}.
+- For deciding whether something belongs in global or project scope, read \${refs.project_capability}.
+- Add private language, coding, or writing refs in local config only when they belong to the user's own operating layer.
+`;
+
+function appendOperatingModelFrame(seedText: string): string {
+  const normalized = seedText.trimEnd();
+  if (normalized.includes("<!-- fclty:global/baseline -->")) {
+    return `${normalized}\n`;
+  }
+  return `${normalized}\n\n## Facult Operating Model\n\n${OPERATING_MODEL_SNIPPET_FRAME}`;
+}
+
+async function firstExistingFileText(
+  candidates: string[]
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return await Bun.file(candidate).text();
+    }
+  }
+  return null;
+}
+
+async function seedAgentsGlobalText(args: {
+  rootDir: string;
+  homeDir?: string;
+  fallbackText: string;
+}): Promise<{ text: string; seededFromExisting: boolean }> {
+  const home = args.homeDir ?? homedir();
+  const projectRoot = projectRootFromAiRoot(args.rootDir, home);
+  const seedText = await firstExistingFileText(
+    projectRoot
+      ? [
+          join(projectRoot, "AGENTS.md"),
+          join(projectRoot, "CLAUDE.md"),
+          join(projectRoot, ".codex", "AGENTS.md"),
+          join(projectRoot, ".claude", "CLAUDE.md"),
+        ]
+      : [
+          join(home, ".codex", "AGENTS.md"),
+          join(home, ".claude", "CLAUDE.md"),
+          join(home, ".cursor", "AGENTS.md"),
+        ]
+  );
+  if (!seedText?.trim()) {
+    return { text: args.fallbackText, seededFromExisting: false };
+  }
+  return {
+    text: appendOperatingModelFrame(seedText),
+    seededFromExisting: true,
+  };
+}
+
 async function scaffoldBuiltinOperatingModelPack(args: {
   rootDir: string;
   homeDir?: string;
@@ -1364,20 +1449,33 @@ async function scaffoldBuiltinOperatingModelPack(args: {
     if (!relPath || relPath.startsWith("..")) {
       continue;
     }
-    const targetPath = join(rootDir, relPath);
-    const sourceText = await Bun.file(sourcePath).text();
+    const targetRelPath = builtinOperatingModelInstallRelPath(relPath);
+    const targetPath = join(rootDir, targetRelPath);
+    const rawSourceText = await Bun.file(sourcePath).text();
+    const targetExists = await pathExists(targetPath);
+    const seed =
+      targetRelPath === "AGENTS.global.md" && !targetExists
+        ? await seedAgentsGlobalText({
+            rootDir,
+            homeDir: args.homeDir,
+            fallbackText: rawSourceText,
+          })
+        : null;
+    const sourceText = seed?.text ?? rawSourceText;
+    const trackInManifest = !seed?.seededFromExisting;
     const sourceHash = sha256Text(sourceText);
-    const exists = await pathExists(targetPath);
-    let shouldWrite = !exists || Boolean(args.force);
+    let shouldWrite = !targetExists || Boolean(args.force);
 
-    if (exists && !shouldWrite) {
+    if (targetExists && !shouldWrite) {
       const targetText = await Bun.file(targetPath).text();
       const targetHash = sha256Text(targetText);
       if (targetHash === sourceHash) {
-        manifestFiles[relPath] = { sha256: sourceHash };
+        if (trackInManifest) {
+          manifestFiles[targetRelPath] = { sha256: sourceHash };
+        }
       } else if (
         args.update &&
-        existingManifest?.files[relPath]?.sha256 === targetHash
+        existingManifest?.files[targetRelPath]?.sha256 === targetHash
       ) {
         shouldWrite = true;
       } else if (args.update) {
@@ -1389,7 +1487,11 @@ async function scaffoldBuiltinOperatingModelPack(args: {
       continue;
     }
     changedPaths.push(targetPath);
-    manifestFiles[relPath] = { sha256: sourceHash };
+    if (trackInManifest) {
+      manifestFiles[targetRelPath] = { sha256: sourceHash };
+    } else {
+      delete manifestFiles[targetRelPath];
+    }
     if (!args.dryRun) {
       await mkdir(dirname(targetPath), { recursive: true });
       await Bun.write(targetPath, sourceText);

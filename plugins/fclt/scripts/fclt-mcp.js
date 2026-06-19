@@ -1,0 +1,320 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+
+const FCLT_BIN = process.env.FCLT_BIN || "fclt";
+const DEFAULT_TIMEOUT_MS = Number(process.env.FCLT_MCP_TIMEOUT_MS || 60_000);
+const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
+
+const tools = [
+  {
+    name: "fclt_status",
+    description:
+      "Return fclt status for the current, global, or project scope.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["auto", "global", "project"] },
+        cwd: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "fclt_doctor",
+    description: "Run read-only fclt doctor checks and return JSON output.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["auto", "global", "project"] },
+        cwd: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "fclt_paths",
+    description: "Return canonical, generated, review, and runtime fclt paths.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["auto", "global", "project"] },
+        cwd: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "fclt_init_operating_model",
+    description: "Install or update the built-in operating-model pack.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["global", "project"] },
+        cwd: { type: "string" },
+        update: { type: "boolean" },
+        dryRun: { type: "boolean" },
+        force: { type: "boolean" },
+      },
+      required: ["scope"],
+    },
+  },
+  {
+    name: "fclt_writeback_add",
+    description: "Record a durable fclt writeback with evidence.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["auto", "global", "project"] },
+        cwd: { type: "string" },
+        kind: { type: "string" },
+        summary: { type: "string" },
+        asset: { type: "string" },
+        evidence: { type: "string" },
+        confidence: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+        },
+      },
+      required: ["kind", "summary"],
+    },
+  },
+  {
+    name: "fclt_writeback_review",
+    description: "List, group, or summarize current fclt writebacks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["auto", "global", "project"] },
+        cwd: { type: "string" },
+        mode: { type: "string", enum: ["list", "group", "summarize"] },
+        by: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "fclt_evolve",
+    description: "List, propose, draft, or review fclt evolution proposals.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["auto", "global", "project"] },
+        cwd: { type: "string" },
+        action: {
+          type: "string",
+          enum: ["list", "propose", "draft", "review", "show"],
+        },
+        id: { type: "string" },
+      },
+    },
+  },
+];
+
+function scopeArgs(scope) {
+  if (scope === "global") {
+    return ["--global"];
+  }
+  if (scope === "project") {
+    return ["--project"];
+  }
+  return [];
+}
+
+function boolFlag(name, value) {
+  return value ? [name] : [];
+}
+
+function stringFlag(name, value) {
+  return typeof value === "string" && value.trim() ? [name, value] : [];
+}
+
+function commandForTool(name, args = {}) {
+  switch (name) {
+    case "fclt_status":
+      return ["status", ...scopeArgs(args.scope), "--json"];
+    case "fclt_doctor":
+      return ["doctor", ...scopeArgs(args.scope), "--json"];
+    case "fclt_paths":
+      return ["paths", ...scopeArgs(args.scope), "--json"];
+    case "fclt_init_operating_model":
+      return [
+        "templates",
+        "init",
+        "operating-model",
+        ...scopeArgs(args.scope),
+        ...boolFlag("--update", args.update),
+        ...boolFlag("--dry-run", args.dryRun),
+        ...boolFlag("--force", args.force),
+        "--json",
+      ];
+    case "fclt_writeback_add":
+      return [
+        "ai",
+        "writeback",
+        ...scopeArgs(args.scope),
+        "add",
+        "--kind",
+        args.kind,
+        "--summary",
+        args.summary,
+        ...stringFlag("--asset", args.asset),
+        ...stringFlag("--evidence", args.evidence),
+        ...stringFlag("--confidence", args.confidence),
+      ];
+    case "fclt_writeback_review": {
+      const mode = args.mode || "list";
+      return [
+        "ai",
+        "writeback",
+        ...scopeArgs(args.scope),
+        mode,
+        ...stringFlag("--by", args.by),
+      ];
+    }
+    case "fclt_evolve": {
+      const action = args.action || "list";
+      return [
+        "ai",
+        "evolve",
+        ...scopeArgs(args.scope),
+        action,
+        ...(args.id ? [args.id] : []),
+      ];
+    }
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+function runFclt(args, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn(FCLT_BIN, args, {
+      cwd: cwd || process.cwd(),
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, DEFAULT_TIMEOUT_MS);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        code,
+        text: [
+          `$ ${FCLT_BIN} ${args.join(" ")}`,
+          stdout.trim(),
+          stderr.trim() ? `stderr:\n${stderr.trim()}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      });
+    });
+  });
+}
+
+function send(message) {
+  const body = JSON.stringify(message);
+  process.stdout.write(
+    `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+  );
+}
+
+async function handle(message) {
+  if (!message || message.id == null) {
+    return;
+  }
+
+  try {
+    if (message.method === "initialize") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name: "fclt", version: "0.1.0" },
+        },
+      });
+      return;
+    }
+    if (message.method === "tools/list") {
+      send({ jsonrpc: "2.0", id: message.id, result: { tools } });
+      return;
+    }
+    if (message.method === "tools/call") {
+      const { name, arguments: args = {} } = message.params || {};
+      const command = commandForTool(name, args);
+      const result = await runFclt(command, args.cwd);
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          isError: result.code !== 0,
+          content: [{ type: "text", text: result.text }],
+        },
+      });
+      return;
+    }
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      error: { code: -32_601, message: `Method not found: ${message.method}` },
+    });
+  } catch (error) {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      error: {
+        code: -32_000,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  }
+}
+
+let buffer = Buffer.alloc(0);
+
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const headerEnd = buffer.indexOf("\r\n\r\n");
+    if (headerEnd === -1) {
+      return;
+    }
+    const header = buffer.slice(0, headerEnd).toString("utf8");
+    const match = CONTENT_LENGTH_RE.exec(header);
+    if (!match) {
+      buffer = Buffer.alloc(0);
+      return;
+    }
+    const length = Number(match[1]);
+    const frameEnd = headerEnd + 4 + length;
+    if (buffer.length < frameEnd) {
+      return;
+    }
+    const body = buffer.slice(headerEnd + 4, frameEnd).toString("utf8");
+    buffer = buffer.slice(frameEnd);
+    handle(JSON.parse(body)).catch((error) => {
+      send({
+        jsonrpc: "2.0",
+        id: null,
+        error: {
+          code: -32_000,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    });
+  }
+});
+
+if (process.argv.includes("--self-test")) {
+  console.log(
+    JSON.stringify({ tools: tools.map((tool) => tool.name) }, null, 2)
+  );
+  process.exit(0);
+}

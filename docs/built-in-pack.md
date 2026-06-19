@@ -31,11 +31,19 @@ Agents:
 - `scope-promoter`
 - `integration-auditor`
 
-Global doc:
+Entry template:
 
-- `AGENTS.global.md`
+- `snippets/templates/agents-global.md`
 
-`AGENTS.global.md` is the composed entry template for global agent guidance. It should stay small and point to snippets and instructions rather than becoming the only place where guidance lives.
+The template materializes as `AGENTS.global.md` when installed into a canonical `.ai` root. The source lives under snippets/templates so the pack itself models composition instead of treating the root global doc as a special hand-maintained asset. The installed `AGENTS.global.md` should stay small and point to snippets and instructions rather than becoming the only place where guidance lives.
+
+On first install, `fclt` preserves existing guidance when it can:
+
+- global installs seed `AGENTS.global.md` from existing global agent docs such as `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md`
+- project installs seed from the repo's existing `AGENTS.md` or `CLAUDE.md`
+- the packaged template is only the fallback when no existing guidance is found
+
+Seeded `AGENTS.global.md` files are treated as user-owned. They are not marked as pack-owned in the update manifest, so future `--update` runs skip them instead of replacing them with the fallback template.
 
 ## When It Becomes Active
 
