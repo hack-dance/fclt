@@ -1,3 +1,9 @@
+## [2.13.4](https://github.com/hack-dance/fclt/compare/v2.13.3...v2.13.4) (2026-06-19)
+
+### Bug Fixes
+
+* detect mise-managed self updates ([#18](https://github.com/hack-dance/fclt/issues/18)) ([40c99ce](https://github.com/hack-dance/fclt/commit/40c99ce4f8ba32edb38bbe6661d699aa514aa134))
+
 ## [2.13.3](https://github.com/hack-dance/fclt/compare/v2.13.2...v2.13.3) (2026-06-19)
 
 ### Bug Fixes
