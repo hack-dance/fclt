@@ -1,5 +1,10 @@
 # Global Agent Instructions
 
+This file is the global entry template for the operating-model pack. It should
+stay small and composed from snippets. Put detailed doctrine in instructions,
+workflow execution in skills, and local/private preferences in user-owned or
+project-owned assets outside the public pack.
+
 ## Working mode
 
 <!-- fclty:global/baseline -->
@@ -22,6 +27,7 @@
 - For work-unit definition and scope clarification, read ${refs.work_units}.
 - For identifying, improving, and validating feedback loops, read ${refs.feedback_loops}.
 - For verification and anti-false-positive checks, read ${refs.verification}.
+- For checking integration boundaries, read ${refs.integration}.
 - For learning, decisions, and writeback, read ${refs.learning_writeback}.
 - For capability evolution, proposal kinds, and `facult ai` workflow, read ${refs.evolution}.
 - For deciding whether something belongs in global or project scope, read ${refs.project_capability}.

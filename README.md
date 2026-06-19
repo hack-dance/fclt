@@ -31,6 +31,8 @@ Use it when AI setup has become scattered across dotfiles, tool homes, repos, pr
 
 Most usage should be agent-led after setup. Humans install, inspect, audit, and approve broad changes. Agents use `fclt` to find the right capability, preserve friction as writeback, and turn repeated signal into reviewed improvements.
 
+The basic operating unit is the work unit: a piece of agent work with a goal, context, constraints, evidence, an output artifact, verification, and a writeback target when the work teaches something reusable. That frame applies to normal coding, research, docs, setup, operations, and debugging work, not only to skill updates.
+
 ## What it does
 
 `fclt` helps you:
@@ -39,6 +41,7 @@ Most usage should be agent-led after setup. Humans install, inspect, audit, and 
 - keep repo-specific capability in `<repo>/.ai`
 - inspect skills, instructions, MCP servers, agents, automations, and rendered outputs
 - compose guidance from smaller units with refs and snippets
+- give agents a reusable work-unit frame for normal work
 - optionally render approved capability into Codex, Claude, Cursor, and similar tools
 - record writebacks when an agent finds missing context, weak verification, stale guidance, or tool friction
 - turn repeated writeback into reviewable evolution proposals
@@ -140,6 +143,13 @@ fclt templates init operating-model --global
 fclt index --global
 ```
 
+Refresh an existing operating-model pack without overwriting local edits:
+
+```bash
+fclt templates init operating-model --global --update --dry-run
+fclt templates init operating-model --global --update
+```
+
 Create a repo-local `.ai` root:
 
 ```bash
@@ -228,6 +238,8 @@ Snippet markers let repeated blocks stay independently editable:
 
 The rule is simple: target the smallest unit that needs to change. Use instructions for doctrine, snippets for repeated blocks, skills for workflows, agents for roles, MCP/tool config for interfaces, and automations for scheduled loops.
 
+Work units give those assets a practical operating frame. They keep intent, evidence, verification, output, and learning attached to a task so repeated friction can become writeback and evolution instead of disappearing into chat history.
+
 ## Writeback and evolution
 
 Writeback is preserved signal from real work. Evolution turns repeated signal into reviewed changes.
@@ -278,6 +290,7 @@ Install it without managing any tool:
 fclt templates init operating-model --global
 fclt templates init operating-model --project
 fclt templates init operating-model --root /path/to/.ai
+fclt templates init operating-model --global --update
 ```
 
 The pack is also available as built-in refs under:
@@ -352,8 +365,8 @@ Canonical store:
 
 ```bash
 fclt templates list
-fclt templates init operating-model [--global|--project|--root PATH]
-fclt templates init project-ai
+fclt templates init operating-model [--global|--project|--root PATH] [--update]
+fclt templates init project-ai [--update]
 fclt templates init instruction <name>
 fclt templates init snippet <marker>
 fclt templates init skill <name>
@@ -400,9 +413,11 @@ Use `fclt --help` and `fclt <command> --help` for exact flags.
 Start with:
 
 - [Concepts](./docs/concepts.md): roots, scopes, state layers, and asset types
+- [Work Units](./docs/work-units.md): general-purpose agent work framing
 - [Composable Capability](./docs/composable-capability.md): refs, snippets, instruction templates, and evolvable units
 - [Project `.ai`](./docs/project-ai.md): repo-owned capability and project sync policy
 - [Built-in pack](./docs/built-in-pack.md): packaged work-unit, writeback, and evolution defaults
+- [Built-in pack upgrades](./docs/pack-upgrades.md): non-destructive refresh behavior for existing `.ai` roots
 - [Writeback and evolution](./docs/writeback-evolution.md): the feedback-loop workflow and review surfaces
 - [Managed mode](./docs/managed-mode.md): when to let `fclt` write tool files
 - [Roadmap](./docs/roadmap.md): current gaps and planned work
@@ -428,3 +443,7 @@ Commit canonical project assets that belong to the repo: instructions, snippets,
 ## Contributing
 
 Contributor and release workflow details live in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Background
+
+The operating model behind `fclt` is related to the argument in [Governing the Machine](https://www.hack.dance/writing/governing-the-machine): as machine execution gets cheaper, the hard problem becomes governing work, evidence, memory, integration, and improvement.

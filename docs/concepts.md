@@ -48,7 +48,9 @@ Use these as installable catalog sources. Review and trust source policy before 
 
 A work unit is a scoped agent task with a goal, acceptance criteria, required context, constraints, evidence, output artifact, verification path, and writeback target.
 
-Agents should keep this implicit for simple work and make it explicit when the task is ambiguous, risky, or multi-step. The built-in operating-model pack includes `WORK_UNITS.md` so managed agents and canonical `.ai` roots can share the same framing.
+This applies to ordinary coding, research, docs, operations, setup, and debugging work, not only to skill or instruction updates. Agents should keep this implicit for simple work and make it explicit when the task is ambiguous, risky, stateful, or multi-step. The built-in operating-model pack includes `WORK_UNITS.md` so managed agents and canonical `.ai` roots can share the same framing.
+
+See [Work Units](./work-units.md) for the detailed model.
 
 ## State Layers
 
@@ -133,3 +135,4 @@ The durable loop is:
 - Read [Project `.ai`](./project-ai.md) before adding repo-local capability.
 - Read [Managed mode](./managed-mode.md) before allowing `fclt` to write tool files.
 - Read [Composable Capability](./composable-capability.md) to split guidance into instructions, snippets, skills, agents, MCP, and automations.
+- Read [Work Units](./work-units.md) to understand the general task frame behind writeback and evolution.

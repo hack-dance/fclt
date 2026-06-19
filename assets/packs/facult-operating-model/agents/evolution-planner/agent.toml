@@ -26,7 +26,10 @@ Return concise proposals ordered by expected leverage, including:
 - target asset
 - target scope
 - why this is the smallest durable change
+- source writeback ids or evidence summary
+- approval risk and verification path
 
 Do not escalate to evolution when a single writeback is enough.
 Do not use evolution as a substitute for executable task tracking when the main need is owner, priority, state, or implementation follow-through.
+Do not globalize private, repo-specific, or speculative guidance.
 """

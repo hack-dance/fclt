@@ -35,6 +35,8 @@ Global doc:
 
 - `AGENTS.global.md`
 
+`AGENTS.global.md` is the composed entry template for global agent guidance. It should stay small and point to snippets and instructions rather than becoming the only place where guidance lives.
+
 ## When It Becomes Active
 
 The built-in pack is always available as a built-in source:
@@ -52,6 +54,15 @@ fclt templates init operating-model --root /path/to/.ai
 ```
 
 That writes the pack into the selected `.ai` root and rebuilds its index. It does not render files into Codex, Claude, or any other tool home.
+
+Refresh an existing root non-destructively:
+
+```bash
+fclt templates init operating-model --global --update --dry-run
+fclt templates init operating-model --global --update
+```
+
+`--update` refreshes only files that still match the last installed pack manifest and skips local edits. See [Built-in pack upgrades](./pack-upgrades.md).
 
 Use `project-ai` when the target is the current repo:
 
@@ -95,5 +106,7 @@ Keep project-specific behavior in project `.ai`. Promote it only when repeated e
 ## Next
 
 - Read [Composable Capability](./composable-capability.md) for refs, snippets, and instruction templates.
+- Read [Work Units](./work-units.md) for the general work-unit model.
+- Read [Built-in pack upgrades](./pack-upgrades.md) before refreshing an existing root.
 - Read [Writeback and evolution](./writeback-evolution.md) for the feedback loop.
 - Read [Managed mode](./managed-mode.md) before rendering the pack into a tool home.

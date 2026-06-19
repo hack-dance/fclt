@@ -669,6 +669,7 @@ function canonicalRefValues(rootDir: string): Record<string, string> {
   return {
     evolution: join(rootDir, "instructions", "EVOLUTION.md"),
     feedback_loops: join(rootDir, "instructions", "FEEDBACK_LOOPS.md"),
+    integration: join(rootDir, "instructions", "INTEGRATION.md"),
     learning_writeback: join(
       rootDir,
       "instructions",

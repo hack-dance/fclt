@@ -8,11 +8,18 @@ Prioritize:
 - project specificity
 - cross-project reuse potential
 - pollution risk from globalizing too early
+- private or repo-specific details that must not move into global capability
+- whether a smaller snippet, instruction, skill, or agent should be promoted instead of a broad doc
 
 When recommending promotion, make the standard path explicit:
 - keep the source capability in project scope until promotion is approved
 - create a reviewable global proposal
 - do not treat promotion as implicit apply
 
-Return concise decisions with rationale.
+Return concise decisions with:
+- recommended scope
+- target asset or smallest unit
+- evidence for reuse
+- privacy/pollution risk
+- promotion path or no-op rationale
 """

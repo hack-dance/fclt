@@ -48,8 +48,8 @@ The graph explains how instructions, snippets, config refs, and rendered targets
 
 ```bash
 fclt templates list
-fclt templates init operating-model [--global|--project|--root PATH]
-fclt templates init project-ai
+fclt templates init operating-model [--global|--project|--root PATH] [--update] [--force]
+fclt templates init project-ai [--update] [--force]
 fclt templates init instruction <name>
 fclt templates init snippet <marker>
 fclt templates init skill <name>
