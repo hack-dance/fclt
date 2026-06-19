@@ -9,6 +9,7 @@ const defaultBinary =
   process.platform === "win32" ? "dist/fclt.exe" : "dist/fclt";
 const binaryPath = resolve(repoRoot, process.argv[2] ?? defaultBinary);
 const tempHome = await mkdtemp(join(tmpdir(), "fclt-binary-verify-"));
+const tempProcessTmp = join(tempHome, "tmp");
 
 async function run(args: string[]): Promise<string> {
   const proc = Bun.spawn([binaryPath, ...args], {
@@ -16,6 +17,11 @@ async function run(args: string[]): Promise<string> {
     env: {
       ...process.env,
       HOME: tempHome,
+      USERPROFILE: tempHome,
+      APPDATA: join(tempHome, "AppData", "Roaming"),
+      LOCALAPPDATA: join(tempHome, "AppData", "Local"),
+      TEMP: tempProcessTmp,
+      TMP: tempProcessTmp,
       FACULT_CACHE_DIR: join(tempHome, ".cache", "fclt"),
       FACULT_LOCAL_STATE_DIR: join(tempHome, ".local", "state", "fclt"),
     },
