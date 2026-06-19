@@ -1,3 +1,9 @@
+## [2.9.0](https://github.com/hack-dance/fclt/compare/v2.8.12...v2.9.0) (2026-06-19)
+
+### Features
+
+* **ai:** mirror review artifacts into global ai root ([d3ae725](https://github.com/hack-dance/fclt/commit/d3ae72511f0c05cb454c31e43a355c218d857715))
+
 ## [2.8.12](https://github.com/hack-dance/fclt/compare/v2.8.11...v2.8.12) (2026-06-19)
 
 ### Bug Fixes
