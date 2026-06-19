@@ -15,7 +15,11 @@ import { basename, dirname, join } from "node:path";
 import { getAdapter } from "./adapters";
 import { renderCanonicalText } from "./agents";
 import { ensureAiIndexPath } from "./ai-state";
-import { builtinSyncDefaultsEnabled, facultBuiltinPackRoot } from "./builtin";
+import {
+  builtinSyncDefaultsEnabled,
+  facultBuiltinCodexPluginRoot,
+  facultBuiltinPackRoot,
+} from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { renderBullets, renderCode, renderPage } from "./cli-ui";
 import { contentHash, normalizeText } from "./conflicts";
@@ -85,6 +89,8 @@ export interface ManagedState {
 }
 
 type SyncLedgerAction = "add" | "adopt" | "remove" | "skip" | "write";
+
+const FCLT_CODEX_PLUGIN_NAME = "fclt";
 
 interface SyncLedgerEvent {
   version: 1;
@@ -259,7 +265,8 @@ async function isGeneratedOnlyProjectRoot(args: {
 function renderedSourceKindForPath(
   sourcePath: string
 ): ManagedRenderedTargetState["sourceKind"] {
-  return sourcePath.startsWith(facultBuiltinPackRoot())
+  return sourcePath.startsWith(facultBuiltinPackRoot()) ||
+    sourcePath.startsWith(facultBuiltinCodexPluginRoot())
     ? "builtin"
     : "canonical";
 }
@@ -326,6 +333,45 @@ function normalizeCodexMarketplaceText(text: string): string {
   } catch {
     return text.endsWith("\n") ? text : `${text}\n`;
   }
+}
+
+function fcltCodexMarketplaceEntry(): Record<string, unknown> {
+  return {
+    name: FCLT_CODEX_PLUGIN_NAME,
+    source: {
+      source: "local",
+      path: `./plugins/${FCLT_CODEX_PLUGIN_NAME}`,
+    },
+    policy: {
+      installation: "AVAILABLE",
+      authentication: "NONE",
+    },
+    category: "Productivity",
+  };
+}
+
+function withBuiltinFcltCodexMarketplaceEntry(text: string | null): string {
+  const base =
+    text == null
+      ? {
+          name: "local",
+          interface: { displayName: "Local Plugins" },
+          plugins: [],
+        }
+      : (JSON.parse(text) as unknown);
+  if (!isPlainObject(base)) {
+    return text == null ? normalizeCodexMarketplaceText("{}") : text;
+  }
+  const plugins = Array.isArray(base.plugins) ? [...base.plugins] : [];
+  const hasFclt = plugins.some(
+    (entry) => isPlainObject(entry) && entry.name === FCLT_CODEX_PLUGIN_NAME
+  );
+  if (!hasFclt) {
+    plugins.push(fcltCodexMarketplaceEntry());
+  }
+  return normalizeCodexMarketplaceText(
+    JSON.stringify({ ...base, plugins }, null, 2)
+  );
 }
 
 function isSafeCodexPluginName(name: string): boolean {
@@ -899,7 +945,8 @@ async function listRelativeFilesWithDotfiles(root: string): Promise<string[]> {
 }
 
 async function loadCanonicalCodexPlugins(
-  rootDir: string
+  rootDir: string,
+  homeDir?: string
 ): Promise<CanonicalPluginEntry[]> {
   const pluginsRoot = codexCanonicalPluginsRoot(rootDir);
   const entries = await readdir(pluginsRoot, { withFileTypes: true }).catch(
@@ -907,36 +954,81 @@ async function loadCanonicalCodexPlugins(
   );
   const out: CanonicalPluginEntry[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) {
-      continue;
-    }
-    const sourceDir = join(pluginsRoot, entry.name);
+  async function loadEntry(
+    name: string,
+    sourceDir: string
+  ): Promise<CanonicalPluginEntry | null> {
     if (!(await fileExists(join(sourceDir, ".codex-plugin", "plugin.json")))) {
-      continue;
+      return null;
     }
     const files = new Map<string, Uint8Array>();
     for (const relPath of await listRelativeFilesWithDotfiles(sourceDir)) {
       files.set(relPath, await Bun.file(join(sourceDir, relPath)).bytes());
     }
-    out.push({ name: entry.name, sourceDir, files });
+    return { name, sourceDir, files };
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    const sourceDir = join(pluginsRoot, entry.name);
+    const plugin = await loadEntry(entry.name, sourceDir);
+    if (plugin) {
+      out.push(plugin);
+    }
+  }
+
+  if (
+    (await builtinSyncDefaultsEnabled(rootDir, homeDir)) &&
+    !out.some((entry) => entry.name === FCLT_CODEX_PLUGIN_NAME)
+  ) {
+    const plugin = await loadEntry(
+      FCLT_CODEX_PLUGIN_NAME,
+      facultBuiltinCodexPluginRoot()
+    );
+    if (plugin) {
+      out.push(plugin);
+    }
   }
 
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function canonicalCodexPluginsExist(rootDir: string): Promise<boolean> {
+async function canonicalCodexPluginsExist(
+  rootDir: string,
+  homeDir?: string
+): Promise<boolean> {
   if (await fileExists(codexCanonicalPluginMarketplacePath(rootDir))) {
     return true;
   }
-  return (await loadCanonicalCodexPlugins(rootDir)).length > 0;
+  return (await loadCanonicalCodexPlugins(rootDir, homeDir)).length > 0;
 }
 
 async function loadCanonicalCodexMarketplaceText(
-  rootDir: string
+  rootDir: string,
+  homeDir?: string
 ): Promise<{ text: string | null; sourcePath: string }> {
   const sourcePath = codexCanonicalPluginMarketplacePath(rootDir);
   const raw = await readTextOrNull(sourcePath);
+  const builtinEnabled = await builtinSyncDefaultsEnabled(rootDir, homeDir);
+  if (builtinEnabled) {
+    try {
+      return {
+        text: withBuiltinFcltCodexMarketplaceEntry(raw),
+        sourcePath:
+          raw == null
+            ? join(
+                facultBuiltinCodexPluginRoot(),
+                ".codex-plugin",
+                "plugin.json"
+              )
+            : sourcePath,
+      };
+    } catch {
+      // Fall back to the canonical marketplace text if it is not JSON.
+    }
+  }
   return {
     text: raw == null ? null : normalizeCodexMarketplaceText(raw),
     sourcePath,
@@ -2919,6 +3011,7 @@ export async function manageTool(tool: string, opts: ManageOptions = {}) {
   const pluginPreview =
     tool === "codex" && toolPaths.pluginsDir && toolPaths.pluginMarketplacePath
       ? await planCodexPluginFileChanges({
+          homeDir: home,
           rootDir,
           pluginsDir: toolPaths.pluginsDir,
           pluginMarketplacePath: toolPaths.pluginMarketplacePath,
@@ -3390,7 +3483,7 @@ async function repairManagedToolEntry(args: {
     !(next.pluginsDir && next.pluginMarketplacePath) &&
     toolPaths.pluginsDir &&
     toolPaths.pluginMarketplacePath &&
-    (await canonicalCodexPluginsExist(rootDir))
+    (await canonicalCodexPluginsExist(rootDir, homeDir))
   ) {
     if (!next.pluginsDir) {
       next.pluginsBackup = await backupPath(toolPaths.pluginsDir);
@@ -4409,6 +4502,7 @@ async function adoptExistingCodexPlugins(args: {
 }
 
 async function planCodexPluginFileChanges(args: {
+  homeDir?: string;
   rootDir: string;
   pluginsDir: string;
   pluginMarketplacePath?: string;
@@ -4423,14 +4517,20 @@ async function planCodexPluginFileChanges(args: {
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
 
-  const marketplace = await loadCanonicalCodexMarketplaceText(args.rootDir);
+  const marketplace = await loadCanonicalCodexMarketplaceText(
+    args.rootDir,
+    args.homeDir
+  );
   if (marketplace.text != null && args.pluginMarketplacePath) {
     desiredPaths.add(args.pluginMarketplacePath);
     contents.set(args.pluginMarketplacePath, marketplace.text);
     sources.set(args.pluginMarketplacePath, marketplace.sourcePath);
   }
 
-  for (const plugin of await loadCanonicalCodexPlugins(args.rootDir)) {
+  for (const plugin of await loadCanonicalCodexPlugins(
+    args.rootDir,
+    args.homeDir
+  )) {
     for (const [relPath, bytes] of plugin.files.entries()) {
       const targetPath = join(args.pluginsDir, plugin.name, relPath);
       desiredPaths.add(targetPath);
@@ -4641,6 +4741,7 @@ async function syncManagedToolEntry({
   const pluginPlan =
     tool === "codex" && entry.pluginsDir
       ? await planCodexPluginFileChanges({
+          homeDir,
           rootDir,
           pluginsDir: entry.pluginsDir,
           pluginMarketplacePath: entry.pluginMarketplacePath,

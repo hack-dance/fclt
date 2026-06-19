@@ -46,7 +46,7 @@ That writes plugin files under the Codex plugin location and updates the persona
 For local plugin development, run the lightweight checks that ship with the repository:
 
 ```bash
-node plugins/fclt/scripts/fclt-mcp.js --self-test
+node plugins/fclt/scripts/fclt-mcp.cjs --self-test
 bun run check
 ```
 

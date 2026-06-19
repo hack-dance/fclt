@@ -35,6 +35,7 @@
     "docs/**/*.png",
     "plugins/fclt/.codex-plugin/*.json",
     "plugins/fclt/.mcp.json",
+    "plugins/fclt/**/*.cjs",
     "plugins/fclt/**/*.js",
     "plugins/fclt/**/*.md",
     "src/**/*.ts",
