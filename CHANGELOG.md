@@ -1,3 +1,9 @@
+## [2.11.0](https://github.com/hack-dance/fclt/compare/v2.10.0...v2.11.0) (2026-06-19)
+
+### Features
+
+* **templates:** install operating model pack independently ([f451360](https://github.com/hack-dance/fclt/commit/f45136096c25551a2520cb8cdc90e29d6a06d7e8))
+
 ## [2.10.0](https://github.com/hack-dance/fclt/compare/v2.9.0...v2.10.0) (2026-06-19)
 
 ### Features
