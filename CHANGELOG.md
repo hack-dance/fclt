@@ -1,3 +1,9 @@
+## [2.8.12](https://github.com/hack-dance/fclt/compare/v2.8.11...v2.8.12) (2026-06-19)
+
+### Bug Fixes
+
+* **index:** clean builtin canonical refs ([7873462](https://github.com/hack-dance/fclt/commit/78734625d221789317ca03ef071a2c8579a6194a))
+
 ## [2.8.11](https://github.com/hack-dance/fclt/compare/v2.8.10...v2.8.11) (2026-06-19)
 
 ### Bug Fixes
