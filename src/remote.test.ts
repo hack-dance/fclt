@@ -1528,9 +1528,91 @@ describe("templates command", () => {
       rootDir: globalRoot,
     });
     expect(renderedAgentsText).toContain("WORK_UNITS.md");
+    expect(renderedAgentsText).toContain("INTEGRATION.md");
+    expect(renderedAgentsText).not.toContain(
+      ["$", "{refs.integration}"].join("")
+    );
     expect(await Bun.file(facultAiIndexPath(home, globalRoot)).exists()).toBe(
       true
     );
+    const manifestPath = join(
+      globalRoot,
+      ".facult",
+      "packs",
+      "facult-operating-model.json"
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    expect(manifest.pack).toBe("facult-operating-model");
+    expect(manifest.files["instructions/WORK_UNITS.md"].sha256).toBeString();
+  });
+
+  it("updates unmodified builtin operating-model files using the pack manifest", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--global"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+
+    const workUnitsPath = join(globalRoot, "instructions", "WORK_UNITS.md");
+    const manifestPath = join(
+      globalRoot,
+      ".facult",
+      "packs",
+      "facult-operating-model.json"
+    );
+    const oldPackText = "# Work Units\n\nOld packaged copy.\n";
+    await writeFile(workUnitsPath, oldPackText);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files["instructions/WORK_UNITS.md"] = {
+      sha256: sha256Hex(oldPackText),
+    };
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "operating-model", "--global", "--update"],
+        {
+          homeDir: home,
+          cwd: home,
+        }
+      );
+    });
+
+    const updated = await readFile(workUnitsPath, "utf8");
+    expect(updated).toContain("smallest coherent unit of agent work");
+    expect(updated).not.toBe(oldPackText);
+  });
+
+  it("does not overwrite locally edited builtin operating-model files during update", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--global"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+
+    const workUnitsPath = join(globalRoot, "instructions", "WORK_UNITS.md");
+    const localEdit = "# Work Units\n\nLocal edited guidance.\n";
+    await writeFile(workUnitsPath, localEdit);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "operating-model", "--global", "--update"],
+        {
+          homeDir: home,
+          cwd: home,
+        }
+      );
+    });
+
+    expect(await readFile(workUnitsPath, "utf8")).toBe(localEdit);
   });
 
   it("bootstraps the builtin operating-model pack into a project root", async () => {

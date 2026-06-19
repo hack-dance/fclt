@@ -6,5 +6,6 @@
 - Treat verification, evaluation, and writeback as part of the work, not cleanup after it.
 - For work-unit clarification, read ${refs.work_units}.
 - For verification guidance, read ${refs.verification}.
+- For integration risk, read ${refs.integration}.
 - For learning and writeback, read ${refs.learning_writeback}.
 - For deeper guidance, read ${refs.feedback_loops}.

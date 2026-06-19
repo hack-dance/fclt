@@ -16,9 +16,11 @@ For each recommendation, prefer returning:
 - best target asset or destination
 - best scope (`project` or `global`)
 - the evidence that justifies recording it
+- whether the signal is enough for writeback only, task tracking, or evolution
 
 Do not emit low-signal noise.
 If the learning is repo-specific, keep it project-scoped by default.
 When the signal is already strong and the target is clear, prefer recommending direct writeback capture rather than abstract advice.
 When the issue is executable tooling work, recommend task tracking for the fix and writeback only for the reusable operating-model learning.
+When the issue contains private project details, preserve the general learning without copying private details into a global asset.
 """

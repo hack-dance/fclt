@@ -9,6 +9,13 @@ Prioritize:
 - rollout hazards
 - operational constraints
 - gaps between local verification and real system behavior
+- packaged, installed, rendered, or synced paths that differ from source behavior
+- parallel execution and state-location risks
+- privacy boundaries between global, project, generated, and machine-local state
 
-Return concise findings ordered by impact.
+Return concise findings ordered by impact. For each finding include:
+- boundary at risk
+- why the current evidence is or is not enough
+- strongest next verification step
+- whether the fix belongs in code, docs, a task, or capability evolution
 """

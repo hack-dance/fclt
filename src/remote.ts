@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
@@ -130,6 +131,7 @@ interface InstallResult {
   sourceTrustLevel: SourceTrustLevel;
   dryRun: boolean;
   changedPaths: string[];
+  skippedPaths?: string[];
 }
 
 interface UpdateCheckResult {
@@ -1298,17 +1300,64 @@ async function listFilesRecursive(rootDir: string): Promise<string[]> {
   return out.sort();
 }
 
+interface BuiltinPackManifest {
+  version: 1;
+  pack: string;
+  updatedAt: string;
+  files: Record<string, { sha256: string }>;
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function builtinPackManifestPath(rootDir: string): string {
+  return join(rootDir, ".facult", "packs", "facult-operating-model.json");
+}
+
+async function readBuiltinPackManifest(
+  rootDir: string
+): Promise<BuiltinPackManifest | null> {
+  const pathValue = builtinPackManifestPath(rootDir);
+  if (!(await pathExists(pathValue))) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(await Bun.file(pathValue).text());
+    if (
+      parsed?.version === 1 &&
+      parsed.pack === "facult-operating-model" &&
+      isPlainObject(parsed.files)
+    ) {
+      return parsed as BuiltinPackManifest;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function serializeBuiltinPackManifest(manifest: BuiltinPackManifest): string {
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
 async function scaffoldBuiltinOperatingModelPack(args: {
   rootDir: string;
   homeDir?: string;
   dryRun?: boolean;
   force?: boolean;
+  update?: boolean;
   installedAs?: string;
 }): Promise<InstallResult> {
   const rootDir = resolve(args.rootDir);
   const packRoot = facultBuiltinPackRoot("facult-operating-model");
   const files = await listFilesRecursive(packRoot);
   const changedPaths: string[] = [];
+  const skippedPaths: string[] = [];
+  const existingManifest = await readBuiltinPackManifest(rootDir);
+  const manifestFiles: BuiltinPackManifest["files"] = {
+    ...(existingManifest?.files ?? {}),
+  };
 
   for (const sourcePath of files) {
     const relPath = relative(packRoot, sourcePath);
@@ -1316,23 +1365,90 @@ async function scaffoldBuiltinOperatingModelPack(args: {
       continue;
     }
     const targetPath = join(rootDir, relPath);
+    const sourceText = await Bun.file(sourcePath).text();
+    const sourceHash = sha256Text(sourceText);
     const exists = await pathExists(targetPath);
-    if (exists && !args.force) {
+    let shouldWrite = !exists || Boolean(args.force);
+
+    if (exists && !shouldWrite) {
+      const targetText = await Bun.file(targetPath).text();
+      const targetHash = sha256Text(targetText);
+      if (targetHash === sourceHash) {
+        manifestFiles[relPath] = { sha256: sourceHash };
+      } else if (
+        args.update &&
+        existingManifest?.files[relPath]?.sha256 === targetHash
+      ) {
+        shouldWrite = true;
+      } else if (args.update) {
+        skippedPaths.push(targetPath);
+      }
+    }
+
+    if (!shouldWrite) {
       continue;
     }
     changedPaths.push(targetPath);
+    manifestFiles[relPath] = { sha256: sourceHash };
     if (!args.dryRun) {
       await mkdir(dirname(targetPath), { recursive: true });
-      await Bun.write(targetPath, await Bun.file(sourcePath).text());
+      await Bun.write(targetPath, sourceText);
     }
   }
 
   const configPath = join(rootDir, "config.toml");
-  if (!(await pathExists(configPath)) || args.force) {
+  const configRelPath = "config.toml";
+  const configText = "version = 1\n";
+  const configHash = sha256Text(configText);
+  const configExists = await pathExists(configPath);
+  let shouldWriteConfig = !configExists || Boolean(args.force);
+  if (configExists && !shouldWriteConfig) {
+    const targetText = await Bun.file(configPath).text();
+    const targetHash = sha256Text(targetText);
+    if (targetHash === configHash) {
+      manifestFiles[configRelPath] = { sha256: configHash };
+    } else if (
+      args.update &&
+      existingManifest?.files[configRelPath]?.sha256 === targetHash
+    ) {
+      shouldWriteConfig = true;
+    } else if (args.update) {
+      skippedPaths.push(configPath);
+    }
+  }
+  if (shouldWriteConfig) {
     changedPaths.push(configPath);
+    manifestFiles[configRelPath] = { sha256: configHash };
     if (!args.dryRun) {
       await mkdir(dirname(configPath), { recursive: true });
-      await Bun.write(configPath, "version = 1\n");
+      await Bun.write(configPath, configText);
+    }
+  }
+
+  const manifestPath = builtinPackManifestPath(rootDir);
+  const sortedManifestFiles = Object.fromEntries(
+    Object.entries(manifestFiles).sort(([a], [b]) => a.localeCompare(b))
+  );
+  const stableManifest = serializeBuiltinPackManifest({
+    version: 1,
+    pack: "facult-operating-model",
+    updatedAt: existingManifest?.updatedAt ?? "",
+    files: sortedManifestFiles,
+  });
+  const existingManifestText = (await pathExists(manifestPath))
+    ? await Bun.file(manifestPath).text()
+    : null;
+  if (existingManifestText !== stableManifest) {
+    const nextManifest = serializeBuiltinPackManifest({
+      version: 1,
+      pack: "facult-operating-model",
+      updatedAt: new Date().toISOString(),
+      files: sortedManifestFiles,
+    });
+    changedPaths.push(manifestPath);
+    if (!args.dryRun) {
+      await mkdir(dirname(manifestPath), { recursive: true });
+      await Bun.write(manifestPath, nextManifest);
     }
   }
 
@@ -1352,6 +1468,7 @@ async function scaffoldBuiltinOperatingModelPack(args: {
     sourceTrustLevel: "trusted",
     dryRun: Boolean(args.dryRun),
     changedPaths: uniqueSorted(changedPaths),
+    skippedPaths: uniqueSorted(skippedPaths),
   };
 }
 
@@ -1360,6 +1477,7 @@ async function scaffoldBuiltinProjectAiPack(args: {
   homeDir?: string;
   dryRun?: boolean;
   force?: boolean;
+  update?: boolean;
 }): Promise<InstallResult> {
   const cwd = resolve(args.cwd ?? process.cwd());
   return await scaffoldBuiltinOperatingModelPack({
@@ -1367,6 +1485,7 @@ async function scaffoldBuiltinProjectAiPack(args: {
     homeDir: args.homeDir,
     dryRun: args.dryRun,
     force: args.force,
+    update: args.update,
     installedAs: "project-ai",
   });
 }
@@ -2815,9 +2934,11 @@ function printTemplatesHelp() {
             ),
             renderCode("fclt templates init agents [--force] [--dry-run]"),
             renderCode(
-              "fclt templates init operating-model [--global|--project|--root PATH] [--force] [--dry-run]"
+              "fclt templates init operating-model [--global|--project|--root PATH] [--update] [--force] [--dry-run]"
             ),
-            renderCode("fclt templates init project-ai [--force] [--dry-run]"),
+            renderCode(
+              "fclt templates init project-ai [--update] [--force] [--dry-run]"
+            ),
             renderCode(
               "fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE] [--yes] [--dry-run]"
             ),
@@ -3322,6 +3443,7 @@ export async function templatesCommand(
   }
   const dryRun = args.includes("--dry-run");
   const force = args.includes("--force");
+  const update = args.includes("--update");
   const json = args.includes("--json");
   const parsedArgs = parseTemplateInitArgs(args);
   const positional = parsedArgs.positional;
@@ -3333,6 +3455,7 @@ export async function templatesCommand(
         homeDir: ctx.homeDir,
         dryRun,
         force,
+        update,
       });
       if (json) {
         console.log(JSON.stringify(result, null, 2));
@@ -3348,6 +3471,14 @@ export async function templatesCommand(
               title: "Changed Paths",
               lines: renderBullets(result.changedPaths),
             },
+            ...(result.skippedPaths?.length
+              ? [
+                  {
+                    title: "Skipped Local Edits",
+                    lines: renderBullets(result.skippedPaths),
+                  },
+                ]
+              : []),
           ],
         })
       );
@@ -3378,6 +3509,7 @@ export async function templatesCommand(
         homeDir: ctx.homeDir,
         dryRun,
         force,
+        update,
       });
       if (json) {
         console.log(JSON.stringify(result, null, 2));
@@ -3393,6 +3525,14 @@ export async function templatesCommand(
               title: "Changed Paths",
               lines: renderBullets(result.changedPaths),
             },
+            ...(result.skippedPaths?.length
+              ? [
+                  {
+                    title: "Skipped Local Edits",
+                    lines: renderBullets(result.skippedPaths),
+                  },
+                ]
+              : []),
           ],
         })
       );
