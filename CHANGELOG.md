@@ -1,3 +1,9 @@
+## [2.8.10](https://github.com/hack-dance/fclt/compare/v2.8.9...v2.8.10) (2026-06-19)
+
+### Bug Fixes
+
+* **pkg:** embed builtin defaults in binary ([59e9365](https://github.com/hack-dance/fclt/commit/59e9365d9442bf1724868196bcb5f35bc50d9fc5))
+
 ## [2.8.9](https://github.com/hack-dance/fclt/compare/v2.8.8...v2.8.9) (2026-06-19)
 
 ### Bug Fixes
