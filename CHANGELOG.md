@@ -1,3 +1,9 @@
+## [2.8.6](https://github.com/hack-dance/fclt/compare/v2.8.5...v2.8.6) (2026-06-19)
+
+### Bug Fixes
+
+* **ai:** store evolution runtime in machine-local state ([9908344](https://github.com/hack-dance/fclt/commit/99083449b4bddb0ab9558c4e8baadb2ac3886b0b))
+
 ## [2.8.5](https://github.com/hack-dance/fclt/compare/v2.8.4...v2.8.5) (2026-05-29)
 
 ### Bug Fixes
