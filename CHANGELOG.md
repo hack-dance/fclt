@@ -1,3 +1,9 @@
+## [2.13.5](https://github.com/hack-dance/fclt/compare/v2.13.4...v2.13.5) (2026-06-19)
+
+### Bug Fixes
+
+* persist mise self-update state ([ccc643b](https://github.com/hack-dance/fclt/commit/ccc643bc23d5bdbc3f0a72b29d86c439ff87de0b))
+
 ## [2.13.4](https://github.com/hack-dance/fclt/compare/v2.13.3...v2.13.4) (2026-06-19)
 
 ### Bug Fixes
