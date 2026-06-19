@@ -195,6 +195,70 @@ describe("ai CLI", () => {
     expect(domainOut.logs.join("\n")).toContain("unassigned");
   });
 
+  it("accepts context flags before writeback and evolve operation names", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    const verificationPath = join(rootDir, "instructions", "VERIFICATION.md");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
+    await Bun.write(verificationPath, "# Verification\n");
+    await Bun.write(
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: "2026-03-18T00:00:00.000Z",
+          nodes: {
+            "instruction:global:global:VERIFICATION": {
+              id: "instruction:global:global:VERIFICATION",
+              kind: "instruction",
+              name: "VERIFICATION",
+              sourceKind: "global",
+              scope: "global",
+              canonicalRef: "@ai/instructions/VERIFICATION.md",
+              path: verificationPath,
+            },
+          },
+          edges: [],
+        },
+        null,
+        2
+      )}\n`
+    );
+    process.chdir(tempHome);
+
+    const addOut = await captureConsole(async () => {
+      await aiCommand([
+        "writeback",
+        "--global",
+        "add",
+        "--kind",
+        "weak_verification",
+        "--summary",
+        "Global checks were too shallow.",
+        "--asset",
+        "instruction:VERIFICATION",
+        ...proposalEvidenceArgs("global-before-subcommand"),
+      ]);
+    });
+    expect(addOut.errors).toEqual([]);
+    expect(addOut.logs.join("\n")).toContain("WB-00001");
+
+    const proposeOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "--global", "propose"]);
+    });
+    expect(proposeOut.errors).toEqual([]);
+    expect(proposeOut.logs.join("\n")).toContain("EV-00001");
+
+    const draftOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "--global", "draft", "EV-00001"]);
+    });
+    expect(draftOut.errors).toEqual([]);
+    expect(draftOut.logs.join("\n")).toContain("Drafted EV-00001");
+  });
+
   it("generates and shows proposals through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

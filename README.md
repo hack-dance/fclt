@@ -441,13 +441,13 @@ fclt ai evolve apply EV-00001
 fclt ai evolve promote EV-00003 --to global --project
 ```
 
-Runtime state stays generated and local inside the active canonical root:
-- global writeback state: `~/.ai/.facult/ai/global/...`
+Runtime writeback and evolution state stays generated and machine-local:
+- global writeback state: machine-local Facult state under `.../global/ai/global/...`
 - project writeback state: machine-local per-project Facult state under `.../projects/<slug-hash>/ai/project/...`
 
 That split is intentional:
 - canonical source remains in `~/.ai` or `<repo>/.ai`
-- global generated state stays inside `~/.ai/.facult/`; project generated state stays outside the repo in machine-local state
+- global generated index and graph state stays inside `~/.ai/.facult/`; writebacks, journals, proposals, drafts, and managed runtime state stay outside canonical source in machine-local state
 - those records let agents inspect what changed, why it changed, and how it was reviewed
 
 Use writeback when:
@@ -698,6 +698,8 @@ Under canonical generated AI state (`~/.ai/.facult/` or `<repo>/.ai/.facult/`):
 Under machine-local Facult state:
 - `install.json` (machine-local install metadata)
 - `global/managed.json` or `projects/<slug-hash>/managed.json` (managed tool state)
+- `global/ai/global/writeback/queue.jsonl` and `projects/<slug-hash>/ai/project/writeback/queue.jsonl` (writeback queues)
+- `global/ai/global/evolution/` and `projects/<slug-hash>/ai/project/evolution/` (proposal metadata, markdown drafts, and patch artifacts)
 - `.../autosync/services/*.json` (autosync service configs)
 - `.../autosync/state/*.json` (autosync runtime state)
 - `.../autosync/logs/*` (autosync service logs)

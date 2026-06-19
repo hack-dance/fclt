@@ -99,6 +99,15 @@ describe("ai writeback", () => {
     expect(record.assetId).toBe("instruction:global:global:VERIFICATION");
     expect(record.assetType).toBe("instruction");
     expect(record.status).toBe("recorded");
+    expect(facultAiWritebackQueuePath(tempHome, rootDir)).toBe(
+      join(
+        facultMachineStateDir(tempHome, rootDir),
+        "ai",
+        "global",
+        "writeback",
+        "queue.jsonl"
+      )
+    );
 
     const queue = await readFile(
       facultAiWritebackQueuePath(tempHome, rootDir),
@@ -263,6 +272,53 @@ describe("ai writeback", () => {
     );
   });
 
+  it("reads legacy global writeback state from generated AI state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    const legacyQueuePath = join(
+      rootDir,
+      ".facult",
+      "ai",
+      "global",
+      "writeback",
+      "queue.jsonl"
+    );
+    await mkdir(dirname(legacyQueuePath), { recursive: true });
+    await Bun.write(
+      legacyQueuePath,
+      `${JSON.stringify({
+        id: "WB-00009",
+        ts: "2026-06-19T15:00:00.000Z",
+        scope: "global",
+        kind: "capability_gap",
+        summary: "Legacy global writeback should remain visible.",
+        evidence: [{ type: "session", ref: "legacy-global" }],
+        confidence: "medium",
+        source: "facult:manual",
+        tags: [],
+        status: "recorded",
+      })}\n`
+    );
+
+    const rows = await listWritebacks({ homeDir: tempHome, rootDir });
+
+    expect(rows.map((entry) => entry.id)).toEqual(["WB-00009"]);
+    expect(rows[0]?.summary).toBe(
+      "Legacy global writeback should remain visible."
+    );
+    expect(facultAiWritebackQueuePath(tempHome, rootDir)).toBe(
+      join(
+        facultMachineStateDir(tempHome, rootDir),
+        "ai",
+        "global",
+        "writeback",
+        "queue.jsonl"
+      )
+    );
+  });
+
   it("reads and updates legacy repo-local project evolution proposals", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
@@ -350,6 +406,55 @@ describe("ai writeback", () => {
         "utf8"
       )
     ).toContain('"status": "applied"');
+  });
+
+  it("reads legacy global evolution proposals from generated AI state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    const legacyProposalDir = join(
+      rootDir,
+      ".facult",
+      "ai",
+      "global",
+      "evolution",
+      "proposals"
+    );
+    await mkdir(legacyProposalDir, { recursive: true });
+    await Bun.write(
+      join(legacyProposalDir, "EV-00009.json"),
+      `${JSON.stringify(
+        {
+          id: "EV-00009",
+          ts: "2026-06-19T15:00:00.000Z",
+          status: "rejected",
+          scope: "global",
+          kind: "update_instruction",
+          targets: ["@ai/instructions/VERIFICATION.md"],
+          sourceWritebacks: [],
+          summary: "Legacy global proposal should remain visible.",
+          rationale: "Preserve existing global proposal state.",
+          confidence: "medium",
+          reviewRequired: true,
+          policyClass: "high-risk",
+          draftRefs: [],
+        },
+        null,
+        2
+      )}\n`
+    );
+
+    const listed = await listProposals({ homeDir: tempHome, rootDir });
+    const shown = await showProposal("EV-00009", {
+      homeDir: tempHome,
+      rootDir,
+    });
+
+    expect(listed.map((entry) => entry.id)).toEqual(["EV-00009"]);
+    expect(shown?.summary).toBe(
+      "Legacy global proposal should remain visible."
+    );
   });
 
   it("supports dismiss and promote as append-only status transitions", async () => {
@@ -475,7 +580,13 @@ describe("ai writeback", () => {
     const listed = await listProposals({ homeDir: tempHome, rootDir });
     expect(listed.map((entry) => entry.id)).toEqual(["EV-00001"]);
     expect(facultAiProposalDir(tempHome, rootDir)).toBe(
-      join(tempHome, ".ai", ".facult", "ai", "global", "evolution", "proposals")
+      join(
+        facultMachineStateDir(tempHome, rootDir),
+        "ai",
+        "global",
+        "evolution",
+        "proposals"
+      )
     );
 
     const nextWritebacks = await listWritebacks({ homeDir: tempHome, rootDir });

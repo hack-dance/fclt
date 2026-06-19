@@ -72,6 +72,11 @@ fclt ai evolve apply EV-00001
 
 Use `fclt ai evolve draft <id> --append "..."` to revise a draft while preserving draft history.
 
+Evolution proposal metadata, markdown drafts, patch artifacts, writeback queues,
+and journals are runtime state. `fclt` stores them in machine-local Facult state;
+canonical assets in `~/.ai` or `<repo>/.ai` should only change when a proposal is
+applied.
+
 ## Default Agent Behavior
 
 Use the smallest action that fits the signal:

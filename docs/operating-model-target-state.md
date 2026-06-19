@@ -389,11 +389,11 @@ Target behavior:
 
 ### 14. Writeback Should Feed the Same Status Model
 
-Writeback/evolution is one of the package’s strongest ideas, but it is currently a separate command family.
+Writeback/evolution is one of the package’s strongest ideas. It should stay visible in the same status model agents use to understand root, scope, and runtime state.
 
 Target behavior:
 
-- `fclt status` includes writeback queue counts, proposal counts, and overdue review loops.
+- `fclt status` includes machine-local writeback queue paths, proposal paths, counts, and overdue review loops.
 - `fclt graph` shows writeback/proposal relationships to assets.
 - `fclt ai writeback add` should offer suggestions when the asset selector fails.
 - `fclt ai evolve propose` should explain whether it found enough repeated signal.

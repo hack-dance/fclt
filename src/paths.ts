@@ -369,7 +369,8 @@ export function facultAiRuntimeScopeDir(
   rootDir?: string
 ): string {
   return join(
-    facultAiStateDir(home, rootDir),
+    facultMachineStateDir(home, rootDir),
+    "ai",
     projectRootFromAiRoot(rootDir ?? facultRootDir(home), home)
       ? "project"
       : "global"

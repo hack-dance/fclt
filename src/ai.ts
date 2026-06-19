@@ -9,6 +9,7 @@ import {
   facultAiDraftDir,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiStateDir,
   facultAiWritebackQueuePath,
   facultRootDir,
   legacyFacultAiStateDirs,
@@ -233,9 +234,10 @@ function aiRuntimeScopeName(rootDir: string, homeDir: string): AssetScope {
 
 function legacyAiRuntimeScopeDirs(homeDir: string, rootDir: string): string[] {
   const scope = aiRuntimeScopeName(rootDir, homeDir);
-  return legacyFacultAiStateDirs(homeDir, rootDir).map((dir) =>
-    join(dir, scope)
-  );
+  return uniqueStrings([
+    join(facultAiStateDir(homeDir, rootDir), scope),
+    ...legacyFacultAiStateDirs(homeDir, rootDir).map((dir) => join(dir, scope)),
+  ]);
 }
 
 function aiWritebackQueueReadPaths(homeDir: string, rootDir: string): string[] {
@@ -1604,15 +1606,15 @@ function parseEvidence(argv: string[]): WritebackEvidence[] {
 }
 
 async function writebackCommand(argv: string[]) {
-  const [sub, ...rest] = argv;
-  const parsed = parseCliContextArgs(rest);
+  const parsed = parseCliContextArgs(argv);
+  const [sub, ...commandArgs] = parsed.argv;
 
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(writebackHelp());
     return;
   }
 
-  if (parsed.argv.includes("--help") || parsed.argv.includes("-h")) {
+  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
     console.log(writebackHelp());
     return;
   }
@@ -1625,8 +1627,8 @@ async function writebackCommand(argv: string[]) {
 
   try {
     if (sub === "add") {
-      const kind = parseStringFlag(parsed.argv, "--kind");
-      const summary = parseStringFlag(parsed.argv, "--summary");
+      const kind = parseStringFlag(commandArgs, "--kind");
+      const summary = parseStringFlag(commandArgs, "--summary");
       if (!(kind && summary)) {
         throw new Error("writeback add requires --kind and --summary");
       }
@@ -1634,18 +1636,18 @@ async function writebackCommand(argv: string[]) {
         rootDir,
         kind,
         summary,
-        asset: parseStringFlag(parsed.argv, "--asset"),
-        allowEmptyEvidence: parsed.argv.includes("--allow-empty-evidence"),
+        asset: parseStringFlag(commandArgs, "--asset"),
+        allowEmptyEvidence: commandArgs.includes("--allow-empty-evidence"),
         confidence:
-          (parseStringFlag(parsed.argv, "--confidence") as
+          (parseStringFlag(commandArgs, "--confidence") as
             | ConfidenceLevel
             | undefined) ?? undefined,
         suggestedDestination: parseStringFlag(
-          parsed.argv,
+          commandArgs,
           "--suggested-destination"
         ),
-        tags: parseRepeatedFlag(parsed.argv, "--tag"),
-        evidence: parseEvidence(parsed.argv),
+        tags: parseRepeatedFlag(commandArgs, "--tag"),
+        evidence: parseEvidence(commandArgs),
       });
       console.log(`Recorded writeback ${record.id}`);
       console.log(JSON.stringify(record, null, 2));
@@ -1654,7 +1656,7 @@ async function writebackCommand(argv: string[]) {
 
     if (sub === "list") {
       const rows = await listWritebacks({ rootDir });
-      if (parsed.argv.includes("--json")) {
+      if (commandArgs.includes("--json")) {
         console.log(JSON.stringify(rows, null, 2));
         return;
       }
@@ -1665,7 +1667,7 @@ async function writebackCommand(argv: string[]) {
     }
 
     if (sub === "group" || sub === "summarize") {
-      const byValue = parseStringFlag(parsed.argv, "--by") ?? "asset";
+      const byValue = parseStringFlag(commandArgs, "--by") ?? "asset";
       if (byValue !== "asset" && byValue !== "kind" && byValue !== "domain") {
         throw new Error(`Unsupported writeback grouping: ${byValue}`);
       }
@@ -1673,7 +1675,7 @@ async function writebackCommand(argv: string[]) {
         sub === "group"
           ? await groupWritebacks({ rootDir, by: byValue })
           : await summarizeWritebacks({ rootDir, by: byValue });
-      if (parsed.argv.includes("--json")) {
+      if (commandArgs.includes("--json")) {
         console.log(JSON.stringify(rows, null, 2));
         return;
       }
@@ -1686,7 +1688,7 @@ async function writebackCommand(argv: string[]) {
     }
 
     if (sub === "show") {
-      const id = parsed.argv.find((arg) => !arg.startsWith("-"));
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
       if (!id) {
         throw new Error("writeback show requires an id");
       }
@@ -1699,7 +1701,7 @@ async function writebackCommand(argv: string[]) {
     }
 
     if (sub === "dismiss" || sub === "promote") {
-      const id = parsed.argv.find((arg) => !arg.startsWith("-"));
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
       if (!id) {
         throw new Error(`writeback ${sub} requires an id`);
       }
@@ -1720,15 +1722,15 @@ async function writebackCommand(argv: string[]) {
 }
 
 async function evolveCommand(argv: string[]) {
-  const [sub, ...rest] = argv;
-  const parsed = parseCliContextArgs(rest);
+  const parsed = parseCliContextArgs(argv);
+  const [sub, ...commandArgs] = parsed.argv;
 
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(evolveHelp());
     return;
   }
 
-  if (parsed.argv.includes("--help") || parsed.argv.includes("-h")) {
+  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
     console.log(evolveHelp());
     return;
   }
@@ -1743,9 +1745,9 @@ async function evolveCommand(argv: string[]) {
     if (sub === "propose") {
       const proposals = await proposeEvolution({
         rootDir,
-        asset: parseStringFlag(parsed.argv, "--asset"),
+        asset: parseStringFlag(commandArgs, "--asset"),
       });
-      if (parsed.argv.includes("--json")) {
+      if (commandArgs.includes("--json")) {
         console.log(JSON.stringify(proposals, null, 2));
         return;
       }
@@ -1759,7 +1761,7 @@ async function evolveCommand(argv: string[]) {
 
     if (sub === "list") {
       const rows = await listProposals({ rootDir });
-      if (parsed.argv.includes("--json")) {
+      if (commandArgs.includes("--json")) {
         console.log(JSON.stringify(rows, null, 2));
         return;
       }
@@ -1770,7 +1772,7 @@ async function evolveCommand(argv: string[]) {
     }
 
     if (sub === "show") {
-      const id = parsed.argv.find((arg) => !arg.startsWith("-"));
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
       if (!id) {
         throw new Error("evolve show requires an id");
       }
@@ -1791,7 +1793,7 @@ async function evolveCommand(argv: string[]) {
       sub === "apply" ||
       sub === "promote"
     ) {
-      const id = parsed.argv.find((arg) => !arg.startsWith("-"));
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
       if (!id) {
         throw new Error(`evolve ${sub} requires an id`);
       }
@@ -1799,7 +1801,7 @@ async function evolveCommand(argv: string[]) {
         sub === "draft"
           ? await draftProposal(id, {
               rootDir,
-              append: parseStringFlag(parsed.argv, "--append"),
+              append: parseStringFlag(commandArgs, "--append"),
             })
           : sub === "review"
             ? await reviewProposal(id, { rootDir })
@@ -1809,7 +1811,7 @@ async function evolveCommand(argv: string[]) {
                 ? await rejectProposal(id, {
                     rootDir,
                     reason:
-                      parseStringFlag(parsed.argv, "--reason") ??
+                      parseStringFlag(commandArgs, "--reason") ??
                       (() => {
                         throw new Error("evolve reject requires --reason");
                       })(),
@@ -1817,7 +1819,7 @@ async function evolveCommand(argv: string[]) {
                 : sub === "supersede"
                   ? await supersedeProposal(
                       id,
-                      parseStringFlag(parsed.argv, "--by") ??
+                      parseStringFlag(commandArgs, "--by") ??
                         (() => {
                           throw new Error("evolve supersede requires --by");
                         })(),
@@ -1827,7 +1829,7 @@ async function evolveCommand(argv: string[]) {
                     ? await promoteProposal(id, {
                         rootDir,
                         to:
-                          (parseStringFlag(parsed.argv, "--to") as
+                          (parseStringFlag(commandArgs, "--to") as
                             | "global"
                             | undefined) ??
                           (() => {

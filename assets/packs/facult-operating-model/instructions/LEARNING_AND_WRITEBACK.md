@@ -26,6 +26,11 @@ Use:
 fclt ai writeback add --kind <kind> --summary "<summary>" --asset <asset-selector>
 ```
 
+The writeback queue is runtime state, not canonical source. `fclt` stores it in
+machine-local Facult state so sandboxed agents can record durable friction
+without mutating `~/.ai` or a repo-local `.ai` unless an evolution proposal is
+later reviewed and applied.
+
 ## Record Writeback When
 
 - the same failure or weak loop appears again

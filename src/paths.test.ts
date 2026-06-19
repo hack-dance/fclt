@@ -5,6 +5,7 @@ import {
   facultAiGraphPath,
   facultAiIndexPath,
   facultAiStateDir,
+  facultAiWritebackQueuePath,
   facultContextRootDir,
   facultInstallStatePath,
   facultMachineStateDir,
@@ -93,6 +94,23 @@ describe("paths", () => {
     );
     expect(facultAiIndexPath(tempHome)).toBe(
       join(tempHome, ".ai", ".facult", "ai", "index.json")
+    );
+  });
+
+  it("stores global writeback runtime state in machine-local state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+
+    expect(facultAiWritebackQueuePath(tempHome, rootDir)).toBe(
+      join(
+        facultMachineStateDir(tempHome, rootDir),
+        "ai",
+        "global",
+        "writeback",
+        "queue.jsonl"
+      )
     );
   });
 
