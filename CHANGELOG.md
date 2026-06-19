@@ -1,3 +1,9 @@
+## [2.16.0](https://github.com/hack-dance/fclt/compare/v2.15.2...v2.16.0) (2026-06-19)
+
+### Features
+
+* **ai:** assess evolution readiness ([3086a03](https://github.com/hack-dance/fclt/commit/3086a03bda9f1336b7080f85ac19afd2d7ae1fd5))
+
 ## [2.15.2](https://github.com/hack-dance/fclt/compare/v2.15.1...v2.15.2) (2026-06-19)
 
 ### Bug Fixes
