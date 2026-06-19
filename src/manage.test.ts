@@ -2516,6 +2516,68 @@ describe("syncManagedTools", () => {
     ).toBe(true);
   });
 
+  it("does not adopt live codex plugins during repair from builtin defaults alone", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(rootDir, { recursive: true });
+
+    await mkdir(join(home, "plugins", "custom", ".codex-plugin"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(home, "plugins", "custom", ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "custom", version: "0.1.0" }, null, 2)
+    );
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "local",
+      interface: { displayName: "Local Plugins" },
+      plugins: [
+        {
+          name: "custom",
+          source: { source: "local", path: "./plugins/custom" },
+          policy: {
+            installation: "AVAILABLE",
+            authentication: "ON_INSTALL",
+          },
+          category: "Productivity",
+        },
+      ],
+    });
+
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-02-21T18:27:27.874Z",
+          },
+        },
+      },
+      home
+    );
+
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+
+    const repairedState = await loadManagedState(home);
+    expect(repairedState.tools.codex?.pluginsDir).toBeUndefined();
+    expect(repairedState.tools.codex?.pluginMarketplacePath).toBeUndefined();
+    expect(repairedState.tools.codex?.pluginsBackup).toBeUndefined();
+    expect(repairedState.tools.codex?.pluginMarketplaceBackup).toBeUndefined();
+
+    expect(
+      await Bun.file(
+        join(home, "plugins", "custom", ".codex-plugin", "plugin.json")
+      ).exists()
+    ).toBe(true);
+    const marketplace = await readFile(
+      join(home, ".agents", "plugins", "marketplace.json"),
+      "utf8"
+    );
+    expect(marketplace).toContain('"name": "custom"');
+    expect(marketplace).not.toContain('"name": "fclt"');
+  });
+
   it("adopts backed-up managed skills back into the canonical store during sync repair", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");

@@ -1005,6 +1005,33 @@ async function canonicalCodexPluginsExist(
   return (await loadCanonicalCodexPlugins(rootDir, homeDir)).length > 0;
 }
 
+async function canonicalCodexPluginSourceExists(
+  rootDir: string
+): Promise<boolean> {
+  if (await fileExists(codexCanonicalPluginMarketplacePath(rootDir))) {
+    return true;
+  }
+
+  const pluginsRoot = codexCanonicalPluginsRoot(rootDir);
+  const entries = await readdir(pluginsRoot, { withFileTypes: true }).catch(
+    () => [] as import("node:fs").Dirent[]
+  );
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    if (
+      await fileExists(
+        join(pluginsRoot, entry.name, ".codex-plugin", "plugin.json")
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function loadCanonicalCodexMarketplaceText(
   rootDir: string,
   homeDir?: string
@@ -3483,7 +3510,7 @@ async function repairManagedToolEntry(args: {
     !(next.pluginsDir && next.pluginMarketplacePath) &&
     toolPaths.pluginsDir &&
     toolPaths.pluginMarketplacePath &&
-    (await canonicalCodexPluginsExist(rootDir, homeDir))
+    (await canonicalCodexPluginSourceExists(rootDir))
   ) {
     if (!next.pluginsDir) {
       next.pluginsBackup = await backupPath(toolPaths.pluginsDir);
