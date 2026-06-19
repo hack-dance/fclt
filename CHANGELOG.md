@@ -1,3 +1,9 @@
+## [2.17.0](https://github.com/hack-dance/fclt/compare/v2.16.0...v2.17.0) (2026-06-19)
+
+### Features
+
+* **codex:** add narrow plugin setup command ([2e75673](https://github.com/hack-dance/fclt/commit/2e75673a0c2d40092d64445a3a808ed78ec93516))
+
 ## [2.16.0](https://github.com/hack-dance/fclt/compare/v2.15.2...v2.16.0) (2026-06-19)
 
 ### Features
