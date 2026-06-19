@@ -80,16 +80,18 @@ describe("snippets CLI", () => {
     const root = await makeTempDir();
     await mkdir(join(root, "snippets", "global"), { recursive: true });
     await Bun.write(
-      join(root, "snippets", "global", "codingstyle.md"),
+      join(root, "snippets", "global", "qualitychecklist.md"),
       "SYNCED\n"
     );
 
     const targetPath = join(root, "-target.md");
     await Bun.write(
       targetPath,
-      ["<!-- fclty:codingstyle -->", "OLD", "<!-- /fclty:codingstyle -->"].join(
-        "\n"
-      )
+      [
+        "<!-- fclty:qualitychecklist -->",
+        "OLD",
+        "<!-- /fclty:qualitychecklist -->",
+      ].join("\n")
     );
 
     process.env.FACULT_ROOT_DIR = root;
@@ -104,7 +106,7 @@ describe("snippets CLI", () => {
 
     const next = await readFile(targetPath, "utf8");
     expect(next).toContain(
-      "<!-- fclty:codingstyle -->\nSYNCED\n<!-- /fclty:codingstyle -->"
+      "<!-- fclty:qualitychecklist -->\nSYNCED\n<!-- /fclty:qualitychecklist -->"
     );
     expect(process.exitCode).toBe(0);
   });

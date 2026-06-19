@@ -18,8 +18,9 @@ import {
   facultAiWritebackReviewDir,
 } from "./paths";
 
-const BROKEN_CODING_REF = ["$", "{refs.coding_general}"].join("");
+const BROKEN_CUSTOM_REF = ["$", "{refs.private_custom}"].join("");
 const BROKEN_LEARNING_REF = ["$", "{refs.learning_writeback}"].join("");
+const BROKEN_VERIFICATION_REF = ["$", "{refs.verification}"].join("");
 const AGENTS_GLOBAL_BACKUP_RE = /^AGENTS\.global\./;
 const FEEDBACK_LOOPS_BACKUP_RE = /^instructions__FEEDBACK_LOOPS\.md\./;
 
@@ -415,7 +416,7 @@ test("doctor --json flags invalid canonical global guidance", async () => {
         "<!-- fclty:global/core/work-units -->",
         "<!-- /fclty:global/core/work-units -->",
         "",
-        `- For coding work, read ${BROKEN_CODING_REF}.`,
+        `- For verification, read ${BROKEN_VERIFICATION_REF}.`,
       ].join("\n")
     );
 
@@ -489,7 +490,7 @@ test("doctor --json accepts renderable templated canonical global guidance", asy
         "<!-- fclty:global/core/work-units -->",
         "<!-- /fclty:global/core/work-units -->",
         "",
-        `- For coding work, read ${BROKEN_CODING_REF}.`,
+        `- For learning, read ${BROKEN_LEARNING_REF}.`,
       ].join("\n")
     );
     await Bun.write(
@@ -582,7 +583,7 @@ test("doctor --json flags unresolved refs in canonical markdown sources", async 
     );
     await Bun.write(
       join(aiRoot, "instructions", "FEEDBACK_LOOPS.md"),
-      `# Feedback Loops\n\nRead ${BROKEN_CODING_REF}.\n`
+      `# Feedback Loops\n\nRead ${BROKEN_CUSTOM_REF}.\n`
     );
 
     const env = { ...process.env, HOME: dir };
@@ -665,7 +666,7 @@ test("doctor --repair refreshes invalid canonical global guidance and review art
       [
         "# Feedback Loops",
         "",
-        `For coding, read ${BROKEN_CODING_REF}.`,
+        `For verification, read ${BROKEN_VERIFICATION_REF}.`,
         `For learning, read ${BROKEN_LEARNING_REF}.`,
       ].join("\n")
     );
@@ -733,7 +734,7 @@ test("doctor --repair refreshes invalid canonical global guidance and review art
       "utf8"
     );
     expect(repairedInstruction).toContain(
-      join(aiRoot, "instructions", "CODING.GENERAL.md")
+      join(aiRoot, "instructions", "VERIFICATION.md")
     );
     expect(repairedInstruction).toContain(
       join(aiRoot, "instructions", "LEARNING_AND_WRITEBACK.md")

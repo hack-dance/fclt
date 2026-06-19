@@ -89,7 +89,7 @@ describe("snippets sync", () => {
     const root = await makeTempRoot();
     await mkdir(join(root, "snippets", "global"), { recursive: true });
     await Bun.write(
-      join(root, "snippets", "global", "codingstyle.md"),
+      join(root, "snippets", "global", "qualitychecklist.md"),
       "Hello\nWorld\n"
     );
 
@@ -100,9 +100,9 @@ describe("snippets sync", () => {
       [
         "# Title",
         "",
-        "<!-- fclty:codingstyle -->",
+        "<!-- fclty:qualitychecklist -->",
         "OLD",
-        "<!-- /fclty:codingstyle -->",
+        "<!-- /fclty:qualitychecklist -->",
         "",
       ].join("\n")
     );
@@ -112,13 +112,13 @@ describe("snippets sync", () => {
     expect(res.changed).toBe(true);
     expect(
       res.changes.some(
-        (c) => c.marker === "codingstyle" && c.status === "updated"
+        (c) => c.marker === "qualitychecklist" && c.status === "updated"
       )
     ).toBe(true);
 
     const next = await Bun.file(filePath).text();
     expect(next).toContain(
-      "<!-- fclty:codingstyle -->\nHello\nWorld\n<!-- /fclty:codingstyle -->"
+      "<!-- fclty:qualitychecklist -->\nHello\nWorld\n<!-- /fclty:qualitychecklist -->"
     );
 
     const res2 = await syncFile({ filePath, rootDir: root });
@@ -133,11 +133,11 @@ describe("snippets sync", () => {
       recursive: true,
     });
     await Bun.write(
-      join(root, "snippets", "global", "codingstyle.md"),
+      join(root, "snippets", "global", "qualitychecklist.md"),
       "GLOBAL\n"
     );
     await Bun.write(
-      join(root, "snippets", "projects", "myproj", "codingstyle.md"),
+      join(root, "snippets", "projects", "myproj", "qualitychecklist.md"),
       "PROJECT\n"
     );
 
@@ -146,9 +146,11 @@ describe("snippets sync", () => {
     const filePath = join(repo, "CLAUDE.md");
     await Bun.write(
       filePath,
-      ["<!-- fclty:codingstyle -->", "OLD", "<!-- /fclty:codingstyle -->"].join(
-        "\n"
-      )
+      [
+        "<!-- fclty:qualitychecklist -->",
+        "OLD",
+        "<!-- /fclty:qualitychecklist -->",
+      ].join("\n")
     );
 
     const res = await syncFile({ filePath, rootDir: root });
@@ -156,7 +158,7 @@ describe("snippets sync", () => {
 
     const next = await Bun.file(filePath).text();
     expect(next).toContain(
-      "<!-- fclty:codingstyle -->\nPROJECT\n<!-- /fclty:codingstyle -->"
+      "<!-- fclty:qualitychecklist -->\nPROJECT\n<!-- /fclty:qualitychecklist -->"
     );
   });
 
@@ -167,11 +169,11 @@ describe("snippets sync", () => {
       recursive: true,
     });
     await Bun.write(
-      join(root, "snippets", "global", "codingstyle.md"),
+      join(root, "snippets", "global", "qualitychecklist.md"),
       "GLOBAL\n"
     );
     await Bun.write(
-      join(root, "snippets", "projects", "myproj", "codingstyle.md"),
+      join(root, "snippets", "projects", "myproj", "qualitychecklist.md"),
       "PROJECT\n"
     );
 
@@ -181,16 +183,16 @@ describe("snippets sync", () => {
     await Bun.write(
       filePath,
       [
-        "<!-- fclty:global/codingstyle -->",
+        "<!-- fclty:global/qualitychecklist -->",
         "OLD",
-        "<!-- /fclty:global/codingstyle -->",
+        "<!-- /fclty:global/qualitychecklist -->",
       ].join("\n")
     );
 
     await syncFile({ filePath, rootDir: root });
     const next = await Bun.file(filePath).text();
     expect(next).toContain(
-      "<!-- fclty:global/codingstyle -->\nGLOBAL\n<!-- /fclty:global/codingstyle -->"
+      "<!-- fclty:global/qualitychecklist -->\nGLOBAL\n<!-- /fclty:global/qualitychecklist -->"
     );
   });
 

@@ -27,7 +27,7 @@ function placeholder(name: string): string {
   return `${DOLLAR}{${name}}`;
 }
 
-const REFS_WRITING_RULE = placeholder("refs.writing_rule");
+const REFS_WRITING_RULE = placeholder("refs.review_policy");
 const HOME_VAR = placeholder("HOME");
 
 async function createTempDir(): Promise<string> {
@@ -86,14 +86,14 @@ describe("managed state", () => {
     });
     await Bun.write(
       join(rootDir, "agents", "argument-editor", "agent.toml"),
-      `name = "argument-editor"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.writing_rule}.\nTarget tool: \${TARGET_TOOL}.\n"""\n`
+      `name = "argument-editor"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.review_policy}.\nTarget tool: \${TARGET_TOOL}.\n"""\n`
     );
 
     await mkdir(join(rootDir, "rules"), { recursive: true });
-    await Bun.write(join(rootDir, "rules", "WRITING.md"), "House rules.\n");
+    await Bun.write(join(rootDir, "rules", "REVIEW.md"), "Review rules.\n");
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/rules/REVIEW.md"\n'
     );
 
     await mkdir(join(rootDir, "mcp"), { recursive: true });
@@ -115,7 +115,7 @@ describe("managed state", () => {
       join(home, ".codex", "agents", "argument-editor.toml"),
       "utf8"
     );
-    expect(rendered).toContain(join(rootDir, "rules", "WRITING.md"));
+    expect(rendered).toContain(join(rootDir, "rules", "REVIEW.md"));
     expect(rendered).toContain("Target tool: codex.");
     expect(rendered).not.toContain(REFS_WRITING_RULE);
   });
@@ -134,7 +134,7 @@ describe("managed state", () => {
         'description = "Editorial reviewer."',
         "",
         'developer_instructions = """',
-        `Before reviewing, read ${"${"}refs.writing_rule}.`,
+        `Before reviewing, read ${"${"}refs.review_policy}.`,
         `Target tool: ${"${"}TARGET_TOOL}.`,
         '"""',
         "",
@@ -142,10 +142,10 @@ describe("managed state", () => {
     );
 
     await mkdir(join(rootDir, "rules"), { recursive: true });
-    await Bun.write(join(rootDir, "rules", "WRITING.md"), "House rules.\n");
+    await Bun.write(join(rootDir, "rules", "REVIEW.md"), "Review rules.\n");
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/rules/REVIEW.md"\n'
     );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
@@ -162,7 +162,7 @@ describe("managed state", () => {
     expect(rendered).toContain('name: "argument-editor"');
     expect(rendered).toContain('description: "Editorial reviewer."');
     expect(rendered).toContain('model: "inherit"');
-    expect(rendered).toContain(join(rootDir, "rules", "WRITING.md"));
+    expect(rendered).toContain(join(rootDir, "rules", "REVIEW.md"));
     expect(rendered).toContain("Target tool: factory.");
     expect(rendered).not.toContain(REFS_WRITING_RULE);
   });
@@ -570,10 +570,10 @@ describe("managed state", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/instructions/REVIEW.md"\n'
     );
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Write directly.\n"
     );
     await Bun.write(
@@ -594,7 +594,7 @@ describe("managed state", () => {
       join(home, ".claude", "CLAUDE.md"),
       "utf8"
     );
-    expect(globalClaude).toContain(join(rootDir, "instructions", "WRITING.md"));
+    expect(globalClaude).toContain(join(rootDir, "instructions", "REVIEW.md"));
     expect(globalClaude).toContain("Target tool: claude.");
     expect(
       await Bun.file(join(home, ".claude", "CLAUDE.override.md")).exists()
@@ -620,10 +620,10 @@ describe("managed state", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/instructions/REVIEW.md"\n'
     );
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Write directly.\n"
     );
     await Bun.write(
@@ -660,7 +660,7 @@ describe("managed state", () => {
       join(home, ".cursor", "AGENTS.md"),
       "utf8"
     );
-    expect(globalAgents).toContain(join(rootDir, "instructions", "WRITING.md"));
+    expect(globalAgents).toContain(join(rootDir, "instructions", "REVIEW.md"));
     expect(globalAgents).toContain("Target tool: cursor.");
 
     const globalOverride = await readFile(
@@ -1012,14 +1012,14 @@ describe("manage/unmanage", () => {
     await mkdir(agent, { recursive: true });
     await Bun.write(
       join(agent, "agent.toml"),
-      `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.writing_rule}.\nTarget file: \${TARGET_PATH}\n"""\n`
+      `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.review_policy}.\nTarget file: \${TARGET_PATH}\n"""\n`
     );
 
     await mkdir(join(rootDir, "rules"), { recursive: true });
-    await Bun.write(join(rootDir, "rules", "WRITING.md"), "House rules.\n");
+    await Bun.write(join(rootDir, "rules", "REVIEW.md"), "Review rules.\n");
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/rules/REVIEW.md"\n'
     );
 
     const indexPath = join(home, ".ai", ".facult", "ai", "index.json");
@@ -1077,7 +1077,7 @@ describe("manage/unmanage", () => {
       join(toolAgents, "alpha.toml"),
       "utf8"
     );
-    expect(renderedAgent).toContain(join(rootDir, "rules", "WRITING.md"));
+    expect(renderedAgent).toContain(join(rootDir, "rules", "REVIEW.md"));
     expect(renderedAgent).toContain(join(toolAgents, "alpha.toml"));
 
     const newMcp = JSON.parse(await readFile(toolMcp, "utf8")) as {
@@ -1117,11 +1117,11 @@ describe("manage/unmanage", () => {
     await mkdir(rootDir, { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/instructions/REVIEW.md"\n'
     );
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Write directly.\n"
     );
     await mkdir(join(rootDir, "snippets", "global", "codex"), {
@@ -1190,7 +1190,7 @@ describe("manage/unmanage", () => {
     expect(globalAgents).toContain(
       "Always show the active instruction sources before editing."
     );
-    expect(globalAgents).toContain(join(rootDir, "instructions", "WRITING.md"));
+    expect(globalAgents).toContain(join(rootDir, "instructions", "REVIEW.md"));
     expect(globalAgents).not.toContain(REFS_WRITING_RULE);
 
     const defaultRule = await readFile(
@@ -1526,10 +1526,10 @@ describe("syncManagedTools", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/instructions/REVIEW.md"\n'
     );
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Write directly.\n"
     );
     await Bun.write(
@@ -1731,20 +1731,20 @@ describe("syncManagedTools", () => {
         "version = 1",
         "",
         "[refs]",
-        'writing_rule = "@project/instructions/WRITING.md"',
+        'review_policy = "@project/instructions/REVIEW.md"',
         "",
         "[project_sync.codex]",
         'agents = ["alpha"]',
       ].join("\n")
     );
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Project-specific writing guidance.\n"
     );
     await mkdir(join(rootDir, "agents", "alpha"), { recursive: true });
     await Bun.write(
       join(rootDir, "agents", "alpha", "agent.toml"),
-      `name = "alpha"\n\ndeveloper_instructions = """\nRead \${refs.writing_rule}.\nTarget tool: \${TARGET_TOOL}.\n"""\n`
+      `name = "alpha"\n\ndeveloper_instructions = """\nRead \${refs.review_policy}.\nTarget tool: \${TARGET_TOOL}.\n"""\n`
     );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
@@ -1755,7 +1755,7 @@ describe("syncManagedTools", () => {
       join(projectRoot, ".codex", "agents", "alpha.toml"),
       "utf8"
     );
-    expect(rendered).toContain(join(rootDir, "instructions", "WRITING.md"));
+    expect(rendered).toContain(join(rootDir, "instructions", "REVIEW.md"));
     expect(rendered).toContain("Target tool: codex.");
 
     const managedRaw = await readFile(
@@ -1900,18 +1900,18 @@ describe("syncManagedTools", () => {
     await mkdir(join(rootDir, "agents", "alpha"), { recursive: true });
     await Bun.write(
       join(rootDir, "agents", "alpha", "agent.toml"),
-      `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.writing_rule}.\n"""\n`
+      `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.review_policy}.\n"""\n`
     );
     await mkdir(join(rootDir, "agents", "beta"), { recursive: true });
     await Bun.write(
       join(rootDir, "agents", "beta", "agent.toml"),
-      `name = "beta"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.writing_rule}.\n"""\n`
+      `name = "beta"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.review_policy}.\n"""\n`
     );
     await mkdir(join(rootDir, "rules"), { recursive: true });
-    await Bun.write(join(rootDir, "rules", "WRITING.md"), "House rules.\n");
+    await Bun.write(join(rootDir, "rules", "REVIEW.md"), "Review rules.\n");
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/rules/REVIEW.md"\n'
     );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
@@ -1921,7 +1921,7 @@ describe("syncManagedTools", () => {
     await rm(join(rootDir, "agents", "beta"), { recursive: true, force: true });
     await Bun.write(
       join(rootDir, "agents", "alpha", "agent.toml"),
-      `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.writing_rule} and check \${refs.writing_rule} again.\n"""\n`
+      `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.review_policy} and check \${refs.review_policy} again.\n"""\n`
     );
 
     await syncManagedTools({
@@ -1935,7 +1935,7 @@ describe("syncManagedTools", () => {
       join(home, ".codex", "agents", "alpha.toml"),
       "utf8"
     );
-    expect(alpha).toContain(join(rootDir, "rules", "WRITING.md"));
+    expect(alpha).toContain(join(rootDir, "rules", "REVIEW.md"));
     expect(alpha).toContain("check");
 
     const betaExists = await Bun.file(
@@ -2139,11 +2139,11 @@ describe("syncManagedTools", () => {
     await mkdir(rootDir, { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/instructions/REVIEW.md"\n'
     );
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Write directly.\n"
     );
     await Bun.write(
@@ -2309,10 +2309,10 @@ describe("syncManagedTools", () => {
     await mkdir(join(rootDir, "instructions"), { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/instructions/REVIEW.md"\n'
     );
     await Bun.write(
-      join(rootDir, "instructions", "WRITING.md"),
+      join(rootDir, "instructions", "REVIEW.md"),
       "Write directly.\n"
     );
     await Bun.write(
@@ -2433,7 +2433,7 @@ describe("syncManagedTools", () => {
       join(home, ".codex", "AGENTS.md"),
       "utf8"
     );
-    expect(globalAgents).toContain(join(rootDir, "instructions", "WRITING.md"));
+    expect(globalAgents).toContain(join(rootDir, "instructions", "REVIEW.md"));
 
     const toolConfig = await readFile(
       join(home, ".codex", "config.toml"),

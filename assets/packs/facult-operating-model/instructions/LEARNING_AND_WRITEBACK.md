@@ -63,7 +63,7 @@ Target the smallest composable unit that explains the friction:
 - a cross-project behavior probably belongs in global capability
 - a skill, tool, MCP, plugin, automation, or instruction gap repeatedly slows work down
 - an agent has to restate the same workaround, verification rule, or review rule
-- a repeated preference should become an atomic instruction such as `BUN.md`, `RUST.md`, or a project-specific testing policy
+- a repeated preference should become an atomic user-owned instruction or project-specific testing policy
 
 ## Do Not Record Writeback For
 

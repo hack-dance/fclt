@@ -81,10 +81,13 @@ const expectedCodexGuidance = [
   "# Global Agent Instructions",
   "Treat every task as a work unit",
   "record a writeback before ending the task",
-  "/instructions/CODING.GENERAL.md",
+  "/instructions/VERIFICATION.md",
 ];
+const normalizedCodexAgents = codexAgents.replaceAll("\\", "/");
 if (
-  !expectedCodexGuidance.every((text) => codexAgents.includes(text)) ||
+  !expectedCodexGuidance.every((text) =>
+    normalizedCodexAgents.includes(text)
+  ) ||
   /\$\{refs\.[^}]+}/.test(codexAgents)
 ) {
   throw new Error(`Expected builtin AGENTS guidance in ${codexAgentsPath}`);

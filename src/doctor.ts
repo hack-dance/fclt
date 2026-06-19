@@ -667,8 +667,6 @@ const CANONICAL_TEMPLATE_REF_DIRS = ["instructions"] as const;
 
 function canonicalRefValues(rootDir: string): Record<string, string> {
   return {
-    bun_rule: join(rootDir, "instructions", "BUN.md"),
-    coding_general: join(rootDir, "instructions", "CODING.GENERAL.md"),
     evolution: join(rootDir, "instructions", "EVOLUTION.md"),
     feedback_loops: join(rootDir, "instructions", "FEEDBACK_LOOPS.md"),
     learning_writeback: join(
@@ -679,7 +677,6 @@ function canonicalRefValues(rootDir: string): Record<string, string> {
     project_capability: join(rootDir, "instructions", "PROJECT_CAPABILITY.md"),
     verification: join(rootDir, "instructions", "VERIFICATION.md"),
     work_units: join(rootDir, "instructions", "WORK_UNITS.md"),
-    writing_rule: join(rootDir, "instructions", "WRITING.md"),
   };
 }
 
