@@ -77,7 +77,16 @@ const capabilityEvolutionSkillPath = join(
   "SKILL.md"
 );
 const codexAgents = await Bun.file(codexAgentsPath).text();
-if (!codexAgents.includes("durable friction")) {
+const expectedCodexGuidance = [
+  "# Global Agent Instructions",
+  "Treat every task as a work unit",
+  "record a writeback before ending the task",
+  "/instructions/CODING.GENERAL.md",
+];
+if (
+  !expectedCodexGuidance.every((text) => codexAgents.includes(text)) ||
+  /\$\{refs\.[^}]+}/.test(codexAgents)
+) {
   throw new Error(`Expected builtin AGENTS guidance in ${codexAgentsPath}`);
 }
 const capabilityEvolutionSkill = await Bun.file(
