@@ -78,6 +78,7 @@ Typical workflow:
 fclt ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by domain
+fclt ai evolve assess --asset instruction:VERIFICATION --json
 fclt ai evolve propose
 fclt ai evolve draft EV-00001
 fclt ai evolve accept EV-00001
@@ -91,6 +92,7 @@ Review surfaces:
 - open `~/.ai/writebacks/` and `~/.ai/evolution/` in a Markdown editor for frontmatter-rich global and project-scoped review artifacts
 - `fclt status --json` for queue/proposal paths, review artifact paths, counts, and active scope
 - `fclt ai writeback list|show|group|summarize` for raw and clustered signal
+- `fclt ai evolve assess` for read-only proposal readiness and the safest next action
 - `fclt ai evolve list|show|review` for proposal state without applying changes
 - `fclt templates init automation learning-review` for recurring capture/review
 - `fclt templates init automation evolution-review` for recurring proposal review
@@ -110,8 +112,11 @@ Use the smallest action that fits the signal:
 
 1. record one strong writeback when there is a clear durable learning
 2. use `writeback-curator` when the target, kind, or scope is ambiguous
-3. use `capability-evolution` or `evolution-planner` when repeated signal should become a proposal
-4. do not draft or apply proposals just because a writeback exists; require repeated evidence or a clearly missing capability
+3. run `fclt ai evolve assess --asset <selector> --json` before proposing when a target is known
+4. use `capability-evolution` or `evolution-planner` when repeated signal should become a proposal
+5. do not draft or apply proposals just because a writeback exists; require repeated evidence or a clearly missing capability
+
+When assessment recommends no mutation or more writeback, agents should still produce a useful review: state the current target, evidence grade, missing signal, exact recurrence that would justify evolution, and any read-only follow-up. Do not end with only "no proposal".
 
 Avoid creating writeback/evolution noise for one-off nits, vague preferences, or speculative ideas without evidence.
 

@@ -163,6 +163,41 @@ export interface AiWritebackGroup {
   summary: string;
 }
 
+export type EvolutionAssessmentRecommendation =
+  | "no_mutation"
+  | "record_more_writeback"
+  | "propose"
+  | "review_existing_proposal";
+
+export interface EvolutionAssessment {
+  scope: AssetScope;
+  projectSlug?: string;
+  projectRoot?: string;
+  asset?: string;
+  target?: string;
+  recommendation: EvolutionAssessmentRecommendation;
+  confidence: ConfidenceLevel;
+  rationale: string;
+  writebackCount: number;
+  sourceWritebacks: string[];
+  kinds: string[];
+  statuses: string[];
+  evidenceCount: number;
+  activeProposalIds: string[];
+  repeatedSignal: boolean;
+  approvalRequired: boolean;
+  suggestedCommands: {
+    readOnly: string[];
+    mutating: string[];
+  };
+  qualityChecklist: {
+    item: string;
+    pass: boolean;
+    note: string;
+  }[];
+  nextAgentInstruction: string;
+}
+
 interface ScopeContext {
   scope: AssetScope;
   projectSlug?: string;
@@ -1047,6 +1082,236 @@ export async function proposeEvolution(args: {
   return proposals.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+const ACTIVE_PROPOSAL_STATUSES: ProposalStatus[] = [
+  "proposed",
+  "drafted",
+  "in_review",
+  "accepted",
+];
+
+function writebackSupportsImmediateProposal(entry: AiWritebackRecord): boolean {
+  return (
+    entry.confidence === "high" &&
+    [
+      "capability_gap",
+      "missing_capability",
+      "missing_context",
+      "stale_asset",
+      "stale_canonical_asset",
+    ].includes(entry.kind)
+  );
+}
+
+function commandAssetArg(asset?: string, target?: string): string {
+  const value = asset ?? target;
+  return value ? ` --asset ${JSON.stringify(value)}` : "";
+}
+
+function assessTargetKey(entry: AiWritebackRecord): string | undefined {
+  return entry.suggestedDestination ?? entry.assetRef;
+}
+
+export async function assessEvolution(args: {
+  homeDir?: string;
+  rootDir: string;
+  asset?: string;
+}): Promise<EvolutionAssessment> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const scopeContext = resolveScopeContext(args.rootDir, homeDir);
+  const filterAsset = args.asset
+    ? await resolveAssetSelection({
+        homeDir,
+        rootDir: args.rootDir,
+        asset: args.asset,
+      })
+    : null;
+  const target = filterAsset?.assetRef ?? args.asset;
+  const writebacks = (await listWritebacks({ homeDir, rootDir: args.rootDir }))
+    .filter((entry) => entry.status !== "dismissed")
+    .filter((entry) => entry.status !== "superseded")
+    .filter((entry) => entry.evidence.length > 0)
+    .filter((entry) => {
+      if (!filterAsset) {
+        return Boolean(assessTargetKey(entry));
+      }
+      return (
+        entry.assetId === filterAsset.assetId ||
+        entry.assetRef === filterAsset.assetRef ||
+        entry.suggestedDestination === filterAsset.assetRef
+      );
+    });
+
+  const groups = new Map<string, AiWritebackRecord[]>();
+  for (const entry of writebacks) {
+    const key = assessTargetKey(entry);
+    if (!key) {
+      continue;
+    }
+    const next = groups.get(key) ?? [];
+    next.push(entry);
+    groups.set(key, next);
+  }
+  const [selectedTarget, selectedWritebacks] =
+    target && groups.has(target)
+      ? ([target, groups.get(target)!] as const)
+      : ([...groups.entries()].sort((a, b) => {
+          if (b[1].length !== a[1].length) {
+            return b[1].length - a[1].length;
+          }
+          return a[0].localeCompare(b[0]);
+        })[0] ?? [target, []]);
+
+  const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
+  const activeProposalIds = proposals
+    .filter((proposal) => ACTIVE_PROPOSAL_STATUSES.includes(proposal.status))
+    .filter((proposal) => {
+      if (!selectedTarget) {
+        return false;
+      }
+      return proposal.targets.includes(selectedTarget);
+    })
+    .map((proposal) => proposal.id)
+    .sort();
+  const sourceWritebacks = selectedWritebacks.map((entry) => entry.id).sort();
+  const kinds = uniqueStrings(selectedWritebacks.map((entry) => entry.kind));
+  const statuses = uniqueStrings(
+    selectedWritebacks.map((entry) => entry.status)
+  );
+  const evidenceCount = selectedWritebacks.reduce(
+    (count, entry) => count + entry.evidence.length,
+    0
+  );
+  const repeatedSignal = selectedWritebacks.length >= 2;
+  const hasStrongSingleSignal = selectedWritebacks.some(
+    writebackSupportsImmediateProposal
+  );
+  const canPropose = selectedWritebacks.length > 0;
+  const shouldPropose = repeatedSignal || hasStrongSingleSignal;
+
+  let recommendation: EvolutionAssessmentRecommendation = "no_mutation";
+  let confidence: ConfidenceLevel = "high";
+  let rationale =
+    "No targetable evidenced writeback signal was found. Do not create a proposal yet.";
+
+  if (activeProposalIds.length > 0) {
+    recommendation = "review_existing_proposal";
+    confidence = "high";
+    rationale = `Existing active proposal${activeProposalIds.length === 1 ? "" : "s"} already cover ${selectedTarget}. Review or revise before creating another proposal.`;
+  } else if (shouldPropose) {
+    recommendation = "propose";
+    confidence = repeatedSignal ? "high" : "medium";
+    rationale = repeatedSignal
+      ? `${selectedTarget} has repeated evidenced signal across ${selectedWritebacks.length} writebacks. A small proposal is justified if the target and scope are correct.`
+      : `${selectedTarget} has one high-confidence writeback that points at a clearly missing or stale capability. A small proposal may be justified after inspecting the target asset.`;
+  } else if (canPropose) {
+    recommendation = "record_more_writeback";
+    confidence = "medium";
+    rationale = `${selectedTarget} has only ${selectedWritebacks.length} evidenced writeback. Prefer recording another concrete recurrence or narrowing the target before proposing evolution.`;
+  }
+
+  const assetArg = commandAssetArg(args.asset, selectedTarget);
+  const readOnly = [
+    "fclt status --json",
+    "fclt ai writeback group --by asset --json",
+    `fclt ai evolve assess${assetArg} --json`,
+    ...(activeProposalIds.length > 0
+      ? activeProposalIds.map((id) => `fclt ai evolve show ${id} --json`)
+      : []),
+  ];
+  const mutating =
+    recommendation === "propose"
+      ? [`fclt ai evolve propose${assetArg} --json`]
+      : canPropose
+        ? [
+            "fclt ai writeback add --kind <kind> --summary <summary> --asset <target> --evidence <type:ref>",
+            `fclt ai evolve propose${assetArg} --json`,
+          ]
+        : [
+            "fclt ai writeback add --kind <kind> --summary <summary> --asset <target> --evidence <type:ref>",
+          ];
+
+  const qualityChecklist = [
+    {
+      item: "targetable asset",
+      pass: Boolean(selectedTarget),
+      note: selectedTarget ?? "No asset or suggested destination was selected.",
+    },
+    {
+      item: "evidence present",
+      pass: evidenceCount > 0,
+      note:
+        evidenceCount > 0
+          ? `${evidenceCount} evidence item${evidenceCount === 1 ? "" : "s"} across selected writebacks.`
+          : "Writebacks without evidence are ignored for evolution.",
+    },
+    {
+      item: "repeated or clearly missing capability",
+      pass: repeatedSignal || hasStrongSingleSignal,
+      note: repeatedSignal
+        ? "Repeated signal is present."
+        : hasStrongSingleSignal
+          ? "Single high-confidence missing/stale capability signal is present."
+          : "Signal is not repeated and does not yet prove a missing or stale capability.",
+    },
+    {
+      item: "no duplicate active proposal",
+      pass: activeProposalIds.length === 0,
+      note:
+        activeProposalIds.length === 0
+          ? "No active proposal targets this asset."
+          : `Active proposals: ${activeProposalIds.join(", ")}.`,
+    },
+    {
+      item: "smallest safe next action",
+      pass: true,
+      note:
+        recommendation === "propose"
+          ? "Draft only the smallest target-specific proposal, then review before apply."
+          : recommendation === "review_existing_proposal"
+            ? "Review or revise the existing proposal instead of creating a duplicate."
+            : recommendation === "record_more_writeback"
+              ? "Record another concrete recurrence before proposing."
+              : "Do not mutate capability state yet.",
+    },
+  ];
+
+  const nextAgentInstruction =
+    recommendation === "propose"
+      ? `Inspect ${selectedTarget}, confirm scope and proposal kind, then ask before running the proposal command. Draft only the smallest change supported by ${sourceWritebacks.join(", ")}.`
+      : recommendation === "review_existing_proposal"
+        ? `Review ${activeProposalIds.join(", ")} and decide whether to revise, accept, reject, or leave it. Do not create a duplicate proposal.`
+        : recommendation === "record_more_writeback"
+          ? "Do not propose yet. Inspect the target if useful, explain what recurrence would change the decision, and record a new writeback only if there is fresh concrete evidence."
+          : "Do not mutate fclt state. Ask for a target asset or gather concrete writeback evidence first.";
+
+  return {
+    scope: scopeContext.scope,
+    projectSlug: scopeContext.projectSlug,
+    projectRoot: scopeContext.projectRoot,
+    asset: args.asset,
+    target: selectedTarget,
+    recommendation,
+    confidence,
+    rationale,
+    writebackCount: selectedWritebacks.length,
+    sourceWritebacks,
+    kinds,
+    statuses,
+    evidenceCount,
+    activeProposalIds,
+    repeatedSignal,
+    approvalRequired:
+      recommendation === "propose" ||
+      recommendation === "review_existing_proposal",
+    suggestedCommands: {
+      readOnly,
+      mutating,
+    },
+    qualityChecklist,
+    nextAgentInstruction,
+  };
+}
+
 export async function listProposals(args?: {
   homeDir?: string;
   rootDir: string;
@@ -1759,7 +2024,7 @@ function aiHelp(): string {
 
 Usage:
   fclt ai writeback <add|list|show|dismiss|promote> [args...]
-  fclt ai evolve <propose|list|show|draft|review|accept|reject|supersede|apply> [args...]
+  fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply> [args...]
 `;
 }
 
@@ -1781,6 +2046,7 @@ function evolveHelp(): string {
   return `fclt ai evolve
 
 Usage:
+  fclt ai evolve assess [--asset <selector>] [--json]
   fclt ai evolve propose [--asset <selector>] [--json]
   fclt ai evolve list [--json]
   fclt ai evolve show <id> [--json]
@@ -2001,6 +2267,31 @@ async function evolveCommand(argv: string[]) {
   });
 
   try {
+    if (sub === "assess") {
+      const assessment = await assessEvolution({
+        rootDir,
+        asset: parseStringFlag(commandArgs, "--asset"),
+      });
+      if (commandArgs.includes("--json")) {
+        console.log(JSON.stringify(assessment, null, 2));
+        return;
+      }
+      console.log(`recommendation: ${assessment.recommendation}`);
+      console.log(`target: ${assessment.target ?? "none"}`);
+      console.log(`confidence: ${assessment.confidence}`);
+      console.log(`rationale: ${assessment.rationale}`);
+      console.log(
+        `writebacks: ${assessment.writebackCount}${
+          assessment.sourceWritebacks.length > 0
+            ? ` (${assessment.sourceWritebacks.join(", ")})`
+            : ""
+        }`
+      );
+      console.log(`approval required: ${assessment.approvalRequired}`);
+      console.log(`next: ${assessment.nextAgentInstruction}`);
+      return;
+    }
+
     if (sub === "propose") {
       const proposals = await proposeEvolution({
         rootDir,

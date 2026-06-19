@@ -20,20 +20,33 @@ fclt ai writeback summarize --by domain
 fclt ai evolve list
 ```
 
-2. Propose only when evidence is strong enough:
+2. Assess proposal readiness before mutating state:
+
+```bash
+fclt ai evolve assess --asset <selector> --json
+```
+
+Use the assessment recommendation as the decision checkpoint:
+
+- `no_mutation`: do not change capability state; ask for a target or evidence.
+- `record_more_writeback`: explain what recurrence would justify evolution and record a new writeback only if there is fresh concrete evidence.
+- `propose`: ask before running the proposal command, then create the smallest target-specific proposal.
+- `review_existing_proposal`: inspect or revise the existing proposal instead of creating a duplicate.
+
+3. Propose only when evidence is strong enough:
 
 ```bash
 fclt ai evolve propose
 ```
 
-3. Draft and inspect:
+4. Draft and inspect:
 
 ```bash
 fclt ai evolve draft EV-00001
 fclt ai evolve review EV-00001
 ```
 
-4. Accept/apply only when scope, target, and evidence are correct:
+5. Accept/apply only when scope, target, and evidence are correct:
 
 ```bash
 fclt ai evolve accept EV-00001
@@ -55,11 +68,13 @@ fclt ai evolve apply EV-00001
 - Ask for approval before applying global instructions, global skills, plugin behavior, or other broad shared surfaces.
 - Reject or park proposals that are stale, duplicated, vague, or unsupported.
 - Use Linear or another task system for executable implementation work that needs owner, priority, or state.
+- A no-op answer must still be useful: include the evidence grade, missing signal, next writeback target, and exact approval boundary.
 
 ## Output
 
 - proposals reviewed
 - repeated signal
+- assessment recommendation
 - proposal created or updated
 - approvals needed
 - apply/reject/no-op rationale

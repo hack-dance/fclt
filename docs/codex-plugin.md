@@ -54,4 +54,6 @@ bun run check
 
 Use the plugin skills as the first interface. Use MCP tools when a Codex workflow benefits from structured calls for status, doctor, paths, writeback, or evolution review.
 
-Do not create writeback/evolution noise. Record strong signal, group repeated signal, then propose the smallest concrete capability change.
+For proposal triage, call `fclt_evolve` with `action: "assess"` before proposing when a target is known. Assessment is read-only and returns the recommendation, source writebacks, active proposal ids, quality checklist, suggested commands, and the next agent instruction.
+
+Do not create writeback/evolution noise. Record strong signal, group repeated signal, assess readiness, then propose the smallest concrete capability change only when evidence repeats or the missing capability is clear.
