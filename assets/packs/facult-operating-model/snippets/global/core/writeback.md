@@ -1,0 +1,9 @@
+- Do not end at output if something important was learned.
+- Preserve decisions, failures, successes, and reusable signal when they will improve future work.
+- Prefer writing to a real destination over leaving knowledge in chat.
+- When useful, leave behind better docs, tests, evals, prompts, notes, or follow-up tasks.
+- When a high-signal learning clearly points at a canonical asset or durable destination, record a writeback before ending the task.
+- Prefer one strong writeback over many weak ones.
+- If you can name the target asset, the expected scope, and the actual signal, use `fclt ai writeback add ...` instead of merely mentioning that writeback would be useful.
+- If repeated signal is already accumulating, use the `capability-evolution` skill or `fclt ai evolve ...` flow to turn it into a reviewable proposal.
+- For deeper guidance, read ${refs.learning_writeback}.

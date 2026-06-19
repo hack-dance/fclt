@@ -1,0 +1,3 @@
+- Preserve existing user changes unless asked to rewrite them.
+- Prefer small, reviewable diffs and verify meaningful changes before claiming success.
+- State constraints, risks, and follow-up steps directly.

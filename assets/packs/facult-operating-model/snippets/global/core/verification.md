@@ -1,0 +1,6 @@
+- Treat verification as part of the work, not a final checkbox.
+- Prefer the strongest available proof that matches the real risk.
+- Make clear what has actually been verified and what remains assumed.
+- Distrust shallow green signals when stronger checks are available.
+- If the current harness is stale, weak, or misleading, say so and improve it where possible.
+- For deeper guidance, read ${refs.verification}.

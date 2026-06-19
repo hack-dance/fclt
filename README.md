@@ -89,9 +89,11 @@ fclt doctor --repair
 ```
 
 `doctor --json` is read-only. `doctor --repair` is the self-heal path for legacy
-state, broken canonical global guidance, missing review artifacts, and stale
-local integration layout. Canonical repairs keep a backup under
-`.ai/.facult/backups/doctor/`.
+state, broken rendered global guidance, missing review artifacts, and stale
+local integration layout. It validates the rendered form of `AGENTS.global.md`
+while preserving that file as a composable source template, and it repairs
+leaked `${refs.*}` placeholders in direct-readable instruction files. Canonical
+repairs keep a backup under `.ai/.facult/backups/doctor/`.
 
 Update an installed binary:
 

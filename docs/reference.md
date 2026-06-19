@@ -26,6 +26,14 @@ sync policy, invalid canonical global guidance, and missing Markdown review
 artifacts. Destructive-looking canonical repairs keep a backup under
 `.ai/.facult/backups/doctor/`.
 
+`doctor` renders `AGENTS.global.md` in memory before judging it. That file is a
+source template, so empty `fclty` blocks and `${refs.work_units}` placeholders
+are valid when they render into filled, concrete tool guidance. `doctor` flags
+the global docs only when the rendered output still has empty managed sections,
+unresolved placeholders, or marker errors. It also checks direct-readable
+instruction files for leaked `${refs.*}` placeholders and can repair known refs
+there with backups.
+
 ## Graph
 
 ```bash
