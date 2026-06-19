@@ -25,8 +25,10 @@ import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { loadManagedState } from "./manage";
 import { extractServersObject } from "./mcp-config";
 import {
+  facultAiEvolutionReviewDir,
   facultAiGraphPath,
   facultAiIndexPath,
+  facultAiWritebackReviewDir,
   facultConfigPath,
   facultRootDir,
   facultStateDir,
@@ -38,8 +40,71 @@ import {
   loadConfiguredProjectSyncTools,
   writeProjectSyncPolicy,
 } from "./project-sync";
+import { packageVersion } from "./status";
 
 const TOML_FILE_SUFFIX_RE = /\.toml$/;
+
+type DoctorHealthState =
+  | "healthy"
+  | "uninitialized"
+  | "partial_global_config"
+  | "project_generated_only"
+  | "project_policy_attention"
+  | "stale_or_missing_generated_state"
+  | "legacy_state_attention";
+
+interface DoctorIssue {
+  severity: "info" | "warning" | "error";
+  code: string;
+  message: string;
+  fix?: string;
+}
+
+interface DoctorAction {
+  id: string;
+  label: string;
+  command: string;
+  risk:
+    | "read_only"
+    | "generated_state_write"
+    | "canonical_write"
+    | "tool_home_write";
+}
+
+export interface DoctorReport {
+  version: 1;
+  packageVersion: string;
+  cwd: string;
+  homeDir: string;
+  rootDir: string;
+  projectRoot: string | null;
+  health: {
+    state: DoctorHealthState;
+    ok: boolean;
+  };
+  paths: {
+    configPath: string;
+    generatedIndex: string;
+    generatedGraph: string;
+    stateDir: string;
+    legacyIndex: string;
+    writebackReviewDir: string;
+    evolutionReviewDir: string;
+  };
+  checks: {
+    rootExists: boolean;
+    canonicalSourceExists: boolean;
+    generatedOnlyProjectRoot: boolean;
+    generatedIndexSource: "generated" | "legacy" | "rebuilt" | "missing";
+    generatedGraphExists: boolean;
+    writebackReviewDirExists: boolean;
+    evolutionReviewDirExists: boolean;
+    projectSyncRepairNeeded: boolean;
+    projectSyncRepairTools: string[];
+  };
+  issues: DoctorIssue[];
+  actions: DoctorAction[];
+}
 
 function legacyDefaultRoot(home: string): string {
   return join(home, "agents", ".facult");
@@ -573,11 +638,226 @@ function printHelp() {
   console.log(`fclt doctor — inspect and repair local fclt state
 
 Usage:
-  fclt doctor [--repair] [--root <path> | --global | --project]
+  fclt doctor [--json] [--repair] [--root <path> | --global | --project]
 
 Options:
+  --json     Print read-only setup health, issues, and recommended actions
   --repair   Reconcile legacy Facult state, canonical root config, AI index/graph, and autosync service config when needed
 `);
+}
+
+export async function buildDoctorReport(opts?: {
+  cwd?: string;
+  homeDir?: string;
+  rootArg?: string;
+  scope?: "merged" | "global" | "project";
+}): Promise<DoctorReport> {
+  const home = opts?.homeDir ?? process.env.HOME?.trim() ?? homedir();
+  const cwd = opts?.cwd ?? process.cwd();
+  const rootDir =
+    opts?.rootArg || opts?.scope === "project"
+      ? resolveCliContextRoot({
+          rootArg: opts?.rootArg,
+          scope: opts?.scope ?? "merged",
+          cwd,
+          homeDir: home,
+        })
+      : facultRootDir(home);
+  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  const generated = facultAiIndexPath(home, rootDir);
+  const generatedGraph = facultAiGraphPath(home, rootDir);
+  const legacy = legacyAiIndexPath(rootDir);
+  const writebackReviewDir = facultAiWritebackReviewDir(home, rootDir);
+  const evolutionReviewDir = facultAiEvolutionReviewDir(home, rootDir);
+
+  const [
+    rootExists,
+    canonicalSourceExists,
+    generatedOnlyProjectRoot,
+    result,
+    generatedGraphExists,
+    writebackReviewDirExists,
+    evolutionReviewDirExists,
+    projectSyncPlan,
+  ] = await Promise.all([
+    pathExists(rootDir),
+    hasCanonicalSource(rootDir),
+    isGeneratedOnlyProjectRoot({ home, rootDir }),
+    ensureAiIndexPath({ homeDir: home, rootDir, repair: false }),
+    pathExists(generatedGraph),
+    pathExists(writebackReviewDir),
+    pathExists(evolutionReviewDir),
+    planProjectSyncPolicyRepair({ home, rootDir }),
+  ]);
+
+  const projectSyncRepairTools = Object.keys(projectSyncPlan.toolPolicies).sort(
+    (a, b) => a.localeCompare(b)
+  );
+  const issues: DoctorIssue[] = [];
+  const actions: DoctorAction[] = [];
+
+  if (!rootExists) {
+    issues.push({
+      severity: "error",
+      code: "missing-root",
+      message: "Canonical .ai root does not exist.",
+      fix: "Initialize the global operating model or project .ai root.",
+    });
+    actions.push({
+      id: "init-global-operating-model",
+      label: "Initialize global operating model",
+      command: "fclt templates init operating-model --global",
+      risk: "canonical_write",
+    });
+  }
+
+  if (!canonicalSourceExists) {
+    issues.push({
+      severity: projectRoot ? "error" : "warning",
+      code: "missing-canonical-source",
+      message:
+        "No canonical capability source was found in the selected .ai root.",
+      fix: projectRoot
+        ? "Run fclt templates init project-ai from the repo or restore canonical project assets."
+        : "Run fclt templates init operating-model --global.",
+    });
+  }
+
+  if (generatedOnlyProjectRoot) {
+    issues.push({
+      severity: "error",
+      code: "project-generated-only",
+      message:
+        "Project .ai contains generated state but no canonical project source.",
+      fix: "Initialize, restore, or detach canonical project capability before managed project sync.",
+    });
+    actions.push({
+      id: "init-project-ai",
+      label: "Initialize project AI root",
+      command: "fclt templates init project-ai",
+      risk: "canonical_write",
+    });
+  }
+
+  if (result.source === "missing") {
+    issues.push({
+      severity: "warning",
+      code: "missing-generated-index",
+      message: "Generated AI index is missing.",
+      fix: "Run fclt index or fclt doctor --repair.",
+    });
+    actions.push({
+      id: "rebuild-index",
+      label: "Rebuild generated index",
+      command: "fclt index",
+      risk: "generated_state_write",
+    });
+  } else if (result.source === "legacy") {
+    issues.push({
+      severity: "warning",
+      code: "legacy-generated-index",
+      message: "Generated AI index is still in a legacy location.",
+      fix: "Run fclt doctor --repair.",
+    });
+    actions.push({
+      id: "repair-generated-state",
+      label: "Repair generated state",
+      command: "fclt doctor --repair",
+      risk: "generated_state_write",
+    });
+  }
+
+  if (!generatedGraphExists) {
+    issues.push({
+      severity: "info",
+      code: "missing-generated-graph",
+      message: "Generated capability graph is missing.",
+      fix: "Run fclt index or fclt doctor --repair.",
+    });
+  }
+
+  if (!writebackReviewDirExists) {
+    issues.push({
+      severity: "info",
+      code: "missing-writeback-review-dir",
+      message: "Global writeback review directory is not present yet.",
+      fix: "It will be created when writebacks are recorded or the operating model is initialized.",
+    });
+  }
+
+  if (!evolutionReviewDirExists) {
+    issues.push({
+      severity: "info",
+      code: "missing-evolution-review-dir",
+      message: "Global evolution review directory is not present yet.",
+      fix: "It will be created when proposals are drafted or the operating model is initialized.",
+    });
+  }
+
+  if (projectSyncPlan.needed) {
+    issues.push({
+      severity: "warning",
+      code: "implicit-project-sync-policy",
+      message: `Project sync is still implicit for managed tools: ${projectSyncRepairTools.join(", ")}.`,
+      fix: "Run fclt doctor --repair to materialize explicit project sync policy.",
+    });
+    actions.push({
+      id: "materialize-project-sync-policy",
+      label: "Materialize project sync policy",
+      command: "fclt doctor --repair",
+      risk: "canonical_write",
+    });
+  }
+
+  let state: DoctorHealthState = "healthy";
+  if (generatedOnlyProjectRoot) {
+    state = "project_generated_only";
+  } else if (!(rootExists && canonicalSourceExists)) {
+    state = "uninitialized";
+  } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
+    state = "partial_global_config";
+  } else if (projectSyncPlan.needed) {
+    state = "project_policy_attention";
+  } else if (result.source === "missing") {
+    state = "stale_or_missing_generated_state";
+  } else if (result.source === "legacy") {
+    state = "legacy_state_attention";
+  }
+
+  return {
+    version: 1,
+    packageVersion: await packageVersion(),
+    cwd,
+    homeDir: home,
+    rootDir,
+    projectRoot,
+    health: {
+      state,
+      ok: state === "healthy" || state === "partial_global_config",
+    },
+    paths: {
+      configPath: facultConfigPath(home),
+      generatedIndex: generated,
+      generatedGraph,
+      stateDir: facultStateDir(home, rootDir),
+      legacyIndex: legacy,
+      writebackReviewDir,
+      evolutionReviewDir,
+    },
+    checks: {
+      rootExists,
+      canonicalSourceExists,
+      generatedOnlyProjectRoot,
+      generatedIndexSource: result.source,
+      generatedGraphExists,
+      writebackReviewDirExists,
+      evolutionReviewDirExists,
+      projectSyncRepairNeeded: projectSyncPlan.needed,
+      projectSyncRepairTools,
+    },
+    issues,
+    actions,
+  };
 }
 
 export async function doctorCommand(argv: string[]) {
@@ -586,16 +866,38 @@ export async function doctorCommand(argv: string[]) {
     return;
   }
 
+  const json = argv.includes("--json");
   const repair = argv.includes("--repair");
   const home = process.env.HOME?.trim() || homedir();
 
   try {
-    const parsed = parseCliContextArgs(argv);
+    const parsed = parseCliContextArgs(
+      argv.filter((arg) => arg !== "--json" && arg !== "--repair")
+    );
+    if (json) {
+      if (repair) {
+        console.error(
+          "doctor --json is read-only; run doctor --repair without --json to mutate state."
+        );
+        process.exitCode = 1;
+        return;
+      }
+      const report = await buildDoctorReport({
+        cwd: process.cwd(),
+        homeDir: home,
+        rootArg: parsed.rootArg,
+        scope: parsed.scope,
+      });
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    const textParsed = parseCliContextArgs(argv);
     const rootDir =
-      parsed.rootArg || parsed.scope === "project"
+      textParsed.rootArg || textParsed.scope === "project"
         ? resolveCliContextRoot({
-            rootArg: parsed.rootArg,
-            scope: parsed.scope,
+            rootArg: textParsed.rootArg,
+            scope: textParsed.scope,
             cwd: process.cwd(),
             homeDir: home,
           })

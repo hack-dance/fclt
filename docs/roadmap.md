@@ -11,6 +11,7 @@ This roadmap tracks remaining product direction for `fclt`.
 - Project-scoped writeback/evolution artifacts mirrored under global `~/.ai`.
 - Built-in operating-model pack.
 - Independent built-in operating-model pack install with `templates init operating-model`.
+- Read-only setup discovery with `doctor --json` and `paths --json`.
 - Cleaner built-in canonical refs.
 - JSON-first `inventory`.
 - `sync --adopt-live` for explicit promotion of live tool edits.
@@ -18,38 +19,42 @@ This roadmap tracks remaining product direction for `fclt`.
 
 ## Current Priorities
 
-1. Make status more explanatory.
+1. Add agent-first setup APIs.
+   - Add `setup plan --json` and safe apply primitives for confirmation-gated setup.
+   - Add command/risk metadata so agents can distinguish read-only, dry-run, generated-state writes, mutating actions, and high-risk global changes.
+
+2. Make status more explanatory.
    - Show policy summaries.
    - Surface top recommended next action.
    - Connect sync ledger history to rendered targets.
 
-2. Add a structured sync plan.
+3. Add a structured sync plan.
    - Group writes, updates, removals, skips, conflicts, and repairs.
    - Expose the same plan as JSON.
    - Explain source refs and policy reasons.
 
-3. Improve project onboarding.
+4. Improve project onboarding.
    - Add a primary `fclt init project` flow.
    - Explain default-deny project sync during setup.
    - Offer safe adoption, detach, and restore choices.
 
-4. Make policy inspectable.
+5. Make policy inspectable.
    - Add `policy show`.
    - Add `policy explain`.
    - Hide TOML details behind user-facing commands where possible.
 
-5. Make templates, plugins, automations, and rendered targets first-class inventory objects.
+6. Make templates, plugins, automations, and rendered targets first-class inventory objects.
    - List and show them consistently.
    - Add graph visibility.
    - Include them in status and sync plans.
 
-6. Add a first-party Codex plugin and MCP surface.
+7. Add a first-party Codex plugin and MCP surface.
    - Expose safe read/write operations over existing `fclt` behavior.
    - Keep the CLI and canonical `.ai` roots as the source of truth.
    - Gate high-risk global changes behind explicit review.
    - Bundle agent-facing skills for work units, writeback, evolution, capability search, and automation setup.
 
-7. Tighten selector consistency.
+8. Tighten selector consistency.
    - Use one selector grammar across `list`, `show`, `graph`, `enable`, `disable`, `trust`, `audit`, writeback, and evolution.
    - Return useful ambiguity errors with candidates.
 

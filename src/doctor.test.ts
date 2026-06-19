@@ -322,6 +322,55 @@ test("doctor --repair materializes explicit project sync config for managed proj
   }
 }, 10_000);
 
+test("doctor --json reports read-only setup health", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-json-"));
+
+  try {
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    const report = JSON.parse(out) as {
+      version: number;
+      health: { state: string; ok: boolean };
+      rootDir: string;
+      checks: { generatedIndexSource: string };
+      issues: Array<{ code: string }>;
+      actions: Array<{ id: string; risk: string }>;
+    };
+    expect(report.version).toBe(1);
+    expect(report.rootDir).toBe(join(dir, ".ai"));
+    expect(report.health.state).toBe("uninitialized");
+    expect(report.health.ok).toBe(false);
+    expect(report.checks.generatedIndexSource).toBe("missing");
+    expect(report.issues.map((issue) => issue.code)).toContain("missing-root");
+    expect(report.actions).toContainEqual(
+      expect.objectContaining({
+        id: "init-global-operating-model",
+        risk: "canonical_write",
+      })
+    );
+    expect(await Bun.file(join(dir, ".ai")).exists()).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
 test("doctor flags generated-only project ai roots as unsafe", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-generated-only-"));
   const projectRoot = join(dir, "work", "repo");
@@ -366,6 +415,69 @@ test("doctor flags generated-only project ai roots as unsafe", async () => {
     expect(code).toBe(1);
     expect(err).toBe("");
     expect(out).toContain("generated state only");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor --json flags generated-only project ai roots without exiting nonzero", async () => {
+  const dir = await mkdtemp(
+    join(tmpdir(), "facult-doctor-json-generated-only-")
+  );
+  const projectRoot = join(dir, "work", "repo");
+  const aiRoot = join(projectRoot, ".ai");
+
+  try {
+    await mkdir(join(aiRoot, ".facult", "ai"), { recursive: true });
+    await Bun.write(
+      join(aiRoot, ".facult", "ai", "index.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          skills: {},
+          mcp: { servers: {} },
+          agents: {},
+          snippets: {},
+          instructions: {},
+        },
+        null,
+        2
+      )
+    );
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json", "--root", aiRoot],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    const report = JSON.parse(out) as {
+      health: { state: string; ok: boolean };
+      projectRoot: string | null;
+      checks: { generatedOnlyProjectRoot: boolean };
+      issues: Array<{ code: string }>;
+    };
+    expect(report.health.state).toBe("project_generated_only");
+    expect(report.health.ok).toBe(false);
+    expect(report.projectRoot).toBe(projectRoot);
+    expect(report.checks.generatedOnlyProjectRoot).toBe(true);
+    expect(report.issues.map((issue) => issue.code)).toContain(
+      "project-generated-only"
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

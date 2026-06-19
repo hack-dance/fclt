@@ -116,6 +116,7 @@ function printHelp() {
                 "status",
                 "Show active roots, managed tools, graph/index, and sync risks",
               ],
+              ["paths", "Show canonical, generated, runtime, and review paths"],
               [
                 "audit",
                 "Run security audits with interactive or scripted flows",
@@ -1285,6 +1286,11 @@ async function main(argv: string[]) {
       return;
     case "status":
       await import("./status").then(({ statusCommand }) => statusCommand(rest));
+      return;
+    case "paths":
+      await import("./paths-command").then(({ pathsCommand }) =>
+        pathsCommand(rest)
+      );
       return;
     case "audit":
       await import("./audit").then(({ auditCommand }) => auditCommand(rest));

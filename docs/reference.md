@@ -6,6 +6,8 @@ This page groups the main `fclt` commands by job. Use `fclt --help` and `fclt <c
 
 ```bash
 fclt status [--json]
+fclt doctor [--json] [--repair]
+fclt paths [--json]
 fclt scan [--from <path>] [--json] [--show-duplicates]
 fclt inventory [--json] [--tool <name>] [--show-secrets]
 fclt list [skills|mcp|agents|snippets|instructions|automations]
@@ -14,6 +16,9 @@ fclt find <query>
 ```
 
 Use these first. They let you inspect tool state without claiming ownership of any files.
+`doctor --json` is read-only and reports setup health, issues, and recommended
+actions. `paths --json` reports canonical, generated, runtime, and review paths
+for agents and integrations.
 
 ## Graph
 

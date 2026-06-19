@@ -317,6 +317,8 @@ Discovery:
 
 ```bash
 fclt status [--json]
+fclt doctor [--json] [--repair]
+fclt paths [--json]
 fclt scan [--from <path>] [--json] [--show-duplicates]
 fclt inventory [--json] [--tool <name>] [--show-secrets]
 fclt list [skills|mcp|agents|snippets|instructions|automations]

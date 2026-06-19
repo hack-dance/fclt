@@ -130,6 +130,47 @@ describe("CLI output contracts", () => {
     }
   });
 
+  it("paths --json emits canonical and review paths", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facult-cli-paths-"));
+
+    try {
+      const proc = Bun.spawn(
+        ["bun", "run", join(process.cwd(), "src/index.ts"), "paths", "--json"],
+        {
+          cwd: dir,
+          env: { ...process.env, HOME: dir },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      const [code, out, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      const parsed = JSON.parse(out) as {
+        version: number;
+        contextRoot: string;
+        canonical: { globalRoot: string };
+        review: { writebackDir: string; evolutionDir: string };
+      };
+      expect(parsed.version).toBe(1);
+      expect(parsed.contextRoot).toBe(join(dir, ".ai"));
+      expect(parsed.canonical.globalRoot).toBe(join(dir, ".ai"));
+      expect(parsed.review.writebackDir).toBe(
+        join(dir, ".ai", "writebacks", "global")
+      );
+      expect(parsed.review.evolutionDir).toBe(
+        join(dir, ".ai", "evolution", "global")
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("ai writeback subcommand help exits cleanly", async () => {
     const proc = Bun.spawn(
       ["bun", "run", "./src/index.ts", "ai", "writeback", "add", "--help"],
