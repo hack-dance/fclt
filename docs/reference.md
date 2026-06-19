@@ -108,6 +108,10 @@ fclt audit [--non-interactive]
 fclt self-update
 ```
 
+`self-update` detects release-script, npm/Bun, and mise-managed npm installs.
+For mise installs it updates the global `npm:facult` pin and verifies the
+resolved `fclt` version through mise.
+
 Use `--strict-source-trust` when installing or updating remote capability from catalogs.
 
 ## Root Selection

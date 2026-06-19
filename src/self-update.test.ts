@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+  buildPackageManagerUpdateCommand,
   detectInstallMethod,
+  looksLikeMiseShim,
   normalizeVersionTag,
   parseSelfUpdateArgs,
   stripTagPrefix,
@@ -61,11 +63,46 @@ describe("detectInstallMethod", () => {
     expect(method).toBe("release-script");
   });
 
+  it("infers mise npm install from active npm-facult executable before stale state", () => {
+    const method = detectInstallMethod(
+      {
+        version: 1,
+        method: "npm-binary-cache",
+      },
+      {
+        homeDir: "/tmp/test-home",
+        executablePath:
+          "/tmp/test-home/.local/share/mise/installs/npm-facult/2.13.1/bin/fclt",
+      }
+    );
+    expect(method).toBe("mise-npm");
+  });
+
   it("falls back to unknown when no signal is present", () => {
     const method = detectInstallMethod(null, {
       homeDir: "/tmp/test-home",
       executablePath: "/usr/local/bin/node",
     });
     expect(method).toBe("unknown");
+  });
+});
+
+describe("buildPackageManagerUpdateCommand", () => {
+  it("pins npm-facult through mise for mise-managed installs", () => {
+    expect(
+      buildPackageManagerUpdateCommand({
+        packageManager: "mise",
+        version: "2.13.2",
+      })
+    ).toEqual(["mise", "use", "-g", "--pin", "npm:facult@2.13.2"]);
+  });
+});
+
+describe("looksLikeMiseShim", () => {
+  it("recognizes a mise fclt shim path", () => {
+    expect(looksLikeMiseShim("/Users/test/.local/share/mise/shims/fclt")).toBe(
+      true
+    );
+    expect(looksLikeMiseShim("/usr/local/bin/fclt")).toBe(false);
   });
 });

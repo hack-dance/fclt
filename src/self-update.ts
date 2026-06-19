@@ -19,6 +19,7 @@ type InstallMethod =
   | "script-bin"
   | "release-script"
   | "npm-binary-cache"
+  | "mise-npm"
   | "unknown";
 
 interface InstallState {
@@ -113,21 +114,27 @@ export function detectInstallMethod(
   if (envMethod === "script-dev" || envMethod === "script-bin") {
     return envMethod;
   }
-  if (envMethod === "npm-binary-cache") {
-    return "npm-binary-cache";
+  if (envMethod === "npm-binary-cache" || envMethod === "mise-npm") {
+    return envMethod;
   }
+
+  const exec = context.executablePath ?? process.execPath;
+  const home = context.homeDir ?? homedir();
+  if (looksLikeMiseNpmFacultExecutable(exec)) {
+    return "mise-npm";
+  }
+
   const raw = state?.method?.trim();
   if (
     raw === "script-dev" ||
     raw === "script-bin" ||
     raw === "release-script" ||
-    raw === "npm-binary-cache"
+    raw === "npm-binary-cache" ||
+    raw === "mise-npm"
   ) {
     return raw;
   }
 
-  const exec = context.executablePath ?? process.execPath;
-  const home = context.homeDir ?? homedir();
   const facultBins = [
     join(preferredGlobalFacultStateDir(home), "bin"),
     join(legacyExternalFacultStateDir(home), "bin"),
@@ -143,6 +150,68 @@ export function detectInstallMethod(
   }
 
   return "unknown";
+}
+
+async function detectActiveInstallMethod(
+  state: InstallState | null
+): Promise<InstallMethod> {
+  const method = detectInstallMethod(state);
+  if (method !== "npm-binary-cache" && method !== "unknown") {
+    return method;
+  }
+  if (await activeFcltUsesMiseNpmFacult()) {
+    return "mise-npm";
+  }
+  return method;
+}
+
+function looksLikeMiseNpmFacultExecutable(executablePath: string): boolean {
+  const normalized = executablePath.split("\\").join(sep);
+  return (
+    normalized.includes(`${sep}mise${sep}installs${sep}npm-facult${sep}`) &&
+    CLI_BASENAME_PATTERN.test(basename(normalized))
+  );
+}
+
+export function looksLikeMiseShim(
+  pathValue: string | null | undefined
+): boolean {
+  if (!pathValue) {
+    return false;
+  }
+  const normalized = pathValue.split("\\").join(sep);
+  return (
+    normalized.includes(`${sep}mise${sep}shims${sep}`) &&
+    CLI_BASENAME_PATTERN.test(basename(normalized))
+  );
+}
+
+async function activeFcltUsesMiseNpmFacult(): Promise<boolean> {
+  if (!Bun.which("mise")) {
+    return false;
+  }
+  const fcltPath = Bun.which("fclt");
+  if (looksLikeMiseNpmFacultExecutable(fcltPath ?? "")) {
+    return true;
+  }
+  if (!looksLikeMiseShim(fcltPath)) {
+    return false;
+  }
+  const proc = Bun.spawn({
+    cmd: ["mise", "which", "fclt"],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    env: process.env,
+  });
+  const [stdout, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) {
+    return false;
+  }
+  return looksLikeMiseNpmFacultExecutable(stdout.trim());
 }
 
 function resolvePlatformTarget(): {
@@ -284,14 +353,17 @@ async function selfUpdateBinary(args: {
   console.log(`Path: ${binaryPath}`);
 }
 
-type PackageManager = "npm" | "bun";
+type PackageManager = "npm" | "bun" | "mise";
 
 function chooseGlobalPackageManager(preferred?: string): PackageManager {
   const forced = process.env.FACULT_INSTALL_PM?.trim();
-  if (forced === "npm" || forced === "bun") {
+  if (forced === "npm" || forced === "bun" || forced === "mise") {
     return forced;
   }
 
+  if (preferred === "mise" && Bun.which("mise")) {
+    return "mise";
+  }
   if (preferred === "npm" && Bun.which("npm")) {
     return "npm";
   }
@@ -305,25 +377,58 @@ function chooseGlobalPackageManager(preferred?: string): PackageManager {
   if (Bun.which("bun")) {
     return "bun";
   }
+  if (Bun.which("mise")) {
+    return "mise";
+  }
   return "npm";
+}
+
+export function buildPackageManagerUpdateCommand(args: {
+  packageManager: PackageManager;
+  version: string;
+}): string[] {
+  const installSpec = `${PACKAGE_NAME}@${args.version}`;
+  if (args.packageManager === "npm") {
+    return ["npm", "install", "-g", installSpec];
+  }
+  if (args.packageManager === "bun") {
+    return ["bun", "add", "-g", installSpec];
+  }
+  return ["mise", "use", "-g", "--pin", `npm:${PACKAGE_NAME}@${args.version}`];
+}
+
+async function resolvePackageTargetVersion(requestedVersion?: string): Promise<{
+  version: string;
+  resolvedFromLatest: boolean;
+}> {
+  if (requestedVersion && requestedVersion !== "latest") {
+    return {
+      version: stripTagPrefix(requestedVersion),
+      resolvedFromLatest: false,
+    };
+  }
+  const tag = await resolveLatestTag();
+  return { version: stripTagPrefix(tag), resolvedFromLatest: true };
 }
 
 async function selfUpdateViaPackageManager(args: {
   requestedVersion?: string;
   dryRun: boolean;
   preferredPackageManager?: string;
+  method?: InstallMethod;
 }) {
-  const pm = chooseGlobalPackageManager(args.preferredPackageManager);
-  const targetVersion =
-    args.requestedVersion && args.requestedVersion !== "latest"
-      ? stripTagPrefix(args.requestedVersion)
-      : "latest";
-
-  const installSpec = `${PACKAGE_NAME}@${targetVersion}`;
-  const cmd =
-    pm === "npm"
-      ? ["npm", "install", "-g", installSpec]
-      : ["bun", "add", "-g", installSpec];
+  const pm = chooseGlobalPackageManager(
+    args.method === "mise-npm" ? "mise" : args.preferredPackageManager
+  );
+  const target =
+    args.dryRun &&
+    (!args.requestedVersion || args.requestedVersion === "latest")
+      ? { version: "latest", resolvedFromLatest: false }
+      : await resolvePackageTargetVersion(args.requestedVersion);
+  const cmd = buildPackageManagerUpdateCommand({
+    packageManager: pm,
+    version: target.version,
+  });
 
   if (args.dryRun) {
     console.log(`[dry-run] Would run: ${cmd.join(" ")}`);
@@ -341,7 +446,68 @@ async function selfUpdateViaPackageManager(args: {
   if (code !== 0) {
     throw new Error(`Self-update failed via ${pm} (exit ${code}).`);
   }
-  console.log(`Updated fclt via ${pm}: ${installSpec}`);
+  if (pm === "mise") {
+    await runBestEffort(["mise", "reshim", `npm:${PACKAGE_NAME}`]);
+  }
+  await assertActiveFcltVersion(target.version, pm);
+  console.log(`Updated fclt via ${pm}: ${PACKAGE_NAME}@${target.version}`);
+  if (target.resolvedFromLatest) {
+    console.log(`Resolved latest release to ${target.version}`);
+  }
+}
+
+async function runBestEffort(cmd: string[]): Promise<void> {
+  const proc = Bun.spawn({
+    cmd,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    env: process.env,
+  });
+  await proc.exited;
+}
+
+async function assertActiveFcltVersion(
+  expectedVersion: string,
+  packageManager: PackageManager
+): Promise<void> {
+  const cmd =
+    packageManager === "mise"
+      ? [
+          "mise",
+          "exec",
+          `npm:${PACKAGE_NAME}@${expectedVersion}`,
+          "--",
+          "fclt",
+          "--version",
+        ]
+      : ["fclt", "--version"];
+  const proc = Bun.spawn({
+    cmd,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: process.env,
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  const actual = stdout.trim();
+  if (code !== 0) {
+    throw new Error(
+      `Updated package, but could not verify active fclt version: ${stderr.trim()}`
+    );
+  }
+  if (actual !== expectedVersion) {
+    throw new Error(
+      [
+        `Updated package to ${expectedVersion}, but active fclt is still ${actual}.`,
+        "Your PATH may be resolving an older shim. Run `mise which fclt` or `which fclt` to inspect it.",
+      ].join("\n")
+    );
+  }
 }
 
 async function fetchReleaseBinaryWithRetry(url: string): Promise<ArrayBuffer> {
@@ -424,7 +590,7 @@ export async function selfUpdateCommand(argv: string[]) {
 
   const home = homedir();
   const state = await loadInstallState(home);
-  const method = detectInstallMethod(state);
+  const method = await detectActiveInstallMethod(state);
 
   try {
     if (method === "script-dev") {
@@ -434,9 +600,10 @@ export async function selfUpdateCommand(argv: string[]) {
       );
       return;
     }
-    if (method === "npm-binary-cache") {
+    if (method === "npm-binary-cache" || method === "mise-npm") {
       await selfUpdateViaPackageManager({
         ...parsed,
+        method,
         preferredPackageManager:
           process.env.FACULT_INSTALL_PM?.trim() || state?.packageManager,
       });
