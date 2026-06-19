@@ -100,6 +100,11 @@ fclt self-update
 fclt self-update --version 2.12.0
 ```
 
+`self-update` follows the active install mode. It updates release-script binaries
+directly, npm/Bun global installs through their package manager, and
+mise-managed npm installs with `mise use -g --pin npm:facult@<version>`, then
+verifies the active `fclt --version`.
+
 ## Quick start
 
 ### 1. Inspect existing AI state
