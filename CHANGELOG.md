@@ -1,3 +1,9 @@
+## [2.13.0](https://github.com/hack-dance/fclt/compare/v2.12.0...v2.13.0) (2026-06-19)
+
+### Features
+
+* **setup:** add read-only health APIs ([4f4cc45](https://github.com/hack-dance/fclt/commit/4f4cc45a6c8826c01c977e816996065eb9599ebe))
+
 ## [2.12.0](https://github.com/hack-dance/fclt/compare/v2.11.0...v2.12.0) (2026-06-19)
 
 ### Features
