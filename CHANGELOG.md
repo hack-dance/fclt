@@ -1,3 +1,9 @@
+## [2.15.2](https://github.com/hack-dance/fclt/compare/v2.15.1...v2.15.2) (2026-06-19)
+
+### Bug Fixes
+
+* **codex:** preserve live plugins during repair ([#29](https://github.com/hack-dance/fclt/issues/29)) ([b1bea0f](https://github.com/hack-dance/fclt/commit/b1bea0fe15671f3a4158c65d71cb2a39f4faf53c))
+
 ## [2.15.1](https://github.com/hack-dance/fclt/compare/v2.15.0...v2.15.1) (2026-06-19)
 
 ### Bug Fixes
