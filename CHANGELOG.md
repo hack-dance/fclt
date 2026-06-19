@@ -1,3 +1,9 @@
+## [2.13.9](https://github.com/hack-dance/fclt/compare/v2.13.8...v2.13.9) (2026-06-19)
+
+### Bug Fixes
+
+* harden binary guidance verifier ([39dc3a9](https://github.com/hack-dance/fclt/commit/39dc3a96b07b8af647670a893e91e68fc82f4099))
+
 ## [2.13.8](https://github.com/hack-dance/fclt/compare/v2.13.7...v2.13.8) (2026-06-19)
 
 ### Bug Fixes
