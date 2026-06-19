@@ -450,14 +450,18 @@ fclt ai evolve apply EV-00001
 fclt ai evolve promote EV-00003 --to global --project
 ```
 
-Runtime writeback and evolution state stays generated and machine-local:
+Runtime writeback and evolution source state stays generated and machine-local:
 - global writeback state: machine-local Facult state under `.../global/ai/global/...`
 - project writeback state: machine-local per-project Facult state under `.../projects/<slug-hash>/ai/project/...`
+- editor-facing writeback review artifacts: `~/.ai/writebacks/global/*.md` and `~/.ai/writebacks/projects/<slug-hash>/*.md`
+- editor-facing evolution review artifacts: `~/.ai/evolution/global/*.md` and `~/.ai/evolution/projects/<slug-hash>/*.md`
 
 That split is intentional:
 - canonical source remains in `~/.ai` or `<repo>/.ai`
-- global generated index and graph state stays inside `~/.ai/.facult/`; writebacks, journals, proposals, drafts, and managed runtime state stay outside canonical source in machine-local state
-- those records let agents inspect what changed, why it changed, and how it was reviewed
+- global generated index and graph state stays inside `~/.ai/.facult/`; JSON queues, proposal metadata, journals, draft refs, patches, and managed runtime state stay outside canonical source in machine-local state
+- human-readable review artifacts always live under the global `~/.ai` root, even when the signal is project-scoped
+- project repos do not receive bundled writeback/evolution review artifacts; project metadata such as cwd, project root, project slug, target refs, status, and evidence is captured in frontmatter instead
+- those records let agents and humans inspect what changed, why it changed, and how it was reviewed
 
 Use writeback when:
 - a task exposed a weak or misleading verification loop
@@ -485,12 +489,14 @@ Current apply semantics are intentionally policy-bound:
 
 Current review/draft semantics:
 - `writeback group` and `writeback summarize` expose recurring patterns across `asset`, `kind`, and `domain` without mutating canonical assets
-- drafted proposals emit both a human-readable markdown draft and a patch artifact under generated state
+- every writeback/proposal mutation refreshes a Markdown review artifact under global `~/.ai/writebacks/...` or `~/.ai/evolution/...` with frontmatter metadata
+- drafted proposals emit both a human-readable markdown draft and a patch artifact under machine-local generated state, and the latest draft body is mirrored into the global evolution review artifact
 - rerunning `evolve draft <id> --append ...` revises the draft and records draft history
 - `evolve promote --to global` creates a new high-risk global proposal from a project-scoped proposal; that promoted proposal can then be drafted, reviewed, and applied into `~/.ai`
 
 Review surfaces:
-- `fclt status --json` reports queue/proposal paths and counts for the active scope
+- open `~/.ai/writebacks/` and `~/.ai/evolution/` in a Markdown editor for global and project-scoped review artifacts
+- `fclt status --json` reports queue/proposal paths, review artifact paths, and counts for the active scope
 - `fclt ai writeback list|show|group|summarize` reviews raw and clustered signal
 - `fclt ai evolve list|show|review` reviews proposal state without applying changes
 - `fclt templates init automation learning-review` scaffolds background writeback capture/review
@@ -635,7 +641,7 @@ fclt snippets sync [--dry-run] [file...]
 
 Recommended topology:
 
-- Use `learning-review --scope project` for repo-local writeback and evolution. This keeps review state, verification, and follow-up scoped to the repo that actually produced the evidence.
+- Use `learning-review --scope project` for project-scoped writeback and evolution. This keeps verification and follow-up scoped to the repo that produced the evidence while storing human-readable review artifacts under global `~/.ai/writebacks/projects/...` and `~/.ai/evolution/projects/...`.
 - Use `evolution-review` on a slower cadence, usually weekly, to triage open proposals and proposal-worthy clusters and suggest the next operator action (`draft`, `review`, `accept`, `reject`, `promote`, or `apply`).
 - Use a separate wide/global automation only for cross-repo or shared-surface review, such as global doctrine, shared skills, or repeated tool/agent patterns across repos.
 - If you do use a wide learning review, keep the `cwds` list intentionally small and related. The prompt is designed to partition by cwd first, not to blur unrelated repos together.
@@ -733,6 +739,10 @@ Under machine-local Facult state:
 - `.../autosync/logs/*` (autosync service logs)
 - `cache/runtime/<version>/<platform-arch>/...` under the macOS machine-local state root, or `runtime/<version>/<platform-arch>/...` under `FACULT_CACHE_DIR`/XDG cache roots on other platforms (npm launcher binary cache)
   - if that cache root is unavailable, the npm launcher falls back to a temp-dir runtime cache before using the bundled source fallback
+
+Under global Markdown review state (`~/.ai/`):
+- `writebacks/global/*.md` and `writebacks/projects/<slug-hash>/*.md` (frontmatter-rich writeback review artifacts)
+- `evolution/global/*.md` and `evolution/projects/<slug-hash>/*.md` (frontmatter-rich proposal review artifacts, including latest draft body when present)
 
 ### Config reference
 

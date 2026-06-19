@@ -58,15 +58,7 @@ async function newestPathMtime(path: string): Promise<number> {
 }
 
 async function watchedPathMtime(path: string): Promise<number> {
-  const newest = await newestPathMtime(path);
-  if (newest > 0) {
-    return newest;
-  }
-  try {
-    return (await stat(dirname(path))).mtimeMs;
-  } catch {
-    return 0;
-  }
+  return await newestPathMtime(path);
 }
 
 async function canonicalAssetsNewerThanIndex(args: {

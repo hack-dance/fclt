@@ -238,7 +238,7 @@ export function facultStateDir(
   return join(resolvedRoot, ".facult");
 }
 
-function machineStateProjectKey(
+export function machineStateProjectKey(
   rootDir: string,
   home: string = defaultHomeDir()
 ): string {
@@ -411,6 +411,37 @@ export function facultAiDraftDir(
   rootDir?: string
 ): string {
   return join(facultAiRuntimeScopeDir(home, rootDir), "evolution", "drafts");
+}
+
+export function facultAiReviewScopeDir(
+  artifactDir: "writebacks" | "evolution",
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  const projectRoot = projectRootFromAiRoot(resolvedRoot, home);
+  return projectRoot
+    ? join(
+        preferredGlobalAiRoot(home),
+        artifactDir,
+        "projects",
+        machineStateProjectKey(resolvedRoot, home)
+      )
+    : join(preferredGlobalAiRoot(home), artifactDir, "global");
+}
+
+export function facultAiWritebackReviewDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return facultAiReviewScopeDir("writebacks", home, rootDir);
+}
+
+export function facultAiEvolutionReviewDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return facultAiReviewScopeDir("evolution", home, rootDir);
 }
 
 export function facultConfigPath(home: string = defaultHomeDir()): string {

@@ -3,10 +3,12 @@ import { dirname, join } from "node:path";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { loadManagedState } from "./manage";
 import {
+  facultAiEvolutionReviewDir,
   facultAiGraphPath,
   facultAiIndexPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
+  facultAiWritebackReviewDir,
   facultMachineStateDir,
   facultRootDir,
   projectRootFromAiRoot,
@@ -41,8 +43,10 @@ export interface FacultStatus {
   };
   writeback: {
     queuePath: string;
+    reviewDir: string;
     pendingCount: number;
     proposalDir: string;
+    evolutionReviewDir: string;
     proposalCount: number;
   };
   issues: StatusIssue[];
@@ -175,6 +179,8 @@ export async function buildStatus(opts?: {
   const graphPath = facultAiGraphPath(homeDir, contextRoot);
   const queuePath = facultAiWritebackQueuePath(homeDir, contextRoot);
   const proposalDir = facultAiProposalDir(homeDir, contextRoot);
+  const reviewDir = facultAiWritebackReviewDir(homeDir, contextRoot);
+  const evolutionReviewDir = facultAiEvolutionReviewDir(homeDir, contextRoot);
   const managed = await loadManagedState(homeDir, contextRoot);
 
   const issues: StatusIssue[] = [];
@@ -222,8 +228,10 @@ export async function buildStatus(opts?: {
     },
     writeback: {
       queuePath,
+      reviewDir,
       pendingCount: await countPendingWritebacks(homeDir, contextRoot),
       proposalDir,
+      evolutionReviewDir,
       proposalCount: await countActiveProposals(homeDir, contextRoot),
     },
     issues,
@@ -247,6 +255,8 @@ function printStatus(status: FacultStatus) {
   console.log(
     `writeback: ${status.writeback.pendingCount} queued, ${status.writeback.proposalCount} proposals`
   );
+  console.log(`writeback review: ${status.writeback.reviewDir}`);
+  console.log(`evolution review: ${status.writeback.evolutionReviewDir}`);
   if (status.issues.length > 0) {
     console.log("issues:");
     for (const issue of status.issues) {

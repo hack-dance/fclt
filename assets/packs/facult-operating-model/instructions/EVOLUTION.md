@@ -78,7 +78,8 @@ Use `fclt ai evolve draft <id> --append "..."` to revise a draft while preservin
 
 Review surfaces:
 
-- `fclt status --json` for queue/proposal paths, counts, and active scope
+- open `~/.ai/writebacks/` and `~/.ai/evolution/` in a Markdown editor for frontmatter-rich global and project-scoped review artifacts
+- `fclt status --json` for queue/proposal paths, review artifact paths, counts, and active scope
 - `fclt ai writeback list|show|group|summarize` for raw and clustered signal
 - `fclt ai evolve list|show|review` for proposal state without applying changes
 - `fclt templates init automation learning-review` for recurring capture/review
@@ -86,9 +87,12 @@ Review surfaces:
 - `fclt templates init automation tool-call-audit` for repeated tool-friction review
 
 Evolution proposal metadata, markdown drafts, patch artifacts, writeback queues,
-and journals are runtime state. `fclt` stores them in machine-local Facult state;
-canonical assets in `~/.ai` or `<repo>/.ai` should only change when a proposal is
-applied.
+and journals are runtime state. `fclt` stores JSON queues, proposal records,
+draft refs, patches, and journals in machine-local Facult state. It mirrors
+human-readable review artifacts into global `~/.ai/writebacks/...` and
+`~/.ai/evolution/...`, including project-scoped artifacts under
+`projects/<slug-hash>/` with cwd/project metadata in frontmatter. Canonical
+assets in `~/.ai` or `<repo>/.ai` should only change when a proposal is applied.
 
 ## Default Agent Behavior
 

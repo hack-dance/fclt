@@ -22,9 +22,11 @@ import {
 } from "./ai";
 import {
   facultAiDraftDir,
+  facultAiEvolutionReviewDir,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
+  facultAiWritebackReviewDir,
   facultMachineStateDir,
 } from "./paths";
 
@@ -120,6 +122,14 @@ describe("ai writeback", () => {
     );
     expect(queue).toContain('"id":"WB-00001"');
     expect(journal).toContain('"kind":"writeback_recorded"');
+    const review = await readFile(
+      join(facultAiWritebackReviewDir(tempHome, rootDir), "WB-00001.md"),
+      "utf8"
+    );
+    expect(review).toContain('artifact: "writeback"');
+    expect(review).toContain('status: "recorded"');
+    expect(review).toContain('scope: "global"');
+    expect(review).toContain('assetRef: "@ai/instructions/VERIFICATION.md"');
   });
 
   it("resolves automation graph nodes for writeback targeting", async () => {
@@ -230,6 +240,15 @@ describe("ai writeback", () => {
         "queue.jsonl"
       )
     );
+    const reviewDir = facultAiWritebackReviewDir(tempHome, rootDir);
+    expect(reviewDir.startsWith(join(tempHome, ".ai", "writebacks"))).toBe(
+      true
+    );
+    expect(reviewDir.startsWith(projectRoot)).toBe(false);
+    const review = await readFile(join(reviewDir, "WB-00001.md"), "utf8");
+    expect(review).toContain('scope: "project"');
+    expect(review).toContain(`projectRoot: "${projectRoot}"`);
+    expect(review).toContain(`cwd: "${projectRoot}"`);
   });
 
   it("reads legacy repo-local project writeback state", async () => {
@@ -589,6 +608,16 @@ describe("ai writeback", () => {
         "proposals"
       )
     );
+    const review = await readFile(
+      join(facultAiEvolutionReviewDir(tempHome, rootDir), "EV-00001.md"),
+      "utf8"
+    );
+    expect(review).toContain('artifact: "evolution_proposal"');
+    expect(review).toContain('status: "proposed"');
+    expect(review).toContain('sourceWritebacks: ["WB-00001","WB-00002"]');
+    expect(review).toContain(
+      "- WB-00001 (weak_verification): Checks are too shallow."
+    );
 
     const nextWritebacks = await listWritebacks({ homeDir: tempHome, rootDir });
     expect(nextWritebacks.every((entry) => entry.status === "promoted")).toBe(
@@ -725,6 +754,13 @@ describe("ai writeback", () => {
       rootDir,
     });
     expect(drafted.draftHistory).toHaveLength(1);
+    const review = await readFile(
+      join(facultAiEvolutionReviewDir(tempHome, rootDir), `${proposal!.id}.md`),
+      "utf8"
+    );
+    expect(review).toContain('status: "drafted"');
+    expect(review).toContain("## Current Draft");
+    expect(review).toContain("# Work Units");
 
     const revised = await draftProposal(proposal!.id, {
       homeDir: tempHome,

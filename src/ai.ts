@@ -7,10 +7,12 @@ import type { AssetScope, GraphNodeKind } from "./graph";
 import { loadGraph, resolveGraphNode } from "./graph-query";
 import {
   facultAiDraftDir,
+  facultAiEvolutionReviewDir,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiStateDir,
   facultAiWritebackQueuePath,
+  facultAiWritebackReviewDir,
   facultRootDir,
   legacyFacultAiStateDirs,
   projectRootFromAiRoot,
@@ -284,6 +286,176 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+function yamlScalar(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return JSON.stringify(value);
+  }
+  if (value && typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return "null";
+}
+
+function renderFrontmatter(values: Record<string, unknown>): string {
+  const lines = Object.entries(values)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}: ${yamlScalar(value)}`);
+  return ["---", ...lines, "---"].join("\n");
+}
+
+function markdownList(values: string[]): string[] {
+  return values.length > 0 ? values.map((value) => `- ${value}`) : ["- none"];
+}
+
+function renderEvidenceList(evidence: WritebackEvidence[]): string[] {
+  return evidence.length > 0
+    ? evidence.map((entry) => `- ${entry.type}: ${entry.ref}`)
+    : ["- none"];
+}
+
+function writebackReviewPath(
+  homeDir: string,
+  rootDir: string,
+  id: string
+): string {
+  return join(facultAiWritebackReviewDir(homeDir, rootDir), `${id}.md`);
+}
+
+function proposalReviewPath(
+  homeDir: string,
+  rootDir: string,
+  id: string
+): string {
+  return join(facultAiEvolutionReviewDir(homeDir, rootDir), `${id}.md`);
+}
+
+async function writeWritebackReviewArtifact(args: {
+  homeDir: string;
+  rootDir: string;
+  record: AiWritebackRecord;
+}): Promise<void> {
+  const pathValue = writebackReviewPath(
+    args.homeDir,
+    args.rootDir,
+    args.record.id
+  );
+  await ensureParentDir(pathValue);
+  const body = [
+    renderFrontmatter({
+      id: args.record.id,
+      artifact: "writeback",
+      status: args.record.status,
+      scope: args.record.scope,
+      kind: args.record.kind,
+      confidence: args.record.confidence,
+      source: args.record.source,
+      assetRef: args.record.assetRef,
+      assetId: args.record.assetId,
+      assetType: args.record.assetType,
+      suggestedDestination: args.record.suggestedDestination,
+      domain: args.record.domain,
+      tags: args.record.tags,
+      projectSlug: args.record.projectSlug,
+      projectRoot: args.record.projectRoot,
+      cwd: args.record.projectRoot,
+      rootDir: args.rootDir,
+      createdAt: args.record.ts,
+      updatedAt: args.record.updatedAt ?? args.record.ts,
+    }),
+    "",
+    `# ${args.record.id}: ${args.record.summary}`,
+    "",
+    "## Summary",
+    args.record.summary,
+    "",
+    "## Evidence",
+    ...renderEvidenceList(args.record.evidence),
+    "",
+    "## Target",
+    `- asset: ${args.record.assetRef ?? "unassigned"}`,
+    `- destination: ${args.record.suggestedDestination ?? "unassigned"}`,
+    "",
+  ].join("\n");
+  await Bun.write(pathValue, `${body.trimEnd()}\n`);
+}
+
+async function writeProposalReviewArtifact(args: {
+  homeDir: string;
+  rootDir: string;
+  proposal: AiProposalRecord;
+  writebacks?: AiWritebackRecord[];
+  draftBody?: string | null;
+}): Promise<void> {
+  const pathValue = proposalReviewPath(
+    args.homeDir,
+    args.rootDir,
+    args.proposal.id
+  );
+  await ensureParentDir(pathValue);
+  const body = [
+    renderFrontmatter({
+      id: args.proposal.id,
+      artifact: "evolution_proposal",
+      status: args.proposal.status,
+      scope: args.proposal.scope,
+      kind: args.proposal.kind,
+      confidence: args.proposal.confidence,
+      policyClass: args.proposal.policyClass,
+      reviewRequired: args.proposal.reviewRequired,
+      targets: args.proposal.targets,
+      sourceWritebacks: args.proposal.sourceWritebacks,
+      sourceProposals: args.proposal.sourceProposals,
+      draftRefs: args.proposal.draftRefs,
+      projectSlug: args.proposal.projectSlug,
+      projectRoot: args.proposal.projectRoot,
+      cwd: args.proposal.projectRoot,
+      rootDir: args.rootDir,
+      createdAt: args.proposal.ts,
+      updatedAt:
+        args.proposal.review?.reviewedAt ??
+        args.proposal.applyResult?.appliedAt ??
+        args.proposal.draftHistory?.at(-1)?.ts ??
+        args.proposal.ts,
+    }),
+    "",
+    `# ${args.proposal.id}: ${args.proposal.summary}`,
+    "",
+    "## Rationale",
+    args.proposal.rationale,
+    "",
+    "## Targets",
+    ...markdownList(args.proposal.targets),
+    "",
+    "## Source Writebacks",
+    ...(args.writebacks && args.writebacks.length > 0
+      ? args.writebacks.map(
+          (entry) => `- ${entry.id} (${entry.kind}): ${entry.summary}`
+        )
+      : markdownList(args.proposal.sourceWritebacks)),
+    "",
+    "## Draft Refs",
+    ...markdownList(args.proposal.draftRefs),
+    "",
+    ...(args.draftBody
+      ? [
+          "## Current Draft",
+          "",
+          "```markdown",
+          args.draftBody.trimEnd(),
+          "```",
+          "",
+        ]
+      : []),
+  ].join("\n");
+  await Bun.write(pathValue, `${body.trimEnd()}\n`);
+}
+
 function slugToTitle(value: string): string {
   return value
     .split(SLUG_SPLIT_RE)
@@ -498,6 +670,11 @@ export async function addWriteback(
     evidence: record.evidence,
     tags: record.tags,
   });
+  await writeWritebackReviewArtifact({
+    homeDir,
+    rootDir: args.rootDir,
+    record,
+  });
   return record;
 }
 
@@ -555,6 +732,11 @@ async function updateWritebackStatus(
     summary: `${id} -> ${status}`,
     refs: next.assetRef ? [next.assetRef] : undefined,
     tags: next.tags,
+  });
+  await writeWritebackReviewArtifact({
+    homeDir,
+    rootDir: args.rootDir,
+    record: next,
   });
   return next;
 }
@@ -743,6 +925,7 @@ async function writeProposalFile(
     join(dir, `${proposal.id}.json`),
     `${JSON.stringify(proposal, null, 2)}\n`
   );
+  await writeProposalReviewArtifact({ homeDir, rootDir, proposal });
 }
 
 export async function proposeEvolution(args: {
@@ -835,6 +1018,12 @@ export async function proposeEvolution(args: {
       draftRefs: [],
     };
     await writeProposalFile(homeDir, args.rootDir, proposal);
+    await writeProposalReviewArtifact({
+      homeDir,
+      rootDir: args.rootDir,
+      proposal,
+      writebacks: entries,
+    });
     await appendEvent(homeDir, args.rootDir, {
       id: nextId("EVT", []),
       ts: proposal.ts,
@@ -1203,6 +1392,13 @@ export async function draftProposal(
       }),
     })
   );
+  await writeProposalReviewArtifact({
+    homeDir,
+    rootDir: args.rootDir,
+    proposal: next,
+    writebacks,
+    draftBody,
+  });
   await appendEvent(homeDir, args.rootDir, {
     id: "",
     ts: nowIso(),
@@ -1490,6 +1686,12 @@ export async function promoteProposal(
     applyResult: undefined,
   };
   await writeProposalFile(homeDir, targetRoot, promoted);
+  await writeProposalReviewArtifact({
+    homeDir,
+    rootDir: targetRoot,
+    proposal: promoted,
+    writebacks: sourceWritebacks,
+  });
   await appendEvent(homeDir, targetRoot, {
     id: "",
     ts: promoted.ts,

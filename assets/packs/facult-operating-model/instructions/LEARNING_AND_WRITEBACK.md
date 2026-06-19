@@ -28,10 +28,18 @@ Use:
 fclt ai writeback add --kind <kind> --summary "<summary>" --asset <asset-selector>
 ```
 
-The writeback queue is runtime state, not canonical source. `fclt` stores it in
-machine-local Facult state so sandboxed agents can record durable friction
-without mutating `~/.ai` or a repo-local `.ai` unless an evolution proposal is
-later reviewed and applied.
+The writeback queue is runtime state, not canonical source. `fclt` stores JSON
+queue state in machine-local Facult state so sandboxed agents can record durable
+friction without mutating canonical assets unless an evolution proposal is later
+reviewed and applied.
+
+Every writeback also refreshes a Markdown review artifact under the global
+`~/.ai/writebacks/...` tree. Global signal lands in `~/.ai/writebacks/global/`;
+project-scoped signal lands in `~/.ai/writebacks/projects/<slug-hash>/` with
+frontmatter for scope, project root, cwd, target asset, status, tags, evidence,
+and timestamps. Do not write writeback review artifacts into a repo-local `.ai`;
+repo-local state should contribute project metadata and evidence, not bundled
+private review files.
 
 Project-scoped writebacks should usually be recorded from the repo that produced
 the evidence. Global writebacks should be reserved for shared doctrine, shared
