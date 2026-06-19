@@ -4,7 +4,7 @@
 
 The important distinction is ownership. A file can be source, generated state, machine runtime state, a rendered output, or a review artifact. Treating those as separate layers prevents sync surprises.
 
-![fclt feedback loop: setup, canonical capability, project capability, agent work units, writebacks, evolution review, and approved improvements](./assets/fclt-feedback-loop.svg)
+![fclt capability loop: setup, capability, agents, work units, writebacks, evolution, approval, and better future agents](./assets/fclt-capability-loop.png)
 
 The intended operating model is agent-led after setup. Users install and approve broad changes; agents inspect capability, run work units, record durable friction, and use repeated signal to propose small improvements.
 

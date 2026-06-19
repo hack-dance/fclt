@@ -26,7 +26,7 @@ It gives instructions, snippets, skills, agents, MCP definitions, automations, a
 Use it when AI setup has become scattered across dotfiles, tool homes, repos, prompts, skills, and one-off notes.
 
 <p align="center">
-  <img alt="fclt feedback loop: installed once, agents use canonical capability, work units create evidence, writebacks preserve signal, evolution proposals improve future agents" src="./docs/assets/fclt-feedback-loop.svg">
+  <img alt="fclt capability loop: setup, capability, agents, work units, writebacks, evolution, approval, and better future agents" src="./docs/assets/fclt-capability-loop.png">
 </p>
 
 Most usage should be agent-led after setup. Humans install, inspect, audit, and approve broad changes. Agents use `fclt` to find the right capability, preserve friction as writeback, and turn repeated signal into reviewed improvements.
