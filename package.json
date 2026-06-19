@@ -27,6 +27,8 @@
     "access": "public"
   },
   "files": [
+    "assets/**/*.md",
+    "assets/**/*.toml",
     "bin/fclt.cjs",
     "bin/facult.cjs",
     "src/**/*.ts",

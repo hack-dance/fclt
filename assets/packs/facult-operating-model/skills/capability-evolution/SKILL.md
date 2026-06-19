@@ -10,6 +10,8 @@ Use this skill when the same missing guidance, weak loop, or recurring win appea
 
 Do not wait for a human operator by default if the signal is already clear and the environment permits local AI runtime state to be updated.
 
+Use writeback first when the signal is useful but not yet repeated. Use evolution when accumulated writebacks, repeated tool friction, or a clearly missing capability point at a specific target asset or new capability.
+
 ## Scope Decision
 
 Choose `project` when the behavior depends on repo-local architecture or workflow.
@@ -40,6 +42,14 @@ fclt ai evolve accept EV-00001
 fclt ai evolve apply EV-00001
 ```
 
+For background review loops, use:
+
+```bash
+fclt templates init automation learning-review
+fclt templates init automation evolution-review
+fclt templates init automation tool-call-audit
+```
+
 If there is not yet enough repeated signal for evolution, record the writeback and stop there.
 
 ## Proposal Kind Selection
@@ -49,6 +59,8 @@ If there is not yet enough repeated signal for evolution, record the writeback a
 - `extract_snippet` for reusable partial guidance
 - `add_skill` for reusable workflow instruction
 - `promote_asset` for project-to-global promotion
+
+Use task tracking instead of evolution when the main work is an executable tool or product fix that needs an owner, priority, state, or delivery plan. Use evolution for the reusable instruction, skill, or operating-model change that should survive that fix.
 
 ## Output Contract
 - repeated signal

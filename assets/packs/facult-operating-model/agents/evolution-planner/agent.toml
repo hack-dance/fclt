@@ -9,6 +9,7 @@ Prioritize:
 - correct target asset type
 - correct target scope
 - evidence that justifies the change
+- repeated writeback clusters or clearly missing capabilities, not isolated preferences
 
 Proposal kinds you should consider first:
 - update_asset
@@ -27,4 +28,5 @@ Return concise proposals ordered by expected leverage, including:
 - why this is the smallest durable change
 
 Do not escalate to evolution when a single writeback is enough.
+Do not use evolution as a substitute for executable task tracking when the main need is owner, priority, state, or implementation follow-through.
 """

@@ -31,7 +31,7 @@ It helps you:
 - render managed tool files into Codex, Claude, Cursor, and similar tools
 - inspect dependencies, provenance, and rendered outputs
 - review trust and audit remote or local capability before it spreads
-- capture writebacks and evolve canonical assets over time
+- capture real-work friction as writeback and evolve canonical assets over time
 
 ## Quick Start
 
@@ -203,11 +203,18 @@ Useful AI behavior is composable. You need small reusable parts, a clean way to 
 ## Built-in Defaults
 
 `fclt` includes a built-in layer for writeback and evolution. By default, that layer provides:
-- instructions for evolution, integration, and project capability
+- instructions for learning/writeback, evolution, integration, and project capability
 - agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
 - skills such as `capability-evolution` and `project-operating-layer-design`
 
-Those built-in defaults become live when you manage a tool. Global tool management renders the bundled docs, agents, and skills into that tool’s live files. Project-local `.ai` roots do not sync the built-in operating-model layer unless you explicitly enable it.
+Those built-in defaults become live when you manage a tool. Global tool management renders the bundled docs, agents, and skills into that tool's live files, so every managed agent sees that it can preserve strong friction with `fclt ai writeback ...` and escalate repeated signal with `fclt ai evolve ...`. Project-local `.ai` roots do not sync the built-in operating-model layer unless you explicitly enable it.
+
+The intended feedback loop is:
+1. agents notice durable friction, weak verification, stale guidance, or missing capability during normal work
+2. agents record one strong writeback when the signal, target, and scope are clear
+3. humans or scheduled automations review grouped writebacks and existing proposals
+4. only repeated evidence, a clearly missing capability, or a stale canonical asset becomes an evolution proposal
+5. accepted proposals update canonical markdown assets, skills, snippets, or project/global instructions
 
 If you want to disable default built-in sync for one canonical root:
 
@@ -224,8 +231,9 @@ Put that in `config.toml` or `config.local.toml` under the active canonical root
 
 `fclt` is CLI-first. The practical setup is:
 1. Install `fclt` globally so any agent runtime can execute it.
-2. Put allowed `fclt` workflows in your agent instructions and skills.
-3. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
+2. Manage each agent tool with `fclt manage <tool>` and `fclt sync`.
+3. Let the built-in operating-model layer render global writeback/evolution instructions into the tool.
+4. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
 
 ```bash
 # Scaffold reusable templates in the canonical store
@@ -250,6 +258,7 @@ fclt sync
 ```
 
 Note: `templates init mcp ...` is a scaffold, not a running server by itself.
+The supported review surface today is the CLI plus generated Codex automation templates; MCP is an optional wrapper path when an agent environment prefers MCP calls over shell commands.
 
 ## Mental Model
 
@@ -455,8 +464,17 @@ Use writeback when:
 - an instruction or agent was missing key context
 - a pattern proved reusable enough to become doctrine
 - a project-local pattern deserves promotion toward global capability
+- a skill, tool, prompt, or default behavior repeatedly slows agents down without hard-failing
 
 Do not think of writeback as note-taking. Treat it as preserved signal that should improve the system.
+
+Recommended agent behavior:
+- record a writeback directly when the learning is durable, scoped, and targetable
+- prefer project scope for repo-specific tooling, tests, architecture, or workflow
+- use global scope for shared doctrine, shared skills, shared agents, or cross-project capability gaps
+- group or summarize before proposing evolution unless the missing capability is already obvious
+- use the smallest proposal kind that fits: `update_asset`, `create_asset`, `extract_snippet`, `add_skill`, or `promote_asset`
+- do not create proposals for one-off preferences, speculative ideas, or duplicate noise
 
 Current apply semantics are intentionally policy-bound:
 - targets are resolved through the generated graph when possible and fall back to canonical ref resolution for missing assets
@@ -470,6 +488,14 @@ Current review/draft semantics:
 - drafted proposals emit both a human-readable markdown draft and a patch artifact under generated state
 - rerunning `evolve draft <id> --append ...` revises the draft and records draft history
 - `evolve promote --to global` creates a new high-risk global proposal from a project-scoped proposal; that promoted proposal can then be drafted, reviewed, and applied into `~/.ai`
+
+Review surfaces:
+- `fclt status --json` reports queue/proposal paths and counts for the active scope
+- `fclt ai writeback list|show|group|summarize` reviews raw and clustered signal
+- `fclt ai evolve list|show|review` reviews proposal state without applying changes
+- `fclt templates init automation learning-review` scaffolds background writeback capture/review
+- `fclt templates init automation evolution-review` scaffolds periodic proposal review
+- `fclt templates init automation tool-call-audit` scaffolds repeated tool-friction review
 
 ### Scope and source selection
 
@@ -614,6 +640,8 @@ Recommended topology:
 - Use a separate wide/global automation only for cross-repo or shared-surface review, such as global doctrine, shared skills, or repeated tool/agent patterns across repos.
 - If you do use a wide learning review, keep the `cwds` list intentionally small and related. The prompt is designed to partition by cwd first, not to blur unrelated repos together.
 - A practical default is daily `learning-review` plus weekly `evolution-review`. The first finds and records durable signal; the second keeps proposal review from stalling.
+- Add `tool-call-audit` when you want a focused background loop for repeated tool failures, missing skills, excessive retries, or shallow-success patterns.
+- Treat automations as review and synthesis loops. They should create writebacks and proposals when evidence is strong, but high-risk global changes still move through proposal review before apply.
 
 Files are written to:
 
@@ -799,7 +827,7 @@ Contributor and release workflow details live in [CONTRIBUTING.md](./CONTRIBUTIN
 
 Not as a first-party `fclt mcp serve` runtime.
 
-`fclt` currently focuses on inventory, trust/audit, install/update, and managed sync of canonical AI capability and tool-native outputs.
+`fclt` currently focuses on inventory, trust/audit, install/update, writeback/evolution, and managed sync of canonical AI capability and tool-native outputs. Use the CLI directly from agents, or scaffold an MCP definition that delegates to the CLI when an environment needs an MCP-shaped entrypoint.
 
 ### Does fclt now manage global AI config, not just skills and MCP?
 

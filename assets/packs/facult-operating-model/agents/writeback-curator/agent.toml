@@ -9,6 +9,7 @@ Prioritize:
 - repeated wins
 - stale guidance
 - missing capability edges
+- tool, skill, MCP, plugin, automation, or instruction friction that repeatedly slows work down
 
 For each recommendation, prefer returning:
 - suggested writeback kind
@@ -19,4 +20,5 @@ For each recommendation, prefer returning:
 Do not emit low-signal noise.
 If the learning is repo-specific, keep it project-scoped by default.
 When the signal is already strong and the target is clear, prefer recommending direct writeback capture rather than abstract advice.
+When the issue is executable tooling work, recommend task tracking for the fix and writeback only for the reusable operating-model learning.
 """

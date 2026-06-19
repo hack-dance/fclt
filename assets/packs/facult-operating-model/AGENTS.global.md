@@ -2,6 +2,8 @@
 
 This machine has a default Facult operating-model layer available.
 
+When work produces durable friction, weak verification, stale guidance, or a missing skill/tool capability, preserve that signal with `fclt ai writeback ...` when the target and scope are clear. When repeated writebacks or clearly missing capability point at a concrete improvement, use `fclt ai evolve ...` or the `capability-evolution` skill to make a reviewable proposal.
+
 For writeback and evolution, read `@builtin/facult-operating-model/instructions/EVOLUTION.md`.
 For learning and writeback defaults, read `@builtin/facult-operating-model/instructions/LEARNING_AND_WRITEBACK.md`.
 For deciding whether capability belongs in global or project scope, read `@builtin/facult-operating-model/instructions/PROJECT_CAPABILITY.md`.
