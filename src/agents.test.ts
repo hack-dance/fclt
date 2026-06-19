@@ -25,11 +25,11 @@ describe("renderAiRefs", () => {
   it("renders canonical @ai refs to absolute paths", () => {
     const rendered = renderAiRefs(
       "Before reviewing, read @ai/rules/REVIEW.md.\nThen inspect @ai/scripts/check-style.sh.",
-      "/Users/hack/.ai"
+      "/home/example/.ai"
     );
 
     expect(rendered).toBe(
-      "Before reviewing, read /Users/hack/.ai/rules/REVIEW.md.\nThen inspect /Users/hack/.ai/scripts/check-style.sh."
+      "Before reviewing, read /home/example/.ai/rules/REVIEW.md.\nThen inspect /home/example/.ai/scripts/check-style.sh."
     );
   });
 
@@ -37,17 +37,17 @@ describe("renderAiRefs", () => {
     const input =
       "Use @aix/rules/REVIEW.md, literal @ai, and email@example.com as-is.";
 
-    expect(renderAiRefs(input, "/Users/hack/.ai")).toBe(input);
+    expect(renderAiRefs(input, "/home/example/.ai")).toBe(input);
   });
 
   it("renders project refs to repo-local .ai paths", () => {
     const rendered = renderProjectRefs(
       "Read @project/instructions/REVIEW.md before editing.",
-      "/Users/hack/dev/facult"
+      "/workspace/facult"
     );
 
     expect(rendered).toBe(
-      "Read /Users/hack/dev/facult/.ai/instructions/REVIEW.md before editing."
+      "Read /workspace/facult/.ai/instructions/REVIEW.md before editing."
     );
   });
 });
