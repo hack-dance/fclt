@@ -13,9 +13,6 @@
   <a aria-label="hack.dance" href="https://hack.dance">
     <img alt="Made by hack.dance" src="https://img.shields.io/badge/MADE%20BY%20HACK.DANCE-000000.svg?style=flat-square&labelColor=000000">
   </a>
-  <a aria-label="X" href="https://x.com/dimitrikennedy">
-    <img alt="Follow on X" src="https://img.shields.io/twitter/follow/dimitrikennedy?style=social">
-  </a>
 </div>
 
 <p align="center">
@@ -206,6 +203,17 @@ Useful AI behavior is composable. You need small reusable parts, a clean way to 
 
 The renderer is optional. The low-friction default is to let tools keep their native files, use `fclt inventory`/`scan`/`list` to see the full global set, and use `fclt consolidate` or `fclt sync --adopt-live` only when you explicitly want to promote live tool edits into canonical `~/.ai`.
 
+## Documentation
+
+Focused docs live under [docs](./docs/README.md):
+
+- [Concepts](./docs/concepts.md): roots, scopes, state layers, and asset types
+- [Managed Mode](./docs/managed-mode.md): safe rendering and adoption rules
+- [Project `.ai`](./docs/project-ai.md): repo-local capability and project sync policy
+- [Built-In Pack](./docs/built-in-pack.md): packaged writeback/evolution defaults
+- [Writeback And Evolution](./docs/writeback-evolution.md): feedback-loop workflow and review surfaces
+- [Roadmap](./docs/roadmap.md): current gaps and non-goals
+
 ## Built-in Defaults
 
 `fclt` includes a built-in layer for writeback and evolution. By default, that layer provides:
@@ -269,7 +277,7 @@ The supported review surface today is the CLI plus generated Codex automation te
 
 ## Mental Model
 
-`fclt` treats both `~/.ai` and `<repo>/.ai` as canonical stores. The global store is for personal reusable capability. The project store is for repo-owned capability that should travel with the codebase.
+`fclt` treats both `~/.ai` and `<repo>/.ai` as canonical stores. The global store is for user-owned reusable capability. The project store is for repo-owned capability that should travel with the codebase.
 
 Typical layout:
 
@@ -849,7 +857,7 @@ Not as a first-party `fclt mcp serve` runtime.
 ### Does fclt now manage global AI config, not just skills and MCP?
 
 Yes. The core model now includes:
-- canonical personal AI source in `~/.ai`
+- canonical user-owned AI source in `~/.ai`
 - rendered managed outputs in tool homes such as `~/.codex`, `~/.agents`, and `~/plugins`
 - global instruction docs such as `AGENTS.global.md`, rendered by default into `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and `~/.cursor/AGENTS.md`
 - Codex-authored skills in `~/.agents/skills`

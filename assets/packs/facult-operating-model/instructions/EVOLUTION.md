@@ -129,6 +129,6 @@ Use the smallest durable change that fits the evidence.
 - prefer the smallest safe change
 - keep reviewable evidence tied to source writebacks
 - do not globalize project behavior too early
-- do not apply high-risk global instruction, skill, plugin, or non-COS changes without explicit review/approval
+- do not apply high-risk global instruction, skill, plugin, or shared-tool changes without explicit review/approval
 
 Apply is for markdown canonical assets only. If the target is wrong, revise the proposal rather than forcing it through.
