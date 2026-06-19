@@ -1,3 +1,9 @@
+## [2.15.0](https://github.com/hack-dance/fclt/compare/v2.14.0...v2.15.0) (2026-06-19)
+
+### Features
+
+* **templates:** seed operating model guidance ([#27](https://github.com/hack-dance/fclt/issues/27)) ([5a3c491](https://github.com/hack-dance/fclt/commit/5a3c491a1fc0bd15f38c569b20aef597481de8aa))
+
 ## [2.14.0](https://github.com/hack-dance/fclt/compare/v2.13.9...v2.14.0) (2026-06-19)
 
 ### Features
