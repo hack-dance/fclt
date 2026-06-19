@@ -1434,6 +1434,75 @@ describe("templates command", () => {
       await Bun.file(facultAiIndexPath(home, join(repoDir, ".ai"))).exists()
     ).toBe(true);
   });
+
+  it("installs the builtin operating-model pack into the global canonical root", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--global"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+
+    expect(
+      await Bun.file(join(globalRoot, "instructions", "WORK_UNITS.md")).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(join(globalRoot, "instructions", "EVOLUTION.md")).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(
+        join(globalRoot, "skills", "capability-evolution", "SKILL.md")
+      ).exists()
+    ).toBe(true);
+    expect(await Bun.file(join(globalRoot, "AGENTS.global.md")).exists()).toBe(
+      true
+    );
+
+    const agentsText = await Bun.file(
+      join(globalRoot, "AGENTS.global.md")
+    ).text();
+    expect(agentsText).toContain("WORK_UNITS.md");
+    expect(await Bun.file(facultAiIndexPath(home, globalRoot)).exists()).toBe(
+      true
+    );
+  });
+
+  it("bootstraps the builtin operating-model pack into a project root", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    await mkdir(repoDir, { recursive: true });
+    process.chdir(repoDir);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--project"], {
+        homeDir: home,
+        cwd: repoDir,
+      });
+    });
+
+    const projectRoot = join(repoDir, ".ai");
+    expect(
+      await Bun.file(
+        join(projectRoot, "instructions", "WORK_UNITS.md")
+      ).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(
+        join(
+          projectRoot,
+          "skills",
+          "project-operating-layer-design",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(await Bun.file(facultAiIndexPath(home, projectRoot)).exists()).toBe(
+      true
+    );
+  });
 });
 
 describe("sources command", () => {

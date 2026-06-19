@@ -115,6 +115,13 @@ fclt templates init project-ai
 fclt index
 ```
 
+If you want a concrete copy of the built-in operating-model pack without managing a tool:
+
+```bash
+fclt templates init operating-model --global
+fclt templates init operating-model --root /path/to/.ai
+```
+
 ### 3. Import existing skills or config
 
 ```bash
@@ -217,11 +224,13 @@ Focused docs live under [docs](./docs/README.md):
 ## Built-in Defaults
 
 `fclt` includes a built-in layer for writeback and evolution. By default, that layer provides:
-- instructions for learning/writeback, evolution, integration, and project capability
+- instructions for work units, learning/writeback, evolution, integration, and project capability
 - agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
 - skills such as `capability-evolution` and `project-operating-layer-design`
 
-Those built-in defaults become live when you manage a tool. Global tool management renders the bundled docs, agents, and skills into that tool's live files, so every managed agent sees that it can preserve strong friction with `fclt ai writeback ...` and escalate repeated signal with `fclt ai evolve ...`. Project-local `.ai` roots do not sync the built-in operating-model layer unless you explicitly enable it.
+Those built-in defaults are always available as `@builtin/facult-operating-model/...`. To install a concrete copy into a canonical root without managing any tool, run `fclt templates init operating-model --global`, `--project`, or `--root /path/to/.ai`.
+
+Managed mode is separate. Global tool management renders the bundled docs, agents, and skills into that tool's live files, so every managed agent sees that it can preserve strong friction with `fclt ai writeback ...` and escalate repeated signal with `fclt ai evolve ...`. Project-local `.ai` roots do not sync the built-in operating-model layer unless you explicitly enable it.
 
 The intended feedback loop is:
 1. agents notice durable friction, weak verification, stale guidance, or missing capability during normal work
@@ -246,9 +255,10 @@ Put that in `config.toml` or `config.local.toml` under the active canonical root
 `fclt` is CLI-first. The practical setup is:
 1. Install `fclt` globally so any agent runtime can execute it.
 2. Use `fclt inventory`, `fclt list`, and `fclt consolidate` to inspect and normalize existing tool-native state.
-3. If you want fclt-owned rendered outputs, manage each agent tool with `fclt manage <tool>` and `fclt sync`.
-4. Let the built-in operating-model layer render global writeback/evolution instructions into the tool only where managed rendering is worth the ownership tradeoff.
-5. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
+3. Install the built-in operating-model pack into `~/.ai` or a project `.ai` when you want editable canonical defaults without managed rendering.
+4. If you want fclt-owned rendered outputs, manage each agent tool with `fclt manage <tool>` and `fclt sync`.
+5. Let the built-in operating-model layer render global writeback/evolution instructions into the tool only where managed rendering is worth the ownership tradeoff.
+6. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
 
 ```bash
 # Scaffold reusable templates in the canonical store
@@ -630,6 +640,7 @@ fclt sources clear <source>
 - Templates and snippets
 ```bash
 fclt templates list
+fclt templates init operating-model [--global|--project|--root PATH] [--force] [--dry-run]
 fclt templates init project-ai
 fclt templates init skill <name>
 fclt templates init mcp <name>

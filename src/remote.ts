@@ -9,8 +9,9 @@ import {
   relative,
   resolve,
 } from "node:path";
-import { fileURLToPath } from "node:url";
 import { isCancel, multiselect, select, text } from "@clack/prompts";
+import { facultBuiltinPackRoot } from "./builtin";
+import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import {
   renderBullets,
   renderCatalog,
@@ -1221,11 +1222,6 @@ updated_at = ${timestamp}
   };
 }
 
-function builtinPackRoot(packName: string): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, "..", "assets", "packs", packName);
-}
-
 async function pathExists(pathValue: string): Promise<boolean> {
   try {
     await Bun.file(pathValue).stat();
@@ -1258,15 +1254,15 @@ async function listFilesRecursive(rootDir: string): Promise<string[]> {
   return out.sort();
 }
 
-async function scaffoldBuiltinProjectAiPack(args: {
-  cwd?: string;
+async function scaffoldBuiltinOperatingModelPack(args: {
+  rootDir: string;
   homeDir?: string;
   dryRun?: boolean;
   force?: boolean;
+  installedAs?: string;
 }): Promise<InstallResult> {
-  const cwd = resolve(args.cwd ?? process.cwd());
-  const rootDir = join(cwd, ".ai");
-  const packRoot = builtinPackRoot("facult-operating-model");
+  const rootDir = resolve(args.rootDir);
+  const packRoot = facultBuiltinPackRoot("facult-operating-model");
   const files = await listFilesRecursive(packRoot);
   const changedPaths: string[] = [];
 
@@ -1307,12 +1303,28 @@ async function scaffoldBuiltinProjectAiPack(args: {
   return {
     ref: `${BUILTIN_INDEX_NAME}:facult-operating-model`,
     type: "skill",
-    installedAs: "project-ai",
+    installedAs: args.installedAs ?? "operating-model",
     path: rootDir,
     sourceTrustLevel: "trusted",
     dryRun: Boolean(args.dryRun),
     changedPaths: uniqueSorted(changedPaths),
   };
+}
+
+async function scaffoldBuiltinProjectAiPack(args: {
+  cwd?: string;
+  homeDir?: string;
+  dryRun?: boolean;
+  force?: boolean;
+}): Promise<InstallResult> {
+  const cwd = resolve(args.cwd ?? process.cwd());
+  return await scaffoldBuiltinOperatingModelPack({
+    rootDir: join(cwd, ".ai"),
+    homeDir: args.homeDir,
+    dryRun: args.dryRun,
+    force: args.force,
+    installedAs: "project-ai",
+  });
 }
 
 function compareVersions(a: string, b: string): number {
@@ -2658,6 +2670,9 @@ function printTemplatesHelp() {
               "fclt templates init snippet <marker> [--force] [--dry-run]"
             ),
             renderCode("fclt templates init agents [--force] [--dry-run]"),
+            renderCode(
+              "fclt templates init operating-model [--global|--project|--root PATH] [--force] [--dry-run]"
+            ),
             renderCode("fclt templates init project-ai [--force] [--dry-run]"),
             renderCode(
               "fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE] [--yes] [--dry-run]"
@@ -3053,6 +3068,14 @@ export async function templatesCommand(
         version: item.version ?? "",
       })),
       {
+        id: "operating-model",
+        type: "pack",
+        title: "Operating Model Pack",
+        description:
+          "Install the built-in Facult operating-model pack into the active canonical root.",
+        version: "1.0.0",
+      },
+      {
         id: "project-ai",
         type: "pack",
         title: "Project AI Pack",
@@ -3101,7 +3124,7 @@ export async function templatesCommand(
   const [kind, ...args] = rest;
   if (!kind) {
     console.error(
-      "templates init requires a kind (skill|mcp|agent|snippet|agents|claude|project-ai|automation)"
+      "templates init requires a kind (skill|mcp|agent|snippet|agents|claude|operating-model|project-ai|automation)"
     );
     process.exitCode = 2;
     return;
@@ -3128,6 +3151,51 @@ export async function templatesCommand(
         renderPage({
           title: `fclt templates init ${kind}`,
           subtitle: `${action} ${result.installedAs}`,
+          sections: [
+            {
+              title: "Changed Paths",
+              lines: renderBullets(result.changedPaths),
+            },
+          ],
+        })
+      );
+      return;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  if (kind === "operating-model") {
+    try {
+      const context = parseCliContextArgs(args, { allowScope: false });
+      const cwd = resolve(ctx.cwd ?? process.cwd());
+      const rootDir = ctx.rootDir
+        ? resolve(ctx.rootDir)
+        : context.scope === "project" && !context.rootArg
+          ? join(findGitRootFromPath(cwd) ?? cwd, ".ai")
+          : resolveCliContextRoot({
+              rootArg: context.rootArg,
+              scope: context.scope,
+              homeDir: ctx.homeDir,
+              cwd,
+            });
+      const result = await scaffoldBuiltinOperatingModelPack({
+        rootDir,
+        homeDir: ctx.homeDir,
+        dryRun,
+        force,
+      });
+      if (json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      const action = dryRun ? "Would install" : "Installed";
+      console.log(
+        renderPage({
+          title: `fclt templates init ${kind}`,
+          subtitle: `${action} ${result.installedAs} into ${result.path}`,
           sections: [
             {
               title: "Changed Paths",

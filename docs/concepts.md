@@ -40,6 +40,12 @@ glama:<name>
 
 Use these as installable catalog sources. Review and trust source policy before installing remote capability broadly.
 
+## Work Units
+
+A work unit is a scoped agent task with a goal, acceptance criteria, required context, constraints, evidence, output artifact, verification path, and writeback target.
+
+Agents should keep this implicit for simple work and make it explicit when the task is ambiguous, risky, or multi-step. The built-in operating-model pack includes `WORK_UNITS.md` so managed agents and canonical `.ai` roots can share the same framing.
+
 ## State Layers
 
 Canonical source is edited by humans or accepted proposals.

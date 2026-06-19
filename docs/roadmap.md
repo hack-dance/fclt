@@ -10,6 +10,7 @@ This replaces the older operating-model target-state notes. That file mixed curr
 - Global Markdown review artifacts for writebacks and evolution proposals.
 - Project-scoped writeback/evolution artifacts mirrored under global `~/.ai`.
 - Built-in operating-model pack.
+- Independent built-in operating-model pack install with `templates init operating-model`.
 - Cleaner built-in canonical refs.
 - JSON-first `inventory`.
 - `sync --adopt-live` for explicit promotion of live tool edits.
