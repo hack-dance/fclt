@@ -1,6 +1,6 @@
 # Project `.ai`
 
-A project `.ai` root stores repo-owned capability. It is not a dumping ground for generated state, review queues, or private local context.
+A project `.ai` root stores repo-owned capability. It is for source that should travel with the codebase, not for generated state, review queues, or private local context.
 
 Create one with:
 
@@ -44,11 +44,11 @@ Do not put these in project `.ai`:
 - secrets
 - private review artifacts
 
-Project-scoped writebacks and evolution proposals are stored in machine-local Facult state and mirrored for review under global `~/.ai/writebacks/projects/<slug-hash>/` and `~/.ai/evolution/projects/<slug-hash>/`.
+Project-scoped writebacks and evolution proposals are stored in machine-local `fclt` state and mirrored for review under global `~/.ai/writebacks/projects/<slug-hash>/` and `~/.ai/evolution/projects/<slug-hash>/`.
 
-## Generated-Only Roots
+## Migration From Generated-Only Roots
 
-Older versions could leave `<repo>/.ai/.facult/ai/index.json` and `graph.json` behind without any canonical source. That makes the repo look like it has project AI state even though there is nothing durable to render.
+Some repos may contain `<repo>/.ai/.facult/ai/index.json` and `graph.json` without any canonical source. That makes the repo look like it has project AI state even though there is nothing durable to render.
 
 Current behavior:
 
@@ -78,6 +78,12 @@ tool_config = true
 ```
 
 This includes inherited global assets. If a global skill should appear in project-managed Codex output, list it explicitly.
+
+## Next
+
+- Read [Concepts](./concepts.md) for source, generated state, machine-local state, and rendered outputs.
+- Read [Managed mode](./managed-mode.md) before syncing project assets into tool outputs.
+- Read [Security and trust](./security-trust.md) before committing MCP config.
 
 ## Verification
 

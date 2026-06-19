@@ -29,7 +29,7 @@ fclt ai writeback add --kind <kind> --summary "<summary>" --asset <asset-selecto
 ```
 
 The writeback queue is runtime state, not canonical source. `fclt` stores JSON
-queue state in machine-local Facult state so sandboxed agents can record durable
+queue state in machine-local `fclt` state so sandboxed agents can record durable
 friction without mutating canonical assets unless an evolution proposal is later
 reviewed and applied.
 

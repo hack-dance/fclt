@@ -1,6 +1,6 @@
 # Roadmap
 
-This replaces the older operating-model target-state notes. That file mixed current documentation, past investigation output, and future design ideas. The current docs now describe shipped behavior; this file tracks remaining product direction.
+This roadmap tracks remaining product direction for `fclt`.
 
 ## Already Shipped
 
@@ -43,7 +43,13 @@ This replaces the older operating-model target-state notes. That file mixed curr
    - Add graph visibility.
    - Include them in status and sync plans.
 
-6. Tighten selector consistency.
+6. Add a first-party Codex plugin and MCP surface.
+   - Expose safe read/write operations over existing `fclt` behavior.
+   - Keep the CLI and canonical `.ai` roots as the source of truth.
+   - Gate high-risk global changes behind explicit review.
+   - Bundle agent-facing skills for work units, writeback, evolution, capability search, and automation setup.
+
+7. Tighten selector consistency.
    - Use one selector grammar across `list`, `show`, `graph`, `enable`, `disable`, `trust`, `audit`, writeback, and evolution.
    - Return useful ambiguity errors with candidates.
 

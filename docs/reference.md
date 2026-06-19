@@ -1,0 +1,107 @@
+# Command reference
+
+This page groups the main `fclt` commands by job. Use `fclt --help` and `fclt <command> --help` for exact flags.
+
+## Discovery
+
+```bash
+fclt status [--json]
+fclt scan [--from <path>] [--json] [--show-duplicates]
+fclt inventory [--json] [--tool <name>] [--show-secrets]
+fclt list [skills|mcp|agents|snippets|instructions|automations]
+fclt show <selector>
+fclt find <query>
+```
+
+Use these first. They let you inspect tool state without claiming ownership of any files.
+
+## Graph
+
+```bash
+fclt graph show <selector>
+fclt graph deps <selector>
+fclt graph dependents <selector>
+```
+
+The graph explains how instructions, snippets, config refs, and rendered targets relate.
+
+## Canonical Store
+
+```bash
+fclt templates list
+fclt templates init operating-model [--global|--project|--root PATH]
+fclt templates init project-ai
+fclt templates init instruction <name>
+fclt templates init snippet <marker>
+fclt templates init skill <name>
+fclt templates init agent <name>
+fclt templates init mcp <name>
+fclt templates init automation <template-id> --scope global|project|wide
+fclt consolidate --auto keep-current --from <path>
+fclt index [--force]
+```
+
+Use these to create or normalize canonical capability in `~/.ai` or `<repo>/.ai`.
+
+## Managed mode
+
+```bash
+fclt manage <tool> [--dry-run] [--adopt-existing]
+fclt sync [tool] [--dry-run] [--adopt-live]
+fclt enable <selector> --for codex,claude
+fclt disable <selector> --for codex,claude
+fclt managed
+fclt unmanage <tool>
+```
+
+Managed mode writes rendered output into tool homes. Read [Managed mode](./managed-mode.md) before using it on an existing setup.
+
+## Writeback and evolution
+
+```bash
+fclt ai writeback add --kind <kind> --summary <text> --asset <selector>
+fclt ai writeback list
+fclt ai writeback show WB-00001
+fclt ai writeback group --by asset
+fclt ai writeback summarize --by kind
+
+fclt ai evolve propose
+fclt ai evolve list
+fclt ai evolve show EV-00001
+fclt ai evolve draft EV-00001
+fclt ai evolve review EV-00001
+fclt ai evolve accept EV-00001
+fclt ai evolve reject EV-00001 --reason <text>
+fclt ai evolve apply EV-00001
+fclt ai evolve promote EV-00003 --to global --project
+```
+
+Use these to turn repeated work friction into reviewed capability changes.
+
+## Sources, Audit, And Updates
+
+```bash
+fclt search <query>
+fclt install <source:item> [--as <name>] [--strict-source-trust]
+fclt update [--apply]
+fclt verify-source <name> [--json]
+fclt sources list
+fclt sources trust <source> [--note <text>]
+fclt sources review <source> [--note <text>]
+fclt sources block <source> [--note <text>]
+fclt sources clear <source>
+fclt audit [--non-interactive]
+fclt self-update
+```
+
+Use `--strict-source-trust` when installing or updating remote capability from catalogs.
+
+## Root Selection
+
+Most commands accept the same root controls:
+
+- `--global`: use `~/.ai`
+- `--project`: use the nearest repo-local `.ai`
+- `--root /path/to/.ai`: use an explicit canonical root
+- `--scope merged|global|project`: choose a discovery view
+- `--source builtin|global|project`: filter provenance in list/find/show/graph flows

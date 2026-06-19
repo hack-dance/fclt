@@ -66,7 +66,7 @@ Examples:
 ~/.ai/.facult/ai/graph.json
 ```
 
-Project generated state lives in machine-local Facult state, not in the repo.
+Project generated state lives in machine-local `fclt` state, not in the repo.
 
 Machine runtime state records local behavior and history.
 
@@ -123,3 +123,9 @@ The durable loop is:
 4. Draft the smallest valid proposal.
 5. Review and apply accepted changes to canonical source.
 6. Re-index and sync only the surfaces that should receive the change.
+
+## Next
+
+- Read [Project `.ai`](./project-ai.md) before adding repo-local capability.
+- Read [Managed mode](./managed-mode.md) before allowing `fclt` to write tool files.
+- Read [Composable Capability](./composable-capability.md) to split guidance into instructions, snippets, skills, agents, MCP, and automations.

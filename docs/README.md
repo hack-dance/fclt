@@ -1,19 +1,27 @@
 # fclt Documentation
 
-These docs explain the product model behind `fclt`. The root [README](../README.md) is the quick start and command reference. The files here explain why the pieces exist and how they fit together.
+These docs explain how `fclt` stores, inspects, composes, renders, and improves AI capability.
 
-Start here:
+Start with the root [README](../README.md) for installation and first workflows. Use these guides when you need the model, safety rules, or command details.
+
+## Guides
 
 - [Concepts](./concepts.md): canonical roots, generated state, rendered outputs, scopes, and asset types.
 - [Composable Capability](./composable-capability.md): refs, snippets, instruction templates, and evolvable units.
-- [Managed Mode](./managed-mode.md): when to let `fclt` write tool files, and how adoption works.
 - [Project `.ai`](./project-ai.md): how repo-local capability works without leaking project review state into the repo.
-- [Built-In Pack](./built-in-pack.md): the packaged operating-model layer for writeback and evolution.
-- [Writeback And Evolution](./writeback-evolution.md): how real-work friction becomes reviewable capability changes.
-- [Roadmap](./roadmap.md): current product gaps and non-goals.
+- [Built-in pack](./built-in-pack.md): the packaged operating-model layer for writeback and evolution.
+- [Writeback and evolution](./writeback-evolution.md): how real-work friction becomes reviewable capability changes.
+- [Managed mode](./managed-mode.md): when to let `fclt` write tool files, and how adoption works.
+- [Security and trust](./security-trust.md): source trust, audit, secrets, and commit hygiene.
+- [Automations](./automations.md): recurring Codex loops for learning review, evolution review, and tool-call audit.
+- [Command reference](./reference.md): command groups and common flags.
+- [Roadmap](./roadmap.md): current product gaps and planned work.
 
-## Documentation Policy
+## Reading Order
 
-Public docs should use generic examples. Do not include personal account names, private customer names, local machine paths, secret values, or project-specific operating notes. Use placeholders such as `/path/to/repo`, `example.com`, and `~/.ai`.
+New users should read:
 
-Machine-local state and review artifacts can contain project metadata. `fclt` keeps those artifacts in machine-local Facult state and global `~/.ai/writebacks` / `~/.ai/evolution` review directories, not in repo-local project `.ai` directories.
+- [Concepts](./concepts.md)
+- [Project `.ai`](./project-ai.md) if working in a repo
+- [Managed mode](./managed-mode.md) only before allowing `fclt` to write tool files
+- [Writeback and evolution](./writeback-evolution.md) before setting up feedback loops

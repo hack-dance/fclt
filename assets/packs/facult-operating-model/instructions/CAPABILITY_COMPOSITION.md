@@ -42,7 +42,7 @@ Use project scope for capability that belongs to a repo, team workflow, architec
 
 Promote project capability to global only when repeated evidence shows reuse across projects. Do not globalize a project quirk just because it worked once.
 
-## Writeback And Evolution
+## Writeback and Evolution
 
 Target the smallest affected unit.
 

@@ -1,4 +1,4 @@
-# Built-In Pack
+# Built-in Pack
 
 `fclt` ships an operating-model pack:
 
@@ -6,7 +6,7 @@
 assets/packs/facult-operating-model/
 ```
 
-It provides a default feedback loop for agents that use `fclt`.
+It provides default guidance for agents that use `fclt`: define the work, verify it, record durable feedback, and turn repeated signal into reviewed changes.
 
 ## Included Assets
 
@@ -80,7 +80,7 @@ sync_defaults = false
 
 ## Design Rule
 
-The built-in pack should stay small. It should teach:
+The built-in pack should stay small. It teaches:
 
 - work-unit discipline
 - composable refs, snippets, instructions, skills, agents, MCP, and automations
@@ -90,4 +90,10 @@ The built-in pack should stay small. It should teach:
 - project/global scope decisions
 - managed-mode ownership boundaries
 
-It should not become a pile of preferences. Put project-specific behavior in project `.ai`; promote to global only when repeated evidence proves reuse.
+Keep project-specific behavior in project `.ai`. Promote it only when repeated evidence shows it is reusable outside that project.
+
+## Next
+
+- Read [Composable Capability](./composable-capability.md) for refs, snippets, and instruction templates.
+- Read [Writeback and evolution](./writeback-evolution.md) for the feedback loop.
+- Read [Managed mode](./managed-mode.md) before rendering the pack into a tool home.

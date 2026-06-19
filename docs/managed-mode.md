@@ -1,4 +1,4 @@
-# Managed Mode
+# Managed mode
 
 Managed mode is optional. Use it when you want `fclt` to write rendered files into a tool home. Do not use it just to inspect or normalize existing tool-native state.
 
@@ -37,9 +37,9 @@ When live content differs from canonical content:
 - rendered docs/config with local edits are skipped unless an explicit conflict option allows overwrite
 - built-in rendered defaults require `--builtin-conflicts overwrite` before replacing local edits
 
-This is deliberate. Managed mode should be boring and reversible.
+This is deliberate. Managed mode should be predictable and reversible.
 
-## Project Managed Mode
+## Project managed mode
 
 Project sync is default-deny. A project `.ai` root can exist without rendering anything into repo-local tool outputs.
 
@@ -60,7 +60,7 @@ tool_config = true
 
 If a repo-local `.ai` contains only generated state and no canonical assets, `fclt status --project` reports a generated-only warning and `fclt sync --project` skips. Initialize or restore canonical source before syncing managed project output.
 
-## When Not To Use Managed Mode
+## When not to use managed mode
 
 Do not use managed mode when:
 
@@ -71,3 +71,9 @@ Do not use managed mode when:
 - you are debugging and need read-only evidence first
 
 Use `fclt inventory`, `scan`, `list`, `show`, `graph`, `status`, and `audit` instead.
+
+## Next
+
+- Read [Project `.ai`](./project-ai.md) for repo-local sync policy.
+- Read [Security and trust](./security-trust.md) for MCP secrets and audit.
+- Use [Command reference](./reference.md) for common managed-mode commands.

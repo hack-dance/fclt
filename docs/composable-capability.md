@@ -2,6 +2,8 @@
 
 `fclt` treats AI behavior as small capability units that can be composed into larger agent instructions and evolved independently.
 
+This prevents one giant agent file from becoming the only place to put every preference, workflow, and exception. A language preference can live in one instruction. A repeated rendered block can live in one snippet. A workflow can live in one skill. Each unit can receive targeted writeback and targeted evolution.
+
 This is the core model:
 
 - write domain guidance once
@@ -168,3 +170,9 @@ fclt ai evolve list
 ```
 
 Open `~/.ai/writebacks/` and `~/.ai/evolution/` in a markdown editor to inspect review artifacts with frontmatter status, scope, targets, project metadata, evidence, and proposal state.
+
+## Next
+
+- Read [Writeback and evolution](./writeback-evolution.md) for proposal flow.
+- Read [Built-in Pack](./built-in-pack.md) for packaged defaults.
+- Use [Command reference](./reference.md) for template and graph commands.

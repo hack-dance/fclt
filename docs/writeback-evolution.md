@@ -1,6 +1,8 @@
-# Writeback And Evolution
+# Writeback and Evolution
 
 Writeback preserves useful signal from real work. Evolution turns repeated signal into reviewable changes.
+
+Use this when normal work exposes the same problem more than once: shallow tests, missing context, stale guidance, a slow tool path, or a missing skill. Ignore it for one-off preferences and vague complaints.
 
 Use this loop when a task exposes durable friction:
 
@@ -77,7 +79,7 @@ fclt ai evolve promote EV-00003 --to global --project
 
 ## Review Artifacts
 
-Runtime JSON queues, proposal metadata, draft patches, and journals stay in machine-local Facult state.
+Runtime JSON queues, proposal metadata, draft patches, and journals stay in machine-local `fclt` state.
 
 Human-readable Markdown mirrors live under global `~/.ai`:
 
@@ -95,3 +97,9 @@ Project-scoped artifacts include project metadata in frontmatter. They do not ge
 Global instructions, skills, plugins, and other high-risk shared surfaces require explicit review before apply. Project-scoped additive markdown changes can be lower risk, but still need evidence and a clear target.
 
 Executable product or tooling work belongs in the task system. Use evolution for the reusable instruction, skill, prompt, or operating-model change that should survive that work.
+
+## Next
+
+- Read [Composable Capability](./composable-capability.md) to choose the smallest target.
+- Read [Automations](./automations.md) to schedule recurring review loops.
+- Read [Security and trust](./security-trust.md) before applying global changes.

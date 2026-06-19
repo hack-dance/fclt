@@ -98,7 +98,7 @@ Review surfaces:
 
 Evolution proposal metadata, markdown drafts, patch artifacts, writeback queues,
 and journals are runtime state. `fclt` stores JSON queues, proposal records,
-draft refs, patches, and journals in machine-local Facult state. It mirrors
+draft refs, patches, and journals in machine-local `fclt` state. It mirrors
 human-readable review artifacts into global `~/.ai/writebacks/...` and
 `~/.ai/evolution/...`, including project-scoped artifacts under
 `projects/<slug-hash>/` with cwd/project metadata in frontmatter. Canonical
