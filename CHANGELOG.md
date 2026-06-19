@@ -1,3 +1,9 @@
+## [2.8.7](https://github.com/hack-dance/fclt/compare/v2.8.6...v2.8.7) (2026-06-19)
+
+### Bug Fixes
+
+* **cli:** use temp runtime cache fallback ([de6ab43](https://github.com/hack-dance/fclt/commit/de6ab436cf08d9e57db554d98b4ad7fe784813bc))
+
 ## [2.8.6](https://github.com/hack-dance/fclt/compare/v2.8.5...v2.8.6) (2026-06-19)
 
 ### Bug Fixes
