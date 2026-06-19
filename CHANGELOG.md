@@ -1,3 +1,9 @@
+## [2.8.11](https://github.com/hack-dance/fclt/compare/v2.8.10...v2.8.11) (2026-06-19)
+
+### Bug Fixes
+
+* **ci:** isolate windows binary verification home ([f6c40b1](https://github.com/hack-dance/fclt/commit/f6c40b17ab0be2b67c7ba43b499cecd74a38b07a))
+
 ## [2.8.10](https://github.com/hack-dance/fclt/compare/v2.8.9...v2.8.10) (2026-06-19)
 
 ### Bug Fixes
