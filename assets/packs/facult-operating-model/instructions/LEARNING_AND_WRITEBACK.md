@@ -45,6 +45,15 @@ Project-scoped writebacks should usually be recorded from the repo that produced
 the evidence. Global writebacks should be reserved for shared doctrine, shared
 skills, shared agents, tool behavior, or cross-project capability gaps.
 
+Target the smallest composable unit that explains the friction:
+
+- instruction: domain guidance, preferences, verification rules, or review doctrine
+- snippet: repeated markdown block used by more than one rendered doc
+- skill: workflow execution steps or examples
+- agent: delegated role behavior
+- MCP/tool config: tool interface, auth shape, or rendered integration
+- automation: scheduled review loop, cadence, prompt, or memory
+
 ## Record Writeback When
 
 - the same failure or weak loop appears again
@@ -54,6 +63,7 @@ skills, shared agents, tool behavior, or cross-project capability gaps.
 - a cross-project behavior probably belongs in global capability
 - a skill, tool, MCP, plugin, automation, or instruction gap repeatedly slows work down
 - an agent has to restate the same workaround, verification rule, or review rule
+- a repeated preference should become an atomic instruction such as `BUN.md`, `RUST.md`, or a project-specific testing policy
 
 ## Do Not Record Writeback For
 

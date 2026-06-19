@@ -5,6 +5,7 @@ These docs explain the product model behind `fclt`. The root [README](../README.
 Start here:
 
 - [Concepts](./concepts.md): canonical roots, generated state, rendered outputs, scopes, and asset types.
+- [Composable Capability](./composable-capability.md): refs, snippets, instruction templates, and evolvable units.
 - [Managed Mode](./managed-mode.md): when to let `fclt` write tool files, and how adoption works.
 - [Project `.ai`](./project-ai.md): how repo-local capability works without leaking project review state into the repo.
 - [Built-In Pack](./built-in-pack.md): the packaged operating-model layer for writeback and evolution.

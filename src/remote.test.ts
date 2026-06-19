@@ -1120,6 +1120,11 @@ describe("templates command", () => {
         rootDir: root,
         cwd: home,
       });
+      await templatesCommand(["init", "instruction", "BUN"], {
+        homeDir: home,
+        rootDir: root,
+        cwd: home,
+      });
     });
 
     expect(
@@ -1137,6 +1142,43 @@ describe("templates command", () => {
       join(root, "agents", "code-reviewer", "agent.toml")
     ).text();
     expect(agentText).toContain('name = "code-reviewer"');
+    const instructionText = await Bun.file(
+      join(root, "instructions", "BUN.md")
+    ).text();
+    expect(instructionText).toContain("# BUN");
+    expect(instructionText).toContain("@ai/instructions/VERIFICATION.md");
+    expect(instructionText).toContain(
+      "fclt ai writeback add --kind missing_context"
+    );
+    const installed = JSON.parse(
+      await Bun.file(join(root, "remote", "installed.json")).text()
+    ) as { items: Array<{ type: string; installedAs: string }> };
+    expect(
+      installed.items.some(
+        (item) => item.type === "instruction" && item.installedAs === "BUN.md"
+      )
+    ).toBe(true);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("honors --root for shared template scaffolds", async () => {
+    const { home } = await makeTempRoot();
+    const root = join(home, "custom-ai");
+    process.chdir(home);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "instruction", "--root", root, "BUN"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+
+    expect(await Bun.file(join(root, "instructions", "BUN.md")).exists()).toBe(
+      true
+    );
+    expect(
+      await Bun.file(join(home, ".ai", "instructions", "BUN.md")).exists()
+    ).toBe(false);
     expect(process.exitCode).toBe(0);
   });
 

@@ -9,6 +9,8 @@ Use writeback and evolution to improve the AI operating layer itself.
 
 Evolution is the synthesis and change side of the feedback loop. It turns accumulated writebacks, repeated tool friction, stale canonical assets, or clearly missing capability into small reviewable changes to instructions, skills, snippets, agents, or other markdown canonical assets.
 
+Use capability composition when choosing the target. Instructions, snippets, skills, agents, MCP/tool config, and automations are separate units. Target the smallest unit that actually needs to change instead of rewriting a broad agent doc.
+
 ## When To Record Writeback
 
 Record writeback when one of these is true:
@@ -59,6 +61,14 @@ Every good writeback should try to include:
 - the best target asset if known
 - the right scope
 - domain or tags when useful
+
+Good target examples:
+
+- `instruction:BUN` when shared Bun guidance is stale or missing
+- `@project/instructions/TESTING.md` when repo test policy needs project-scoped evolution
+- `snippet:global/lang/bun` when a repeated rendered block should be fixed or extracted
+- `skill:capability-evolution` when a workflow skill is missing steps or examples
+- `automation:evolution-review` when the scheduled review loop is noisy or incomplete
 
 ## Operator Flow
 
@@ -121,6 +131,14 @@ Current supported proposal kinds:
 - `promote_asset`
 
 Use the smallest durable change that fits the evidence.
+
+Examples:
+
+- `update_asset`: fix a stale instruction, snippet, agent, or automation markdown asset.
+- `create_asset`: add a missing instruction such as `BUN.md` or `RUST.md`.
+- `extract_snippet`: move repeated guidance out of several docs into one snippet.
+- `add_skill`: create a workflow when instructions are not enough.
+- `promote_asset`: move a proven project instruction/snippet/skill toward global reuse.
 
 ## Review And Apply Rules
 

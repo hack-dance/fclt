@@ -111,6 +111,8 @@ Common canonical asset types:
 
 Not every asset must be rendered into every tool. Use inventory and policy first, then managed sync only where `fclt` should own the rendered output.
 
+For concrete composition patterns, see [Composable Capability](./composable-capability.md).
+
 ## Feedback Loop
 
 The durable loop is:

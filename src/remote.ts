@@ -43,6 +43,7 @@ import {
   type RemoteAgentItem,
   type RemoteIndexItem,
   type RemoteIndexManifest,
+  type RemoteInstructionItem,
   type RemoteItemType,
   type RemoteMcpItem,
   type RemoteSkillItem,
@@ -60,6 +61,8 @@ const QUERY_SPLIT_RE = /\s+/;
 const MD_EXT_RE = /\.md$/i;
 const FILE_EXT_RE = /\.[A-Za-z0-9]+$/;
 const TRAILING_SLASH_RE = /\/+$/;
+const LEADING_SLASH_RE = /^\/+/;
+const INSTRUCTION_TITLE_SPLIT_RE = /[-_.\s]+/;
 const PROMPT_PATH_SPLIT_RE = /[,\n]/;
 const GIT_WORKTREE_LINE_RE = /\r?\n/;
 
@@ -220,6 +223,52 @@ Use this skill when the task repeatedly follows a known workflow and you want co
 - Include clear next steps when follow-up work exists.
 `,
         },
+      },
+    },
+    {
+      id: "instruction-template",
+      type: "instruction",
+      title: "Instruction Template",
+      description:
+        "Reusable markdown instruction scaffold with ref and snippet composition examples.",
+      version: "1.0.0",
+      tags: ["template", "dx", "instruction"],
+      instruction: {
+        name: "WORKFLOW.md",
+        content: `---
+description: "{{name}} reusable instruction"
+tags: [instruction, workflow]
+---
+
+# {{title}}
+
+Use this instruction when the task needs repeatable guidance that should be discoverable, targetable by writeback, and composable into agent docs.
+
+## Scope
+
+- Applies to:
+- Does not apply to:
+- Project-specific overrides:
+
+## Guidance
+
+- Keep the rule concrete enough that another agent can follow it without chat context.
+- Link deeper reusable guidance with canonical refs such as \`@ai/instructions/VERIFICATION.md\` or \`@project/instructions/TESTING.md\`.
+- Reuse stable partials with snippet markers when the same block appears in more than one rendered doc.
+
+## Composition
+
+<!-- fclty:global/team/example -->
+<!-- /fclty:global/team/example -->
+
+## Writeback Targeting
+
+Record durable friction against this instruction with:
+
+\`\`\`bash
+fclt ai writeback add --kind missing_context --summary "<what was missing>" --asset instruction:{{assetName}}
+\`\`\`
+`,
       },
     },
     {
@@ -1461,7 +1510,8 @@ function parseIndexItem(raw: unknown): RemoteIndexItem | null {
     type !== "skill" &&
     type !== "mcp" &&
     type !== "agent" &&
-    type !== "snippet"
+    type !== "snippet" &&
+    type !== "instruction"
   ) {
     return null;
   }
@@ -1557,6 +1607,30 @@ function parseIndexItem(raw: unknown): RemoteIndexItem | null {
       sourceUrl,
       tags,
       agent: { fileName, content },
+    };
+  }
+
+  if (type === "instruction") {
+    const instructionRaw = obj.instruction;
+    if (!isPlainObject(instructionRaw)) {
+      return null;
+    }
+    const name =
+      typeof instructionRaw.name === "string" ? instructionRaw.name.trim() : "";
+    const content =
+      typeof instructionRaw.content === "string" ? instructionRaw.content : "";
+    if (!(name && content)) {
+      return null;
+    }
+    return {
+      id,
+      type,
+      title,
+      description,
+      version,
+      sourceUrl,
+      tags,
+      instruction: { name, content },
     };
   }
 
@@ -1731,7 +1805,8 @@ async function loadInstalledState(
         type !== "skill" &&
         type !== "mcp" &&
         type !== "agent" &&
-        type !== "snippet"
+        type !== "snippet" &&
+        type !== "instruction"
       ) {
         continue;
       }
@@ -2035,6 +2110,69 @@ async function installSnippetItem(args: {
   };
 }
 
+function normalizeInstructionName(value: string): string {
+  const normalized = value
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(LEADING_SLASH_RE, "");
+  if (!normalized) {
+    throw new Error("Instruction name is required");
+  }
+  const withExt = MD_EXT_RE.test(normalized) ? normalized : `${normalized}.md`;
+  if (!isSafeRelativePath(withExt)) {
+    throw new Error(`Invalid instruction name: ${value}`);
+  }
+  return withExt;
+}
+
+function instructionTitleFromFileName(fileName: string): string {
+  const base = basename(fileName).replace(MD_EXT_RE, "");
+  return base
+    .split(INSTRUCTION_TITLE_SPLIT_RE)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function instructionAssetName(fileName: string): string {
+  return basename(fileName).replace(MD_EXT_RE, "");
+}
+
+async function installInstructionItem(args: {
+  item: RemoteInstructionItem;
+  installAs?: string;
+  rootDir: string;
+  force: boolean;
+  dryRun: boolean;
+}): Promise<{ installedAs: string; path: string; changedPaths: string[] }> {
+  const fileName = normalizeInstructionName(
+    args.installAs ?? args.item.instruction.name
+  );
+  const instructionPath = join(args.rootDir, "instructions", fileName);
+  assertInstallPath(instructionPath, join(args.rootDir, "instructions"));
+  if ((await fileExists(instructionPath)) && !args.force) {
+    throw new Error(
+      `Instruction already exists: ${fileName} (use --force to overwrite)`
+    );
+  }
+  if (!args.dryRun) {
+    await mkdir(dirname(instructionPath), { recursive: true });
+    await Bun.write(
+      instructionPath,
+      renderTemplate(args.item.instruction.content, {
+        name: fileName,
+        title: instructionTitleFromFileName(fileName),
+        assetName: instructionAssetName(fileName),
+      })
+    );
+  }
+  return {
+    installedAs: fileName,
+    path: instructionPath,
+    changedPaths: [instructionPath],
+  };
+}
+
 async function installParsedItem(args: {
   parsedRef: { index: string; itemId: string };
   item: RemoteIndexItem;
@@ -2076,8 +2214,16 @@ async function installParsedItem(args: {
       force: args.force,
       dryRun: args.dryRun,
     });
-  } else {
+  } else if (args.item.type === "snippet") {
     writeResult = await installSnippetItem({
+      item: args.item,
+      installAs: args.installAs,
+      rootDir: args.rootDir,
+      force: args.force,
+      dryRun: args.dryRun,
+    });
+  } else {
+    writeResult = await installInstructionItem({
       item: args.item,
       installAs: args.installAs,
       rootDir: args.rootDir,
@@ -2667,6 +2813,9 @@ function printTemplatesHelp() {
               "fclt templates init agent <name> [--force] [--dry-run]"
             ),
             renderCode(
+              "fclt templates init instruction <name> [--force] [--dry-run]"
+            ),
+            renderCode(
               "fclt templates init snippet <marker> [--force] [--dry-run]"
             ),
             renderCode("fclt templates init agents [--force] [--dry-run]"),
@@ -2732,6 +2881,53 @@ function parseLongFlag(argv: string[], flag: string): string | null {
     }
   }
   return null;
+}
+
+const TEMPLATE_INIT_VALUE_FLAGS = new Set([
+  "--automation-status",
+  "--cwds",
+  "--name",
+  "--project-root",
+  "--root",
+  "--rrule",
+  "--scope",
+  "--status",
+]);
+
+function parseTemplateInitArgs(argv: string[]): {
+  positional: string[];
+  rootArg?: string;
+} {
+  const positional: string[] = [];
+  let rootArg: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) {
+      continue;
+    }
+    if (arg === "--root") {
+      rootArg = argv[i + 1] ?? undefined;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--root=")) {
+      rootArg = arg.slice("--root=".length);
+      continue;
+    }
+    if (TEMPLATE_INIT_VALUE_FLAGS.has(arg)) {
+      i += 1;
+      continue;
+    }
+    const equalFlag = arg.startsWith("--") ? arg.split("=", 1)[0] : "";
+    if (equalFlag && TEMPLATE_INIT_VALUE_FLAGS.has(equalFlag)) {
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      continue;
+    }
+    positional.push(arg);
+  }
+  return { positional, rootArg };
 }
 
 export async function sourcesCommand(
@@ -3124,7 +3320,7 @@ export async function templatesCommand(
   const [kind, ...args] = rest;
   if (!kind) {
     console.error(
-      "templates init requires a kind (skill|mcp|agent|snippet|agents|claude|operating-model|project-ai|automation)"
+      "templates init requires a kind (skill|mcp|agent|instruction|snippet|agents|claude|operating-model|project-ai|automation)"
     );
     process.exitCode = 2;
     return;
@@ -3132,7 +3328,8 @@ export async function templatesCommand(
   const dryRun = args.includes("--dry-run");
   const force = args.includes("--force");
   const json = args.includes("--json");
-  const positional = args.filter((a) => a && !a.startsWith("-"));
+  const parsedArgs = parseTemplateInitArgs(args);
+  const positional = parsedArgs.positional;
 
   if (kind === "project-ai") {
     try {
@@ -3244,6 +3441,14 @@ export async function templatesCommand(
     as = normalizedName.endsWith(".toml")
       ? normalizedName
       : `${normalizedName}/agent.toml`;
+  } else if (kind === "instruction") {
+    ref = `${BUILTIN_INDEX_NAME}:instruction-template`;
+    as = positional[0];
+    if (!as) {
+      console.error("templates init instruction requires a <name>");
+      process.exitCode = 2;
+      return;
+    }
   } else if (kind === "snippet") {
     ref = `${BUILTIN_INDEX_NAME}:snippet-template`;
     as = positional[0];
@@ -3353,7 +3558,7 @@ export async function templatesCommand(
       dryRun,
       force,
       homeDir: ctx.homeDir,
-      rootDir: ctx.rootDir,
+      rootDir: parsedArgs.rootArg ?? ctx.rootDir,
       cwd: ctx.cwd,
       fetchJson: ctx.fetchJson,
       fetchText: ctx.fetchText,

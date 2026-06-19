@@ -4,7 +4,12 @@ import type {
   ManifestSignatureKey,
 } from "./remote-manifest-integrity";
 
-export type RemoteItemType = "skill" | "mcp" | "agent" | "snippet";
+export type RemoteItemType =
+  | "skill"
+  | "mcp"
+  | "agent"
+  | "snippet"
+  | "instruction";
 
 export interface RemoteSkillPayload {
   name: string;
@@ -23,6 +28,11 @@ export interface RemoteAgentPayload {
 
 export interface RemoteSnippetPayload {
   marker: string;
+  content: string;
+}
+
+export interface RemoteInstructionPayload {
+  name: string;
   content: string;
 }
 
@@ -56,11 +66,17 @@ export interface RemoteSnippetItem extends RemoteIndexItemBase {
   snippet: RemoteSnippetPayload;
 }
 
+export interface RemoteInstructionItem extends RemoteIndexItemBase {
+  type: "instruction";
+  instruction: RemoteInstructionPayload;
+}
+
 export type RemoteIndexItem =
   | RemoteSkillItem
   | RemoteMcpItem
   | RemoteAgentItem
-  | RemoteSnippetItem;
+  | RemoteSnippetItem
+  | RemoteInstructionItem;
 
 export interface RemoteIndexManifest {
   name: string;

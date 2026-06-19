@@ -215,6 +215,7 @@ The renderer is optional. The low-friction default is to let tools keep their na
 Focused docs live under [docs](./docs/README.md):
 
 - [Concepts](./docs/concepts.md): roots, scopes, state layers, and asset types
+- [Composable Capability](./docs/composable-capability.md): refs, snippets, instruction templates, and evolvable units
 - [Managed Mode](./docs/managed-mode.md): safe rendering and adoption rules
 - [Project `.ai`](./docs/project-ai.md): repo-local capability and project sync policy
 - [Built-In Pack](./docs/built-in-pack.md): packaged writeback/evolution defaults
@@ -224,7 +225,7 @@ Focused docs live under [docs](./docs/README.md):
 ## Built-in Defaults
 
 `fclt` includes a built-in layer for writeback and evolution. By default, that layer provides:
-- instructions for work units, learning/writeback, evolution, integration, and project capability
+- instructions for work units, capability composition, learning/writeback, evolution, integration, and project capability
 - agents such as `writeback-curator`, `evolution-planner`, and `scope-promoter`
 - skills such as `capability-evolution` and `project-operating-layer-design`
 
@@ -238,6 +239,8 @@ The intended feedback loop is:
 3. humans or scheduled automations review grouped writebacks and existing proposals
 4. only repeated evidence, a clearly missing capability, or a stale canonical asset becomes an evolution proposal
 5. accepted proposals update canonical markdown assets, skills, snippets, or project/global instructions
+
+Composition matters: prefer atomic instructions such as `BUN.md` or `RUST.md`, snippets for repeated rendered blocks, skills for workflows, agents for delegated roles, MCP/tool config for tool interfaces, and automations for scheduled loops. Record writeback against the smallest unit that needs to improve.
 
 If you want to disable default built-in sync for one canonical root:
 
@@ -264,6 +267,8 @@ Put that in `config.toml` or `config.local.toml` under the active canonical root
 # Scaffold reusable templates in the canonical store
 fclt templates init agents
 fclt templates init agent review-operator
+fclt templates init instruction BUN
+fclt templates init snippet global/lang/bun
 fclt templates init skill facult-manager
 
 # Enable that skill for managed tools
@@ -429,6 +434,33 @@ fclt snippets sync [--dry-run] [file...]
 ```
 
 Snippets are already used during global Codex `AGENTS.md` rendering.
+
+### Composable instructions and refs
+
+Use instruction templates for atomic reusable doctrine:
+
+```bash
+fclt templates init instruction BUN
+fclt templates init instruction lang/RUST
+fclt show instruction:BUN
+```
+
+Use canonical refs to compose instructions without hard-coding paths:
+
+```text
+@ai/instructions/BUN.md
+@project/instructions/TESTING.md
+@builtin/facult-operating-model/instructions/WORK_UNITS.md
+```
+
+Use snippets when a repeated block should be inserted into rendered docs and evolved independently:
+
+```md
+<!-- fclty:global/lang/bun -->
+<!-- /fclty:global/lang/bun -->
+```
+
+The composition rule is simple: instructions hold doctrine, snippets hold repeated blocks, skills hold workflows, agents hold roles, MCP/tool config holds interfaces, and automations hold scheduled review loops. Writeback and evolution should target the smallest unit that actually needs to change.
 
 ### Graph inspection
 
@@ -645,6 +677,7 @@ fclt templates init project-ai
 fclt templates init skill <name>
 fclt templates init mcp <name>
 fclt templates init agent <name>
+fclt templates init instruction <name>
 fclt templates init snippet <marker>
 fclt templates init agents
 fclt templates init automation <template-id> --scope global|project|wide [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE]

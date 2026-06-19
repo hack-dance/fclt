@@ -13,6 +13,7 @@ It provides a default feedback loop for agents that use `fclt`.
 Instructions:
 
 - `WORK_UNITS.md`
+- `CAPABILITY_COMPOSITION.md`
 - `LEARNING_AND_WRITEBACK.md`
 - `EVOLUTION.md`
 - `PROJECT_CAPABILITY.md`
@@ -82,6 +83,7 @@ sync_defaults = false
 The built-in pack should stay small. It should teach:
 
 - work-unit discipline
+- composable refs, snippets, instructions, skills, agents, MCP, and automations
 - verification
 - writeback
 - evolution proposal review
