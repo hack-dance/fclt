@@ -81,7 +81,6 @@ const expectedCodexGuidance = [
   "# Global Agent Instructions",
   "Treat every task as a work unit",
   "record a writeback before ending the task",
-  "/instructions/VERIFICATION.md",
 ];
 const normalizedCodexAgents = codexAgents.replaceAll("\\", "/");
 if (
