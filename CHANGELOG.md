@@ -1,3 +1,9 @@
+## [2.13.7](https://github.com/hack-dance/fclt/compare/v2.13.6...v2.13.7) (2026-06-19)
+
+### Bug Fixes
+
+* remove private defaults from builtin guidance ([076c8a0](https://github.com/hack-dance/fclt/commit/076c8a0a2bfb035335b33a8f11fecdaa17a29915))
+
 ## [2.13.6](https://github.com/hack-dance/fclt/compare/v2.13.5...v2.13.6) (2026-06-19)
 
 ### Bug Fixes
