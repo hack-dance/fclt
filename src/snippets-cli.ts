@@ -20,8 +20,8 @@ Usage:
   fclt snippets sync [--dry-run] [file...]
 
 Notes:
-  - <name> is the snippet marker name (e.g. codingstyle, global/codingstyle, myproject/context)
-  - Unscoped names (e.g. codingstyle) resolve to project snippet first (if in a git repo), then global.
+  - <name> is the snippet marker name (e.g. qualitychecklist, global/qualitychecklist, myproject/context)
+  - Unscoped names (e.g. qualitychecklist) resolve to project snippet first (if in a git repo), then global.
 `);
 }
 

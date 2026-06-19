@@ -394,17 +394,12 @@ Ship reliable changes quickly while keeping behavior predictable.
       type: "snippet",
       title: "Snippet Template",
       description:
-        "Reusable snippet block template for coding standards and communication style.",
+        "Reusable snippet block template for a compact quality checklist.",
       version: "1.0.0",
       tags: ["template", "dx", "snippet"],
       snippet: {
-        marker: "team/codingstyle",
-        content: `## Coding Style
-- Prefer explicit, descriptive names over abbreviations.
-- Keep functions focused and side-effect boundaries obvious.
-- Add tests when behavior changes.
-
-## Review Checklist
+        marker: "team/quality-checklist",
+        content: `## Quality Checklist
 - Is behavior correct for edge cases?
 - Are failure modes clear and actionable?
 - Is the change minimal for the goal?

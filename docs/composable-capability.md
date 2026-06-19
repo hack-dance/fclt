@@ -18,8 +18,8 @@ Use `instructions/` for reusable markdown doctrine.
 Examples:
 
 ```text
-~/.ai/instructions/BUN.md
-~/.ai/instructions/RUST.md
+~/.ai/instructions/LANGUAGE.md
+~/.ai/instructions/REVIEW.md
 <repo>/.ai/instructions/TESTING.md
 ```
 
@@ -29,7 +29,7 @@ Examples:
 
 ```text
 ~/.ai/snippets/global/codex/baseline.md
-~/.ai/snippets/global/lang/bun.md
+~/.ai/snippets/global/policy/review.md
 <repo>/.ai/snippets/global/project/testing.md
 ```
 
@@ -40,7 +40,7 @@ Use `skills/` for executable workflows, `agents/` for delegated roles, `mcp/` fo
 Canonical refs let a markdown asset point at another asset without hard-coding machine paths:
 
 ```text
-@ai/instructions/BUN.md
+@ai/instructions/LANGUAGE.md
 @project/instructions/TESTING.md
 @builtin/facult-operating-model/instructions/WORK_UNITS.md
 ```
@@ -53,7 +53,7 @@ Config-backed refs are useful when the concrete path should be named in `config.
 version = 1
 
 [refs]
-language_defaults = "@ai/instructions/BUN.md"
+language_defaults = "@ai/instructions/LANGUAGE.md"
 project_testing = "@project/instructions/TESTING.md"
 ```
 
@@ -64,22 +64,22 @@ Rendered markdown can use those refs through the render context when a tool adap
 Snippets use paired HTML markers:
 
 ```md
-<!-- fclty:global/lang/bun -->
-<!-- /fclty:global/lang/bun -->
+<!-- fclty:global/policy/review -->
+<!-- /fclty:global/policy/review -->
 ```
 
 The marker above resolves to:
 
 ```text
-snippets/global/lang/bun.md
+snippets/global/policy/review.md
 ```
 
 Create and inspect snippets with:
 
 ```bash
-fclt templates init snippet global/lang/bun
+fclt templates init snippet global/policy/review
 fclt snippets list
-fclt snippets show global/lang/bun
+fclt snippets show global/policy/review
 fclt snippets sync --dry-run AGENTS.global.md
 ```
 
@@ -90,22 +90,21 @@ Use snippets when the same block appears in more than one rendered doc, or when 
 Create a new instruction scaffold with:
 
 ```bash
-fclt templates init instruction BUN
-fclt templates init instruction lang/RUST
+fclt templates init instruction LANGUAGE
+fclt templates init instruction REVIEW
 ```
 
 That writes:
 
 ```text
-instructions/BUN.md
-instructions/lang/RUST.md
+instructions/LANGUAGE.md
+instructions/REVIEW.md
 ```
 
 An instruction can include refs, snippet markers, examples, and writeback targeting guidance. Keep one instruction focused on one reusable domain. For example:
 
-- `BUN.md`: JavaScript runtime/package/test preferences.
-- `RUST.md`: Rust formatting, linting, and test preferences.
-- `WRITING.md`: voice and editorial rules.
+- `LANGUAGE.md`: user-owned language or tooling preferences.
+- `REVIEW.md`: user-owned review standards.
 - `VERIFICATION.md`: proof standards.
 
 ## Composition Pattern
@@ -116,8 +115,8 @@ A global `AGENTS.global.md` can stay short and compose units:
 # Global Agent Instructions
 
 For work-unit framing, read `@ai/instructions/WORK_UNITS.md`.
-For JS/Bun projects, read `@ai/instructions/BUN.md`.
-For Rust projects, read `@ai/instructions/RUST.md`.
+For language/tooling preferences, read `@ai/instructions/LANGUAGE.md`.
+For review standards, read `@ai/instructions/REVIEW.md`.
 
 <!-- fclty:global/codex/baseline -->
 <!-- /fclty:global/codex/baseline -->
@@ -148,7 +147,7 @@ Target the smallest unit that actually needs to change:
 Examples:
 
 ```bash
-fclt ai writeback add --kind missing_context --summary "Bun guidance did not cover test runner selection." --asset instruction:BUN
+fclt ai writeback add --kind missing_context --summary "Language guidance did not cover test runner selection." --asset instruction:LANGUAGE
 fclt ai writeback add --kind reusable_pattern --summary "Project testing policy should become a shared verification snippet." --asset @project/instructions/TESTING.md
 fclt ai evolve propose
 ```
@@ -162,9 +161,9 @@ Use these surfaces:
 ```bash
 fclt list instructions --global
 fclt list snippets --global
-fclt show instruction:BUN
+fclt show instruction:LANGUAGE
 fclt graph deps AGENTS.global.md
-fclt graph dependents @ai/instructions/BUN.md
+fclt graph dependents @ai/instructions/LANGUAGE.md
 fclt ai writeback group --by asset
 fclt ai evolve list
 ```

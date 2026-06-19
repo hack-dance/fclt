@@ -342,7 +342,7 @@ describe("ai-state freshness repair", () => {
     await Bun.write(join(rootDir, "AGENTS.global.md"), "Global guidance\n");
     await Bun.write(
       join(rootDir, "config.toml"),
-      '[refs]\npolicy = "@ai/instructions/WRITING.md"\n'
+      '[refs]\npolicy = "@ai/instructions/REVIEW.md"\n'
     );
 
     await buildIndex({ rootDir, homeDir: tempHome });

@@ -10,7 +10,7 @@ function placeholder(name: string): string {
   return `${DOLLAR}{${name}}`;
 }
 
-const REFS_WRITING_RULE = placeholder("refs.writing_rule");
+const REFS_WRITING_RULE = placeholder("refs.review_policy");
 const VARS_VOICE = placeholder("vars.voice");
 const AI_ROOT_VAR = placeholder("AI_ROOT");
 const HOME_VAR = placeholder("HOME");
@@ -24,30 +24,30 @@ async function createTempDir(): Promise<string> {
 describe("renderAiRefs", () => {
   it("renders canonical @ai refs to absolute paths", () => {
     const rendered = renderAiRefs(
-      "Before reviewing, read @ai/rules/WRITING.md.\nThen inspect @ai/scripts/check-style.sh.",
+      "Before reviewing, read @ai/rules/REVIEW.md.\nThen inspect @ai/scripts/check-style.sh.",
       "/Users/hack/.ai"
     );
 
     expect(rendered).toBe(
-      "Before reviewing, read /Users/hack/.ai/rules/WRITING.md.\nThen inspect /Users/hack/.ai/scripts/check-style.sh."
+      "Before reviewing, read /Users/hack/.ai/rules/REVIEW.md.\nThen inspect /Users/hack/.ai/scripts/check-style.sh."
     );
   });
 
   it("leaves unrelated text unchanged", () => {
     const input =
-      "Use @aix/rules/WRITING.md, literal @ai, and email@example.com as-is.";
+      "Use @aix/rules/REVIEW.md, literal @ai, and email@example.com as-is.";
 
     expect(renderAiRefs(input, "/Users/hack/.ai")).toBe(input);
   });
 
   it("renders project refs to repo-local .ai paths", () => {
     const rendered = renderProjectRefs(
-      "Read @project/instructions/WRITING.md before editing.",
+      "Read @project/instructions/REVIEW.md before editing.",
       "/Users/hack/dev/facult"
     );
 
     expect(rendered).toBe(
-      "Read /Users/hack/dev/facult/.ai/instructions/WRITING.md before editing."
+      "Read /Users/hack/dev/facult/.ai/instructions/REVIEW.md before editing."
     );
   });
 });
@@ -60,7 +60,7 @@ describe("renderCanonicalText", () => {
     await mkdir(rootDir, { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@ai/rules/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@ai/rules/REVIEW.md"\n'
     );
 
     const rendered = await renderCanonicalText(
@@ -72,7 +72,7 @@ describe("renderCanonicalText", () => {
     );
 
     expect(rendered).toBe(
-      `Before reviewing, read ${join(rootDir, "rules", "WRITING.md")}.`
+      `Before reviewing, read ${join(rootDir, "rules", "REVIEW.md")}.`
     );
   });
 
@@ -128,7 +128,7 @@ describe("renderCanonicalText", () => {
     await mkdir(rootDir, { recursive: true });
     await Bun.write(
       join(rootDir, "config.toml"),
-      'version = 1\n\n[refs]\nwriting_rule = "@project/instructions/WRITING.md"\n'
+      'version = 1\n\n[refs]\nreview_policy = "@project/instructions/REVIEW.md"\n'
     );
 
     const rendered = await renderCanonicalText(`Read ${REFS_WRITING_RULE}.`, {
@@ -138,7 +138,7 @@ describe("renderCanonicalText", () => {
     });
 
     expect(rendered).toBe(
-      `Read ${join(projectRoot, ".ai", "instructions", "WRITING.md")}.`
+      `Read ${join(projectRoot, ".ai", "instructions", "REVIEW.md")}.`
     );
   });
 });

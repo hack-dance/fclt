@@ -29,8 +29,8 @@ The main units are:
 
 Examples:
 
-- `@ai/instructions/BUN.md` for shared Bun preferences.
-- `@ai/instructions/RUST.md` for shared Rust preferences.
+- `@ai/instructions/LANGUAGE.md` for a user-owned language/tooling preference.
+- `@ai/instructions/REVIEW.md` for a user-owned review standard.
 - `@project/instructions/TESTING.md` for repo-specific test policy.
 - `<!-- fclty:global/codex/baseline -->` for a shared rendered block.
 
@@ -56,7 +56,7 @@ Target the smallest affected unit.
 Good writeback targets are graph-backed selectors when possible:
 
 ```bash
-fclt ai writeback add --kind missing_context --summary "Bun guidance did not cover test runner selection." --asset instruction:BUN
+fclt ai writeback add --kind missing_context --summary "Language guidance did not cover test runner selection." --asset instruction:LANGUAGE
 fclt ai writeback add --kind reusable_pattern --summary "Project test policy should become a shared verification snippet." --asset @project/instructions/TESTING.md
 fclt ai writeback add --kind bad_default --summary "The review automation escalated one-off preferences." --asset automation:evolution-review
 ```
@@ -65,7 +65,7 @@ Use `fclt ai evolve ...` only after repeated signal, a clearly missing capabilit
 
 ## Agent Defaults
 
-When an agent sees a repeated preference like "use Bun for JS projects" or "prefer Cargo nextest for Rust tests", it should not bury that in chat. It should identify whether the durable unit is:
+When an agent sees a repeated language, framework, or test preference, it should not bury that in chat. It should identify whether the durable unit is:
 
 - a global instruction
 - a project instruction

@@ -64,9 +64,9 @@ Every good writeback should try to include:
 
 Good target examples:
 
-- `instruction:BUN` when shared Bun guidance is stale or missing
+- `instruction:LANGUAGE` when shared language/tooling guidance is stale or missing
 - `@project/instructions/TESTING.md` when repo test policy needs project-scoped evolution
-- `snippet:global/lang/bun` when a repeated rendered block should be fixed or extracted
+- `snippet:global/policy/review` when a repeated rendered block should be fixed or extracted
 - `skill:capability-evolution` when a workflow skill is missing steps or examples
 - `automation:evolution-review` when the scheduled review loop is noisy or incomplete
 
@@ -135,7 +135,7 @@ Use the smallest durable change that fits the evidence.
 Examples:
 
 - `update_asset`: fix a stale instruction, snippet, agent, or automation markdown asset.
-- `create_asset`: add a missing instruction such as `BUN.md` or `RUST.md`.
+- `create_asset`: add a missing instruction such as `LANGUAGE.md` or `REVIEW.md`.
 - `extract_snippet`: move repeated guidance out of several docs into one snippet.
 - `add_skill`: create a workflow when instructions are not enough.
 - `promote_asset`: move a proven project instruction/snippet/skill toward global reuse.

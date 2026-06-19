@@ -202,7 +202,7 @@ export function formatSnippetInjection(snippet: string): string {
 }
 
 export interface SnippetResolution {
-  /** The marker name requested (e.g. "codingstyle", "global/codingstyle", "myproj/context"). */
+  /** The marker name requested (e.g. "qualitychecklist", "global/qualitychecklist", "myproj/context"). */
   marker: string;
   /** The snippet file path used for injection. */
   path: string;

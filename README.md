@@ -151,8 +151,8 @@ fclt status --project
 Create individual capability units:
 
 ```bash
-fclt templates init instruction BUN
-fclt templates init snippet global/lang/bun
+fclt templates init instruction LANGUAGE
+fclt templates init snippet global/policy/review
 fclt templates init skill project-review
 fclt templates init agent review-operator
 ```
@@ -214,7 +214,7 @@ Canonical capability can include:
 Refs let markdown point at canonical assets without hard-coding paths:
 
 ```text
-@ai/instructions/BUN.md
+@ai/instructions/LANGUAGE.md
 @project/instructions/TESTING.md
 @builtin/facult-operating-model/instructions/WORK_UNITS.md
 ```
@@ -222,8 +222,8 @@ Refs let markdown point at canonical assets without hard-coding paths:
 Snippet markers let repeated blocks stay independently editable:
 
 ```md
-<!-- fclty:global/lang/bun -->
-<!-- /fclty:global/lang/bun -->
+<!-- fclty:global/policy/review -->
+<!-- /fclty:global/policy/review -->
 ```
 
 The rule is simple: target the smallest unit that needs to change. Use instructions for doctrine, snippets for repeated blocks, skills for workflows, agents for roles, MCP/tool config for interfaces, and automations for scheduled loops.

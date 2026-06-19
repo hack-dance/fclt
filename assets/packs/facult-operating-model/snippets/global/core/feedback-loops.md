@@ -4,9 +4,7 @@
 - If the available loop is stale, weak, noisy, or easy to game, improve it or say what is missing.
 - When useful, leave behind a stronger loop than the one you started with.
 - Treat verification, evaluation, and writeback as part of the work, not cleanup after it.
-- Domain-specific instructions:
-  - coding and implementation: ${refs.coding_general} and ${refs.verification}
-  - writing and editorial work: ${refs.writing_rule}
-  - work-unit clarification: ${refs.work_units}
-  - learning and writeback: ${refs.learning_writeback}
+- For work-unit clarification, read ${refs.work_units}.
+- For verification guidance, read ${refs.verification}.
+- For learning and writeback, read ${refs.learning_writeback}.
 - For deeper guidance, read ${refs.feedback_loops}.

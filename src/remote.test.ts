@@ -1122,7 +1122,7 @@ describe("templates command", () => {
         rootDir: root,
         cwd: home,
       });
-      await templatesCommand(["init", "instruction", "BUN"], {
+      await templatesCommand(["init", "instruction", "LANGUAGE"], {
         homeDir: home,
         rootDir: root,
         cwd: home,
@@ -1145,9 +1145,9 @@ describe("templates command", () => {
     ).text();
     expect(agentText).toContain('name = "code-reviewer"');
     const instructionText = await Bun.file(
-      join(root, "instructions", "BUN.md")
+      join(root, "instructions", "LANGUAGE.md")
     ).text();
-    expect(instructionText).toContain("# BUN");
+    expect(instructionText).toContain("# LANGUAGE");
     expect(instructionText).toContain("@ai/instructions/VERIFICATION.md");
     expect(instructionText).toContain(
       "fclt ai writeback add --kind missing_context"
@@ -1157,7 +1157,8 @@ describe("templates command", () => {
     ) as { items: Array<{ type: string; installedAs: string }> };
     expect(
       installed.items.some(
-        (item) => item.type === "instruction" && item.installedAs === "BUN.md"
+        (item) =>
+          item.type === "instruction" && item.installedAs === "LANGUAGE.md"
       )
     ).toBe(true);
     expect(process.exitCode).toBe(0);
@@ -1169,17 +1170,20 @@ describe("templates command", () => {
     process.chdir(home);
 
     await withMutedConsole(async () => {
-      await templatesCommand(["init", "instruction", "--root", root, "BUN"], {
-        homeDir: home,
-        cwd: home,
-      });
+      await templatesCommand(
+        ["init", "instruction", "--root", root, "LANGUAGE"],
+        {
+          homeDir: home,
+          cwd: home,
+        }
+      );
     });
 
-    expect(await Bun.file(join(root, "instructions", "BUN.md")).exists()).toBe(
-      true
-    );
     expect(
-      await Bun.file(join(home, ".ai", "instructions", "BUN.md")).exists()
+      await Bun.file(join(root, "instructions", "LANGUAGE.md")).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(join(home, ".ai", "instructions", "LANGUAGE.md")).exists()
     ).toBe(false);
     expect(process.exitCode).toBe(0);
   });
