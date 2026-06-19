@@ -526,7 +526,7 @@ async function readJsonSafe(p: string): Promise<unknown> {
 
 function canonicalRefForPath(
   source: IndexedSource,
-  category:
+  _category:
     | "skills"
     | "agents"
     | "automations"
@@ -548,7 +548,7 @@ function canonicalRefForPath(
     return `@project/${rel}`;
   }
   if (source.sourceKind === "builtin") {
-    return `@builtin/facult-operating-model/${category}/${rel}`;
+    return `@builtin/facult-operating-model/${rel}`;
   }
   return undefined;
 }

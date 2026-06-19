@@ -421,8 +421,17 @@ describe("buildIndex", () => {
     expect(index.instructions.SHARED?.projectSlug).toBe("repo");
     expect(index.agents["argument-editor"]?.projectSlug).toBe("repo");
     expect(index.instructions.INTEGRATION?.sourceKind).toBe("builtin");
+    expect(index.instructions.INTEGRATION?.canonicalRef).toBe(
+      "@builtin/facult-operating-model/instructions/INTEGRATION.md"
+    );
     expect(index.instructions.INTEGRATION?.path).toContain(
       join("assets", "packs", "facult-operating-model", "instructions")
+    );
+    expect(index.skills["project-operating-layer-design"]?.sourceKind).toBe(
+      "builtin"
+    );
+    expect(index.skills["project-operating-layer-design"]?.canonicalRef).toBe(
+      "@builtin/facult-operating-model/skills/project-operating-layer-design"
     );
 
     const docNode = Object.values(graph.nodes).find(
