@@ -1070,6 +1070,55 @@ export async function listProposals(args?: {
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+export async function refreshAiReviewArtifacts(args: {
+  homeDir?: string;
+  rootDir: string;
+}): Promise<{
+  writebackCount: number;
+  proposalCount: number;
+  writebackReviewDir: string;
+  evolutionReviewDir: string;
+}> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const writebacks = await listWritebacks({ homeDir, rootDir: args.rootDir });
+  for (const record of writebacks) {
+    await writeWritebackReviewArtifact({
+      homeDir,
+      rootDir: args.rootDir,
+      record,
+    });
+  }
+
+  const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
+  for (const proposal of proposals) {
+    const sourceWritebacks = (
+      await Promise.all(
+        proposal.sourceWritebacks.map((id) =>
+          showWriteback(id, { homeDir, rootDir: args.rootDir })
+        )
+      )
+    ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+    await writeProposalReviewArtifact({
+      homeDir,
+      rootDir: args.rootDir,
+      proposal,
+      writebacks: sourceWritebacks,
+    });
+  }
+
+  const writebackReviewDir = facultAiWritebackReviewDir(homeDir, args.rootDir);
+  const evolutionReviewDir = facultAiEvolutionReviewDir(homeDir, args.rootDir);
+  await mkdir(writebackReviewDir, { recursive: true });
+  await mkdir(evolutionReviewDir, { recursive: true });
+
+  return {
+    writebackCount: writebacks.length,
+    proposalCount: proposals.length,
+    writebackReviewDir,
+    evolutionReviewDir,
+  };
+}
+
 export async function showProposal(
   id: string,
   args: { homeDir?: string; rootDir: string }
@@ -1860,6 +1909,14 @@ async function writebackCommand(argv: string[]) {
       const rows = await listWritebacks({ rootDir });
       if (commandArgs.includes("--json")) {
         console.log(JSON.stringify(rows, null, 2));
+        return;
+      }
+      console.log(`writebacks root: ${rootDir}`);
+      console.log(
+        `writebacks scope: ${projectRootFromAiRoot(rootDir, process.env.HOME ?? "") ? "project" : "global"}`
+      );
+      if (rows.length === 0) {
+        console.log("No writebacks found for this scope.");
         return;
       }
       for (const row of rows) {

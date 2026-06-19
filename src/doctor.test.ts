@@ -1,9 +1,25 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { manageTool } from "./manage";
-import { facultAiIndexPath } from "./paths";
+import {
+  facultAiEvolutionReviewDir,
+  facultAiIndexPath,
+  facultAiWritebackQueuePath,
+  facultAiWritebackReviewDir,
+} from "./paths";
+
+const BROKEN_CODING_REF = ["$", "{refs.coding_general}"].join("");
+const BROKEN_LEARNING_REF = ["$", "{refs.learning_writeback}"].join("");
 
 async function writeJson(p: string, data: unknown) {
   await mkdir(join(p, ".."), { recursive: true }).catch(() => null);
@@ -123,6 +139,15 @@ test("doctor --repair migrates legacy codex skill and plugin layouts into .agent
       join(dir, ".codex", "skills", "legacy-skill", "SKILL.md"),
       "# Legacy Skill\n"
     );
+    await symlink(
+      join(dir, "missing-imagegen-source"),
+      join(dir, ".codex", "skills", "imagegen")
+    );
+    await mkdir(join(dir, ".agents", "skills"), { recursive: true });
+    await symlink(
+      join(dir, "missing-imagegen-destination"),
+      join(dir, ".agents", "skills", "imagegen")
+    );
 
     await mkdir(
       join(dir, ".codex", "plugins", "autoresearch", ".codex-plugin"),
@@ -194,6 +219,9 @@ test("doctor --repair migrates legacy codex skill and plugin layouts into .agent
       await Bun.file(
         join(dir, ".agents", "skills", "legacy-skill", "SKILL.md")
       ).exists()
+    ).toBe(true);
+    expect(
+      (await lstat(join(dir, ".codex", "skills", "imagegen"))).isSymbolicLink()
     ).toBe(true);
     expect(
       await Bun.file(
@@ -366,6 +394,192 @@ test("doctor --json reports read-only setup health", async () => {
       })
     );
     expect(await Bun.file(join(dir, ".ai")).exists()).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor --json flags invalid canonical global guidance", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-global-docs-"));
+  const aiRoot = join(dir, ".ai");
+
+  try {
+    await mkdir(aiRoot, { recursive: true });
+    await Bun.write(
+      join(aiRoot, "AGENTS.global.md"),
+      [
+        "# Global Agent Instructions",
+        "",
+        "<!-- fclty:global/core/work-units -->",
+        "<!-- /fclty:global/core/work-units -->",
+        "",
+        `- For coding work, read ${BROKEN_CODING_REF}.`,
+      ].join("\n")
+    );
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    const report = JSON.parse(out) as {
+      health: { state: string; ok: boolean };
+      checks: {
+        canonicalGlobalDocsValid: boolean;
+        canonicalGlobalDocsIssueCodes: string[];
+      };
+      issues: Array<{ code: string }>;
+      actions: Array<{ id: string; command: string }>;
+    };
+    expect(report.health.state).toBe("canonical_source_attention");
+    expect(report.health.ok).toBe(false);
+    expect(report.checks.canonicalGlobalDocsValid).toBe(false);
+    expect(report.checks.canonicalGlobalDocsIssueCodes).toEqual([
+      "canonical-global-docs-unresolved-template",
+      "canonical-global-docs-empty-managed-sections",
+    ]);
+    expect(report.issues.map((issue) => issue.code)).toContain(
+      "canonical-global-docs-unresolved-template"
+    );
+    expect(report.actions).toContainEqual(
+      expect.objectContaining({
+        id: "refresh-global-operating-model",
+        command: "fclt templates init operating-model --global --force",
+      })
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor exits nonzero for invalid canonical global guidance", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-global-docs-text-"));
+  const aiRoot = join(dir, ".ai");
+
+  try {
+    await mkdir(aiRoot, { recursive: true });
+    await Bun.write(
+      join(aiRoot, "AGENTS.global.md"),
+      [
+        "# Global Agent Instructions",
+        "",
+        "<!-- fclty:global/core/writeback -->",
+        "<!-- /fclty:global/core/writeback -->",
+      ].join("\n")
+    );
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(["bun", "run", "./src/index.ts", "doctor"], {
+      cwd: process.cwd(),
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(1);
+    expect(err).toBe("");
+    expect(out).toContain("empty fclty managed sections");
+    expect(out).toContain("templates init operating-model --global --force");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor --repair refreshes invalid canonical global guidance and review artifacts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-self-heal-"));
+  const aiRoot = join(dir, ".ai");
+
+  try {
+    await mkdir(aiRoot, { recursive: true });
+    await Bun.write(
+      join(aiRoot, "AGENTS.global.md"),
+      [
+        "# Global Agent Instructions",
+        "",
+        "<!-- fclty:global/core/writeback -->",
+        "<!-- /fclty:global/core/writeback -->",
+        "",
+        `- Read ${BROKEN_LEARNING_REF}.`,
+      ].join("\n")
+    );
+
+    const queuePath = facultAiWritebackQueuePath(dir, aiRoot);
+    await mkdir(dirname(queuePath), { recursive: true });
+    await Bun.write(
+      queuePath,
+      `${JSON.stringify({
+        id: "WB-00001",
+        ts: "2026-06-19T00:00:00.000Z",
+        scope: "global",
+        kind: "capability_gap",
+        summary: "Self-heal test writeback",
+        evidence: [{ type: "test", ref: "doctor" }],
+        confidence: "medium",
+        source: "facult:test",
+        tags: [],
+        status: "recorded",
+      })}\n`
+    );
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--repair"],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("Repaired canonical AGENTS.global.md");
+    expect(out).toContain("Refreshed AI review artifacts: 1 writebacks");
+
+    const repaired = await readFile(join(aiRoot, "AGENTS.global.md"), "utf8");
+    expect(repaired).toContain("Default behavior:");
+    expect(repaired).not.toContain("${refs.");
+    expect(repaired).not.toContain("<!-- fclty:global/core/writeback -->");
+
+    const backupEntries = await readdir(
+      join(aiRoot, ".facult", "backups", "doctor")
+    );
+    expect(backupEntries.length).toBe(1);
+    expect(backupEntries[0]?.startsWith("AGENTS.global.")).toBe(true);
+
+    const review = await readFile(
+      join(facultAiWritebackReviewDir(dir, aiRoot), "WB-00001.md"),
+      "utf8"
+    );
+    expect(review).toContain("Self-heal test writeback");
+    expect(await readdir(facultAiEvolutionReviewDir(dir, aiRoot))).toEqual([]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

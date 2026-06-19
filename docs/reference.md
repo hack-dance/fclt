@@ -20,6 +20,12 @@ Use these first. They let you inspect tool state without claiming ownership of a
 actions. `paths --json` reports canonical, generated, runtime, and review paths
 for agents and integrations.
 
+Use `fclt doctor --repair` as the one-command self-heal path for local state.
+It repairs legacy generated state, stale Codex authoring paths, explicit project
+sync policy, invalid canonical global guidance, and missing Markdown review
+artifacts. Destructive-looking canonical repairs keep a backup under
+`.ai/.facult/backups/doctor/`.
+
 ## Graph
 
 ```bash
@@ -82,6 +88,9 @@ fclt ai evolve promote EV-00003 --to global --project
 ```
 
 Use these to turn repeated work friction into reviewed capability changes.
+Plain list output shows the active root and scope so an empty project queue is
+not confused with the global queue. Use `--global`, `--project`, or `--root`
+when reviewing a specific scope, and use `--json` for automation.
 
 ## Sources, Audit, And Updates
 
