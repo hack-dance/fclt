@@ -1,3 +1,9 @@
+## [2.12.0](https://github.com/hack-dance/fclt/compare/v2.11.0...v2.12.0) (2026-06-19)
+
+### Features
+
+* **templates:** scaffold instruction assets ([3291605](https://github.com/hack-dance/fclt/commit/3291605603ce6f2e152caad907543d01928ba44f))
+
 ## [2.11.0](https://github.com/hack-dance/fclt/compare/v2.10.0...v2.11.0) (2026-06-19)
 
 ### Features
