@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aiCommand } from "./ai";
 
@@ -12,8 +13,8 @@ const allowEmptyEvidenceArgs = ["--allow-empty-evidence"];
 
 async function makeTempHome(): Promise<string> {
   const dir = join(
-    process.cwd(),
-    ".tmp-tests",
+    tmpdir(),
+    "fclt-ai-cli-tests",
     `ai-cli-${Date.now()}-${Math.random().toString(16).slice(2)}`
   );
   await mkdir(dir, { recursive: true });

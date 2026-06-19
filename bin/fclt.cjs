@@ -45,7 +45,7 @@ function localCacheRoot(home) {
     return path.resolve(override);
   }
   if (process.platform === "darwin") {
-    return path.join(home, "Library", "Caches", "fclt");
+    return path.join(localStateRoot(home), "cache");
   }
   const xdg = String(process.env.XDG_CACHE_HOME || "").trim();
   return xdg
@@ -67,7 +67,7 @@ async function main() {
   }
 
   const home = os.homedir();
-  const cacheRoot = path.join(localCacheRoot(home), "runtime");
+  const cacheRoot = await runtimeCacheRoot(home);
   const installDir = path.join(
     cacheRoot,
     version,
@@ -172,6 +172,22 @@ async function main() {
     process.exit(result.status);
   }
   process.exit(1);
+}
+
+async function runtimeCacheRoot(home) {
+  const primary = path.join(localCacheRoot(home), "runtime");
+  try {
+    await fsp.mkdir(primary, { recursive: true });
+    return primary;
+  } catch {
+    const fallback = path.join(os.tmpdir(), "fclt", "runtime-cache");
+    try {
+      await fsp.mkdir(fallback, { recursive: true });
+      return fallback;
+    } catch {
+      return primary;
+    }
+  }
 }
 
 async function canUseSourceFallback(sourceEntry) {

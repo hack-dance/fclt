@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndex, parseSkillMarkdown } from "./index-builder";
@@ -21,7 +22,7 @@ function fixturePath(rel: string): string {
 }
 
 async function makeTempHome(): Promise<string> {
-  const base = join(process.cwd(), ".tmp-tests");
+  const base = join(tmpdir(), "fclt-index-builder-tests");
   await mkdir(base, { recursive: true });
   const dir = join(
     base,

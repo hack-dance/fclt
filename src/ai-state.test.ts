@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, readFile, rm, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureAiGraphPath, ensureAiIndexPath } from "./ai-state";
 import { buildIndex } from "./index-builder";
@@ -9,7 +10,7 @@ const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
 
 async function makeTempHome(): Promise<string> {
-  const base = join(process.cwd(), ".tmp-tests");
+  const base = join(tmpdir(), "fclt-ai-state-tests");
   await mkdir(base, { recursive: true });
   const dir = join(
     base,

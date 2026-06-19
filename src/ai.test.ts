@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   acceptProposal,
@@ -33,8 +34,8 @@ const proposalEvidence = (ref: string) => [{ type: "session", ref }];
 
 async function makeTempHome(): Promise<string> {
   const dir = join(
-    process.cwd(),
-    ".tmp-tests",
+    tmpdir(),
+    "fclt-ai-tests",
     `ai-${Date.now()}-${Math.random().toString(16).slice(2)}`
   );
   await mkdir(dir, { recursive: true });

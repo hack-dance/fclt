@@ -114,7 +114,7 @@ export function facultLocalCacheRoot(home: string = defaultHomeDir()): string {
     return resolvePath(override, home);
   }
   if (process.platform === "darwin") {
-    return join(home, "Library", "Caches", "fclt");
+    return join(facultLocalStateRoot(home), "cache");
   }
   const xdg = process.env.XDG_CACHE_HOME?.trim();
   return xdg

@@ -104,6 +104,53 @@ it("does not write install metadata when using a cached runtime binary", async (
   await expect(stat(installStatePath)).rejects.toThrow();
 });
 
+it("uses a temp runtime cache when the configured cache root is unavailable", async () => {
+  if (localOnly) {
+    return;
+  }
+
+  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-"));
+  const tmpHome = await mkdtemp(join(tmpdir(), "fclt-launcher-tmp-"));
+  tempDirs.push(homeDir, tmpHome);
+
+  const badCacheRoot = join(homeDir, "not-a-directory");
+  await writeFile(badCacheRoot, "file", "utf8");
+
+  const runtimeDir = join(
+    tmpHome,
+    "fclt",
+    "runtime-cache",
+    version,
+    `${platform}-${arch}`
+  );
+  await mkdir(runtimeDir, { recursive: true });
+
+  const binaryName = process.platform === "win32" ? "fclt.exe" : "fclt";
+  const binaryPath = join(runtimeDir, binaryName);
+  await writeFile(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
+  await chmod(binaryPath, 0o755);
+  const launcherRuntime = await resolveLauncherRuntime();
+
+  const proc = Bun.spawn({
+    cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      FACULT_CACHE_DIR: badCacheRoot,
+      HOME: homeDir,
+      TMPDIR: tmpHome,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  const stderr = await new Response(proc.stderr).text();
+
+  expect(exitCode).toBe(0);
+  expect(stderr).toBe("");
+});
+
 it("falls back quickly to the bundled source entry when the cached runtime is incomplete", async () => {
   if (localOnly) {
     return;

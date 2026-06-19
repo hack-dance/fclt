@@ -703,7 +703,8 @@ Under machine-local Facult state:
 - `.../autosync/services/*.json` (autosync service configs)
 - `.../autosync/state/*.json` (autosync runtime state)
 - `.../autosync/logs/*` (autosync service logs)
-- `runtime/<version>/<platform-arch>/...` under the machine-local cache root (npm launcher binary cache)
+- `cache/runtime/<version>/<platform-arch>/...` under the macOS machine-local state root, or `runtime/<version>/<platform-arch>/...` under `FACULT_CACHE_DIR`/XDG cache roots on other platforms (npm launcher binary cache)
+  - if that cache root is unavailable, the npm launcher falls back to a temp-dir runtime cache before using the bundled source fallback
 
 ### Config reference
 

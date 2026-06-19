@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   facultAiGraphPath,
@@ -18,7 +19,7 @@ const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
 
 async function makeTempHome(): Promise<string> {
-  const base = join(process.cwd(), ".tmp-tests");
+  const base = join(tmpdir(), "fclt-paths-tests");
   await mkdir(base, { recursive: true });
   const dir = join(
     base,
@@ -36,7 +37,7 @@ function expectedLocalStateRoot(home: string): string {
 
 function expectedLocalCacheRoot(home: string): string {
   return process.platform === "darwin"
-    ? join(home, "Library", "Caches", "fclt")
+    ? join(expectedLocalStateRoot(home), "cache")
     : join(home, ".cache", "fclt");
 }
 
