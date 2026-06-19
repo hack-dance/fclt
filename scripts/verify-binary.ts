@@ -59,4 +59,28 @@ if (status.packageVersion !== version) {
   );
 }
 
+await run(["manage", "codex", "--global"]);
+await run(["sync", "codex", "--global"]);
+
+const codexAgentsPath = join(tempHome, ".codex", "AGENTS.md");
+const capabilityEvolutionSkillPath = join(
+  tempHome,
+  ".agents",
+  "skills",
+  "capability-evolution",
+  "SKILL.md"
+);
+const codexAgents = await Bun.file(codexAgentsPath).text();
+if (!codexAgents.includes("durable friction")) {
+  throw new Error(`Expected builtin AGENTS guidance in ${codexAgentsPath}`);
+}
+const capabilityEvolutionSkill = await Bun.file(
+  capabilityEvolutionSkillPath
+).text();
+if (!capabilityEvolutionSkill.includes("tool-call-audit")) {
+  throw new Error(
+    `Expected builtin capability-evolution skill in ${capabilityEvolutionSkillPath}`
+  );
+}
+
 console.log(`Verified ${binaryPath} (${version})`);

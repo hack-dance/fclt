@@ -1,7 +1,7 @@
 import { mkdir, readdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { getAdapter } from "./adapters";
+import { facultBuiltinPackRoot } from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import {
   type AssetScope,
@@ -522,11 +522,6 @@ async function statIsoTime(p: string): Promise<string | undefined> {
 async function readJsonSafe(p: string): Promise<unknown> {
   const txt = await Bun.file(p).text();
   return JSON.parse(txt);
-}
-
-function builtinAssetsRoot(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, "..", "assets", "packs", "facult-operating-model");
 }
 
 function canonicalRefForPath(
@@ -1628,7 +1623,7 @@ export async function buildIndex(opts?: {
 
   const globalRoot = facultRootDir(homeDir);
   const sources: IndexedSource[] = [];
-  const builtinRoot = builtinAssetsRoot();
+  const builtinRoot = facultBuiltinPackRoot();
   try {
     const st = await Bun.file(builtinRoot).stat();
     if (st.isDirectory()) {

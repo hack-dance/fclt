@@ -1,5 +1,8 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BUILTIN_OPERATING_MODEL_FILES } from "./builtin-assets";
 import { projectRootFromAiRoot } from "./paths";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -10,7 +13,35 @@ export function facultBuiltinPackRoot(
   packName = "facult-operating-model"
 ): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, "..", "assets", "packs", packName);
+  const sourceRoot = join(here, "..", "assets", "packs", packName);
+  if (existsSync(sourceRoot)) {
+    return sourceRoot;
+  }
+  if (packName === "facult-operating-model") {
+    return materializeBuiltinOperatingModelPack();
+  }
+  return sourceRoot;
+}
+
+function materializeBuiltinOperatingModelPack(): string {
+  const root = join(tmpdir(), "fclt-builtin-packs", "facult-operating-model");
+  for (const [relativePath, content] of Object.entries(
+    BUILTIN_OPERATING_MODEL_FILES
+  )) {
+    const pathValue = join(root, relativePath);
+    mkdirSync(dirname(pathValue), { recursive: true });
+    if (existsSync(pathValue)) {
+      try {
+        if (readFileSync(pathValue, "utf8") === content) {
+          continue;
+        }
+      } catch {
+        // Rewrite unreadable materialized assets below.
+      }
+    }
+    writeFileSync(pathValue, content, "utf8");
+  }
+  return root;
 }
 
 async function readTomlObject(
