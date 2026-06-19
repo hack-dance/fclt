@@ -1,3 +1,9 @@
+## [2.14.0](https://github.com/hack-dance/fclt/compare/v2.13.9...v2.14.0) (2026-06-19)
+
+### Features
+
+* **templates:** support safe operating model updates ([#26](https://github.com/hack-dance/fclt/issues/26)) ([7bbdb7b](https://github.com/hack-dance/fclt/commit/7bbdb7b78a9bb256db18cd47b29154624d7900c0))
+
 ## [2.13.9](https://github.com/hack-dance/fclt/compare/v2.13.8...v2.13.9) (2026-06-19)
 
 ### Bug Fixes
