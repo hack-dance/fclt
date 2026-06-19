@@ -1,3 +1,9 @@
+## [2.13.6](https://github.com/hack-dance/fclt/compare/v2.13.5...v2.13.6) (2026-06-19)
+
+### Bug Fixes
+
+* preserve global agents template semantics ([abbcf02](https://github.com/hack-dance/fclt/commit/abbcf021b08e488d4c546d37b603fb4c1603a126))
+
 ## [2.13.5](https://github.com/hack-dance/fclt/compare/v2.13.4...v2.13.5) (2026-06-19)
 
 ### Bug Fixes
