@@ -1,3 +1,9 @@
+## [2.10.0](https://github.com/hack-dance/fclt/compare/v2.9.0...v2.10.0) (2026-06-19)
+
+### Features
+
+* **manage:** make live adoption opt-in ([e0efcd4](https://github.com/hack-dance/fclt/commit/e0efcd4092077817ea9828aee04c9a9b20b2a734))
+
 ## [2.9.0](https://github.com/hack-dance/fclt/compare/v2.8.12...v2.9.0) (2026-06-19)
 
 ### Features
