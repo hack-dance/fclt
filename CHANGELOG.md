@@ -1,3 +1,9 @@
+## [2.15.1](https://github.com/hack-dance/fclt/compare/v2.15.0...v2.15.1) (2026-06-19)
+
+### Bug Fixes
+
+* **codex:** install bundled plugin during sync ([#28](https://github.com/hack-dance/fclt/issues/28)) ([0c76f1b](https://github.com/hack-dance/fclt/commit/0c76f1ba42a2cd88ab344c24c5a180eadfcc369e))
+
 ## [2.15.0](https://github.com/hack-dance/fclt/compare/v2.14.0...v2.15.0) (2026-06-19)
 
 ### Features
