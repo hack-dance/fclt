@@ -1,3 +1,9 @@
+## [2.13.2](https://github.com/hack-dance/fclt/compare/v2.13.1...v2.13.2) (2026-06-19)
+
+### Bug Fixes
+
+* self-heal broken global guidance ([9db510e](https://github.com/hack-dance/fclt/commit/9db510e585a5f32d22595e39c1fd13654b8c7b0d))
+
 ## [2.13.1](https://github.com/hack-dance/fclt/compare/v2.13.0...v2.13.1) (2026-06-19)
 
 ### Bug Fixes
