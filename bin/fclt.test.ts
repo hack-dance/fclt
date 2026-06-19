@@ -204,3 +204,58 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
   expect(stdout).toContain("Manage canonical AI capability");
   expect(stderr).not.toContain("Unable to download the fclt binary");
 });
+
+it("waits for a concurrent launcher to finish writing the runtime binary", async () => {
+  if (localOnly) {
+    return;
+  }
+
+  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-wait-"));
+  tempDirs.push(homeDir);
+
+  const runtimeDir = join(
+    facultRuntimeCacheDir(homeDir),
+    version,
+    `${platform}-${arch}`
+  );
+  await mkdir(runtimeDir, { recursive: true });
+
+  const binaryName = process.platform === "win32" ? "fclt.exe" : "fclt";
+  const binaryPath = join(runtimeDir, binaryName);
+  const tempPath = join(runtimeDir, `${binaryName}.tmp-active`);
+  await writeFile(tempPath, "partial", "utf8");
+
+  const writerDone = new Promise<void>((resolve, reject) => {
+    setTimeout(() => {
+      writeFile(binaryPath, "#!/bin/sh\necho cached-runtime-ready\n", "utf8")
+        .then(() => chmod(binaryPath, 0o755))
+        .then(() => rm(tempPath, { force: true }))
+        .then(resolve, reject);
+    }, 150);
+  });
+
+  const launcherRuntime = await resolveLauncherRuntime();
+  const proc = Bun.spawn({
+    cmd: [launcherRuntime, "bin/fclt.cjs", "--version"],
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      HTTPS_PROXY: "http://127.0.0.1:1",
+      HTTP_PROXY: "http://127.0.0.1:1",
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  await writerDone;
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
+  expect(exitCode).toBe(0);
+  expect(stdout.trim()).toBe("cached-runtime-ready");
+  expect(stderr).toBe("");
+});

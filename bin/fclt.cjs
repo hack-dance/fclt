@@ -15,6 +15,9 @@ const REPO_NAME = "fclt";
 const PACKAGE_NAME = "facult";
 const DOWNLOAD_RETRIES = 12;
 const DOWNLOAD_RETRY_DELAY_MS = 5000;
+const ACTIVE_RUNTIME_WAIT_MS = 10_000;
+const ACTIVE_RUNTIME_WAIT_INTERVAL_MS = 100;
+const STALE_RUNTIME_TEMP_MS = 10 * 60 * 1000;
 
 function isHelpLikeArgs(args) {
   return (
@@ -80,70 +83,75 @@ async function main() {
   let installedBinaryThisRun = false;
 
   if (!(await fileExists(binaryPath))) {
-    const packageManager = detectPackageManager();
-    const hasSourceFallback = await canUseSourceFallback(sourceEntry);
-    const incompleteCache = await hasIncompleteRuntimeCache({
+    await removeStaleRuntimeTemps({
       installDir,
       binaryName,
+      maxAgeMs: STALE_RUNTIME_TEMP_MS,
     });
+    const packageManager = detectPackageManager();
+    const hasSourceFallback = await canUseSourceFallback(sourceEntry);
 
-    if (incompleteCache) {
-      await removeIncompleteRuntimeTemps({ installDir, binaryName });
-    }
-
-    if (hasSourceFallback && (incompleteCache || isHelpLikeArgs(args))) {
+    if (hasSourceFallback && isHelpLikeArgs(args)) {
       return runSourceFallback({
         sourceEntry,
         version,
         packageManager,
-        reason: new Error(
-          incompleteCache
-            ? "incomplete cached runtime download"
-            : "runtime binary missing for help-like command"
-        ),
+        reason: new Error("runtime binary missing for help-like command"),
       });
     }
 
-    const tag = `v${version}`;
-    const assetName = `${PACKAGE_NAME}-${version}-${resolved.platform}-${resolved.arch}${resolved.ext}`;
-    const url = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`;
-    const tmpPath = `${binaryPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-
-    try {
-      await fsp.mkdir(installDir, { recursive: true });
-      await downloadWithRetry(url, tmpPath, {
-        attempts: DOWNLOAD_RETRIES,
-        delayMs: DOWNLOAD_RETRY_DELAY_MS,
+    if (await hasIncompleteRuntimeCache({ installDir, binaryName })) {
+      await waitForFile(binaryPath, {
+        timeoutMs: ACTIVE_RUNTIME_WAIT_MS,
+        intervalMs: ACTIVE_RUNTIME_WAIT_INTERVAL_MS,
       });
-      if (resolved.platform !== "windows") {
-        await fsp.chmod(tmpPath, 0o755);
-      }
-      await fsp.rename(tmpPath, binaryPath);
-      installedBinaryThisRun = true;
-    } catch (error) {
-      await safeUnlink(tmpPath);
-      if (await canUseSourceFallback(sourceEntry)) {
-        return runSourceFallback({
-          sourceEntry,
-          version,
-          packageManager: detectPackageManager(),
-          reason: error,
+    }
+
+    if (await fileExists(binaryPath)) {
+      // Another concurrent launcher finished the runtime install while this
+      // process was waiting.
+    } else {
+      const tag = `v${version}`;
+      const assetName = `${PACKAGE_NAME}-${version}-${resolved.platform}-${resolved.arch}${resolved.ext}`;
+      const url = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`;
+      const tmpPath = `${binaryPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+      try {
+        await fsp.mkdir(installDir, { recursive: true });
+        await downloadWithRetry(url, tmpPath, {
+          attempts: DOWNLOAD_RETRIES,
+          delayMs: DOWNLOAD_RETRY_DELAY_MS,
         });
+        if (resolved.platform !== "windows") {
+          await fsp.chmod(tmpPath, 0o755);
+        }
+        await installDownloadedRuntime(tmpPath, binaryPath);
+        installedBinaryThisRun = true;
+      } catch (error) {
+        await safeUnlink(tmpPath);
+        if (await canUseSourceFallback(sourceEntry)) {
+          return runSourceFallback({
+            sourceEntry,
+            version,
+            packageManager: detectPackageManager(),
+            reason: error,
+          });
+        }
+        const message =
+          error instanceof Error ? error.message : String(error ?? "");
+        console.error(
+          [
+            "Unable to download the fclt binary for this platform.",
+            `Expected asset: ${assetName}`,
+            `URL: ${url}`,
+            `Reason: ${message}`,
+            "",
+            "Try installing directly from releases:",
+            "https://github.com/hack-dance/fclt/releases",
+          ].join("\n")
+        );
+        process.exit(1);
       }
-      const message =
-        error instanceof Error ? error.message : String(error ?? "");
-      console.error(
-        [
-          "Unable to download the fclt binary for this platform.",
-          `Expected asset: ${assetName}`,
-          `URL: ${url}`,
-          `Reason: ${message}`,
-          "",
-          "Try installing directly from releases:",
-          "https://github.com/hack-dance/fclt/releases",
-        ].join("\n")
-      );
-      process.exit(1);
     }
   }
 
@@ -367,16 +375,55 @@ async function hasIncompleteRuntimeCache({ installDir, binaryName }) {
   }
 }
 
-async function removeIncompleteRuntimeTemps({ installDir, binaryName }) {
+async function removeStaleRuntimeTemps({ installDir, binaryName, maxAgeMs }) {
   try {
     const entries = await fsp.readdir(installDir);
-    await Promise.all(
-      entries
-        .filter((entry) => entry.startsWith(`${binaryName}.tmp-`))
-        .map((entry) => safeUnlink(path.join(installDir, entry)))
-    );
+    const now = Date.now();
+    const stalePaths = [];
+    for (const entry of entries) {
+      if (!entry.startsWith(`${binaryName}.tmp-`)) {
+        continue;
+      }
+      const candidate = path.join(installDir, entry);
+      try {
+        const stats = await fsp.stat(candidate);
+        if (now - stats.mtimeMs > maxAgeMs) {
+          stalePaths.push(candidate);
+        }
+      } catch {
+        // Ignore temp files that disappeared while scanning.
+      }
+    }
+    await Promise.all(stalePaths.map((candidate) => safeUnlink(candidate)));
   } catch {
     // Ignore missing runtime dirs while cleaning stale temp files.
+  }
+}
+
+async function waitForFile(filePath, { timeoutMs, intervalMs }) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await fileExists(filePath)) {
+      return true;
+    }
+    await sleep(intervalMs);
+  }
+  return await fileExists(filePath);
+}
+
+async function installDownloadedRuntime(tmpPath, binaryPath) {
+  if (await fileExists(binaryPath)) {
+    await safeUnlink(tmpPath);
+    return;
+  }
+  try {
+    await fsp.rename(tmpPath, binaryPath);
+  } catch (error) {
+    if (await fileExists(binaryPath)) {
+      await safeUnlink(tmpPath);
+      return;
+    }
+    throw error;
   }
 }
 
