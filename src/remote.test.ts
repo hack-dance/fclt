@@ -1519,6 +1519,11 @@ describe("templates command", () => {
         join(globalRoot, "snippets", "global", "core", "work-units.md")
       ).exists()
     ).toBe(true);
+    expect(
+      await Bun.file(
+        join(globalRoot, "snippets", "templates", "agents-global.md")
+      ).exists()
+    ).toBe(false);
     const withSnippets = await renderSnippetText({
       text: agentsText,
       rootDir: globalRoot,
@@ -1543,7 +1548,81 @@ describe("templates command", () => {
     );
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     expect(manifest.pack).toBe("facult-operating-model");
+    expect(manifest.files["AGENTS.global.md"].sha256).toBeString();
+    expect(
+      manifest.files["snippets/templates/agents-global.md"]
+    ).toBeUndefined();
     expect(manifest.files["instructions/WORK_UNITS.md"].sha256).toBeString();
+  });
+
+  it("seeds global AGENTS.global.md from existing global agent guidance", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+    await mkdir(join(home, ".codex"), { recursive: true });
+    await writeFile(
+      join(home, ".codex", "AGENTS.md"),
+      "# Existing Global Guidance\n\n- Preserve my current rules.\n"
+    );
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--global"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+
+    const agentsPath = join(globalRoot, "AGENTS.global.md");
+    const agentsText = await readFile(agentsPath, "utf8");
+    expect(agentsText).toContain("# Existing Global Guidance");
+    expect(agentsText).toContain("- Preserve my current rules.");
+    expect(agentsText).toContain("## Facult Operating Model");
+    expect(agentsText).toContain("<!-- fclty:global/core/work-units -->");
+
+    const manifest = JSON.parse(
+      await readFile(
+        join(globalRoot, ".facult", "packs", "facult-operating-model.json"),
+        "utf8"
+      )
+    );
+    expect(manifest.files["AGENTS.global.md"]).toBeUndefined();
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "operating-model", "--global", "--update"],
+        {
+          homeDir: home,
+          cwd: home,
+        }
+      );
+    });
+    expect(await readFile(agentsPath, "utf8")).toBe(agentsText);
+  });
+
+  it("seeds project AGENTS.global.md from the repo AGENTS.md", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    await mkdir(repoDir, { recursive: true });
+    await writeFile(
+      join(repoDir, "AGENTS.md"),
+      "# Project Agent Instructions\n\n- Use repo-specific checks.\n"
+    );
+    process.chdir(repoDir);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--project"], {
+        homeDir: home,
+        cwd: repoDir,
+      });
+    });
+
+    const agentsText = await readFile(
+      join(repoDir, ".ai", "AGENTS.global.md"),
+      "utf8"
+    );
+    expect(agentsText).toContain("# Project Agent Instructions");
+    expect(agentsText).toContain("- Use repo-specific checks.");
+    expect(agentsText).toContain("## Facult Operating Model");
+    expect(agentsText).toContain("<!-- fclty:global/core/writeback -->");
   });
 
   it("updates unmodified builtin operating-model files using the pack manifest", async () => {

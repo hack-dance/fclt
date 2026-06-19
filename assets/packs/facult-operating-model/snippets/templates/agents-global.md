@@ -1,9 +1,9 @@
 # Global Agent Instructions
 
-This file is the global entry template for the operating-model pack. It should
-stay small and composed from snippets. Put detailed doctrine in instructions,
-workflow execution in skills, and local/private preferences in user-owned or
-project-owned assets outside the public pack.
+This template materializes as `AGENTS.global.md` when the operating-model pack is
+installed. It should stay small and composed from snippets. Put detailed
+doctrine in instructions, workflow execution in skills, and local/private
+preferences in user-owned or project-owned assets outside the public pack.
 
 ## Working mode
 

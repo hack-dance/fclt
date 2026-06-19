@@ -1,7 +1,11 @@
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { renderCanonicalText } from "./agents";
-import { builtinSyncDefaultsEnabled, facultBuiltinPackRoot } from "./builtin";
+import {
+  builtinSyncDefaultsEnabled,
+  facultBuiltinAgentsGlobalSourcePath,
+  facultBuiltinPackRoot,
+} from "./builtin";
 import { projectRootFromAiRoot } from "./paths";
 import { projectSyncAllowsToolSurface } from "./project-sync";
 import { renderSnippetText } from "./snippets";
@@ -184,7 +188,7 @@ async function listGlobalDocSources(args: {
       targetPath: targets.primary,
     });
   } else if (useBuiltinDefaults) {
-    const builtinBase = join(facultBuiltinPackRoot(), "AGENTS.global.md");
+    const builtinBase = facultBuiltinAgentsGlobalSourcePath();
     if (await fileExists(builtinBase)) {
       candidates.push({
         sourcePath: builtinBase,

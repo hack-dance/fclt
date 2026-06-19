@@ -16,6 +16,7 @@ This roadmap tracks remaining product direction for `fclt`.
 - JSON-first `inventory`.
 - `sync --adopt-live` for explicit promotion of live tool edits.
 - Managed sync local-edit protection for rendered docs, config, MCP, and skills.
+- Initial first-party Codex plugin with setup/writeback/evolution/capability-review skills and a CLI-backed MCP wrapper.
 
 ## Current Priorities
 
@@ -48,11 +49,11 @@ This roadmap tracks remaining product direction for `fclt`.
    - Add graph visibility.
    - Include them in status and sync plans.
 
-7. Add a first-party Codex plugin and MCP surface.
-   - Expose safe read/write operations over existing `fclt` behavior.
+7. Expand the first-party Codex plugin and MCP surface.
+   - Add richer setup planning tools beyond the initial CLI wrapper.
    - Keep the CLI and canonical `.ai` roots as the source of truth.
    - Gate high-risk global changes behind explicit review.
-   - Bundle agent-facing skills for work units, writeback, evolution, capability search, and automation setup.
+   - Add more focused agent-facing skills for automation setup, capability search, and upgrade flows.
 
 8. Tighten selector consistency.
    - Use one selector grammar across `list`, `show`, `graph`, `enable`, `disable`, `trust`, `audit`, writeback, and evolution.
