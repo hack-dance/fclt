@@ -107,7 +107,7 @@ async function main() {
     const tag = `v${version}`;
     const assetName = `${PACKAGE_NAME}-${version}-${resolved.platform}-${resolved.arch}${resolved.ext}`;
     const url = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${tag}/${assetName}`;
-    const tmpPath = `${binaryPath}.tmp-${Date.now()}`;
+    const tmpPath = `${binaryPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     try {
       await fsp.mkdir(installDir, { recursive: true });
