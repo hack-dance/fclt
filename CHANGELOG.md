@@ -1,3 +1,9 @@
+## [2.13.8](https://github.com/hack-dance/fclt/compare/v2.13.7...v2.13.8) (2026-06-19)
+
+### Bug Fixes
+
+* relax binary guidance verifier paths ([bc74150](https://github.com/hack-dance/fclt/commit/bc74150fa0357b00c1e0b814a2c538b7ffa255a4))
+
 ## [2.13.7](https://github.com/hack-dance/fclt/compare/v2.13.6...v2.13.7) (2026-06-19)
 
 ### Bug Fixes
