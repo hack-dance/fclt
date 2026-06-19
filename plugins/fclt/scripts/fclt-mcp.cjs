@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+"use strict";
 
-import { spawn } from "node:child_process";
+const { spawn } = require("node:child_process");
 
 const FCLT_BIN = process.env.FCLT_BIN || "fclt";
 const DEFAULT_TIMEOUT_MS = Number(process.env.FCLT_MCP_TIMEOUT_MS || 60_000);

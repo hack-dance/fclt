@@ -450,6 +450,53 @@ describe("managed state", () => {
     );
   });
 
+  it("syncs the builtin fclt codex plugin and marketplace by default", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(rootDir, { recursive: true });
+
+    await manageTool("codex", {
+      homeDir: home,
+      rootDir,
+    });
+
+    const marketplace = await readFile(
+      join(home, ".agents", "plugins", "marketplace.json"),
+      "utf8"
+    );
+    expect(marketplace).toContain('"name": "fclt"');
+    expect(marketplace).toContain('"path": "./plugins/fclt"');
+
+    const pluginManifest = await readFile(
+      join(home, "plugins", "fclt", ".codex-plugin", "plugin.json"),
+      "utf8"
+    );
+    expect(pluginManifest).toContain('"name": "fclt"');
+
+    const mcpConfig = await readFile(
+      join(home, "plugins", "fclt", ".mcp.json"),
+      "utf8"
+    );
+    expect(mcpConfig).toContain('"./scripts/fclt-mcp.cjs"');
+
+    const proc = Bun.spawn(
+      [
+        "node",
+        join(home, "plugins", "fclt", "scripts", "fclt-mcp.cjs"),
+        "--self-test",
+      ],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("fclt_evolve");
+  });
+
   it("can disable builtin default sync via config", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
@@ -477,12 +524,22 @@ describe("managed state", () => {
     expect(await Bun.file(join(home, ".codex", "AGENTS.md")).exists()).toBe(
       false
     );
+    expect(await Bun.file(join(home, "plugins", "fclt")).exists()).toBe(false);
+    expect(
+      await Bun.file(
+        join(home, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
   });
 
   it("does not create codex plugin output dirs when no canonical plugin content exists", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
     await mkdir(rootDir, { recursive: true });
+    await Bun.write(
+      join(rootDir, "config.toml"),
+      "version = 1\n\n[builtin]\nsync_defaults = false\n"
+    );
     await mkdir(join(rootDir, "mcp"), { recursive: true });
     await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
 

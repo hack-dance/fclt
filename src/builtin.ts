@@ -2,7 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BUILTIN_OPERATING_MODEL_FILES } from "./builtin-assets";
+import {
+  BUILTIN_FCLT_CODEX_PLUGIN_FILES,
+  BUILTIN_OPERATING_MODEL_FILES,
+} from "./builtin-assets";
 import { projectRootFromAiRoot } from "./paths";
 
 export const OPERATING_MODEL_AGENTS_GLOBAL_TEMPLATE =
@@ -36,6 +39,15 @@ export function facultBuiltinAgentsGlobalSourcePath(): string {
   return join(root, OPERATING_MODEL_AGENTS_GLOBAL_TARGET);
 }
 
+export function facultBuiltinCodexPluginRoot(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const sourceRoot = join(here, "..", "plugins", "fclt");
+  if (existsSync(join(sourceRoot, ".codex-plugin", "plugin.json"))) {
+    return sourceRoot;
+  }
+  return materializeBuiltinCodexPlugin();
+}
+
 export function builtinOperatingModelInstallRelPath(
   relativePath: string
 ): string {
@@ -49,6 +61,27 @@ function materializeBuiltinOperatingModelPack(): string {
   const root = join(tmpdir(), "fclt-builtin-packs", "facult-operating-model");
   for (const [relativePath, content] of Object.entries(
     BUILTIN_OPERATING_MODEL_FILES
+  )) {
+    const pathValue = join(root, relativePath);
+    mkdirSync(dirname(pathValue), { recursive: true });
+    if (existsSync(pathValue)) {
+      try {
+        if (readFileSync(pathValue, "utf8") === content) {
+          continue;
+        }
+      } catch {
+        // Rewrite unreadable materialized assets below.
+      }
+    }
+    writeFileSync(pathValue, content, "utf8");
+  }
+  return root;
+}
+
+function materializeBuiltinCodexPlugin(): string {
+  const root = join(tmpdir(), "fclt-builtin-plugins", "fclt");
+  for (const [relativePath, content] of Object.entries(
+    BUILTIN_FCLT_CODEX_PLUGIN_FILES
   )) {
     const pathValue = join(root, relativePath);
     mkdirSync(dirname(pathValue), { recursive: true });
