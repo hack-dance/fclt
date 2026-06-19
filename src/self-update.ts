@@ -187,10 +187,11 @@ export function looksLikeMiseShim(
 }
 
 async function activeFcltUsesMiseNpmFacult(): Promise<boolean> {
-  if (!Bun.which("mise")) {
+  const misePath = Bun.which("mise") ?? (await resolveCommandPath("mise"));
+  if (!misePath) {
     return false;
   }
-  const fcltPath = Bun.which("fclt");
+  const fcltPath = Bun.which("fclt") ?? (await resolveCommandPath("fclt"));
   if (looksLikeMiseNpmFacultExecutable(fcltPath ?? "")) {
     return true;
   }
@@ -226,6 +227,24 @@ async function miseHasCurrentFacultTool(): Promise<boolean> {
     env: process.env,
   });
   return (await proc.exited) === 0;
+}
+
+async function resolveCommandPath(command: string): Promise<string | null> {
+  const proc = Bun.spawn({
+    cmd: ["sh", "-lc", `command -v ${command}`],
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    env: process.env,
+  });
+  const [stdout, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) {
+    return null;
+  }
+  return stdout.trim() || null;
 }
 
 function resolvePlatformTarget(): {
@@ -292,6 +311,7 @@ async function writeInstallState(args: {
   method: InstallMethod;
   packageVersion?: string;
   binaryPath?: string;
+  packageManager?: string;
 }) {
   const dir = dirname(facultInstallStatePath(args.home));
   await mkdir(dir, { recursive: true });
@@ -300,7 +320,11 @@ async function writeInstallState(args: {
     method: args.method,
     packageVersion: args.packageVersion,
     binaryPath: args.binaryPath,
-    source: args.method === "npm-binary-cache" ? "npm" : "direct",
+    packageManager: args.packageManager,
+    source:
+      args.method === "npm-binary-cache" || args.method === "mise-npm"
+        ? "npm"
+        : "direct",
     installedAt: new Date().toISOString(),
   };
   await Bun.write(
@@ -426,6 +450,7 @@ async function resolvePackageTargetVersion(requestedVersion?: string): Promise<{
 }
 
 async function selfUpdateViaPackageManager(args: {
+  home: string;
   requestedVersion?: string;
   dryRun: boolean;
   preferredPackageManager?: string;
@@ -464,6 +489,12 @@ async function selfUpdateViaPackageManager(args: {
     await runBestEffort(["mise", "reshim", `npm:${PACKAGE_NAME}`]);
   }
   await assertActiveFcltVersion(target.version, pm);
+  await writeInstallState({
+    home: args.home,
+    method: pm === "mise" ? "mise-npm" : "npm-binary-cache",
+    packageVersion: target.version,
+    packageManager: pm,
+  });
   console.log(`Updated fclt via ${pm}: ${PACKAGE_NAME}@${target.version}`);
   if (target.resolvedFromLatest) {
     console.log(`Resolved latest release to ${target.version}`);
@@ -617,6 +648,7 @@ export async function selfUpdateCommand(argv: string[]) {
     if (method === "npm-binary-cache" || method === "mise-npm") {
       await selfUpdateViaPackageManager({
         ...parsed,
+        home,
         method,
         preferredPackageManager:
           process.env.FACULT_INSTALL_PM?.trim() || state?.packageManager,
