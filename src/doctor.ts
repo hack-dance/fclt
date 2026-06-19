@@ -21,6 +21,7 @@ import {
   legacyAiIndexPath,
 } from "./ai-state";
 import { repairAutosyncServices } from "./autosync";
+import { facultBuiltinPackRoot } from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { loadManagedState } from "./manage";
 import { extractServersObject } from "./mcp-config";
@@ -43,10 +44,12 @@ import {
 import { packageVersion } from "./status";
 
 const TOML_FILE_SUFFIX_RE = /\.toml$/;
+const ISO_MILLIS_SUFFIX_RE = /\..+$/;
 
 type DoctorHealthState =
   | "healthy"
   | "uninitialized"
+  | "canonical_source_attention"
   | "partial_global_config"
   | "project_generated_only"
   | "project_policy_attention"
@@ -99,6 +102,8 @@ export interface DoctorReport {
     generatedGraphExists: boolean;
     writebackReviewDirExists: boolean;
     evolutionReviewDirExists: boolean;
+    canonicalGlobalDocsValid: boolean;
+    canonicalGlobalDocsIssueCodes: string[];
     projectSyncRepairNeeded: boolean;
     projectSyncRepairTools: string[];
   };
@@ -162,6 +167,15 @@ async function repairLegacyRootConfig(home: string): Promise<boolean> {
 async function pathExists(pathValue: string): Promise<boolean> {
   try {
     await stat(pathValue);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pathEntryExists(pathValue: string): Promise<boolean> {
+  try {
+    await lstat(pathValue);
     return true;
   } catch {
     return false;
@@ -252,7 +266,7 @@ async function moveSymlinkIfPossible(
 ): Promise<boolean> {
   const sourceTarget = await readlink(src);
   await mkdir(dirname(dst), { recursive: true });
-  if (!(await pathExists(dst))) {
+  if (!(await pathEntryExists(dst))) {
     await symlink(sourceTarget, dst);
     await rm(src, { force: true });
     return true;
@@ -384,6 +398,13 @@ function normalizeCodexMarketplaceText(text: string): string {
   }
 }
 
+function timestampForBackup(): string {
+  return new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(ISO_MILLIS_SUFFIX_RE, "Z");
+}
+
 async function repairLegacyCodexAuthoringLayout(args: {
   home: string;
   rootDir: string;
@@ -423,6 +444,33 @@ async function repairLegacyCodexAuthoringLayout(args: {
   }
 
   return { changed, conflicts };
+}
+
+async function repairCanonicalGlobalDocs(args: {
+  home: string;
+  rootDir: string;
+}): Promise<{ changed: boolean; backupPath?: string }> {
+  const inspected = await inspectCanonicalGlobalDocs(args.rootDir);
+  if (!(inspected.exists && !inspected.valid)) {
+    return { changed: false };
+  }
+
+  const sourcePath = join(facultBuiltinPackRoot(), "AGENTS.global.md");
+  const targetPath = join(args.rootDir, "AGENTS.global.md");
+  const backupPath = join(
+    args.rootDir,
+    ".facult",
+    "backups",
+    "doctor",
+    `AGENTS.global.${timestampForBackup()}.md`
+  );
+  await mkdir(dirname(backupPath), { recursive: true });
+  await copyFile(targetPath, backupPath);
+  await mkdir(dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, await readFile(sourcePath, "utf8"), "utf8");
+  await ensureAiIndexPath({ homeDir: args.home, rootDir: args.rootDir });
+  await ensureAiGraphPath({ homeDir: args.home, rootDir: args.rootDir });
+  return { changed: true, backupPath };
 }
 
 async function listProjectSkillNames(rootDir: string): Promise<string[]> {
@@ -496,6 +544,57 @@ async function hasProjectGlobalDocs(rootDir: string): Promise<boolean> {
     (await pathExists(join(rootDir, "AGENTS.global.md"))) ||
     (await pathExists(join(rootDir, "AGENTS.override.global.md")))
   );
+}
+
+const UNRESOLVED_TEMPLATE_REF_RE = /\$\{[^}\n]+\}/g;
+const FCLTY_BLOCK_RE =
+  /<!--\s*fclty:([^>]+?)\s*-->([\s\S]*?)<!--\s*\/fclty:\1\s*-->/g;
+
+async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
+  exists: boolean;
+  valid: boolean;
+  issues: DoctorIssue[];
+}> {
+  const pathValue = join(rootDir, "AGENTS.global.md");
+  if (!(await pathExists(pathValue))) {
+    return { exists: false, valid: true, issues: [] };
+  }
+
+  const text = await readFile(pathValue, "utf8");
+  const issues: DoctorIssue[] = [];
+  const unresolvedRefs = new Set(text.match(UNRESOLVED_TEMPLATE_REF_RE) ?? []);
+  if (unresolvedRefs.size > 0) {
+    issues.push({
+      severity: "warning",
+      code: "canonical-global-docs-unresolved-template",
+      message:
+        "Canonical AGENTS.global.md contains unresolved template references.",
+      fix: "Review the file or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+    });
+  }
+
+  const emptySections: string[] = [];
+  for (const match of text.matchAll(FCLTY_BLOCK_RE)) {
+    const key = match[1]?.trim();
+    const body = match[2]?.trim();
+    if (key && !body) {
+      emptySections.push(key);
+    }
+  }
+  if (emptySections.length > 0) {
+    issues.push({
+      severity: "warning",
+      code: "canonical-global-docs-empty-managed-sections",
+      message: `Canonical AGENTS.global.md has empty fclty managed sections: ${emptySections.join(", ")}.`,
+      fix: "Review the file or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+    });
+  }
+
+  return {
+    exists: true,
+    valid: issues.length === 0,
+    issues,
+  };
 }
 
 async function hasProjectToolRules(
@@ -678,6 +777,7 @@ export async function buildDoctorReport(opts?: {
     generatedGraphExists,
     writebackReviewDirExists,
     evolutionReviewDirExists,
+    canonicalGlobalDocs,
     projectSyncPlan,
   ] = await Promise.all([
     pathExists(rootDir),
@@ -687,6 +787,7 @@ export async function buildDoctorReport(opts?: {
     pathExists(generatedGraph),
     pathExists(writebackReviewDir),
     pathExists(evolutionReviewDir),
+    inspectCanonicalGlobalDocs(rootDir),
     planProjectSyncPolicyRepair({ home, rootDir }),
   ]);
 
@@ -720,6 +821,18 @@ export async function buildDoctorReport(opts?: {
       fix: projectRoot
         ? "Run fclt templates init project-ai from the repo or restore canonical project assets."
         : "Run fclt templates init operating-model --global.",
+    });
+  }
+
+  for (const issue of canonicalGlobalDocs.issues) {
+    issues.push(issue);
+  }
+  if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
+    actions.push({
+      id: "refresh-global-operating-model",
+      label: "Refresh global operating model",
+      command: "fclt templates init operating-model --global --force",
+      risk: "canonical_write",
     });
   }
 
@@ -814,6 +927,8 @@ export async function buildDoctorReport(opts?: {
     state = "project_generated_only";
   } else if (!(rootExists && canonicalSourceExists)) {
     state = "uninitialized";
+  } else if (!canonicalGlobalDocs.valid) {
+    state = "canonical_source_attention";
   } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
     state = "partial_global_config";
   } else if (projectSyncPlan.needed) {
@@ -852,6 +967,10 @@ export async function buildDoctorReport(opts?: {
       generatedGraphExists,
       writebackReviewDirExists,
       evolutionReviewDirExists,
+      canonicalGlobalDocsValid: canonicalGlobalDocs.valid,
+      canonicalGlobalDocsIssueCodes: canonicalGlobalDocs.issues.map(
+        (issue) => issue.code
+      ),
       projectSyncRepairNeeded: projectSyncPlan.needed,
       projectSyncRepairTools,
     },
@@ -908,6 +1027,16 @@ export async function doctorCommand(argv: string[]) {
     let autosyncRepaired = false;
     let codexAuthoringRepaired = false;
     let codexAuthoringConflicts: string[] = [];
+    let canonicalGlobalDocsRepaired = false;
+    let canonicalGlobalDocsBackupPath: string | undefined;
+    let reviewArtifactsRefreshed:
+      | {
+          writebackCount: number;
+          proposalCount: number;
+          writebackReviewDir: string;
+          evolutionReviewDir: string;
+        }
+      | undefined;
     let projectSyncRepairNeeded = false;
     let projectSyncRepaired = false;
     let projectSyncRepairTools: string[] = [];
@@ -926,6 +1055,17 @@ export async function doctorCommand(argv: string[]) {
       });
       codexAuthoringRepaired = authoringRepair.changed;
       codexAuthoringConflicts = authoringRepair.conflicts;
+      const globalDocsRepair = await repairCanonicalGlobalDocs({
+        home,
+        rootDir,
+      });
+      canonicalGlobalDocsRepaired = globalDocsRepair.changed;
+      canonicalGlobalDocsBackupPath = globalDocsRepair.backupPath;
+      const { refreshAiReviewArtifacts } = await import("./ai");
+      reviewArtifactsRefreshed = await refreshAiReviewArtifacts({
+        homeDir: home,
+        rootDir,
+      });
       const projectSyncRepair = await repairProjectSyncPolicy({
         home,
         rootDir,
@@ -987,6 +1127,16 @@ export async function doctorCommand(argv: string[]) {
         console.log(`- ${conflict}`);
       }
     }
+    if (canonicalGlobalDocsRepaired) {
+      console.log(
+        `Repaired canonical AGENTS.global.md from the built-in operating model. Backup: ${canonicalGlobalDocsBackupPath}`
+      );
+    }
+    if (reviewArtifactsRefreshed) {
+      console.log(
+        `Refreshed AI review artifacts: ${reviewArtifactsRefreshed.writebackCount} writebacks in ${reviewArtifactsRefreshed.writebackReviewDir}, ${reviewArtifactsRefreshed.proposalCount} proposals in ${reviewArtifactsRefreshed.evolutionReviewDir}.`
+      );
+    }
     if (projectSyncRepaired && projectSyncRepairPath) {
       console.log(
         `Materialized explicit project sync policy in ${projectSyncRepairPath} for: ${projectSyncRepairTools.join(", ")}`
@@ -996,6 +1146,16 @@ export async function doctorCommand(argv: string[]) {
       console.log(
         `Project sync is still implicit for managed tools (${projectSyncRepairTools.join(", ")}). Run \`fclt doctor --repair\` to write explicit [project_sync.<tool>] entries.`
       );
+    }
+    const canonicalGlobalDocs = await inspectCanonicalGlobalDocs(rootDir);
+    if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
+      for (const issue of canonicalGlobalDocs.issues) {
+        console.log(`${issue.message} ${issue.fix ?? ""}`.trim());
+      }
+      if (!repair) {
+        process.exitCode = 1;
+        return;
+      }
     }
     if (await isGeneratedOnlyProjectRoot({ home, rootDir })) {
       console.log(

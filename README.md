@@ -81,6 +81,18 @@ curl -fsSL https://github.com/hack-dance/fclt/releases/latest/download/fclt-inst
 
 Windows and manual installs can download binaries from the [latest release](https://github.com/hack-dance/fclt/releases/latest).
 
+Check and repair local setup:
+
+```bash
+fclt doctor --json
+fclt doctor --repair
+```
+
+`doctor --json` is read-only. `doctor --repair` is the self-heal path for legacy
+state, broken canonical global guidance, missing review artifacts, and stale
+local integration layout. Canonical repairs keep a backup under
+`.ai/.facult/backups/doctor/`.
+
 Update an installed binary:
 
 ```bash
