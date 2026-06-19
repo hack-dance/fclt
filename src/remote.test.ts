@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { renderCanonicalText } from "./agents";
 import { facultAiIndexPath } from "./paths";
 import {
   checkRemoteUpdates,
@@ -12,6 +13,7 @@ import {
   templatesCommand,
   verifySourceCommand,
 } from "./remote";
+import { renderSnippetText } from "./snippets";
 
 const BLOCKED_BY_POLICY_RE = /blocked by policy/i;
 const INTEGRITY_CHECK_FAILED_RE = /integrity check failed/i;
@@ -1506,7 +1508,22 @@ describe("templates command", () => {
     const agentsText = await Bun.file(
       join(globalRoot, "AGENTS.global.md")
     ).text();
-    expect(agentsText).toContain("WORK_UNITS.md");
+    expect(agentsText).toContain(["$", "{refs.work_units}"].join(""));
+    expect(agentsText).toContain("<!-- fclty:global/core/work-units -->");
+    expect(
+      await Bun.file(
+        join(globalRoot, "snippets", "global", "core", "work-units.md")
+      ).exists()
+    ).toBe(true);
+    const withSnippets = await renderSnippetText({
+      text: agentsText,
+      rootDir: globalRoot,
+    });
+    const renderedAgentsText = await renderCanonicalText(withSnippets.text, {
+      homeDir: home,
+      rootDir: globalRoot,
+    });
+    expect(renderedAgentsText).toContain("WORK_UNITS.md");
     expect(await Bun.file(facultAiIndexPath(home, globalRoot)).exists()).toBe(
       true
     );

@@ -1,0 +1,12 @@
+- For any task, identify the highest-signal feedback loops available.
+- Prefer loops that can verify progress, falsify weak assumptions, and expose failure early.
+- Do not rely on a single shallow positive signal if stronger verification exists.
+- If the available loop is stale, weak, noisy, or easy to game, improve it or say what is missing.
+- When useful, leave behind a stronger loop than the one you started with.
+- Treat verification, evaluation, and writeback as part of the work, not cleanup after it.
+- Domain-specific instructions:
+  - coding and implementation: ${refs.coding_general} and ${refs.verification}
+  - writing and editorial work: ${refs.writing_rule}
+  - work-unit clarification: ${refs.work_units}
+  - learning and writeback: ${refs.learning_writeback}
+- For deeper guidance, read ${refs.feedback_loops}.

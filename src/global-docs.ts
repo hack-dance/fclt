@@ -228,18 +228,25 @@ async function renderSourceTarget(args: {
   tool: string;
 }): Promise<string> {
   const raw = await Bun.file(args.sourcePath).text();
+  const builtinRoot = facultBuiltinPackRoot();
+  const sourceRoot = args.sourcePath.startsWith(`${builtinRoot}/`)
+    ? builtinRoot
+    : args.rootDir;
   const withSnippets = await renderSnippetText({
     text: raw,
     filePath: args.sourcePath,
-    rootDir: args.rootDir,
+    rootDir: sourceRoot,
   });
   if (withSnippets.errors.length) {
     throw new Error(withSnippets.errors.join("\n"));
   }
   return await renderCanonicalText(withSnippets.text, {
     homeDir: args.homeDir,
-    rootDir: args.rootDir,
-    projectRoot: projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined,
+    rootDir: sourceRoot,
+    projectRoot:
+      sourceRoot === args.rootDir
+        ? (projectRootFromAiRoot(args.rootDir, args.homeDir) ?? undefined)
+        : undefined,
     targetTool: args.tool,
     targetPath: args.targetPath,
   });

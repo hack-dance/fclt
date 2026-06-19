@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { renderCanonicalText } from "./agents";
 import {
   ensureAiGraphPath,
   ensureAiIndexPath,
@@ -41,6 +42,7 @@ import {
   loadConfiguredProjectSyncTools,
   writeProjectSyncPolicy,
 } from "./project-sync";
+import { renderSnippetText } from "./snippets";
 import { packageVersion } from "./status";
 
 const TOML_FILE_SUFFIX_RE = /\.toml$/;
@@ -104,6 +106,9 @@ export interface DoctorReport {
     evolutionReviewDirExists: boolean;
     canonicalGlobalDocsValid: boolean;
     canonicalGlobalDocsIssueCodes: string[];
+    canonicalTemplateRefsValid: boolean;
+    canonicalTemplateRefsIssueCodes: string[];
+    canonicalTemplateRefsIssuePaths: string[];
     projectSyncRepairNeeded: boolean;
     projectSyncRepairTools: string[];
   };
@@ -446,6 +451,24 @@ async function repairLegacyCodexAuthoringLayout(args: {
   return { changed, conflicts };
 }
 
+interface CanonicalTemplateIssue {
+  path: string;
+  relPath: string;
+  code: string;
+  message: string;
+}
+
+interface CanonicalTemplateRefsInspection {
+  valid: boolean;
+  issues: CanonicalTemplateIssue[];
+}
+
+interface CanonicalTemplateRefsRepair {
+  changed: boolean;
+  repairedPaths: string[];
+  backupPaths: string[];
+}
+
 async function repairCanonicalGlobalDocs(args: {
   home: string;
   rootDir: string;
@@ -468,9 +491,33 @@ async function repairCanonicalGlobalDocs(args: {
   await copyFile(targetPath, backupPath);
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(targetPath, await readFile(sourcePath, "utf8"), "utf8");
+  await copyMissingBuiltinOperatingModelSnippets(args.rootDir);
   await ensureAiIndexPath({ homeDir: args.home, rootDir: args.rootDir });
   await ensureAiGraphPath({ homeDir: args.home, rootDir: args.rootDir });
   return { changed: true, backupPath };
+}
+
+async function copyMissingBuiltinOperatingModelSnippets(
+  rootDir: string
+): Promise<void> {
+  const relPaths = [
+    "snippets/global/baseline.md",
+    "snippets/global/core/work-units.md",
+    "snippets/global/core/feedback-loops.md",
+    "snippets/global/core/verification.md",
+    "snippets/global/core/writeback.md",
+  ];
+  const sourceRoot = facultBuiltinPackRoot();
+
+  for (const relPath of relPaths) {
+    const sourcePath = join(sourceRoot, relPath);
+    const targetPath = join(rootDir, relPath);
+    if (await pathExists(targetPath)) {
+      continue;
+    }
+    await mkdir(dirname(targetPath), { recursive: true });
+    await copyFile(sourcePath, targetPath);
+  }
 }
 
 async function listProjectSkillNames(rootDir: string): Promise<string[]> {
@@ -547,6 +594,7 @@ async function hasProjectGlobalDocs(rootDir: string): Promise<boolean> {
 }
 
 const UNRESOLVED_TEMPLATE_REF_RE = /\$\{[^}\n]+\}/g;
+const UNRESOLVED_REFS_TEMPLATE_RE = /\$\{refs\.([A-Za-z0-9_.-]+)\}/g;
 const FCLTY_BLOCK_RE =
   /<!--\s*fclty:([^>]+?)\s*-->([\s\S]*?)<!--\s*\/fclty:\1\s*-->/g;
 
@@ -562,19 +610,37 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
 
   const text = await readFile(pathValue, "utf8");
   const issues: DoctorIssue[] = [];
-  const unresolvedRefs = new Set(text.match(UNRESOLVED_TEMPLATE_REF_RE) ?? []);
+  const withSnippets = await renderSnippetText({
+    text,
+    filePath: pathValue,
+    rootDir,
+  });
+  for (const error of withSnippets.errors) {
+    issues.push({
+      severity: "warning",
+      code: "canonical-global-docs-render-error",
+      message: error,
+      fix: "Review AGENTS.global.md snippet markers or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+    });
+  }
+  const rendered = await renderCanonicalText(withSnippets.text, {
+    rootDir,
+  });
+  const unresolvedRefs = new Set(
+    rendered.match(UNRESOLVED_TEMPLATE_REF_RE) ?? []
+  );
   if (unresolvedRefs.size > 0) {
     issues.push({
       severity: "warning",
       code: "canonical-global-docs-unresolved-template",
       message:
-        "Canonical AGENTS.global.md contains unresolved template references.",
-      fix: "Review the file or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+        "Rendered AGENTS.global.md contains unresolved template references.",
+      fix: "Review AGENTS.global.md refs or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
     });
   }
 
   const emptySections: string[] = [];
-  for (const match of text.matchAll(FCLTY_BLOCK_RE)) {
+  for (const match of rendered.matchAll(FCLTY_BLOCK_RE)) {
     const key = match[1]?.trim();
     const body = match[2]?.trim();
     if (key && !body) {
@@ -585,8 +651,8 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
     issues.push({
       severity: "warning",
       code: "canonical-global-docs-empty-managed-sections",
-      message: `Canonical AGENTS.global.md has empty fclty managed sections: ${emptySections.join(", ")}.`,
-      fix: "Review the file or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+      message: `Rendered AGENTS.global.md has empty fclty managed sections: ${emptySections.join(", ")}.`,
+      fix: "Add the missing snippets or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
     });
   }
 
@@ -594,6 +660,127 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
     exists: true,
     valid: issues.length === 0,
     issues,
+  };
+}
+
+const CANONICAL_TEMPLATE_REF_DIRS = ["instructions"] as const;
+
+function canonicalRefValues(rootDir: string): Record<string, string> {
+  return {
+    bun_rule: join(rootDir, "instructions", "BUN.md"),
+    coding_general: join(rootDir, "instructions", "CODING.GENERAL.md"),
+    evolution: join(rootDir, "instructions", "EVOLUTION.md"),
+    feedback_loops: join(rootDir, "instructions", "FEEDBACK_LOOPS.md"),
+    learning_writeback: join(
+      rootDir,
+      "instructions",
+      "LEARNING_AND_WRITEBACK.md"
+    ),
+    project_capability: join(rootDir, "instructions", "PROJECT_CAPABILITY.md"),
+    verification: join(rootDir, "instructions", "VERIFICATION.md"),
+    work_units: join(rootDir, "instructions", "WORK_UNITS.md"),
+    writing_rule: join(rootDir, "instructions", "WRITING.md"),
+  };
+}
+
+function resolveKnownCanonicalRefs(text: string, rootDir: string): string {
+  const refs = canonicalRefValues(rootDir);
+  return text.replace(UNRESOLVED_REFS_TEMPLATE_RE, (match, key: string) => {
+    return refs[key] ?? match;
+  });
+}
+
+async function listCanonicalMarkdownFiles(rootDir: string): Promise<string[]> {
+  const out: string[] = [];
+
+  async function visit(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(
+      () => [] as import("node:fs").Dirent[]
+    );
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const pathValue = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(pathValue);
+      } else if (entry.isFile() && entry.name.endsWith(".md")) {
+        out.push(pathValue);
+      }
+    }
+  }
+
+  for (const relDir of CANONICAL_TEMPLATE_REF_DIRS) {
+    await visit(join(rootDir, relDir));
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+function relPathFromRoot(rootDir: string, pathValue: string): string {
+  return pathValue.startsWith(`${rootDir}/`)
+    ? pathValue.slice(rootDir.length + 1)
+    : pathValue;
+}
+
+async function inspectCanonicalTemplateRefs(
+  rootDir: string
+): Promise<CanonicalTemplateRefsInspection> {
+  const files = await listCanonicalMarkdownFiles(rootDir);
+  const issues: CanonicalTemplateIssue[] = [];
+
+  for (const pathValue of files) {
+    const text = await readFile(pathValue, "utf8");
+    const refs = new Set(text.match(UNRESOLVED_REFS_TEMPLATE_RE) ?? []);
+    if (refs.size === 0) {
+      continue;
+    }
+    const relPath = relPathFromRoot(rootDir, pathValue);
+    issues.push({
+      path: pathValue,
+      relPath,
+      code: "canonical-source-unresolved-template-ref",
+      message: `${relPath} contains unresolved template refs: ${[...refs].join(", ")}.`,
+    });
+  }
+
+  return {
+    valid: issues.length === 0,
+    issues,
+  };
+}
+
+async function repairCanonicalTemplateRefs(
+  rootDir: string
+): Promise<CanonicalTemplateRefsRepair> {
+  const files = await listCanonicalMarkdownFiles(rootDir);
+  const repairedPaths: string[] = [];
+  const backupPaths: string[] = [];
+
+  for (const pathValue of files) {
+    const before = await readFile(pathValue, "utf8");
+    const after = resolveKnownCanonicalRefs(before, rootDir);
+    if (after === before) {
+      continue;
+    }
+    const relPath = relPathFromRoot(rootDir, pathValue);
+    const backupPath = join(
+      rootDir,
+      ".facult",
+      "backups",
+      "doctor",
+      `${relPath.replaceAll("/", "__")}.${timestampForBackup()}`
+    );
+    await mkdir(dirname(backupPath), { recursive: true });
+    await copyFile(pathValue, backupPath);
+    await writeFile(pathValue, after, "utf8");
+    repairedPaths.push(relPath);
+    backupPaths.push(backupPath);
+  }
+
+  return {
+    changed: repairedPaths.length > 0,
+    repairedPaths,
+    backupPaths,
   };
 }
 
@@ -778,6 +965,7 @@ export async function buildDoctorReport(opts?: {
     writebackReviewDirExists,
     evolutionReviewDirExists,
     canonicalGlobalDocs,
+    canonicalTemplateRefs,
     projectSyncPlan,
   ] = await Promise.all([
     pathExists(rootDir),
@@ -788,6 +976,7 @@ export async function buildDoctorReport(opts?: {
     pathExists(writebackReviewDir),
     pathExists(evolutionReviewDir),
     inspectCanonicalGlobalDocs(rootDir),
+    inspectCanonicalTemplateRefs(rootDir),
     planProjectSyncPolicyRepair({ home, rootDir }),
   ]);
 
@@ -832,6 +1021,23 @@ export async function buildDoctorReport(opts?: {
       id: "refresh-global-operating-model",
       label: "Refresh global operating model",
       command: "fclt templates init operating-model --global --force",
+      risk: "canonical_write",
+    });
+  }
+
+  for (const issue of canonicalTemplateRefs.issues) {
+    issues.push({
+      severity: "warning",
+      code: issue.code,
+      message: issue.message,
+      fix: "Run fclt doctor --repair to resolve known refs into concrete paths, then review any remaining placeholders.",
+    });
+  }
+  if (!canonicalTemplateRefs.valid) {
+    actions.push({
+      id: "repair-canonical-template-refs",
+      label: "Repair unresolved canonical template refs",
+      command: "fclt doctor --repair",
       risk: "canonical_write",
     });
   }
@@ -927,7 +1133,7 @@ export async function buildDoctorReport(opts?: {
     state = "project_generated_only";
   } else if (!(rootExists && canonicalSourceExists)) {
     state = "uninitialized";
-  } else if (!canonicalGlobalDocs.valid) {
+  } else if (!(canonicalGlobalDocs.valid && canonicalTemplateRefs.valid)) {
     state = "canonical_source_attention";
   } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
     state = "partial_global_config";
@@ -970,6 +1176,13 @@ export async function buildDoctorReport(opts?: {
       canonicalGlobalDocsValid: canonicalGlobalDocs.valid,
       canonicalGlobalDocsIssueCodes: canonicalGlobalDocs.issues.map(
         (issue) => issue.code
+      ),
+      canonicalTemplateRefsValid: canonicalTemplateRefs.valid,
+      canonicalTemplateRefsIssueCodes: canonicalTemplateRefs.issues.map(
+        (issue) => issue.code
+      ),
+      canonicalTemplateRefsIssuePaths: canonicalTemplateRefs.issues.map(
+        (issue) => issue.relPath
       ),
       projectSyncRepairNeeded: projectSyncPlan.needed,
       projectSyncRepairTools,
@@ -1029,6 +1242,7 @@ export async function doctorCommand(argv: string[]) {
     let codexAuthoringConflicts: string[] = [];
     let canonicalGlobalDocsRepaired = false;
     let canonicalGlobalDocsBackupPath: string | undefined;
+    let canonicalTemplateRefsRepair: CanonicalTemplateRefsRepair | undefined;
     let reviewArtifactsRefreshed:
       | {
           writebackCount: number;
@@ -1061,6 +1275,7 @@ export async function doctorCommand(argv: string[]) {
       });
       canonicalGlobalDocsRepaired = globalDocsRepair.changed;
       canonicalGlobalDocsBackupPath = globalDocsRepair.backupPath;
+      canonicalTemplateRefsRepair = await repairCanonicalTemplateRefs(rootDir);
       const { refreshAiReviewArtifacts } = await import("./ai");
       reviewArtifactsRefreshed = await refreshAiReviewArtifacts({
         homeDir: home,
@@ -1132,6 +1347,12 @@ export async function doctorCommand(argv: string[]) {
         `Repaired canonical AGENTS.global.md from the built-in operating model. Backup: ${canonicalGlobalDocsBackupPath}`
       );
     }
+    if (canonicalTemplateRefsRepair?.changed) {
+      console.log("Resolved canonical template refs in:");
+      for (const repairedPath of canonicalTemplateRefsRepair.repairedPaths) {
+        console.log(`- ${repairedPath}`);
+      }
+    }
     if (reviewArtifactsRefreshed) {
       console.log(
         `Refreshed AI review artifacts: ${reviewArtifactsRefreshed.writebackCount} writebacks in ${reviewArtifactsRefreshed.writebackReviewDir}, ${reviewArtifactsRefreshed.proposalCount} proposals in ${reviewArtifactsRefreshed.evolutionReviewDir}.`
@@ -1151,6 +1372,18 @@ export async function doctorCommand(argv: string[]) {
     if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
       for (const issue of canonicalGlobalDocs.issues) {
         console.log(`${issue.message} ${issue.fix ?? ""}`.trim());
+      }
+      if (!repair) {
+        process.exitCode = 1;
+        return;
+      }
+    }
+    const canonicalTemplateRefs = await inspectCanonicalTemplateRefs(rootDir);
+    if (!canonicalTemplateRefs.valid) {
+      for (const issue of canonicalTemplateRefs.issues) {
+        console.log(
+          `${issue.message} Run \`fclt doctor --repair\` to resolve known refs into concrete paths, then review any remaining placeholders.`
+        );
       }
       if (!repair) {
         process.exitCode = 1;
