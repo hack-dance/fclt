@@ -513,7 +513,11 @@ describe("managed state", () => {
     const original = await readFile(targetPath, "utf8");
     await Bun.write(targetPath, `${original}\nLocal note.\n`);
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+    });
     const preserved = await readFile(targetPath, "utf8");
     expect(preserved).toContain("Local note.");
 
@@ -1336,7 +1340,12 @@ describe("syncManagedTools", () => {
       rootDir
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(
       await readFile(
@@ -1349,7 +1358,7 @@ describe("syncManagedTools", () => {
     ).toBe("# Live Unmanaged Skill\n");
   });
 
-  it("adopts manually edited live skill directories before replacing them with managed links", async () => {
+  it("skips manually edited live skill directories by default", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
 
@@ -1383,7 +1392,63 @@ describe("syncManagedTools", () => {
       rootDir
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+    });
+
+    expect(
+      await readFile(
+        join(rootDir, "skills", "shared-skill", "SKILL.md"),
+        "utf8"
+      )
+    ).toBe("# Canonical Skill\n");
+    expect(
+      await readFile(join(codexSkillsDir, "shared-skill", "SKILL.md"), "utf8")
+    ).toBe("# User Edited Skill\n");
+  });
+
+  it("adopts manually edited live skill directories with explicit opt-in", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+
+    await mkdir(join(rootDir, "skills", "shared-skill"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "skills", "shared-skill", "SKILL.md"),
+      "# Canonical Skill\n"
+    );
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+
+    const codexSkillsDir = join(home, ".agents", "skills");
+    await mkdir(join(codexSkillsDir, "shared-skill"), { recursive: true });
+    await Bun.write(
+      join(codexSkillsDir, "shared-skill", "SKILL.md"),
+      "# User Edited Skill\n"
+    );
+
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-03-19T00:13:23.457Z",
+            skillsDir: codexSkillsDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     const liveSkillPath = join(codexSkillsDir, "shared-skill");
     const liveSkillStat = await lstat(liveSkillPath);
@@ -1411,7 +1476,7 @@ describe("syncManagedTools", () => {
     ).toBe(true);
   });
 
-  it("adopts unmanaged live skill directories before replacing them with managed links", async () => {
+  it("adopts unmanaged live skill directories with explicit opt-in", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
 
@@ -1440,7 +1505,12 @@ describe("syncManagedTools", () => {
       rootDir
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     const liveSkillPath = join(codexSkillsDir, "new-skill");
     const liveSkillStat = await lstat(liveSkillPath);
@@ -1475,7 +1545,12 @@ describe("syncManagedTools", () => {
     const targetPath = join(home, ".codex", "AGENTS.md");
     await Bun.write(targetPath, "# Live Edited Global\n");
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(await readFile(join(rootDir, "AGENTS.global.md"), "utf8")).toBe(
       `Read ${REFS_WRITING_RULE}.\n`
@@ -1506,7 +1581,12 @@ describe("syncManagedTools", () => {
       servers: { canonical: { command: "node", args: ["updated.js"] } },
     });
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual(liveEdited);
   });
@@ -1629,7 +1709,12 @@ describe("syncManagedTools", () => {
       recursive: true,
       force: true,
     });
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(await Bun.file(targetPath).exists()).toBe(true);
   });
@@ -1839,7 +1924,12 @@ describe("syncManagedTools", () => {
       `name = "alpha"\n\ndeveloper_instructions = """\nBefore reviewing, read \${refs.writing_rule} and check \${refs.writing_rule} again.\n"""\n`
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     const alpha = await readFile(
       join(home, ".codex", "agents", "alpha.toml"),
@@ -1950,7 +2040,12 @@ describe("syncManagedTools", () => {
       "# Alpha live memory\n"
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(
       await readFile(
@@ -2005,7 +2100,12 @@ describe("syncManagedTools", () => {
       join(home, ".codex", "automations", "alpha", "memory.md"),
       "# Alpha runtime memory\n"
     );
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(
       await readFile(
@@ -2129,7 +2229,12 @@ describe("syncManagedTools", () => {
       force: true,
     });
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     const globalAgents = await readFile(
       join(home, ".codex", "AGENTS.md"),
@@ -2394,7 +2499,12 @@ describe("syncManagedTools", () => {
       home
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     const adoptedSkill = await readFile(
       join(rootDir, "skills", "legacy-skill", "SKILL.md"),
@@ -2470,7 +2580,12 @@ describe("syncManagedTools", () => {
       home
     );
 
-    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      adoptLive: true,
+    });
 
     expect(
       await readFile(

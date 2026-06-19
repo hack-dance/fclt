@@ -127,7 +127,7 @@ fclt index
 
 Why `keep-current`: it is deterministic and non-interactive for duplicate sources.
 
-### 4. Manage a tool and sync
+### 4. Optional: manage a tool and sync
 
 ```bash
 fclt manage codex --dry-run
@@ -140,7 +140,11 @@ fclt enable requesting-code-review receiving-code-review brainstorming systemati
 fclt sync
 ```
 
-Use `--dry-run` first if the live tool already has local content. If the tool already contains skills, agents, rules, docs, config, or MCP definitions, rerun with `--adopt-existing` and add `--existing-conflicts keep-canonical|keep-existing` if names collide.
+Managed rendering is an advanced mode. Prefer `fclt inventory`, `fclt list`, `fclt consolidate`, and explicit writeback/evolution when you mainly want visibility and normalization across Codex, Claude, and other tool homes. Use `manage` only when you want fclt to write rendered files back into a tool.
+
+Use `--dry-run` first if the live tool already has local content. If the tool already contains skills, agents, rules, docs, config, or MCP definitions, rerun `manage` with `--adopt-existing` and add `--existing-conflicts keep-canonical|keep-existing` if names collide.
+
+Ordinary `fclt sync` does not import live tool edits into canonical state. If you intentionally edited skills, agents, docs, rules, config, or MCP entries in Codex/Claude and want fclt to pick them up, run `fclt sync --adopt-live`.
 
 Codex path policy:
 - skills render to `.agents/skills`
@@ -200,6 +204,8 @@ Useful AI behavior is composable. You need small reusable parts, a clean way to 
 - discovery and graph views for dependencies, provenance, and rendered targets
 - writeback and evolution flows for improving canonical assets over time
 
+The renderer is optional. The low-friction default is to let tools keep their native files, use `fclt inventory`/`scan`/`list` to see the full global set, and use `fclt consolidate` or `fclt sync --adopt-live` only when you explicitly want to promote live tool edits into canonical `~/.ai`.
+
 ## Built-in Defaults
 
 `fclt` includes a built-in layer for writeback and evolution. By default, that layer provides:
@@ -231,9 +237,10 @@ Put that in `config.toml` or `config.local.toml` under the active canonical root
 
 `fclt` is CLI-first. The practical setup is:
 1. Install `fclt` globally so any agent runtime can execute it.
-2. Manage each agent tool with `fclt manage <tool>` and `fclt sync`.
-3. Let the built-in operating-model layer render global writeback/evolution instructions into the tool.
-4. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
+2. Use `fclt inventory`, `fclt list`, and `fclt consolidate` to inspect and normalize existing tool-native state.
+3. If you want fclt-owned rendered outputs, manage each agent tool with `fclt manage <tool>` and `fclt sync`.
+4. Let the built-in operating-model layer render global writeback/evolution instructions into the tool only where managed rendering is worth the ownership tradeoff.
+5. Optionally scaffold MCP wrappers if you want an MCP entry that delegates to `fclt`.
 
 ```bash
 # Scaffold reusable templates in the canonical store
@@ -592,7 +599,7 @@ fclt disable <name> [--for <tool1,tool2,...>]
 fclt trust --all
 fclt trust skills --all
 fclt untrust mcp --all
-fclt sync [tool] [--dry-run] [--builtin-conflicts overwrite]
+fclt sync [tool] [--dry-run] [--adopt-live] [--builtin-conflicts overwrite]
 fclt autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
 fclt autosync status [tool]
 fclt autosync restart [tool]

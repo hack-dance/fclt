@@ -137,6 +137,7 @@ export interface SyncOptions {
   tool?: string;
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
+  adoptLive?: boolean;
 }
 
 const MANAGED_VERSION = 1 as const;
@@ -2421,12 +2422,14 @@ async function syncSkillSymlinks({
   rootDir,
   tool,
   dryRun,
+  adoptLive,
 }: {
   homeDir: string;
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
   dryRun?: boolean;
+  adoptLive?: boolean;
 }): Promise<SkillSymlinkPlan> {
   const plan = await planSkillSymlinkChanges({
     homeDir,
@@ -2438,10 +2441,12 @@ async function syncSkillSymlinks({
     return plan;
   }
 
-  const adoptedConflicts = await adoptSkillSymlinkConflictsIntoCanonical({
-    rootDir,
-    conflicts: plan.conflicts,
-  });
+  const adoptedConflicts = adoptLive
+    ? await adoptSkillSymlinkConflictsIntoCanonical({
+        rootDir,
+        conflicts: plan.conflicts,
+      })
+    : [];
   const adoptedNames = new Set(
     adoptedConflicts.map((conflict) => conflict.name)
   );
@@ -3646,7 +3651,8 @@ function logRenderedConflicts(
 function logSkillSymlinkConflicts(
   tool: string,
   conflicts: SkillSymlinkConflict[],
-  dryRun?: boolean
+  dryRun?: boolean,
+  mode: "adopt" | "skip" = "skip"
 ) {
   for (const conflict of conflicts) {
     const verb =
@@ -3654,9 +3660,13 @@ function logSkillSymlinkConflicts(
         ? dryRun
           ? "would preserve"
           : "preserved"
-        : dryRun
-          ? "would adopt"
-          : "adopted";
+        : mode === "adopt"
+          ? dryRun
+            ? "would adopt"
+            : "adopted"
+          : dryRun
+            ? "would skip"
+            : "skipped";
     const state =
       conflict.reason === "unmanaged"
         ? "it is not in canonical skill state"
@@ -3667,7 +3677,7 @@ function logSkillSymlinkConflicts(
       ? ` (canonical ${conflict.canonicalPath})`
       : "";
     console.warn(
-      `${tool}: ${verb} skill ${conflict.name} from ${conflict.livePath}${canonical} because ${state}.`
+      `${tool}: ${verb} skill ${conflict.name} from ${conflict.livePath}${canonical} because ${state}.${mode === "skip" && conflict.reason !== "disabled" ? ' Rerun with "--adopt-live" to import it into canonical state.' : ""}`
     );
   }
 }
@@ -4470,6 +4480,7 @@ async function syncManagedToolEntry({
   rootDir,
   dryRun,
   builtinConflictMode,
+  adoptLive,
 }: {
   homeDir: string;
   tool: string;
@@ -4477,6 +4488,7 @@ async function syncManagedToolEntry({
   rootDir: string;
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
+  adoptLive?: boolean;
 }) {
   const correlationId = randomUUID();
   const baseLedger = syncLedgerBase({
@@ -4515,14 +4527,15 @@ async function syncManagedToolEntry({
     automationDir: entry.automationDir,
   });
 
-  const adoptedSkills = dryRun
-    ? []
-    : await repairManagedCanonicalContent({
-        homeDir,
-        rootDir,
-        tool,
-        entry,
-      });
+  const adoptedSkills =
+    dryRun || !adoptLive
+      ? []
+      : await repairManagedCanonicalContent({
+          homeDir,
+          rootDir,
+          tool,
+          entry,
+        });
 
   const skillPlan = entry.skillsDir
     ? await syncSkillSymlinks({
@@ -4531,6 +4544,7 @@ async function syncManagedToolEntry({
         rootDir,
         tool,
         dryRun,
+        adoptLive,
       })
     : { add: [], remove: [], conflicts: [], adopted: [] };
   const skillLedgerEvents = collectSkillLedgerEvents({
@@ -4895,8 +4909,8 @@ async function syncManagedToolEntry({
     logRenderedConflicts(tool, configRendered.conflicts);
     logRenderedConflicts(tool, mcpRendered.conflicts);
     logRenderedConflicts(tool, pluginRendered.conflicts);
-    logSkillSymlinkConflicts(tool, skillPlan.adopted);
-    logSkillSymlinkConflicts(tool, skillPlan.conflicts);
+    logSkillSymlinkConflicts(tool, skillPlan.adopted, false, "adopt");
+    logSkillSymlinkConflicts(tool, skillPlan.conflicts, false, "skip");
 
     updateRenderedTargetState({
       entry,
@@ -5004,6 +5018,7 @@ export async function syncManagedTools(opts: SyncOptions = {}) {
       rootDir,
       dryRun: opts.dryRun,
       builtinConflictMode: opts.builtinConflictMode,
+      adoptLive: opts.adoptLive,
     });
   }
 
@@ -5196,16 +5211,20 @@ export async function syncCommand(argv: string[]) {
     console.log(`fclt sync — sync managed tools with canonical state
 
 Usage:
-  fclt sync [tool] [--dry-run] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
+  fclt sync [tool] [--dry-run] [--adopt-live] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
 
 Options:
   --dry-run   Show what would change
+  --adopt-live   Import live tool content into canonical state before rendering
   --builtin-conflicts overwrite   Replace locally modified builtin-backed rendered files
 `);
     return;
   }
   const tool = parsed.argv.find((arg) => !arg.startsWith("-"));
   const dryRun = parsed.argv.includes("--dry-run");
+  const adoptLive =
+    parsed.argv.includes("--adopt-live") ||
+    parsed.argv.includes("--adopt-live-skills");
   const builtinConflictIndex = parsed.argv.indexOf("--builtin-conflicts");
   let builtinConflictMode: "warn" | "overwrite" | undefined;
   if (builtinConflictIndex !== -1) {
@@ -5221,6 +5240,7 @@ Options:
     await syncManagedTools({
       tool,
       dryRun,
+      adoptLive,
       builtinConflictMode,
       rootDir: resolveCliContextRoot({
         rootArg: parsed.rootArg,
