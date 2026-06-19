@@ -65,6 +65,7 @@ Use these to create or normalize canonical capability in `~/.ai` or `<repo>/.ai`
 ## Managed mode
 
 ```bash
+fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
 fclt manage <tool> [--dry-run] [--adopt-existing]
 fclt sync [tool] [--dry-run] [--adopt-live]
 fclt enable <selector> --for codex,claude
@@ -73,7 +74,7 @@ fclt managed
 fclt unmanage <tool>
 ```
 
-Managed mode writes rendered output into tool homes. Read [Managed mode](./managed-mode.md) before using it on an existing setup.
+`setup codex-plugin` is the narrow path for exposing the bundled fclt Codex plugin without entering managed mode. Managed mode writes rendered output into tool homes. Read [Managed mode](./managed-mode.md) before using it on an existing setup.
 
 ## Writeback and evolution
 

@@ -181,6 +181,7 @@ fclt index
 Managed mode writes rendered files into a tool home. Use it only when `fclt` should own that rendered surface.
 
 ```bash
+fclt setup codex-plugin
 fclt manage codex --dry-run
 fclt manage codex --adopt-existing
 fclt sync codex --dry-run
@@ -377,6 +378,7 @@ fclt index [--force]
 Managed mode:
 
 ```bash
+fclt setup codex-plugin [--dry-run] [--json]
 fclt manage <tool> [--dry-run] [--adopt-existing]
 fclt sync [tool] [--dry-run] [--adopt-live]
 fclt enable <selector> --for codex,claude
@@ -426,7 +428,7 @@ Start with:
 
 ### Does fclt run an MCP server?
 
-The core product is still CLI-first. The first-party Codex plugin includes a small stdio MCP wrapper that delegates to the installed `fclt` binary for status, doctor, paths, setup, writeback, and evolution workflows. See [Codex plugin](./docs/codex-plugin.md).
+The core product is still CLI-first. `fclt setup codex-plugin` installs the first-party Codex plugin without putting all of Codex under managed mode. The plugin includes a small stdio MCP wrapper that delegates to the installed `fclt` binary for status, doctor, paths, setup, writeback, and evolution workflows. See [Codex plugin](./docs/codex-plugin.md).
 
 ### Does fclt have to manage Codex or Claude files?
 

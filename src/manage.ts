@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
@@ -144,6 +145,28 @@ export interface SyncOptions {
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
   adoptLive?: boolean;
+}
+
+export interface SetupCodexPluginOptions {
+  homeDir?: string;
+  dryRun?: boolean;
+  installInCodex?: boolean;
+  codexBin?: string | null;
+}
+
+export interface SetupCodexPluginResult {
+  pluginDir: string;
+  marketplacePath: string;
+  changedPaths: string[];
+  dryRun: boolean;
+  codexInstall: {
+    status: "skipped" | "succeeded" | "failed";
+    command?: string[];
+    stdout?: string;
+    stderr?: string;
+    code?: number | null;
+    reason?: string;
+  };
 }
 
 const MANAGED_VERSION = 1 as const;
@@ -348,6 +371,42 @@ function fcltCodexMarketplaceEntry(): Record<string, unknown> {
     },
     category: "Productivity",
   };
+}
+
+function hackLocalCodexMarketplaceText(text: string | null): string {
+  const base =
+    text == null
+      ? {
+          name: "hack-local",
+          interface: { displayName: "Hack Local Plugins" },
+          plugins: [],
+        }
+      : (JSON.parse(text) as unknown);
+  if (!isPlainObject(base)) {
+    throw new Error("Codex plugin marketplace must be a JSON object.");
+  }
+  const plugins = Array.isArray(base.plugins) ? [...base.plugins] : [];
+  const nextPlugins = plugins.filter(
+    (entry) => !(isPlainObject(entry) && entry.name === FCLT_CODEX_PLUGIN_NAME)
+  );
+  nextPlugins.push(fcltCodexMarketplaceEntry());
+  return normalizeCodexMarketplaceText(
+    JSON.stringify(
+      {
+        ...base,
+        name:
+          typeof base.name === "string" && base.name.trim()
+            ? base.name
+            : "hack-local",
+        interface: isPlainObject(base.interface)
+          ? base.interface
+          : { displayName: "Hack Local Plugins" },
+        plugins: nextPlugins,
+      },
+      null,
+      2
+    )
+  );
 }
 
 function withBuiltinFcltCodexMarketplaceEntry(text: string | null): string {
@@ -4600,6 +4659,116 @@ async function planCodexPluginFileChanges(args: {
   };
 }
 
+async function runCodexPluginAdd(args: {
+  codexBin: string;
+  cwd: string;
+}): Promise<SetupCodexPluginResult["codexInstall"]> {
+  const command = [args.codexBin, "plugin", "add", "fclt@hack-local", "--json"];
+  return await new Promise((resolve) => {
+    const child = spawn(args.codexBin, command.slice(1), {
+      cwd: args.cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      resolve({
+        status: "failed",
+        command,
+        stdout,
+        stderr: error.message,
+        code: null,
+      });
+    });
+    child.on("close", (code) => {
+      resolve({
+        status: code === 0 ? "succeeded" : "failed",
+        command,
+        stdout,
+        stderr,
+        code,
+      });
+    });
+  });
+}
+
+export async function setupCodexPlugin(
+  opts: SetupCodexPluginOptions = {}
+): Promise<SetupCodexPluginResult> {
+  const home = opts.homeDir ?? homedir();
+  const pluginDir = codexPluginsDir(home);
+  const marketplacePath = codexPluginMarketplacePath(home);
+  const sourceDir = facultBuiltinCodexPluginRoot();
+  const changedPaths: string[] = [];
+  const sourceHash = await hashDirectoryTree(sourceDir);
+  const pluginTargetDir = join(pluginDir, FCLT_CODEX_PLUGIN_NAME);
+  const targetHash = await hashDirectoryTree(pluginTargetDir);
+
+  if (sourceHash !== targetHash) {
+    changedPaths.push(pluginTargetDir);
+  }
+
+  const marketplaceRaw = await readTextOrNull(marketplacePath);
+  let marketplaceText: string;
+  try {
+    marketplaceText = hackLocalCodexMarketplaceText(marketplaceRaw);
+  } catch (error) {
+    throw new Error(
+      `Cannot update Codex plugin marketplace at ${marketplacePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  if (
+    (await readTargetHash(marketplacePath, { normalizeText: false })) !==
+    targetContentHash(marketplaceText, { normalizeText: false })
+  ) {
+    changedPaths.push(marketplacePath);
+  }
+
+  const installInCodex = opts.installInCodex ?? true;
+  let codexInstall: SetupCodexPluginResult["codexInstall"] = {
+    status: "skipped",
+    reason: installInCodex
+      ? "dry-run"
+      : "codex plugin install disabled by --no-codex-install",
+  };
+
+  if (!opts.dryRun) {
+    await rm(pluginTargetDir, { recursive: true, force: true });
+    await ensureDir(pluginDir);
+    await cp(sourceDir, pluginTargetDir, { recursive: true });
+    await ensureDir(dirname(marketplacePath));
+    await Bun.write(marketplacePath, marketplaceText);
+
+    if (installInCodex) {
+      const codexBin =
+        opts.codexBin === undefined ? Bun.which("codex") : opts.codexBin;
+      codexInstall = codexBin
+        ? await runCodexPluginAdd({ codexBin, cwd: home })
+        : {
+            status: "skipped",
+            reason: "codex command not found",
+          };
+    }
+  }
+
+  return {
+    pluginDir: pluginTargetDir,
+    marketplacePath,
+    changedPaths: changedPaths.sort(),
+    dryRun: Boolean(opts.dryRun),
+    codexInstall,
+  };
+}
+
 async function syncManagedToolEntry({
   homeDir,
   tool,
@@ -5327,6 +5496,65 @@ export async function managedCommand(argv: string[] = []) {
       ],
     })
   );
+}
+
+export async function setupCommand(argv: string[]) {
+  const args = [...argv];
+  if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
+    console.log(`fclt setup — set up narrow integrations without full managed mode
+
+Usage:
+  fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
+
+Options:
+  --dry-run             Show paths that would change without writing files
+  --json                Print machine-readable setup result
+  --no-codex-install    Only expose the local marketplace entry; do not run codex plugin add
+`);
+    return;
+  }
+  const target = args.find((arg) => !arg.startsWith("-"));
+  const dryRun = args.includes("--dry-run");
+  const json = args.includes("--json");
+  const installInCodex = !args.includes("--no-codex-install");
+  if (target !== "codex-plugin") {
+    console.error("setup requires a target: codex-plugin");
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const result = await setupCodexPlugin({
+      dryRun,
+      installInCodex,
+    });
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if (dryRun) {
+      console.log("codex plugin setup dry-run");
+    } else {
+      console.log("codex plugin setup complete");
+    }
+    console.log(`plugin: ${result.pluginDir}`);
+    console.log(`marketplace: ${result.marketplacePath}`);
+    console.log(`changed: ${result.changedPaths.length}`);
+    if (result.codexInstall.status === "succeeded") {
+      console.log("codex install: succeeded");
+    } else if (result.codexInstall.status === "failed") {
+      console.log("codex install: failed");
+      if (result.codexInstall.stderr?.trim()) {
+        console.log(result.codexInstall.stderr.trim());
+      }
+      process.exitCode = 1;
+    } else {
+      console.log(`codex install: skipped (${result.codexInstall.reason})`);
+    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
 }
 
 export async function syncCommand(argv: string[]) {

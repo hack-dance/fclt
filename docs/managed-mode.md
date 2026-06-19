@@ -2,6 +2,14 @@
 
 Managed mode is optional. Use it when you want `fclt` to write rendered files into a tool home. Do not use it just to inspect or normalize existing tool-native state.
 
+If you only want the first-party fclt Codex plugin, use the narrow setup path instead:
+
+```bash
+fclt setup codex-plugin
+```
+
+That installs/exposes the bundled plugin without adopting or rendering the rest of Codex state.
+
 Prefer this default workflow:
 
 ```bash
