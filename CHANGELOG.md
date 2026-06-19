@@ -1,3 +1,9 @@
+## [2.13.1](https://github.com/hack-dance/fclt/compare/v2.13.0...v2.13.1) (2026-06-19)
+
+### Bug Fixes
+
+* **launcher:** tolerate concurrent runtime installs ([d1724d4](https://github.com/hack-dance/fclt/commit/d1724d4a0a01ec77f32cb27c8deec1154308ef68))
+
 ## [2.13.0](https://github.com/hack-dance/fclt/compare/v2.12.0...v2.13.0) (2026-06-19)
 
 ### Features
