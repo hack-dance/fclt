@@ -16,6 +16,7 @@ import {
   managedStatePathForRoot,
   manageTool,
   saveManagedState,
+  setupCodexPlugin,
   syncManagedTools,
   unmanageTool,
 } from "./manage";
@@ -2576,6 +2577,105 @@ describe("syncManagedTools", () => {
     );
     expect(marketplace).toContain('"name": "custom"');
     expect(marketplace).not.toContain('"name": "fclt"');
+  });
+
+  it("sets up the bundled codex plugin without entering managed mode", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(join(home, "plugins", "custom", ".codex-plugin"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(home, "plugins", "custom", ".codex-plugin", "plugin.json"),
+      JSON.stringify({ name: "custom", version: "0.1.0" }, null, 2)
+    );
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "hack-local",
+      interface: { displayName: "Hack Local Plugins" },
+      plugins: [
+        {
+          name: "custom",
+          source: { source: "local", path: "./plugins/custom" },
+          policy: {
+            installation: "AVAILABLE",
+            authentication: "ON_INSTALL",
+          },
+          category: "Productivity",
+        },
+      ],
+    });
+
+    const result = await setupCodexPlugin({
+      homeDir: home,
+      installInCodex: false,
+    });
+
+    expect(result.codexInstall.status).toBe("skipped");
+    expect(result.changedPaths).toContain(join(home, "plugins", "fclt"));
+    expect(result.changedPaths).toContain(
+      join(home, ".agents", "plugins", "marketplace.json")
+    );
+    expect(
+      await Bun.file(
+        join(home, "plugins", "fclt", ".codex-plugin", "plugin.json")
+      ).exists()
+    ).toBe(true);
+    expect(
+      await readFile(
+        join(home, "plugins", "fclt", "scripts", "fclt-mcp.cjs"),
+        "utf8"
+      )
+    ).toContain(
+      'enum: ["assess", "list", "propose", "draft", "review", "show"]'
+    );
+    expect(
+      await Bun.file(
+        join(home, "plugins", "custom", ".codex-plugin", "plugin.json")
+      ).exists()
+    ).toBe(true);
+
+    const marketplace = JSON.parse(
+      await readFile(
+        join(home, ".agents", "plugins", "marketplace.json"),
+        "utf8"
+      )
+    ) as {
+      plugins: { name: string; source: { path: string } }[];
+    };
+    expect(marketplace.plugins.map((plugin) => plugin.name).sort()).toEqual([
+      "custom",
+      "fclt",
+    ]);
+    expect(
+      marketplace.plugins.find((plugin) => plugin.name === "fclt")?.source.path
+    ).toBe("./plugins/fclt");
+    expect((await loadManagedState(home)).tools.codex).toBeUndefined();
+  });
+
+  it("dry-runs bundled codex plugin setup without writing files", async () => {
+    const home = await createTempDir();
+    const result = await setupCodexPlugin({
+      homeDir: home,
+      dryRun: true,
+    });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.changedPaths).toEqual([
+      join(home, ".agents", "plugins", "marketplace.json"),
+      join(home, "plugins", "fclt"),
+    ]);
+    expect(
+      await Bun.file(
+        join(home, "plugins", "fclt", ".codex-plugin", "plugin.json")
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        join(home, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
+    expect(result.codexInstall.status).toBe("skipped");
   });
 
   it("adopts backed-up managed skills back into the canonical store during sync repair", async () => {

@@ -34,14 +34,27 @@ These tools are thin wrappers around CLI commands and return command output. Mut
 
 ## Install In Codex
 
-From this repository, the plugin can be rendered into the Codex plugin marketplace by managed sync:
+Use the narrow setup command for normal installs:
+
+```bash
+fclt setup codex-plugin
+```
+
+That updates only the local `fclt` plugin payload under `~/plugins/fclt`, merges the `hack-local` marketplace entry at `~/.agents/plugins/marketplace.json`, and runs `codex plugin add fclt@hack-local --json` when the `codex` command is available. It does not enter managed mode, adopt Codex state, render `~/.codex/AGENTS.md`, or touch existing Codex skills/rules/config.
+
+Useful flags:
+
+```bash
+fclt setup codex-plugin --dry-run --json
+fclt setup codex-plugin --no-codex-install
+```
+
+Use managed sync only when you intentionally want `fclt` to render broader Codex tool files:
 
 ```bash
 fclt manage codex --global
 fclt sync codex --global
 ```
-
-That writes plugin files under the Codex plugin location and updates the personal marketplace entry. Use managed sync only when you want `fclt` to write Codex tool files.
 
 For local plugin development, run the lightweight checks that ship with the repository:
 

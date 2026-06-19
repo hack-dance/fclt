@@ -142,6 +142,10 @@ function printHelp() {
                 "manage/sync",
                 "Enter managed mode and render tool-native output",
               ],
+              [
+                "setup",
+                "Install narrow agent integrations without full managed mode",
+              ],
               ["ai", "Capture writeback and evolve canonical assets"],
             ],
           }),
@@ -1364,6 +1368,9 @@ async function main(argv: string[]) {
       return;
     case "sync":
       await import("./manage").then(({ syncCommand }) => syncCommand(rest));
+      return;
+    case "setup":
+      await import("./manage").then(({ setupCommand }) => setupCommand(rest));
       return;
     case "autosync":
       await import("./autosync").then(({ autosyncCommand }) =>
