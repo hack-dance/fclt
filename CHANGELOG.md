@@ -1,3 +1,9 @@
+## [2.8.8](https://github.com/hack-dance/fclt/compare/v2.8.7...v2.8.8) (2026-06-19)
+
+### Bug Fixes
+
+* **cli:** avoid runtime download temp races ([be7ee44](https://github.com/hack-dance/fclt/commit/be7ee44108e06351b514b307395cbd86b7024cb3))
+
 ## [2.8.7](https://github.com/hack-dance/fclt/compare/v2.8.6...v2.8.7) (2026-06-19)
 
 ### Bug Fixes
