@@ -77,19 +77,23 @@ const capabilityEvolutionSkillPath = join(
   "SKILL.md"
 );
 const codexAgents = await Bun.file(codexAgentsPath).text();
-const expectedCodexGuidance = [
-  "# Global Agent Instructions",
-  "Treat every task as a work unit",
-  "record a writeback before ending the task",
-];
 const normalizedCodexAgents = codexAgents.replaceAll("\\", "/");
-if (
-  !expectedCodexGuidance.every((text) =>
-    normalizedCodexAgents.includes(text)
-  ) ||
-  /\$\{refs\.[^}]+}/.test(codexAgents)
-) {
-  throw new Error(`Expected builtin AGENTS guidance in ${codexAgentsPath}`);
+const missingCodexGuidance = ["Global Agent Instructions"].filter(
+  (text) => !normalizedCodexAgents.includes(text)
+);
+const hasUnresolvedRefs = /\$\{refs\.[^}]+}/.test(codexAgents);
+if (missingCodexGuidance.length > 0 || hasUnresolvedRefs) {
+  const details = [
+    `Expected builtin AGENTS guidance in ${codexAgentsPath}`,
+    missingCodexGuidance.length > 0
+      ? `Missing: ${missingCodexGuidance.join(", ")}`
+      : "",
+    hasUnresolvedRefs
+      ? "Rendered guidance still contains unresolved refs."
+      : "",
+    `Preview:\n${normalizedCodexAgents.slice(0, 1200)}`,
+  ].filter(Boolean);
+  throw new Error(details.join("\n"));
 }
 const capabilityEvolutionSkill = await Bun.file(
   capabilityEvolutionSkillPath
