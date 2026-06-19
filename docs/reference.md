@@ -84,6 +84,7 @@ fclt ai writeback show WB-00001
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by kind
 
+fclt ai evolve assess --asset <selector> --json
 fclt ai evolve propose
 fclt ai evolve list
 fclt ai evolve show EV-00001

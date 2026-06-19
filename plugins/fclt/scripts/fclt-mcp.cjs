@@ -92,7 +92,8 @@ const tools = [
   },
   {
     name: "fclt_evolve",
-    description: "List, propose, draft, or review fclt evolution proposals.",
+    description:
+      "Assess, list, propose, draft, or review fclt evolution proposals.",
     inputSchema: {
       type: "object",
       properties: {
@@ -100,9 +101,10 @@ const tools = [
         cwd: { type: "string" },
         action: {
           type: "string",
-          enum: ["list", "propose", "draft", "review", "show"],
+          enum: ["assess", "list", "propose", "draft", "review", "show"],
         },
         id: { type: "string" },
+        asset: { type: "string" },
       },
     },
   },
@@ -176,7 +178,11 @@ function commandForTool(name, args = {}) {
         "evolve",
         ...scopeArgs(args.scope),
         action,
+        ...(action === "assess" || action === "propose"
+          ? stringFlag("--asset", args.asset)
+          : []),
         ...(args.id ? [args.id] : []),
+        ...(action === "assess" ? ["--json"] : []),
       ];
     }
     default:

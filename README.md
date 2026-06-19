@@ -262,6 +262,7 @@ fclt ai writeback summarize --by kind
 Draft a proposal only when the evidence repeats, a capability is clearly missing, or a canonical asset is stale:
 
 ```bash
+fclt ai evolve assess --asset instruction:VERIFICATION --json
 fclt ai evolve propose
 fclt ai evolve list
 fclt ai evolve draft EV-00001
@@ -389,7 +390,7 @@ Writeback and evolution:
 ```bash
 fclt ai writeback add --kind <kind> --summary <text> --asset <selector>
 fclt ai writeback list|show|group|summarize
-fclt ai evolve propose|list|show|draft|review|accept|reject|apply|promote
+fclt ai evolve assess|propose|list|show|draft|review|accept|reject|apply|promote
 ```
 
 Sources, audit, and updates:

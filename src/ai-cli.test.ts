@@ -318,6 +318,136 @@ describe("ai CLI", () => {
     );
   });
 
+  it("assesses evolution readiness before mutating proposal state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    const verificationPath = join(rootDir, "instructions", "VERIFICATION.md");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
+    await Bun.write(verificationPath, "# Verification\n");
+    await Bun.write(
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: "2026-03-18T00:00:00.000Z",
+          nodes: {
+            "instruction:global:global:VERIFICATION": {
+              id: "instruction:global:global:VERIFICATION",
+              kind: "instruction",
+              name: "VERIFICATION",
+              sourceKind: "global",
+              scope: "global",
+              canonicalRef: "@ai/instructions/VERIFICATION.md",
+              path: verificationPath,
+            },
+          },
+          edges: [],
+        },
+        null,
+        2
+      )}\n`
+    );
+    process.chdir(tempHome);
+
+    await aiCommand([
+      "writeback",
+      "add",
+      "--kind",
+      "bad_default",
+      "--summary",
+      "The git fallback guidance missed a macOS sandbox edge case.",
+      "--asset",
+      "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("assess-singleton"),
+    ]);
+
+    const singletonOut = await captureConsole(async () => {
+      await aiCommand([
+        "evolve",
+        "assess",
+        "--asset",
+        "instruction:VERIFICATION",
+        "--json",
+      ]);
+    });
+    expect(singletonOut.errors).toEqual([]);
+    const singleton = JSON.parse(singletonOut.logs.join("\n")) as {
+      recommendation: string;
+      writebackCount: number;
+      approvalRequired: boolean;
+      sourceWritebacks: string[];
+      suggestedCommands: { mutating: string[] };
+    };
+    expect(singleton.recommendation).toBe("record_more_writeback");
+    expect(singleton.writebackCount).toBe(1);
+    expect(singleton.approvalRequired).toBe(false);
+    expect(singleton.sourceWritebacks).toEqual(["WB-00001"]);
+    expect(singleton.suggestedCommands.mutating.join("\n")).toContain(
+      "writeback add"
+    );
+
+    await aiCommand([
+      "writeback",
+      "add",
+      "--kind",
+      "bad_default",
+      "--summary",
+      "The same fallback guidance failed in another sandboxed macOS run.",
+      "--asset",
+      "instruction:VERIFICATION",
+      ...proposalEvidenceArgs("assess-repeat"),
+    ]);
+
+    const repeatedOut = await captureConsole(async () => {
+      await aiCommand([
+        "evolve",
+        "assess",
+        "--asset",
+        "instruction:VERIFICATION",
+        "--json",
+      ]);
+    });
+    expect(repeatedOut.errors).toEqual([]);
+    const repeated = JSON.parse(repeatedOut.logs.join("\n")) as {
+      recommendation: string;
+      writebackCount: number;
+      repeatedSignal: boolean;
+      suggestedCommands: { mutating: string[] };
+    };
+    expect(repeated.recommendation).toBe("propose");
+    expect(repeated.writebackCount).toBe(2);
+    expect(repeated.repeatedSignal).toBe(true);
+    expect(repeated.suggestedCommands.mutating).toContain(
+      'fclt ai evolve propose --asset "instruction:VERIFICATION" --json'
+    );
+
+    await aiCommand([
+      "evolve",
+      "propose",
+      "--asset",
+      "instruction:VERIFICATION",
+    ]);
+    const existingOut = await captureConsole(async () => {
+      await aiCommand([
+        "evolve",
+        "assess",
+        "--asset",
+        "instruction:VERIFICATION",
+        "--json",
+      ]);
+    });
+    expect(existingOut.errors).toEqual([]);
+    const existing = JSON.parse(existingOut.logs.join("\n")) as {
+      recommendation: string;
+      activeProposalIds: string[];
+    };
+    expect(existing.recommendation).toBe("review_existing_proposal");
+    expect(existing.activeProposalIds).toEqual(["EV-00001"]);
+  });
+
   it("supports draft, accept, apply, reject, and supersede through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

@@ -42,9 +42,14 @@ Review accumulated signal:
 fclt ai writeback list
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by kind
+fclt ai evolve assess --asset instruction:VERIFICATION --json
 fclt ai evolve propose
 fclt ai evolve list
 ```
+
+Use `assess` as the read-only gate for agent-led review UI. It returns a recommendation (`no_mutation`, `record_more_writeback`, `propose`, or `review_existing_proposal`), source writeback ids, active proposal ids, a quality checklist, suggested commands, and the next agent instruction.
+
+For a single weak or medium-confidence writeback, the right answer is usually more evidence, not a proposal. A useful no-op still explains what recurrence would change the decision and where the next writeback should land.
 
 Draft and review:
 

@@ -28,11 +28,12 @@ Reject global scope when the proposal depends on private examples, one repo's ar
 
 1. Read current writebacks and existing proposals.
 2. Group or summarize repeated signal by asset, kind, and scope.
-3. Check the current target asset before proposing a change.
-4. Choose the smallest valid proposal kind.
-5. Draft the proposal with evidence and intended target.
-6. Accept only after the target and scope are correct.
-7. Apply only when the markdown target is the intended canonical asset.
+3. Run a read-only evolution assessment for the target when possible.
+4. Check the current target asset before proposing a change.
+5. Choose the smallest valid proposal kind.
+6. Draft the proposal with evidence and intended target.
+7. Accept only after the target and scope are correct.
+8. Apply only when the markdown target is the intended canonical asset.
 
 Use:
 
@@ -40,6 +41,7 @@ Use:
 fclt ai writeback add ...
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by domain
+fclt ai evolve assess --asset <selector> --json
 fclt ai evolve propose
 fclt ai evolve draft EV-00001
 fclt ai evolve draft EV-00001 --append "tighten the rule with a concrete verification step"
@@ -55,7 +57,7 @@ fclt templates init automation evolution-review
 fclt templates init automation tool-call-audit
 ```
 
-If there is not yet enough repeated signal for evolution, record the writeback and stop there.
+If there is not yet enough repeated signal for evolution, do not stop at a bare "no". Explain what evidence would change the decision, whether another writeback should be recorded, and the smallest future target if the pattern repeats.
 
 Do not create a proposal only to preserve an idea. Preserve the idea as writeback, notes, or task tracking unless it has enough evidence to change capability.
 
@@ -87,3 +89,5 @@ Before accept/apply, verify:
 - evidence
 - smallest useful next step
 - approval or no-op rationale
+- next evidence to collect when no proposal is justified
+- exact read-only and mutating commands, with approval boundaries
