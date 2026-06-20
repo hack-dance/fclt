@@ -1,3 +1,9 @@
+## [2.17.1](https://github.com/hack-dance/fclt/compare/v2.17.0...v2.17.1) (2026-06-20)
+
+### Bug Fixes
+
+* **codex:** honor setup marketplace name ([b7d5b3a](https://github.com/hack-dance/fclt/commit/b7d5b3a298ad6cf2d007f9875e58ec50f2e6f13f)), closes [#31](https://github.com/hack-dance/fclt/issues/31)
+
 ## [2.17.0](https://github.com/hack-dance/fclt/compare/v2.16.0...v2.17.0) (2026-06-19)
 
 ### Features
