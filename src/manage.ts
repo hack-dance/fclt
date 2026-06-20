@@ -368,7 +368,7 @@ function fcltCodexMarketplaceEntry(): Record<string, unknown> {
     },
     policy: {
       installation: "AVAILABLE",
-      authentication: "NONE",
+      authentication: "ON_INSTALL",
     },
     category: "Productivity",
   };

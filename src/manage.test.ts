@@ -2643,7 +2643,11 @@ describe("syncManagedTools", () => {
         "utf8"
       )
     ) as {
-      plugins: { name: string; source: { path: string } }[];
+      plugins: {
+        name: string;
+        source: { path: string };
+        policy?: { authentication?: string };
+      }[];
     };
     expect(marketplace.plugins.map((plugin) => plugin.name).sort()).toEqual([
       "custom",
@@ -2652,6 +2656,10 @@ describe("syncManagedTools", () => {
     expect(
       marketplace.plugins.find((plugin) => plugin.name === "fclt")?.source.path
     ).toBe("./plugins/fclt");
+    expect(
+      marketplace.plugins.find((plugin) => plugin.name === "fclt")?.policy
+        ?.authentication
+    ).toBe("ON_INSTALL");
     expect((await loadManagedState(home)).tools.codex).toBeUndefined();
   });
 
