@@ -1,6 +1,6 @@
 {
   "name": "facult",
-  "version": "2.17.2",
+  "version": "2.17.3",
   "description": "Manage canonical AI capabilities, sync surfaces, and evolution state.",
   "type": "module",
   "license": "MIT",

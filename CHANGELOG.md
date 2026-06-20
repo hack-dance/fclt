@@ -1,3 +1,9 @@
+## [2.17.3](https://github.com/hack-dance/fclt/compare/v2.17.2...v2.17.3) (2026-06-20)
+
+### Bug Fixes
+
+* **ai:** tighten evolution assessment review flow ([970d926](https://github.com/hack-dance/fclt/commit/970d926120117722b67757b4f72f01342f84f950))
+
 ## [2.17.2](https://github.com/hack-dance/fclt/compare/v2.17.1...v2.17.2) (2026-06-20)
 
 ### Bug Fixes
