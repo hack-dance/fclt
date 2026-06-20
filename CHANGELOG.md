@@ -1,3 +1,9 @@
+## [2.17.2](https://github.com/hack-dance/fclt/compare/v2.17.1...v2.17.2) (2026-06-20)
+
+### Bug Fixes
+
+* **codex:** use valid plugin auth policy ([1e7f54f](https://github.com/hack-dance/fclt/commit/1e7f54fe3e11bd4e7978c260a5241fc16da2ee5f))
+
 ## [2.17.1](https://github.com/hack-dance/fclt/compare/v2.17.0...v2.17.1) (2026-06-20)
 
 ### Bug Fixes
