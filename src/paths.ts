@@ -1,8 +1,18 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  win32,
+} from "node:path";
 import { parseJsonLenient } from "./util/json";
+
+const WINDOWS_ABSOLUTE_PATH_RE = /^[A-Za-z]:[\\/]/;
 
 export interface FacultConfig {
   /**
@@ -86,6 +96,41 @@ function legacyPreferredRoot(home: string): string {
 
 export function preferredGlobalAiRoot(home: string = defaultHomeDir()): string {
   return join(home, ".ai");
+}
+
+function looksLikeWindowsAbsolutePath(pathValue: string): boolean {
+  return (
+    WINDOWS_ABSOLUTE_PATH_RE.test(pathValue) || pathValue.startsWith("\\\\")
+  );
+}
+
+function relativePathIsInsideOrEqual(args: {
+  rel: string;
+  isAbsolutePath: (pathValue: string) => boolean;
+}): boolean {
+  const { isAbsolutePath, rel } = args;
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolutePath(rel));
+}
+
+export function pathIsInsideOrEqual(
+  pathValue: string,
+  rootDir: string
+): boolean {
+  if (
+    looksLikeWindowsAbsolutePath(pathValue) &&
+    looksLikeWindowsAbsolutePath(rootDir)
+  ) {
+    return relativePathIsInsideOrEqual({
+      isAbsolutePath: win32.isAbsolute,
+      rel: win32.relative(rootDir, pathValue),
+    });
+  }
+
+  const rel = relative(rootDir, pathValue);
+  return relativePathIsInsideOrEqual({
+    isAbsolutePath: isAbsolute,
+    rel,
+  });
 }
 
 export function preferredGlobalFacultStateDir(

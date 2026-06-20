@@ -13,6 +13,7 @@ import {
   facultRootDir,
   facultRuntimeCacheDir,
   legacyFacultAiStateDirs,
+  pathIsInsideOrEqual,
 } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -214,5 +215,32 @@ describe("paths", () => {
     expect(facultMachineStateDir(tempHome, rootDir)).not.toContain(
       join(projectRoot, ".ai", ".facult")
     );
+  });
+
+  it("classifies native and Windows-style child paths without slash assumptions", () => {
+    expect(
+      pathIsInsideOrEqual(
+        join("/tmp", "fclt", "assets", "AGENTS.global.md"),
+        join("/tmp", "fclt", "assets")
+      )
+    ).toBe(true);
+    expect(
+      pathIsInsideOrEqual(
+        join("/tmp", "fclt-other", "AGENTS.global.md"),
+        join("/tmp", "fclt", "assets")
+      )
+    ).toBe(false);
+    expect(
+      pathIsInsideOrEqual(
+        "D:\\a\\fclt\\fclt\\assets\\packs\\facult-operating-model\\AGENTS.global.md",
+        "D:\\a\\fclt\\fclt\\assets\\packs\\facult-operating-model"
+      )
+    ).toBe(true);
+    expect(
+      pathIsInsideOrEqual(
+        "D:\\a\\fclt\\other\\AGENTS.global.md",
+        "D:\\a\\fclt\\fclt\\assets\\packs\\facult-operating-model"
+      )
+    ).toBe(false);
   });
 });

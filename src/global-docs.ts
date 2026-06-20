@@ -6,7 +6,7 @@ import {
   facultBuiltinAgentsGlobalSourcePath,
   facultBuiltinPackRoot,
 } from "./builtin";
-import { projectRootFromAiRoot } from "./paths";
+import { pathIsInsideOrEqual, projectRootFromAiRoot } from "./paths";
 import { projectSyncAllowsToolSurface } from "./project-sync";
 import { renderSnippetText } from "./snippets";
 
@@ -233,7 +233,7 @@ async function renderSourceTarget(args: {
 }): Promise<string> {
   const raw = await Bun.file(args.sourcePath).text();
   const builtinRoot = facultBuiltinPackRoot();
-  const sourceRoot = args.sourcePath.startsWith(`${builtinRoot}/`)
+  const sourceRoot = pathIsInsideOrEqual(args.sourcePath, builtinRoot)
     ? builtinRoot
     : args.rootDir;
   const withSnippets = await renderSnippetText({

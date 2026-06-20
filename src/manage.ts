@@ -48,6 +48,7 @@ import {
   facultMachineStateDir,
   facultRootDir,
   legacyFacultStateDirForRoot,
+  pathIsInsideOrEqual,
   projectRootFromAiRoot,
 } from "./paths";
 import { loadProjectToolSyncPolicy } from "./project-sync";
@@ -289,8 +290,8 @@ async function isGeneratedOnlyProjectRoot(args: {
 function renderedSourceKindForPath(
   sourcePath: string
 ): ManagedRenderedTargetState["sourceKind"] {
-  return sourcePath.startsWith(facultBuiltinPackRoot()) ||
-    sourcePath.startsWith(facultBuiltinCodexPluginRoot())
+  return pathIsInsideOrEqual(sourcePath, facultBuiltinPackRoot()) ||
+    pathIsInsideOrEqual(sourcePath, facultBuiltinCodexPluginRoot())
     ? "builtin"
     : "canonical";
 }
