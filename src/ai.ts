@@ -599,6 +599,7 @@ async function resolveAssetSelection(args: {
   homeDir: string;
   rootDir: string;
   asset: string;
+  repairGraph?: boolean;
 }): Promise<{
   assetRef?: string;
   assetId?: string;
@@ -607,7 +608,7 @@ async function resolveAssetSelection(args: {
   await ensureAiGraphPath({
     homeDir: args.homeDir,
     rootDir: args.rootDir,
-    repair: true,
+    repair: args.repairGraph,
   });
   const graph = await loadGraph({
     homeDir: args.homeDir,
@@ -1123,11 +1124,13 @@ export async function assessEvolution(args: {
         homeDir,
         rootDir: args.rootDir,
         asset: args.asset,
+        repairGraph: false,
       })
     : null;
   const target = filterAsset?.assetRef ?? args.asset;
   const writebacks = (await listWritebacks({ homeDir, rootDir: args.rootDir }))
     .filter((entry) => entry.status !== "dismissed")
+    .filter((entry) => entry.status !== "resolved")
     .filter((entry) => entry.status !== "superseded")
     .filter((entry) => entry.evidence.length > 0)
     .filter((entry) => {

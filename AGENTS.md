@@ -166,7 +166,7 @@ fclt ai writeback add --project \
   --kind reusable_pattern \
   --summary "..." \
   --evidence "session:<id>" \
-  --target "AGENTS.md"
+  --asset "AGENTS.md"
 ```
 
 - Use evolution only for repeated evidence, stale canonical assets, or clearly missing capability.
