@@ -74,7 +74,11 @@ fclt managed
 fclt unmanage <tool>
 ```
 
-`setup codex-plugin` is the narrow path for exposing the bundled fclt Codex plugin without entering managed mode. Managed mode writes rendered output into tool homes. Read [Managed mode](./managed-mode.md) before using it on an existing setup.
+`setup codex-plugin` is the narrow path for exposing the bundled fclt Codex
+plugin without entering managed mode. It writes only `~/plugins/fclt`, the
+local marketplace entry, and the Codex plugin install/cache when Codex is
+available. Managed mode writes rendered output into tool homes. Read
+[Managed mode](./managed-mode.md) before using it on an existing setup.
 
 ## Writeback and evolution
 
