@@ -1,3 +1,9 @@
+## [2.17.6](https://github.com/hack-dance/fclt/compare/v2.17.5...v2.17.6) (2026-06-20)
+
+### Bug Fixes
+
+* classify builtin paths portably ([832113b](https://github.com/hack-dance/fclt/commit/832113bbfebe0c724be27f288d83db4ebc0f35fd))
+
 ## [2.17.5](https://github.com/hack-dance/fclt/compare/v2.17.4...v2.17.5) (2026-06-20)
 
 ### Bug Fixes
