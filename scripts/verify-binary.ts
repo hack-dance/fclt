@@ -78,11 +78,22 @@ const capabilityEvolutionSkillPath = join(
 );
 const codexAgents = await Bun.file(codexAgentsPath).text();
 const normalizedCodexAgents = codexAgents.replaceAll("\\", "/");
-const missingCodexGuidance = ["Global Agent Instructions"].filter(
-  (text) => !normalizedCodexAgents.includes(text)
-);
+const missingCodexGuidance = [
+  "Global Agent Instructions",
+  "Treat every task as a work unit",
+  "For any task, identify the highest-signal feedback loops available",
+  "When a high-signal learning clearly points at a canonical asset",
+].filter((text) => !normalizedCodexAgents.includes(text));
 const hasUnresolvedRefs = /\$\{refs\.[^}]+}/.test(codexAgents);
-if (missingCodexGuidance.length > 0 || hasUnresolvedRefs) {
+const hasEmptyFcltyBlock =
+  /<!--\s*fclty:([^>]+?)\s*-->\s*<!--\s*\/fclty:\1\s*-->/.test(
+    normalizedCodexAgents
+  );
+if (
+  missingCodexGuidance.length > 0 ||
+  hasUnresolvedRefs ||
+  hasEmptyFcltyBlock
+) {
   const details = [
     `Expected builtin AGENTS guidance in ${codexAgentsPath}`,
     missingCodexGuidance.length > 0
@@ -90,6 +101,9 @@ if (missingCodexGuidance.length > 0 || hasUnresolvedRefs) {
       : "",
     hasUnresolvedRefs
       ? "Rendered guidance still contains unresolved refs."
+      : "",
+    hasEmptyFcltyBlock
+      ? "Rendered guidance still contains empty fclty blocks."
       : "",
     `Preview:\n${normalizedCodexAgents.slice(0, 1200)}`,
   ].filter(Boolean);

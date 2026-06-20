@@ -15,6 +15,7 @@ import {
   promoteProposal,
   promoteWriteback,
   proposeEvolution,
+  refreshAiReviewArtifacts,
   rejectProposal,
   showProposal,
   showWriteback,
@@ -1107,6 +1108,16 @@ describe("ai writeback", () => {
       rootDir,
     });
     expect(refreshed?.applyResult?.draftRefs).toHaveLength(2);
+
+    await refreshAiReviewArtifacts({ homeDir: tempHome, rootDir });
+    const reviewText = await readFile(
+      join(facultAiEvolutionReviewDir(tempHome, rootDir), `${proposal!.id}.md`),
+      "utf8"
+    );
+    expect(reviewText).toContain("## Current Draft");
+    expect(reviewText).toContain(
+      "Verification guidance needs stronger proof language."
+    );
   });
 
   it("does not repair generated graph state during assessment", async () => {

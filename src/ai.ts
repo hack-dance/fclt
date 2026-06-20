@@ -491,6 +491,18 @@ async function writeProposalReviewArtifact(args: {
   await Bun.write(pathValue, `${body.trimEnd()}\n`);
 }
 
+async function currentDraftBodyForProposal(
+  proposal: AiProposalRecord
+): Promise<string | null> {
+  const draftPath = proposal.draftRefs.find((pathValue) =>
+    pathValue.endsWith(".md")
+  );
+  if (!(draftPath && (await fileExists(draftPath)))) {
+    return null;
+  }
+  return readFile(draftPath, "utf8");
+}
+
 function slugToTitle(value: string): string {
   return value
     .split(SLUG_SPLIT_RE)
@@ -1375,6 +1387,7 @@ export async function refreshAiReviewArtifacts(args: {
       rootDir: args.rootDir,
       proposal,
       writebacks: sourceWritebacks,
+      draftBody: await currentDraftBodyForProposal(proposal),
     });
   }
 
