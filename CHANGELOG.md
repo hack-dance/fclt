@@ -1,3 +1,9 @@
+## [2.17.5](https://github.com/hack-dance/fclt/compare/v2.17.4...v2.17.5) (2026-06-20)
+
+### Bug Fixes
+
+* address review triage issues ([0a768c0](https://github.com/hack-dance/fclt/commit/0a768c024b60f07f2969e62e1595ec359f76c60b))
+
 ## [2.17.4](https://github.com/hack-dance/fclt/compare/v2.17.3...v2.17.4) (2026-06-20)
 
 ### Bug Fixes
