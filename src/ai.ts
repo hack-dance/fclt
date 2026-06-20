@@ -988,7 +988,11 @@ export async function proposeEvolution(args: {
     : null;
 
   const candidates = writebacks.filter((entry) => {
-    if (entry.status === "dismissed" || entry.status === "superseded") {
+    if (
+      entry.status === "dismissed" ||
+      entry.status === "resolved" ||
+      entry.status === "superseded"
+    ) {
       return false;
     }
     if (entry.evidence.length === 0) {

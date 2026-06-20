@@ -1094,6 +1094,13 @@ describe("ai writeback", () => {
     expect(assessment.recommendation).toBe("no_mutation");
     expect(assessment.writebackCount).toBe(0);
     expect(assessment.sourceWritebacks).toEqual([]);
+    await expect(
+      proposeEvolution({
+        homeDir: tempHome,
+        rootDir,
+        asset: "instruction:VERIFICATION",
+      })
+    ).resolves.toEqual([]);
 
     const refreshed = await showProposal(proposal!.id, {
       homeDir: tempHome,
