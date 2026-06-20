@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -15,6 +16,7 @@ import {
   managedStatePath,
   managedStatePathForRoot,
   manageTool,
+  type SetupCodexPluginResult,
   saveManagedState,
   setupCodexPlugin,
   syncManagedTools,
@@ -2653,6 +2655,43 @@ describe("syncManagedTools", () => {
     expect((await loadManagedState(home)).tools.codex).toBeUndefined();
   });
 
+  it("installs from the preserved Codex marketplace name", async () => {
+    const home = await createTempDir();
+    const codexBin = join(home, "bin", "codex");
+    await mkdir(dirname(codexBin), { recursive: true });
+    await Bun.write(
+      codexBin,
+      `#!/bin/sh
+printf '%s\n' "$@" > codex-args.txt
+printf '{"ok":true}\n'
+`
+    );
+    await chmod(codexBin, 0o755);
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "local",
+      interface: { displayName: "Local Plugins" },
+      plugins: [],
+    });
+
+    const result = await setupCodexPlugin({
+      homeDir: home,
+      codexBin,
+    });
+
+    expect(result.marketplaceName).toBe("local");
+    expect(result.codexInstall.status).toBe("succeeded");
+    expect(result.codexInstall.command).toEqual([
+      codexBin,
+      "plugin",
+      "add",
+      "fclt@local",
+      "--json",
+    ]);
+    expect(await readFile(join(home, "codex-args.txt"), "utf8")).toBe(
+      "plugin\nadd\nfclt@local\n--json\n"
+    );
+  });
+
   it("dry-runs bundled codex plugin setup without writing files", async () => {
     const home = await createTempDir();
     const result = await setupCodexPlugin({
@@ -2676,6 +2715,54 @@ describe("syncManagedTools", () => {
       ).exists()
     ).toBe(false);
     expect(result.codexInstall.status).toBe("skipped");
+  });
+
+  it("returns a failing exit code for JSON codex plugin install failures", async () => {
+    const home = await createTempDir();
+    const binDir = join(home, "bin");
+    const codexBin = join(binDir, "codex");
+    await mkdir(binDir, { recursive: true });
+    await Bun.write(
+      codexBin,
+      `#!/bin/sh
+echo "install failed" >&2
+exit 7
+`
+    );
+    await chmod(codexBin, 0o755);
+
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "run",
+        join(process.cwd(), "src/index.ts"),
+        "setup",
+        "codex-plugin",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(1);
+    expect(stderr).toBe("");
+    const result = JSON.parse(stdout) as SetupCodexPluginResult;
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.code).toBe(7);
+    expect(result.codexInstall.stderr).toContain("install failed");
   });
 
   it("adopts backed-up managed skills back into the canonical store during sync repair", async () => {
