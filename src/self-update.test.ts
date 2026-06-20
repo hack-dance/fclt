@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
+  buildCommandLookupFallback,
   buildPackageManagerUpdateCommand,
   detectInstallMethod,
+  looksLikeMiseNpmFacultExecutableForVersion,
   looksLikeMiseShim,
   normalizeVersionTag,
   parseSelfUpdateArgs,
@@ -104,5 +106,39 @@ describe("looksLikeMiseShim", () => {
       true
     );
     expect(looksLikeMiseShim("/usr/local/bin/fclt")).toBe(false);
+  });
+});
+
+describe("command lookup fallback", () => {
+  it("uses a portable Windows lookup command", () => {
+    expect(buildCommandLookupFallback("fclt", "win32")).toEqual([
+      "where.exe",
+      "fclt",
+    ]);
+  });
+
+  it("uses command -v on POSIX platforms", () => {
+    expect(buildCommandLookupFallback("fclt", "darwin")).toEqual([
+      "sh",
+      "-lc",
+      "command -v 'fclt'",
+    ]);
+  });
+});
+
+describe("mise version helpers", () => {
+  it("matches a concrete npm-facult mise install version", () => {
+    expect(
+      looksLikeMiseNpmFacultExecutableForVersion(
+        "/Users/test/.local/share/mise/installs/npm-facult/2.17.4/bin/fclt",
+        "2.17.4"
+      )
+    ).toBe(true);
+    expect(
+      looksLikeMiseNpmFacultExecutableForVersion(
+        "/Users/test/.local/share/mise/installs/npm-facult/2.17.3/bin/fclt",
+        "2.17.4"
+      )
+    ).toBe(false);
   });
 });

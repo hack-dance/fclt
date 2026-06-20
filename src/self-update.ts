@@ -195,9 +195,6 @@ async function activeFcltUsesMiseNpmFacult(): Promise<boolean> {
   if (looksLikeMiseNpmFacultExecutable(fcltPath ?? "")) {
     return true;
   }
-  if (await miseHasCurrentFacultTool()) {
-    return true;
-  }
   if (!looksLikeMiseShim(fcltPath)) {
     return false;
   }
@@ -218,20 +215,21 @@ async function activeFcltUsesMiseNpmFacult(): Promise<boolean> {
   return looksLikeMiseNpmFacultExecutable(stdout.trim());
 }
 
-async function miseHasCurrentFacultTool(): Promise<boolean> {
-  const proc = Bun.spawn({
-    cmd: ["mise", "current", `npm:${PACKAGE_NAME}`],
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-    env: process.env,
-  });
-  return (await proc.exited) === 0;
+export function buildCommandLookupFallback(
+  command: string,
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  if (platform === "win32") {
+    return ["where.exe", command];
+  }
+  const quoted = `'${command.replaceAll("'", "'\\''")}'`;
+  return ["sh", "-lc", `command -v ${quoted}`];
 }
 
 async function resolveCommandPath(command: string): Promise<string | null> {
+  const cmd = buildCommandLookupFallback(command);
   const proc = Bun.spawn({
-    cmd: ["sh", "-lc", `command -v ${command}`],
+    cmd,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "ignore",
@@ -245,6 +243,17 @@ async function resolveCommandPath(command: string): Promise<string | null> {
     return null;
   }
   return stdout.trim() || null;
+}
+
+export function looksLikeMiseNpmFacultExecutableForVersion(
+  executablePath: string,
+  version: string
+): boolean {
+  const normalized = executablePath.split("\\").join(sep);
+  return (
+    looksLikeMiseNpmFacultExecutable(normalized) &&
+    normalized.includes(`${sep}npm-facult${sep}${version}${sep}`)
+  );
 }
 
 function resolvePlatformTarget(): {
@@ -516,17 +525,38 @@ async function assertActiveFcltVersion(
   expectedVersion: string,
   packageManager: PackageManager
 ): Promise<void> {
-  const cmd =
-    packageManager === "mise"
-      ? [
-          "mise",
-          "exec",
-          `npm:${PACKAGE_NAME}@${expectedVersion}`,
-          "--",
-          "fclt",
-          "--version",
-        ]
-      : ["fclt", "--version"];
+  let cmd = ["fclt", "--version"];
+  if (packageManager === "mise") {
+    const which = Bun.spawn({
+      cmd: ["mise", "which", "fclt"],
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    const [whichStdout, whichStderr, whichCode] = await Promise.all([
+      new Response(which.stdout).text(),
+      new Response(which.stderr).text(),
+      which.exited,
+    ]);
+    const resolvedPath = whichStdout.trim();
+    if (whichCode !== 0) {
+      throw new Error(
+        `Updated package, but could not verify active mise fclt path: ${whichStderr.trim()}`
+      );
+    }
+    if (
+      !looksLikeMiseNpmFacultExecutableForVersion(resolvedPath, expectedVersion)
+    ) {
+      throw new Error(
+        [
+          `Updated package to ${expectedVersion}, but mise resolves fclt to ${resolvedPath || "nothing"}.`,
+          "Run `mise which fclt` and `mise current npm:facult` to inspect the active tool selection.",
+        ].join("\n")
+      );
+    }
+    cmd = [resolvedPath, "--version"];
+  }
   const proc = Bun.spawn({
     cmd,
     stdin: "ignore",

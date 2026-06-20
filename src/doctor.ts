@@ -476,7 +476,12 @@ async function repairCanonicalGlobalDocs(args: {
   home: string;
   rootDir: string;
 }): Promise<{ changed: boolean; backupPath?: string }> {
-  const inspected = await inspectCanonicalGlobalDocs(args.rootDir);
+  if (projectRootFromAiRoot(args.rootDir, args.home)) {
+    return { changed: false };
+  }
+  const inspected = await inspectCanonicalGlobalDocs(args.rootDir, {
+    projectRoot: null,
+  });
   if (!(inspected.exists && !inspected.valid)) {
     return { changed: false };
   }
@@ -494,13 +499,13 @@ async function repairCanonicalGlobalDocs(args: {
   await copyFile(targetPath, backupPath);
   await mkdir(dirname(targetPath), { recursive: true });
   await writeFile(targetPath, await readFile(sourcePath, "utf8"), "utf8");
-  await copyMissingBuiltinOperatingModelSnippets(args.rootDir);
+  await repairBuiltinOperatingModelSnippets(args.rootDir);
   await ensureAiIndexPath({ homeDir: args.home, rootDir: args.rootDir });
   await ensureAiGraphPath({ homeDir: args.home, rootDir: args.rootDir });
   return { changed: true, backupPath };
 }
 
-async function copyMissingBuiltinOperatingModelSnippets(
+async function repairBuiltinOperatingModelSnippets(
   rootDir: string
 ): Promise<void> {
   const relPaths = [
@@ -515,7 +520,10 @@ async function copyMissingBuiltinOperatingModelSnippets(
   for (const relPath of relPaths) {
     const sourcePath = join(sourceRoot, relPath);
     const targetPath = join(rootDir, relPath);
-    if (await pathExists(targetPath)) {
+    const existing = (await pathExists(targetPath))
+      ? await readFile(targetPath, "utf8")
+      : null;
+    if (existing !== null && existing.trim().length > 0) {
       continue;
     }
     await mkdir(dirname(targetPath), { recursive: true });
@@ -601,7 +609,10 @@ const UNRESOLVED_REFS_TEMPLATE_RE = /\$\{refs\.([A-Za-z0-9_.-]+)\}/g;
 const FCLTY_BLOCK_RE =
   /<!--\s*fclty:([^>]+?)\s*-->([\s\S]*?)<!--\s*\/fclty:\1\s*-->/g;
 
-async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
+async function inspectCanonicalGlobalDocs(
+  rootDir: string,
+  opts: { projectRoot?: string | null } = {}
+): Promise<{
   exists: boolean;
   valid: boolean;
   issues: DoctorIssue[];
@@ -613,6 +624,12 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
 
   const text = await readFile(pathValue, "utf8");
   const issues: DoctorIssue[] = [];
+  const refreshCommand = opts.projectRoot
+    ? "fclt templates init project-ai --force"
+    : "fclt templates init operating-model --global --force";
+  const docLabel = opts.projectRoot
+    ? "project AGENTS.global.md"
+    : "AGENTS.global.md";
   const withSnippets = await renderSnippetText({
     text,
     filePath: pathValue,
@@ -623,7 +640,7 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
       severity: "warning",
       code: "canonical-global-docs-render-error",
       message: error,
-      fix: "Review AGENTS.global.md snippet markers or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+      fix: `Review ${docLabel} snippet markers or refresh the selected capability root with \`${refreshCommand}\`.`,
     });
   }
   const rendered = await renderCanonicalText(withSnippets.text, {
@@ -636,9 +653,8 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
     issues.push({
       severity: "warning",
       code: "canonical-global-docs-unresolved-template",
-      message:
-        "Rendered AGENTS.global.md contains unresolved template references.",
-      fix: "Review AGENTS.global.md refs or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+      message: `Rendered ${docLabel} contains unresolved template references.`,
+      fix: `Review ${docLabel} refs or refresh the selected capability root with \`${refreshCommand}\`.`,
     });
   }
 
@@ -654,8 +670,8 @@ async function inspectCanonicalGlobalDocs(rootDir: string): Promise<{
     issues.push({
       severity: "warning",
       code: "canonical-global-docs-empty-managed-sections",
-      message: `Rendered AGENTS.global.md has empty fclty managed sections: ${emptySections.join(", ")}.`,
-      fix: "Add the missing snippets or refresh the built-in operating model with `fclt templates init operating-model --global --force`.",
+      message: `Rendered ${docLabel} has empty fclty managed sections: ${emptySections.join(", ")}.`,
+      fix: `Add the missing snippets or refresh the selected capability root with \`${refreshCommand}\`.`,
     });
   }
 
@@ -976,7 +992,7 @@ export async function buildDoctorReport(opts?: {
     pathExists(generatedGraph),
     pathExists(writebackReviewDir),
     pathExists(evolutionReviewDir),
-    inspectCanonicalGlobalDocs(rootDir),
+    inspectCanonicalGlobalDocs(rootDir, { projectRoot }),
     inspectCanonicalTemplateRefs(rootDir),
     planProjectSyncPolicyRepair({ home, rootDir }),
   ]);
@@ -1019,9 +1035,15 @@ export async function buildDoctorReport(opts?: {
   }
   if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
     actions.push({
-      id: "refresh-global-operating-model",
-      label: "Refresh global operating model",
-      command: "fclt templates init operating-model --global --force",
+      id: projectRoot
+        ? "refresh-project-operating-model"
+        : "refresh-global-operating-model",
+      label: projectRoot
+        ? "Refresh project operating model"
+        : "Refresh global operating model",
+      command: projectRoot
+        ? "fclt templates init project-ai --force"
+        : "fclt templates init operating-model --global --force",
       risk: "canonical_write",
     });
   }
@@ -1369,7 +1391,9 @@ export async function doctorCommand(argv: string[]) {
         `Project sync is still implicit for managed tools (${projectSyncRepairTools.join(", ")}). Run \`fclt doctor --repair\` to write explicit [project_sync.<tool>] entries.`
       );
     }
-    const canonicalGlobalDocs = await inspectCanonicalGlobalDocs(rootDir);
+    const canonicalGlobalDocs = await inspectCanonicalGlobalDocs(rootDir, {
+      projectRoot: projectRootFromAiRoot(rootDir, home),
+    });
     if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
       for (const issue of canonicalGlobalDocs.issues) {
         console.log(`${issue.message} ${issue.fix ?? ""}`.trim());

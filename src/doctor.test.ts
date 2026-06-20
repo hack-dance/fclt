@@ -677,6 +677,13 @@ test("doctor --repair refreshes invalid canonical global guidance and review art
       join(aiRoot, "snippets", "global", "core", "feedback-loops.md"),
       `- For deeper guidance, read ${BROKEN_LEARNING_REF}.\n`
     );
+    await mkdir(join(aiRoot, "snippets", "global", "core"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(aiRoot, "snippets", "global", "core", "writeback.md"),
+      "\n"
+    );
 
     const queuePath = facultAiWritebackQueuePath(dir, aiRoot);
     await mkdir(dirname(queuePath), { recursive: true });
@@ -729,6 +736,13 @@ test("doctor --repair refreshes invalid canonical global guidance and review art
         join(aiRoot, "snippets", "global", "core", "writeback.md")
       ).exists()
     ).toBe(true);
+    const repairedWritebackSnippet = await readFile(
+      join(aiRoot, "snippets", "global", "core", "writeback.md"),
+      "utf8"
+    );
+    expect(repairedWritebackSnippet).toContain(
+      "Do not end at output if something important was learned."
+    );
     const repairedInstruction = await readFile(
       join(aiRoot, "instructions", "FEEDBACK_LOOPS.md"),
       "utf8"
@@ -757,6 +771,55 @@ test("doctor --repair refreshes invalid canonical global guidance and review art
     );
     expect(review).toContain("Self-heal test writeback");
     expect(await readdir(facultAiEvolutionReviewDir(dir, aiRoot))).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor --repair does not replace project AGENTS.global.md with global defaults", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-project-docs-"));
+  const repoDir = join(dir, "repo");
+  const aiRoot = join(repoDir, ".ai");
+  const agentsPath = join(aiRoot, "AGENTS.global.md");
+  const projectGuidance = [
+    "# Project Agent Instructions",
+    "",
+    "Keep this project-specific guidance.",
+    "",
+    "<!-- fclty:global/core/writeback -->",
+    "<!-- /fclty:global/core/writeback -->",
+  ].join("\n");
+
+  try {
+    await mkdir(aiRoot, { recursive: true });
+    await Bun.write(agentsPath, projectGuidance);
+
+    const env = { ...process.env, HOME: dir };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--repair", "--root", aiRoot],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out).toContain("project AGENTS.global.md");
+    expect(out).toContain("fclt templates init project-ai --force");
+    expect(out).not.toContain("Repaired canonical AGENTS.global.md");
+    expect(await readFile(agentsPath, "utf8")).toBe(projectGuidance);
+    expect(
+      await Bun.file(join(aiRoot, ".facult", "backups", "doctor")).exists()
+    ).toBe(false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
