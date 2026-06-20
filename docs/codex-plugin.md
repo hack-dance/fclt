@@ -40,7 +40,19 @@ Use the narrow setup command for normal installs:
 fclt setup codex-plugin
 ```
 
-That updates only the local `fclt` plugin payload under `~/plugins/fclt`, merges the `hack-local` marketplace entry at `~/.agents/plugins/marketplace.json`, and runs `codex plugin add fclt@hack-local --json` when the `codex` command is available. It does not enter managed mode, adopt Codex state, render `~/.codex/AGENTS.md`, or touch existing Codex skills/rules/config.
+That updates only the local `fclt` plugin payload under `~/plugins/fclt`
+and merges an entry into `~/.agents/plugins/marketplace.json`. The default
+marketplace name is `hack-local`; if the marketplace file already has a
+non-empty `name`, fclt preserves it and installs from that name. The generated
+entry uses Codex schema-valid policy values, including
+`installation: "AVAILABLE"` and `authentication: "ON_INSTALL"`.
+
+When the `codex` command is available, setup runs
+`codex plugin add fclt@<marketplace> --json`. The installed Codex cache is
+under `~/.codex/plugins/cache/<marketplace>/fclt/0.1.0`.
+
+It does not enter managed mode, adopt Codex state, render
+`~/.codex/AGENTS.md`, or touch existing Codex skills/rules/config.
 
 Useful flags:
 
