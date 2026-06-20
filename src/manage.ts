@@ -157,6 +157,7 @@ export interface SetupCodexPluginOptions {
 export interface SetupCodexPluginResult {
   pluginDir: string;
   marketplacePath: string;
+  marketplaceName: string;
   changedPaths: string[];
   dryRun: boolean;
   codexInstall: {
@@ -407,6 +408,18 @@ function hackLocalCodexMarketplaceText(text: string | null): string {
       2
     )
   );
+}
+
+function codexMarketplaceNameFromText(text: string): string {
+  const parsed = JSON.parse(text) as unknown;
+  if (
+    isPlainObject(parsed) &&
+    typeof parsed.name === "string" &&
+    parsed.name.trim()
+  ) {
+    return parsed.name;
+  }
+  return "hack-local";
 }
 
 function withBuiltinFcltCodexMarketplaceEntry(text: string | null): string {
@@ -4662,8 +4675,15 @@ async function planCodexPluginFileChanges(args: {
 async function runCodexPluginAdd(args: {
   codexBin: string;
   cwd: string;
+  marketplaceName: string;
 }): Promise<SetupCodexPluginResult["codexInstall"]> {
-  const command = [args.codexBin, "plugin", "add", "fclt@hack-local", "--json"];
+  const command = [
+    args.codexBin,
+    "plugin",
+    "add",
+    `fclt@${args.marketplaceName}`,
+    "--json",
+  ];
   return await new Promise((resolve) => {
     const child = spawn(args.codexBin, command.slice(1), {
       cwd: args.cwd,
@@ -4726,6 +4746,7 @@ export async function setupCodexPlugin(
       }`
     );
   }
+  const marketplaceName = codexMarketplaceNameFromText(marketplaceText);
   if (
     (await readTargetHash(marketplacePath, { normalizeText: false })) !==
     targetContentHash(marketplaceText, { normalizeText: false })
@@ -4752,7 +4773,7 @@ export async function setupCodexPlugin(
       const codexBin =
         opts.codexBin === undefined ? Bun.which("codex") : opts.codexBin;
       codexInstall = codexBin
-        ? await runCodexPluginAdd({ codexBin, cwd: home })
+        ? await runCodexPluginAdd({ codexBin, cwd: home, marketplaceName })
         : {
             status: "skipped",
             reason: "codex command not found",
@@ -4763,6 +4784,7 @@ export async function setupCodexPlugin(
   return {
     pluginDir: pluginTargetDir,
     marketplacePath,
+    marketplaceName,
     changedPaths: changedPaths.sort(),
     dryRun: Boolean(opts.dryRun),
     codexInstall,
@@ -5530,6 +5552,9 @@ Options:
     });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
+      if (result.codexInstall.status === "failed") {
+        process.exitCode = 1;
+      }
       return;
     }
     if (dryRun) {
