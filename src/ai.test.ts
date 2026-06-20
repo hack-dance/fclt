@@ -6,6 +6,7 @@ import {
   acceptProposal,
   addWriteback,
   applyProposal,
+  assessEvolution,
   dismissWriteback,
   draftProposal,
   groupWritebacks,
@@ -23,6 +24,7 @@ import {
 import {
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
+  facultAiGraphPath,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
@@ -1084,11 +1086,43 @@ describe("ai writeback", () => {
     });
     expect(writeback?.status).toBe("resolved");
 
+    const assessment = await assessEvolution({
+      homeDir: tempHome,
+      rootDir,
+      asset: "instruction:VERIFICATION",
+    });
+    expect(assessment.recommendation).toBe("no_mutation");
+    expect(assessment.writebackCount).toBe(0);
+    expect(assessment.sourceWritebacks).toEqual([]);
+
     const refreshed = await showProposal(proposal!.id, {
       homeDir: tempHome,
       rootDir,
     });
     expect(refreshed?.applyResult?.draftRefs).toHaveLength(2);
+  });
+
+  it("does not repair generated graph state during assessment", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "instructions", "VERIFICATION.md"),
+      "# Verification\n"
+    );
+
+    await expect(
+      assessEvolution({
+        homeDir: tempHome,
+        rootDir,
+        asset: "instruction:VERIFICATION",
+      })
+    ).rejects.toThrow("Graph not found");
+    expect(await Bun.file(facultAiGraphPath(tempHome, rootDir)).exists()).toBe(
+      false
+    );
   });
 
   it("supports rejecting and superseding proposals with review metadata", async () => {

@@ -48,8 +48,9 @@ entry uses Codex schema-valid policy values, including
 `installation: "AVAILABLE"` and `authentication: "ON_INSTALL"`.
 
 When the `codex` command is available, setup runs
-`codex plugin add fclt@<marketplace> --json`. The installed Codex cache is
-under `~/.codex/plugins/cache/<marketplace>/fclt/0.1.0`.
+`codex plugin add fclt@<marketplace> --json`. Codex installs the plugin cache
+under `~/.codex/plugins/cache/<marketplace>/fclt/` using its own version
+directory.
 
 It does not enter managed mode, adopt Codex state, render
 `~/.codex/AGENTS.md`, or touch existing Codex skills/rules/config.
