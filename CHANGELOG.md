@@ -1,3 +1,9 @@
+## [2.17.4](https://github.com/hack-dance/fclt/compare/v2.17.3...v2.17.4) (2026-06-20)
+
+### Bug Fixes
+
+* **ai:** skip resolved writebacks when proposing ([4aec566](https://github.com/hack-dance/fclt/commit/4aec5661195247a17ea70c23e9fa34c1e7f54b9d))
+
 ## [2.17.3](https://github.com/hack-dance/fclt/compare/v2.17.2...v2.17.3) (2026-06-20)
 
 ### Bug Fixes
