@@ -1,3 +1,9 @@
+## [2.17.9](https://github.com/hack-dance/fclt/compare/v2.17.8...v2.17.9) (2026-06-22)
+
+### Bug Fixes
+
+* harden fclt MCP cwd inference ([83f7349](https://github.com/hack-dance/fclt/commit/83f7349f18db946537245a403f3c71d4cec3b591))
+
 ## [2.17.8](https://github.com/hack-dance/fclt/compare/v2.17.7...v2.17.8) (2026-06-22)
 
 ### Bug Fixes
