@@ -1,3 +1,9 @@
+## [2.17.11](https://github.com/hack-dance/fclt/compare/v2.17.10...v2.17.11) (2026-06-22)
+
+### Bug Fixes
+
+* make doctor project actions root-aware ([5603467](https://github.com/hack-dance/fclt/commit/560346732ad2d997e86b9e77e8b28f026754a50c))
+
 ## [2.17.10](https://github.com/hack-dance/fclt/compare/v2.17.9...v2.17.10) (2026-06-22)
 
 ### Bug Fixes
