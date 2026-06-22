@@ -3048,7 +3048,7 @@ function printTemplatesHelp() {
               "fclt templates init operating-model [--global|--project|--root PATH] [--update] [--force] [--dry-run]"
             ),
             renderCode(
-              "fclt templates init project-ai [--root PATH] [--update] [--force] [--dry-run]"
+              "fclt templates init project-ai [--project-root PATH|--root PATH] [--update] [--force] [--dry-run]"
             ),
             renderCode(
               "fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE] [--yes] [--dry-run]"
@@ -3124,21 +3124,40 @@ const TEMPLATE_INIT_VALUE_FLAGS = new Set([
 function parseTemplateInitArgs(argv: string[]): {
   positional: string[];
   rootArg?: string;
+  projectRootArg?: string;
 } {
   const positional: string[] = [];
   let rootArg: string | undefined;
+  let projectRootArg: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!arg) {
       continue;
     }
     if (arg === "--root") {
-      rootArg = argv[i + 1] ?? undefined;
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("--root requires a path value");
+      }
+      rootArg = value;
       i += 1;
       continue;
     }
     if (arg.startsWith("--root=")) {
       rootArg = arg.slice("--root=".length);
+      continue;
+    }
+    if (arg === "--project-root") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("--project-root requires a path value");
+      }
+      projectRootArg = value;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--project-root=")) {
+      projectRootArg = arg.slice("--project-root=".length);
       continue;
     }
     if (TEMPLATE_INIT_VALUE_FLAGS.has(arg)) {
@@ -3154,7 +3173,22 @@ function parseTemplateInitArgs(argv: string[]): {
     }
     positional.push(arg);
   }
-  return { positional, rootArg };
+  return { positional, rootArg, projectRootArg };
+}
+
+function expandHomePath(pathValue: string, homeDir: string): string {
+  if (pathValue === "~") {
+    return homeDir;
+  }
+  if (pathValue.startsWith("~/")) {
+    return `${homeDir}/${pathValue.slice(2)}`;
+  }
+  return pathValue;
+}
+
+function projectAiRootFromProjectArg(value: string, homeDir?: string): string {
+  const resolved = resolve(expandHomePath(value, homeDir ?? homedir()));
+  return basename(resolved) === ".ai" ? resolved : join(resolved, ".ai");
 }
 
 export async function sourcesCommand(
@@ -3552,6 +3586,10 @@ export async function templatesCommand(
     process.exitCode = 2;
     return;
   }
+  if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
+    printTemplatesHelp();
+    return;
+  }
   const dryRun = args.includes("--dry-run");
   const force = args.includes("--force");
   const update = args.includes("--update");
@@ -3563,7 +3601,15 @@ export async function templatesCommand(
     try {
       const result = await scaffoldBuiltinProjectAiPack({
         cwd: ctx.cwd,
-        rootDir: parsedArgs.rootArg,
+        rootDir:
+          parsedArgs.rootArg ??
+          ctx.rootDir ??
+          (parsedArgs.projectRootArg
+            ? projectAiRootFromProjectArg(
+                parsedArgs.projectRootArg,
+                ctx.homeDir
+              )
+            : undefined),
         homeDir: ctx.homeDir,
         dryRun,
         force,

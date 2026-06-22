@@ -815,7 +815,7 @@ test("doctor --repair does not replace project AGENTS.global.md with global defa
     expect(err).toBe("");
     expect(out).toContain("project AGENTS.global.md");
     expect(out).toContain(
-      `fclt templates init project-ai --root '${aiRoot}' --force`
+      `fclt templates init project-ai --project-root '${repoDir}' --force`
     );
     expect(out).not.toContain("Repaired canonical AGENTS.global.md");
     expect(await readFile(agentsPath, "utf8")).toBe(projectGuidance);
@@ -938,7 +938,7 @@ test("doctor --json flags generated-only project ai roots without exiting nonzer
     expect(report.actions).toContainEqual(
       expect.objectContaining({
         id: "init-project-ai",
-        command: `fclt templates init project-ai --root '${aiRoot}'`,
+        command: `fclt templates init project-ai --project-root '${projectRoot}'`,
       })
     );
   } finally {

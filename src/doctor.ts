@@ -614,10 +614,13 @@ function shellQuote(value: string): string {
 }
 
 function projectAiInitCommand(rootDir: string, flags: string[] = []): string {
+  const projectRoot = projectRootFromAiRoot(rootDir);
+  const rootFlag = projectRoot ? "--project-root" : "--root";
+  const rootValue = projectRoot ?? rootDir;
   return [
     "fclt templates init project-ai",
-    "--root",
-    shellQuote(rootDir),
+    rootFlag,
+    shellQuote(rootValue),
     ...flags,
   ].join(" ");
 }
