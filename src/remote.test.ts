@@ -1514,6 +1514,104 @@ describe("templates command", () => {
     expect(await Bun.file(join(otherDir, ".ai")).exists()).toBe(false);
   });
 
+  it("scaffolds the builtin project-ai pack from an explicit project root", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    const otherDir = join(home, "other");
+    await mkdir(repoDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "project-ai", "--project-root", repoDir],
+        {
+          homeDir: home,
+          cwd: otherDir,
+        }
+      );
+    });
+
+    expect(
+      await Bun.file(
+        join(
+          repoDir,
+          ".ai",
+          "skills",
+          "project-operating-layer-design",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(await Bun.file(join(otherDir, ".ai")).exists()).toBe(false);
+  });
+
+  it("expands home-relative project roots for project-ai", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    const otherDir = join(home, "other");
+    await mkdir(repoDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "project-ai", "--project-root=~/repo"], {
+        homeDir: home,
+        cwd: otherDir,
+      });
+    });
+
+    expect(
+      await Bun.file(
+        join(
+          repoDir,
+          ".ai",
+          "skills",
+          "project-operating-layer-design",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(await Bun.file(join(otherDir, "~", "repo", ".ai")).exists()).toBe(
+      false
+    );
+  });
+
+  it("rejects project-ai project-root flags without values", async () => {
+    const { home } = await makeTempRoot();
+    const otherDir = join(home, "other");
+    await mkdir(otherDir, { recursive: true });
+
+    await expect(
+      withMutedConsole(async () => {
+        await templatesCommand(
+          ["init", "project-ai", "--project-root", "--force"],
+          {
+            homeDir: home,
+            cwd: otherDir,
+          }
+        );
+      })
+    ).rejects.toThrow("--project-root requires a path value");
+
+    expect(await Bun.file(join(otherDir, "--force", ".ai")).exists()).toBe(
+      false
+    );
+  });
+
+  it("does not scaffold project-ai when help is requested", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    await mkdir(repoDir, { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "project-ai", "--help"], {
+        homeDir: home,
+        cwd: repoDir,
+      });
+    });
+
+    expect(await Bun.file(join(repoDir, ".ai")).exists()).toBe(false);
+  });
+
   it("installs the builtin operating-model pack into the global canonical root", async () => {
     const { home } = await makeTempRoot();
     const globalRoot = join(home, ".ai");
