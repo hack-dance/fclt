@@ -1,3 +1,9 @@
+## [2.17.8](https://github.com/hack-dance/fclt/compare/v2.17.7...v2.17.8) (2026-06-22)
+
+### Bug Fixes
+
+* preserve fclt MCP workspace cwd ([3906afa](https://github.com/hack-dance/fclt/commit/3906afa7f92f6935856beee7e7648a237b769738))
+
 ## [2.17.7](https://github.com/hack-dance/fclt/compare/v2.17.6...v2.17.7) (2026-06-22)
 
 ### Bug Fixes
