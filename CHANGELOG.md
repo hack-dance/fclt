@@ -1,3 +1,9 @@
+## [2.17.13](https://github.com/hack-dance/fclt/compare/v2.17.12...v2.17.13) (2026-06-22)
+
+### Bug Fixes
+
+* honor explicit project ai root ([5da9a10](https://github.com/hack-dance/fclt/commit/5da9a1024f86dc091270452a1e06df003a62fe41))
+
 ## [2.17.12](https://github.com/hack-dance/fclt/compare/v2.17.11...v2.17.12) (2026-06-22)
 
 ### Bug Fixes
