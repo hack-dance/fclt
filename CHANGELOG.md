@@ -1,3 +1,9 @@
+## [2.17.12](https://github.com/hack-dance/fclt/compare/v2.17.11...v2.17.12) (2026-06-22)
+
+### Bug Fixes
+
+* avoid mise root flag conflicts ([36c74ea](https://github.com/hack-dance/fclt/commit/36c74ea65280fe1fdb5eda7b6f021c37d6f66a3a))
+
 ## [2.17.11](https://github.com/hack-dance/fclt/compare/v2.17.10...v2.17.11) (2026-06-22)
 
 ### Bug Fixes
