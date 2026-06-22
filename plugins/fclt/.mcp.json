@@ -5,7 +5,8 @@
       "args": ["./scripts/fclt-mcp.cjs"],
       "env": {
         "FCLT_BIN": "fclt"
-      }
+      },
+      "cwd": "."
     }
   }
 }

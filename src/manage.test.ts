@@ -481,6 +481,7 @@ describe("managed state", () => {
       "utf8"
     );
     expect(mcpConfig).toContain('"./scripts/fclt-mcp.cjs"');
+    expect(mcpConfig).toContain('"cwd": "."');
 
     const proc = Bun.spawn(
       [
@@ -2631,6 +2632,11 @@ describe("syncManagedTools", () => {
     ).toContain(
       'enum: ["assess", "list", "propose", "draft", "review", "show"]'
     );
+
+    const fcltMcp = JSON.parse(
+      await readFile(join(home, "plugins", "fclt", ".mcp.json"), "utf8")
+    ) as { mcpServers: { fclt?: { cwd?: string } } };
+    expect(fcltMcp.mcpServers.fclt?.cwd).toBe(".");
     expect(
       await Bun.file(
         join(home, "plugins", "custom", ".codex-plugin", "plugin.json")
