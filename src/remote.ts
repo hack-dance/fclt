@@ -3603,13 +3603,12 @@ export async function templatesCommand(
         cwd: ctx.cwd,
         rootDir:
           parsedArgs.rootArg ??
-          ctx.rootDir ??
           (parsedArgs.projectRootArg
             ? projectAiRootFromProjectArg(
                 parsedArgs.projectRootArg,
                 ctx.homeDir
               )
-            : undefined),
+            : ctx.rootDir),
         homeDir: ctx.homeDir,
         dryRun,
         force,

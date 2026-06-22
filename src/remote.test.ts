@@ -1545,6 +1545,38 @@ describe("templates command", () => {
     expect(await Bun.file(join(otherDir, ".ai")).exists()).toBe(false);
   });
 
+  it("prefers explicit project roots over inferred template roots for project-ai", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    const otherDir = join(home, "other");
+    await mkdir(repoDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "project-ai", "--project-root", repoDir],
+        {
+          homeDir: home,
+          cwd: otherDir,
+          rootDir: join(otherDir, ".ai"),
+        }
+      );
+    });
+
+    expect(
+      await Bun.file(
+        join(
+          repoDir,
+          ".ai",
+          "skills",
+          "project-operating-layer-design",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(await Bun.file(join(otherDir, ".ai")).exists()).toBe(false);
+  });
+
   it("expands home-relative project roots for project-ai", async () => {
     const { home } = await makeTempRoot();
     const repoDir = join(home, "repo");
