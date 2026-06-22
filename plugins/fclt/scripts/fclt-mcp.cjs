@@ -2,10 +2,13 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const os = require("node:os");
+const path = require("node:path");
 
 const FCLT_BIN = process.env.FCLT_BIN || "fclt";
 const DEFAULT_TIMEOUT_MS = Number(process.env.FCLT_MCP_TIMEOUT_MS || 60_000);
 const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
+const PLUGIN_ROOT = path.resolve(__dirname, "..");
 
 const tools = [
   {
@@ -126,6 +129,43 @@ function boolFlag(name, value) {
 
 function stringFlag(name, value) {
   return typeof value === "string" && value.trim() ? [name, value] : [];
+}
+
+function isSubpath(child, parent) {
+  const relative = path.relative(parent, child);
+  return (
+    relative === "" || !(relative.startsWith("..") || path.isAbsolute(relative))
+  );
+}
+
+function resolveWorkspaceCwd() {
+  const candidates = [
+    process.env.FCLT_MCP_WORKSPACE_CWD,
+    process.env.INIT_CWD,
+    process.env.PWD,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string" || !candidate.trim()) {
+      continue;
+    }
+    const resolved = path.resolve(candidate);
+    if (!isSubpath(resolved, PLUGIN_ROOT)) {
+      return resolved;
+    }
+  }
+  return os.homedir();
+}
+
+function resolveToolCwd(name, args = {}) {
+  if (typeof args.cwd === "string" && args.cwd.trim()) {
+    return args.cwd;
+  }
+  if (args.scope === "project") {
+    throw new Error(
+      `${name} with project scope requires a cwd for the target workspace`
+    );
+  }
+  return resolveWorkspaceCwd();
 }
 
 function commandForTool(name, args = {}) {
@@ -256,7 +296,7 @@ async function handle(message) {
     if (message.method === "tools/call") {
       const { name, arguments: args = {} } = message.params || {};
       const command = commandForTool(name, args);
-      const result = await runFclt(command, args.cwd);
+      const result = await runFclt(command, resolveToolCwd(name, args));
       send({
         jsonrpc: "2.0",
         id: message.id,
