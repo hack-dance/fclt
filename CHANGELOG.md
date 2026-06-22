@@ -1,3 +1,9 @@
+## [2.17.7](https://github.com/hack-dance/fclt/compare/v2.17.6...v2.17.7) (2026-06-22)
+
+### Bug Fixes
+
+* launch fclt codex mcp from plugin cwd ([#39](https://github.com/hack-dance/fclt/issues/39)) ([64dd52c](https://github.com/hack-dance/fclt/commit/64dd52c735eee23ce6732cf38ed7abc0e521c2e1))
+
 ## [2.17.6](https://github.com/hack-dance/fclt/compare/v2.17.5...v2.17.6) (2026-06-20)
 
 ### Bug Fixes
