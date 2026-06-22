@@ -1,3 +1,9 @@
+## [2.17.10](https://github.com/hack-dance/fclt/compare/v2.17.9...v2.17.10) (2026-06-22)
+
+### Bug Fixes
+
+* reject home for fclt MCP project cwd ([9e20d02](https://github.com/hack-dance/fclt/commit/9e20d025baac768029236e636cc4607ba446d7c6))
+
 ## [2.17.9](https://github.com/hack-dance/fclt/compare/v2.17.8...v2.17.9) (2026-06-22)
 
 ### Bug Fixes
