@@ -2,6 +2,7 @@
 "use strict";
 
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -138,7 +139,15 @@ function isSubpath(child, parent) {
   );
 }
 
-function resolveWorkspaceCwd() {
+function isDirectory(candidate) {
+  try {
+    return fs.statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function resolveWorkspaceCwd({ allowHomeFallback = true } = {}) {
   const candidates = [
     process.env.FCLT_MCP_WORKSPACE_CWD,
     process.env.INIT_CWD,
@@ -149,23 +158,32 @@ function resolveWorkspaceCwd() {
       continue;
     }
     const resolved = path.resolve(candidate);
-    if (!isSubpath(resolved, PLUGIN_ROOT)) {
+    if (!isSubpath(resolved, PLUGIN_ROOT) && isDirectory(resolved)) {
       return resolved;
     }
   }
-  return os.homedir();
+  if (allowHomeFallback && isDirectory(os.homedir())) {
+    return os.homedir();
+  }
+  return undefined;
 }
 
 function resolveToolCwd(name, args = {}) {
   if (typeof args.cwd === "string" && args.cwd.trim()) {
     return args.cwd;
   }
+  const inferred = resolveWorkspaceCwd({
+    allowHomeFallback: args.scope !== "project",
+  });
+  if (inferred) {
+    return inferred;
+  }
   if (args.scope === "project") {
     throw new Error(
       `${name} with project scope requires a cwd for the target workspace`
     );
   }
-  return resolveWorkspaceCwd();
+  return process.cwd();
 }
 
 function commandForTool(name, args = {}) {
@@ -232,34 +250,56 @@ function commandForTool(name, args = {}) {
 
 function runFclt(args, cwd) {
   return new Promise((resolve) => {
-    const child = spawn(FCLT_BIN, args, {
-      cwd: cwd || process.cwd(),
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const commandText = `$ ${FCLT_BIN} ${args.join(" ")}`;
+    let child;
+    try {
+      child = spawn(FCLT_BIN, args, {
+        cwd: cwd || process.cwd(),
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      resolve({
+        code: 1,
+        text: [commandText, `stderr:\n${error.message}`].join("\n\n"),
+      });
+      return;
+    }
     let stdout = "";
     let stderr = "";
+    let settled = false;
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
     }, DEFAULT_TIMEOUT_MS);
+    const finish = (code, extraError) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      const stderrText = [stderr.trim(), extraError].filter(Boolean).join("\n");
+      resolve({
+        code,
+        text: [
+          commandText,
+          stdout.trim(),
+          stderrText ? `stderr:\n${stderrText}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      });
+    };
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
+    child.on("error", (error) => {
+      finish(1, error.message);
+    });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({
-        code,
-        text: [
-          `$ ${FCLT_BIN} ${args.join(" ")}`,
-          stdout.trim(),
-          stderr.trim() ? `stderr:\n${stderr.trim()}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      });
+      finish(code);
     });
   });
 }

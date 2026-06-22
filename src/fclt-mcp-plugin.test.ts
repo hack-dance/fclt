@@ -107,7 +107,116 @@ describe("bundled fclt MCP plugin", () => {
     }
   });
 
-  it("rejects project-scoped calls without an explicit workspace cwd", async () => {
+  it("uses the inferred workspace cwd for project-scoped calls", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
+    const stub = join(home, "fclt-stub.cjs");
+    await Bun.write(
+      stub,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
+        "",
+      ].join("\n")
+    );
+    await chmod(stub, 0o755);
+    await mkdir(join(home, ".ai"), { recursive: true });
+
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
+      cwd: pluginRoot,
+      env: {
+        ...process.env,
+        FCLT_BIN: stub,
+        HOME: home,
+        PWD: workspace,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_status",
+            arguments: { scope: "project" },
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      const expectedWorkspace = await realpath(workspace);
+
+      expect(response.result?.isError).toBe(false);
+      expect(response.result?.content?.[0]?.text).toContain(
+        `"cwd":"${expectedWorkspace}"`
+      );
+      expect(response.result?.content?.[0]?.text).toContain(
+        '"argv":["status","--project","--json"]'
+      );
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("skips invalid inferred cwd values before choosing a workspace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
+    const stub = join(home, "fclt-stub.cjs");
+    await Bun.write(
+      stub,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
+        "",
+      ].join("\n")
+    );
+    await chmod(stub, 0o755);
+
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
+      cwd: pluginRoot,
+      env: {
+        ...process.env,
+        FCLT_BIN: stub,
+        HOME: home,
+        FCLT_MCP_WORKSPACE_CWD: join(home, "deleted-workspace"),
+        PWD: workspace,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_status",
+            arguments: {},
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      const expectedWorkspace = await realpath(workspace);
+
+      expect(response.result?.isError).toBe(false);
+      expect(response.result?.content?.[0]?.text).toContain(
+        `"cwd":"${expectedWorkspace}"`
+      );
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("rejects project-scoped calls without a usable workspace cwd", async () => {
     const pluginRoot = facultBuiltinCodexPluginRoot();
     const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
       cwd: pluginRoot,
@@ -136,6 +245,54 @@ describe("bundled fclt MCP plugin", () => {
       };
 
       expect(response.error?.message).toContain("requires a cwd");
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("returns an MCP tool error when an explicit cwd cannot be spawned", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
+    const stub = join(home, "fclt-stub.cjs");
+    await Bun.write(
+      stub,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
+        "",
+      ].join("\n")
+    );
+    await chmod(stub, 0o755);
+
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
+      cwd: pluginRoot,
+      env: {
+        ...process.env,
+        FCLT_BIN: stub,
+        HOME: home,
+        PWD: pluginRoot,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_status",
+            arguments: { cwd: join(home, "missing-workspace") },
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+
+      expect(response.result?.isError).toBe(true);
+      expect(response.result?.content?.[0]?.text).toContain("stderr:");
     } finally {
       child.kill();
     }
