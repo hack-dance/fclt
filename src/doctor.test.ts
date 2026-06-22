@@ -814,7 +814,9 @@ test("doctor --repair does not replace project AGENTS.global.md with global defa
     expect(code).toBe(0);
     expect(err).toBe("");
     expect(out).toContain("project AGENTS.global.md");
-    expect(out).toContain("fclt templates init project-ai --force");
+    expect(out).toContain(
+      `fclt templates init project-ai --root '${aiRoot}' --force`
+    );
     expect(out).not.toContain("Repaired canonical AGENTS.global.md");
     expect(await readFile(agentsPath, "utf8")).toBe(projectGuidance);
     expect(
@@ -924,6 +926,7 @@ test("doctor --json flags generated-only project ai roots without exiting nonzer
       projectRoot: string | null;
       checks: { generatedOnlyProjectRoot: boolean };
       issues: Array<{ code: string }>;
+      actions: Array<{ id: string; command: string }>;
     };
     expect(report.health.state).toBe("project_generated_only");
     expect(report.health.ok).toBe(false);
@@ -931,6 +934,12 @@ test("doctor --json flags generated-only project ai roots without exiting nonzer
     expect(report.checks.generatedOnlyProjectRoot).toBe(true);
     expect(report.issues.map((issue) => issue.code)).toContain(
       "project-generated-only"
+    );
+    expect(report.actions).toContainEqual(
+      expect.objectContaining({
+        id: "init-project-ai",
+        command: `fclt templates init project-ai --root '${aiRoot}'`,
+      })
     );
   } finally {
     await rm(dir, { recursive: true, force: true });

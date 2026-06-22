@@ -1576,14 +1576,23 @@ async function scaffoldBuiltinOperatingModelPack(args: {
 
 async function scaffoldBuiltinProjectAiPack(args: {
   cwd?: string;
+  rootDir?: string;
   homeDir?: string;
   dryRun?: boolean;
   force?: boolean;
   update?: boolean;
 }): Promise<InstallResult> {
   const cwd = resolve(args.cwd ?? process.cwd());
+  const rootDir = args.rootDir
+    ? resolveCliContextRoot({
+        rootArg: args.rootDir,
+        scope: "project",
+        cwd,
+        homeDir: args.homeDir,
+      })
+    : join(cwd, ".ai");
   return await scaffoldBuiltinOperatingModelPack({
-    rootDir: join(cwd, ".ai"),
+    rootDir,
     homeDir: args.homeDir,
     dryRun: args.dryRun,
     force: args.force,
@@ -3039,7 +3048,7 @@ function printTemplatesHelp() {
               "fclt templates init operating-model [--global|--project|--root PATH] [--update] [--force] [--dry-run]"
             ),
             renderCode(
-              "fclt templates init project-ai [--update] [--force] [--dry-run]"
+              "fclt templates init project-ai [--root PATH] [--update] [--force] [--dry-run]"
             ),
             renderCode(
               "fclt templates init automation <template-id> [--scope global|project|wide] [--name <name>] [--project-root <path>] [--cwds <path1,path2>] [--rrule <RRULE>] [--status PAUSED|ACTIVE] [--yes] [--dry-run]"
@@ -3554,6 +3563,7 @@ export async function templatesCommand(
     try {
       const result = await scaffoldBuiltinProjectAiPack({
         cwd: ctx.cwd,
+        rootDir: parsedArgs.rootArg,
         homeDir: ctx.homeDir,
         dryRun,
         force,

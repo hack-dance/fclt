@@ -609,6 +609,19 @@ const UNRESOLVED_REFS_TEMPLATE_RE = /\$\{refs\.([A-Za-z0-9_.-]+)\}/g;
 const FCLTY_BLOCK_RE =
   /<!--\s*fclty:([^>]+?)\s*-->([\s\S]*?)<!--\s*\/fclty:\1\s*-->/g;
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function projectAiInitCommand(rootDir: string, flags: string[] = []): string {
+  return [
+    "fclt templates init project-ai",
+    "--root",
+    shellQuote(rootDir),
+    ...flags,
+  ].join(" ");
+}
+
 async function inspectCanonicalGlobalDocs(
   rootDir: string,
   opts: { projectRoot?: string | null } = {}
@@ -625,7 +638,7 @@ async function inspectCanonicalGlobalDocs(
   const text = await readFile(pathValue, "utf8");
   const issues: DoctorIssue[] = [];
   const refreshCommand = opts.projectRoot
-    ? "fclt templates init project-ai --force"
+    ? projectAiInitCommand(rootDir, ["--force"])
     : "fclt templates init operating-model --global --force";
   const docLabel = opts.projectRoot
     ? "project AGENTS.global.md"
@@ -1025,7 +1038,7 @@ export async function buildDoctorReport(opts?: {
       message:
         "No canonical capability source was found in the selected .ai root.",
       fix: projectRoot
-        ? "Run fclt templates init project-ai from the repo or restore canonical project assets."
+        ? `Run ${projectAiInitCommand(rootDir)} or restore canonical project assets.`
         : "Run fclt templates init operating-model --global.",
     });
   }
@@ -1042,7 +1055,7 @@ export async function buildDoctorReport(opts?: {
         ? "Refresh project operating model"
         : "Refresh global operating model",
       command: projectRoot
-        ? "fclt templates init project-ai --force"
+        ? projectAiInitCommand(rootDir, ["--force"])
         : "fclt templates init operating-model --global --force",
       risk: "canonical_write",
     });
@@ -1076,7 +1089,7 @@ export async function buildDoctorReport(opts?: {
     actions.push({
       id: "init-project-ai",
       label: "Initialize project AI root",
-      command: "fclt templates init project-ai",
+      command: projectAiInitCommand(rootDir),
       risk: "canonical_write",
     });
   }

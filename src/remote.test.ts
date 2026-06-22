@@ -1483,6 +1483,37 @@ describe("templates command", () => {
     ).toBe(true);
   });
 
+  it("scaffolds the builtin project-ai pack into an explicit root", async () => {
+    const { home } = await makeTempRoot();
+    const repoDir = join(home, "repo");
+    const otherDir = join(home, "other");
+    await mkdir(repoDir, { recursive: true });
+    await mkdir(otherDir, { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "project-ai", "--root", join(repoDir, ".ai")],
+        {
+          homeDir: home,
+          cwd: otherDir,
+        }
+      );
+    });
+
+    expect(
+      await Bun.file(
+        join(
+          repoDir,
+          ".ai",
+          "skills",
+          "project-operating-layer-design",
+          "SKILL.md"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(await Bun.file(join(otherDir, ".ai")).exists()).toBe(false);
+  });
+
   it("installs the builtin operating-model pack into the global canonical root", async () => {
     const { home } = await makeTempRoot();
     const globalRoot = join(home, ".ai");
