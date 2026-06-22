@@ -158,7 +158,12 @@ function resolveWorkspaceCwd({ allowHomeFallback = true } = {}) {
       continue;
     }
     const resolved = path.resolve(candidate);
-    if (!isSubpath(resolved, PLUGIN_ROOT) && isDirectory(resolved)) {
+    const isHome = resolved === path.resolve(os.homedir());
+    if (
+      (allowHomeFallback || !isHome) &&
+      !isSubpath(resolved, PLUGIN_ROOT) &&
+      isDirectory(resolved)
+    ) {
       return resolved;
     }
   }

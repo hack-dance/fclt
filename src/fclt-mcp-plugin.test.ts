@@ -250,6 +250,42 @@ describe("bundled fclt MCP plugin", () => {
     }
   });
 
+  it("rejects home as an inferred project workspace cwd", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
+      cwd: pluginRoot,
+      env: {
+        ...process.env,
+        FCLT_BIN: "fclt",
+        HOME: home,
+        PWD: home,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_status",
+            arguments: { scope: "project" },
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+
+      expect(response.error?.message).toContain("requires a cwd");
+    } finally {
+      child.kill();
+    }
+  });
+
   it("returns an MCP tool error when an explicit cwd cannot be spawned", async () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const stub = join(home, "fclt-stub.cjs");
