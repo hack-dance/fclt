@@ -448,6 +448,95 @@ describe("ai CLI", () => {
     expect(existing.activeProposalIds).toEqual(["EV-00001"]);
   });
 
+  it("drafts existing skill evolution against SKILL.md", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    const skillDir = join(rootDir, "skills", "capability-evolution");
+    const skillPath = join(skillDir, "SKILL.md");
+    await mkdir(skillDir, { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
+    await Bun.write(skillPath, "# capability-evolution\n");
+    await Bun.write(
+      join(tempHome, ".ai", ".facult", "ai", "graph.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: "2026-03-18T00:00:00.000Z",
+          nodes: {
+            "skill:global:global:capability-evolution": {
+              id: "skill:global:global:capability-evolution",
+              kind: "skill",
+              name: "capability-evolution",
+              sourceKind: "global",
+              scope: "global",
+              canonicalRef: "@ai/skills/capability-evolution",
+              path: skillDir,
+            },
+          },
+          edges: [],
+        },
+        null,
+        2
+      )}\n`
+    );
+    process.chdir(tempHome);
+
+    await aiCommand([
+      "writeback",
+      "add",
+      "--kind",
+      "capability_gap",
+      "--summary",
+      "Evolution reviews need a disposition table instead of repeated no-op summaries.",
+      "--asset",
+      "skill:capability-evolution",
+      "--confidence",
+      "high",
+      ...proposalEvidenceArgs("skill-disposition-gap"),
+    ]);
+
+    const proposeOut = await captureConsole(async () => {
+      await aiCommand([
+        "evolve",
+        "propose",
+        "--asset",
+        "skill:capability-evolution",
+        "--json",
+      ]);
+    });
+    expect(proposeOut.errors).toEqual([]);
+    const proposals = JSON.parse(proposeOut.logs.join("\n")) as Array<{
+      id: string;
+      kind: string;
+      targets: string[];
+    }>;
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.kind).toBe("update_asset");
+    expect(proposals[0]?.targets).toEqual(["@ai/skills/capability-evolution"]);
+
+    const draftOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "draft", "EV-00001"]);
+    });
+    expect(draftOut.errors).toEqual([]);
+    const patchText = await Bun.file(
+      join(
+        tempHome,
+        "Library",
+        "Application Support",
+        "fclt",
+        "global",
+        "ai",
+        "global",
+        "evolution",
+        "drafts",
+        "EV-00001.patch"
+      )
+    ).text();
+    expect(patchText).toContain("skills/capability-evolution/SKILL.md");
+  });
+
   it("supports draft, accept, apply, reject, and supersede through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

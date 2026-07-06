@@ -870,8 +870,11 @@ function inferProposalKind(args: {
   targetPath: string | null;
   targetKind?: GraphNodeKind | null;
 }): ProposalKind {
+  if (args.targetKind === "skill" && args.targetPath) {
+    return "update_asset";
+  }
   if (args.target.includes("/skills/") || args.target.endsWith("/SKILL.md")) {
-    return "add_skill";
+    return args.targetPath ? "update_asset" : "add_skill";
   }
   if (args.target.includes("/snippets/")) {
     return "extract_snippet";
@@ -1626,7 +1629,10 @@ async function resolveProposalTargetNode(
     homeDir,
     rootDir: args.rootDir,
   });
-  const pathValue = node?.path ?? fallbackPath;
+  const pathValue =
+    node?.kind === "skill" && node.path
+      ? join(node.path, "SKILL.md")
+      : (node?.path ?? fallbackPath);
   if (!pathValue) {
     throw new Error(`Could not resolve target path for ${target}`);
   }
