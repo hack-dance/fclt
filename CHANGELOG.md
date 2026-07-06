@@ -1,3 +1,9 @@
+## [2.17.14](https://github.com/hack-dance/fclt/compare/v2.17.13...v2.17.14) (2026-07-06)
+
+### Bug Fixes
+
+* **ai:** draft existing skill evolution targets ([128464f](https://github.com/hack-dance/fclt/commit/128464f2d256102ede146ca800a976e88abfe375))
+
 ## [2.17.13](https://github.com/hack-dance/fclt/compare/v2.17.12...v2.17.13) (2026-06-22)
 
 ### Bug Fixes
