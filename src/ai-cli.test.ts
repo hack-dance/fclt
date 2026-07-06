@@ -520,20 +520,18 @@ describe("ai CLI", () => {
       await aiCommand(["evolve", "draft", "EV-00001"]);
     });
     expect(draftOut.errors).toEqual([]);
-    const patchText = await Bun.file(
-      join(
-        tempHome,
-        "Library",
-        "Application Support",
-        "fclt",
-        "global",
-        "ai",
-        "global",
-        "evolution",
-        "drafts",
-        "EV-00001.patch"
-      )
-    ).text();
+    const showOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "show", "EV-00001", "--json"]);
+    });
+    expect(showOut.errors).toEqual([]);
+    const drafted = JSON.parse(showOut.logs.join("\n")) as {
+      draftRefs: string[];
+    };
+    const patchPath = drafted.draftRefs.find((pathValue) =>
+      pathValue.endsWith(".patch")
+    );
+    expect(patchPath).toBeTruthy();
+    const patchText = await Bun.file(patchPath as string).text();
     expect(patchText).toContain("skills/capability-evolution/SKILL.md");
   });
 
