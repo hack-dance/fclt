@@ -402,6 +402,70 @@ test("doctor --json reports read-only setup health", async () => {
   }
 }, 10_000);
 
+test("doctor health is non-OK when loop readiness is blocked", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-loop-blocked-"));
+
+  try {
+    const env = { ...process.env, HOME: dir };
+    const setup = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "setup",
+        "--global-only",
+        "--no-codex-plugin",
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [setupCode, setupErr] = await Promise.all([
+      setup.exited,
+      new Response(setup.stderr).text(),
+      new Response(setup.stdout).text(),
+    ]);
+    expect(setupCode).toBe(0);
+    expect(setupErr).toBe("");
+
+    await rm(join(dir, ".ai", "skills", "capability-evolution"), {
+      recursive: true,
+      force: true,
+    });
+
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    const report = JSON.parse(out) as {
+      health: { state: string; ok: boolean };
+      loop: { state: string; blockers: string[] };
+    };
+    expect(report.health).toEqual({ state: "loop_blocked", ok: false });
+    expect(report.loop.state).toBe("blocked");
+    expect(report.loop.blockers).toContain("evolution_skill_missing");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
 test("doctor --json flags invalid canonical global guidance", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-global-docs-"));
   const aiRoot = join(dir, ".ai");

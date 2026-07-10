@@ -57,6 +57,7 @@ type DoctorHealthState =
   | "healthy"
   | "uninitialized"
   | "canonical_source_attention"
+  | "loop_blocked"
   | "partial_global_config"
   | "project_generated_only"
   | "project_policy_attention"
@@ -1476,6 +1477,8 @@ export async function buildDoctorReport(opts?: {
     state = "uninitialized";
   } else if (!(canonicalGlobalDocs.valid && canonicalTemplateRefs.valid)) {
     state = "canonical_source_attention";
+  } else if (loopState === "blocked") {
+    state = "loop_blocked";
   } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
     state = "partial_global_config";
   } else if (projectSyncPlan.needed) {
