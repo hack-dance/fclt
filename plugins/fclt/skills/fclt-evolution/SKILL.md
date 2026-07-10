@@ -1,4 +1,5 @@
 ---
+name: fclt-evolution
 description: Turn repeated fclt writebacks into reviewed capability changes.
 tags: [fclt, evolution, proposals, capability]
 ---

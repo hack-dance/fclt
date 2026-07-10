@@ -1,4 +1,5 @@
 ---
+name: fclt-writeback
 description: Record and review fclt writebacks from real agent work.
 tags: [fclt, writeback, learning, feedback-loop]
 ---

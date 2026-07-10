@@ -1,4 +1,5 @@
 ---
+name: fclt-setup
 description: Install, update, inspect, and initialize fclt from Codex.
 tags: [fclt, setup, codex, onboarding]
 ---

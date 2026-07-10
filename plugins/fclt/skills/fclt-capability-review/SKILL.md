@@ -1,4 +1,5 @@
 ---
+name: fclt-capability-review
 description: Inspect fclt capability roots, docs, snippets, skills, agents, MCP, and automations.
 tags: [fclt, capability, review, inventory]
 ---
