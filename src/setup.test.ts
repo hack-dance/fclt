@@ -143,6 +143,32 @@ describe("zero-config setup", () => {
     expect(list.stdout).toContain("Preserve this history");
   }, 20_000);
 
+  it("does not bootstrap a nested project inside a git-backed global root", async () => {
+    const home = await tempHome("fclt-setup-global-root-");
+    const globalRoot = join(home, ".ai");
+    await mkdir(globalRoot, { recursive: true });
+    const proc = Bun.spawn(["git", "init", "--quiet", globalRoot], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const [code, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text(),
+    ]);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+
+    const result = await bootstrapFclt({
+      homeDir: home,
+      cwd: globalRoot,
+      installCodexPlugin: false,
+    });
+
+    expect(result.projectRoot).toBeNull();
+    expect(await Bun.file(join(globalRoot, ".ai")).exists()).toBe(false);
+    expect(result.readiness.project).toBeNull();
+  }, 20_000);
+
   it("records and assesses project writeback using only the documented bootstrap", async () => {
     const home = await tempHome("fclt-setup-loop-");
     const repo = await initRepo(home);

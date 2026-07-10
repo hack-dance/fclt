@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -1284,6 +1284,29 @@ async function pathExists(pathValue: string): Promise<boolean> {
   }
 }
 
+async function ensurePackDirectory(pathValue: string): Promise<void> {
+  try {
+    const entry = await lstat(pathValue);
+    if (entry.isSymbolicLink()) {
+      try {
+        await stat(pathValue);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") {
+          await rm(pathValue, { force: true });
+        } else {
+          throw error;
+        }
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  await mkdir(pathValue, { recursive: true });
+}
+
 async function listFilesRecursive(rootDir: string): Promise<string[]> {
   const out: string[] = [];
   const stack = [rootDir];
@@ -1493,7 +1516,7 @@ export async function scaffoldBuiltinOperatingModelPack(args: {
       delete manifestFiles[targetRelPath];
     }
     if (!args.dryRun) {
-      await mkdir(dirname(targetPath), { recursive: true });
+      await ensurePackDirectory(dirname(targetPath));
       await Bun.write(targetPath, sourceText);
     }
   }
@@ -1522,7 +1545,7 @@ export async function scaffoldBuiltinOperatingModelPack(args: {
     changedPaths.push(configPath);
     manifestFiles[configRelPath] = { sha256: configHash };
     if (!args.dryRun) {
-      await mkdir(dirname(configPath), { recursive: true });
+      await ensurePackDirectory(dirname(configPath));
       await Bun.write(configPath, configText);
     }
   }
@@ -1549,7 +1572,7 @@ export async function scaffoldBuiltinOperatingModelPack(args: {
     });
     changedPaths.push(manifestPath);
     if (!args.dryRun) {
-      await mkdir(dirname(manifestPath), { recursive: true });
+      await ensurePackDirectory(dirname(manifestPath));
       await Bun.write(manifestPath, nextManifest);
     }
   }

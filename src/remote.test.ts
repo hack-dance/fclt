@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderCanonicalText } from "./agents";
@@ -8,6 +16,7 @@ import { facultAiIndexPath } from "./paths";
 import {
   checkRemoteUpdates,
   installRemoteItem,
+  scaffoldBuiltinOperatingModelPack,
   searchRemoteItems,
   sourcesCommand,
   templatesCommand,
@@ -1853,6 +1862,49 @@ describe("templates command", () => {
     });
 
     expect(await readFile(workUnitsPath, "utf8")).toBe(localEdit);
+  });
+
+  it("repairs dangling legacy skill symlinks during setup", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+    const skillPath = join(
+      globalRoot,
+      "skills",
+      "project-operating-layer-design"
+    );
+    await mkdir(join(globalRoot, "skills"), { recursive: true });
+    await symlink(join(home, "missing-legacy-checkout"), skillPath);
+
+    await withMutedConsole(async () => {
+      await templatesCommand(["init", "operating-model", "--global"], {
+        homeDir: home,
+        cwd: home,
+      });
+    });
+
+    expect(await readFile(join(skillPath, "SKILL.md"), "utf8")).toContain(
+      "# project-operating-layer-design"
+    );
+  });
+
+  it("preserves symlinks when target stat fails for a non-missing reason", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+    const skillPath = join(
+      globalRoot,
+      "skills",
+      "project-operating-layer-design"
+    );
+    await mkdir(join(globalRoot, "skills"), { recursive: true });
+    await symlink(skillPath, skillPath);
+
+    await expect(
+      scaffoldBuiltinOperatingModelPack({
+        homeDir: home,
+        rootDir: globalRoot,
+      })
+    ).rejects.toThrow();
+    expect((await lstat(skillPath)).isSymbolicLink()).toBe(true);
   });
 
   it("bootstraps the builtin operating-model pack into a project root", async () => {
