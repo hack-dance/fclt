@@ -213,7 +213,7 @@ function commandForTool(name, args = {}) {
         "--json",
         ...boolFlag("--global-only", args.globalOnly),
         ...boolFlag("--dry-run", args.dryRun),
-        ...(args.installCodexPlugin === true ? [] : ["--no-codex-plugin"]),
+        ...(args.installCodexPlugin === false ? ["--no-codex-plugin"] : []),
       ];
     case "fclt_status":
       return ["status", ...scopeArgs(args.scope), "--json"];

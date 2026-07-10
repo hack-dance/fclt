@@ -51,6 +51,71 @@ function readFrame(stream: NodeJS.ReadableStream): Promise<unknown> {
 }
 
 describe("bundled fclt MCP plugin", () => {
+  it("preserves the setup plugin default unless explicitly disabled", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
+    const stub = join(home, "fclt-stub.cjs");
+    await Bun.write(
+      stub,
+      [
+        "#!/usr/bin/env node",
+        "console.log(JSON.stringify({ argv: process.argv.slice(2) }));",
+        "",
+      ].join("\n")
+    );
+    await chmod(stub, 0o755);
+
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
+      cwd: pluginRoot,
+      env: {
+        ...process.env,
+        FCLT_BIN: stub,
+        HOME: home,
+        PWD: home,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "fclt_setup", arguments: {} },
+        })
+      );
+      const defaultResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(defaultResponse.result?.isError).toBe(false);
+      expect(defaultResponse.result?.content?.[0]?.text).toContain(
+        '"argv":["setup","--json"]'
+      );
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: {
+            name: "fclt_setup",
+            arguments: { installCodexPlugin: false },
+          },
+        })
+      );
+      const disabledResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(disabledResponse.result?.isError).toBe(false);
+      expect(disabledResponse.result?.content?.[0]?.text).toContain(
+        '"argv":["setup","--json","--no-codex-plugin"]'
+      );
+    } finally {
+      child.kill();
+    }
+  });
+
   it("uses the caller workspace cwd instead of the plugin cwd when omitted", async () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
