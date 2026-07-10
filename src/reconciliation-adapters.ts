@@ -264,7 +264,7 @@ const writebackAdapter: ReconciliationAdapter = {
         record({
           context,
           recordId: entry.id,
-          dedupeKey: `writeback:${entry.id}`,
+          dedupeKey: `writeback:${scope}:${entry.id}`,
           observedAt,
           title: entry.summary ?? entry.id,
           body: JSON.stringify({

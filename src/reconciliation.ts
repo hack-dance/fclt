@@ -244,7 +244,9 @@ function correlationKeys(record: SourceRecord): string[] {
       ? [
           ...record.assetRefs.map((entry) => `asset:${entry.toLowerCase()}`),
           ...record.issueRefs.map((entry) => `issue:${entry}`),
-          ...record.writebackRefs.map((entry) => `writeback:${entry}`),
+          ...(record.sourceType === "writebacks"
+            ? [record.dedupeKey]
+            : record.writebackRefs.map((entry) => `writeback:${entry}`)),
         ]
       : [];
   const filePathKey =

@@ -590,6 +590,58 @@ describe("source reconciliation", () => {
     expect(review.signals[0]?.writebackRefs).toEqual(["WB-00020"]);
   });
 
+  it("keeps identical global and project writeback ids distinct", async () => {
+    const fixture = await makeFixture();
+    const projectQueue = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    const globalRoot = join(fixture.homeDir, ".ai");
+    const globalQueue = facultAiWritebackQueuePath(fixture.homeDir, globalRoot);
+    await mkdir(join(projectQueue, ".."), { recursive: true });
+    await mkdir(join(globalQueue, ".."), { recursive: true });
+    await Bun.write(
+      projectQueue,
+      JSON.stringify({
+        id: "WB-00001",
+        ts: "2026-07-05T12:00:00Z",
+        summary: "Project-specific capability signal",
+      })
+    );
+    await Bun.write(
+      globalQueue,
+      JSON.stringify({
+        id: "WB-00001",
+        ts: "2026-07-06T12:00:00Z",
+        summary: "Unrelated global capability signal",
+      })
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "project-writebacks", type: "writebacks" },
+          { id: "global-writebacks", type: "writebacks", scope: "global" },
+        ],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.evidence.map((item) => item.dedupeKey).sort()).toEqual([
+      "writeback:global:WB-00001",
+      "writeback:project:WB-00001",
+    ]);
+    expect(review.signals).toHaveLength(2);
+    expect(
+      review.signals.every((signal) => signal.writebackRefs[0] === "WB-00001")
+    ).toBe(true);
+  });
+
   it("degrades malformed writeback input and filtered coverage", async () => {
     const fixture = await makeFixture();
     const queuePath = facultAiWritebackQueuePath(
