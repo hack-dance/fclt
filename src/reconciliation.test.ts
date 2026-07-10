@@ -817,6 +817,53 @@ describe("source reconciliation", () => {
     expect(review.linkedWork).toContain("HACK-793");
   });
 
+  it("keeps non-terminal Linear status changes as implementation evidence", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.projectRoot, "linear.json"),
+      JSON.stringify({
+        issues: [
+          {
+            id: "issue-900",
+            identifier: "HACK-900",
+            title: "Implement source reader",
+            updatedAt: "2026-07-05T12:00:00Z",
+            state: { name: "In Progress" },
+            history: [
+              {
+                id: "history-1",
+                createdAt: "2026-07-05T12:00:00Z",
+                fromState: { name: "Backlog" },
+                toState: { name: "In Progress" },
+              },
+            ],
+          },
+        ],
+      })
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "linear", type: "linear", exportPath: "linear.json" }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(
+      review.decisions.find(
+        (decision) => decision.sourceRecordId === "status:history-1"
+      )?.classification
+    ).toBe("implementation-only");
+    expect(
+      review.signals.every((signal) => signal.disposition === "task")
+    ).toBe(true);
+  });
+
   it("preserves invalid state and reports it separately from configuration", async () => {
     const fixture = await makeFixture();
     await Bun.write(

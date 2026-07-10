@@ -41,6 +41,8 @@ const UNBORN_GIT_RE =
   /does not have any commits yet|bad default revision 'HEAD'/i;
 const LINEAR_CAPABILITY_RE =
   /capabilit|writeback|evolution|instruction|skill|agent|runbook|reconcil/;
+const TERMINAL_LINEAR_STATE_RE =
+  /^(?:completed|done|closed|canceled|cancelled|released)$/i;
 const LINEAR_OUTCOME_RE = /proof|verified|released|deployed|completed/;
 const FILE_RELEVANCE_RE =
   /capabilit|writeback|evolution|instruction|skill|runbook|verification|reconcil|outcome|signal/i;
@@ -647,7 +649,11 @@ const linearAdapter: ReconciliationAdapter = {
               observedAt,
               title: `${issueRef} status changed`,
               body: `${history.fromState?.name ?? "unknown"} -> ${history.toState?.name ?? "unknown"}`,
-              classification: "outcome-proof",
+              classification: TERMINAL_LINEAR_STATE_RE.test(
+                history.toState?.name ?? ""
+              )
+                ? "outcome-proof"
+                : linearClassification(issue),
               provenance: { issue: issueRef, historyId: history.id },
               extraRefs: [issueRef],
             })
