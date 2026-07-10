@@ -704,6 +704,11 @@ describe("source reconciliation", () => {
       lastReviewId: activeReview.reviewId,
       coverageState: "degraded",
     });
+    await Bun.write(configPath, JSON.stringify({ version: 1, sources: [] }));
+    expect(await reconciliationStatus(fixture)).toMatchObject({
+      sourceCount: 0,
+      coverageState: "degraded",
+    });
   });
 
   it("uses automation record timestamps, exposes undated degradation, and redacts JSON secrets", async () => {
@@ -878,6 +883,32 @@ describe("source reconciliation", () => {
     expect(review.decisions[0]?.classification).toBe("capability-source");
   });
 
+  it("treats an unborn Git repository as checked empty", async () => {
+    const fixture = await makeFixture();
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["init", "--quiet"],
+    });
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "git", type: "git" }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.coverageComplete).toBe(true);
+    expect(review.coverage[0]).toMatchObject({
+      state: "checked",
+      recordsScanned: 0,
+    });
+  });
+
   it("enforces the file scan cap across multiple patterns", async () => {
     const fixture = await makeFixture();
     const logDir = join(fixture.projectRoot, "logs");
@@ -910,6 +941,11 @@ describe("source reconciliation", () => {
       until: "2026-07-10",
     });
     expect(review.coverage[0]?.recordsScanned).toBe(500);
+    expect(review.coverage[0]).toMatchObject({
+      state: "stale",
+      staleReason: "File scan truncated at the 500-file safety cap",
+    });
+    expect(review.coverageComplete).toBe(false);
   });
 
   it("deduplicates a renamed capability patch across branches and overlapping windows", async () => {

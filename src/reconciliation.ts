@@ -883,17 +883,19 @@ export async function reconciliationStatus(args: {
     const enabledSources = config.sources.filter(
       (source) => source.enabled !== false
     );
-    const degraded = enabledSources.some((source) => {
-      const persisted = state.sources[source.id];
-      const adapter = reconciliationAdapterFor(source.type);
-      return (
-        !persisted ||
-        persisted.configDigest !== sourceStateDigest(source) ||
-        persisted.adapterVersion !== adapter.version ||
-        persisted.coverageState === "unavailable" ||
-        persisted.coverageState === "stale"
-      );
-    });
+    const degraded =
+      enabledSources.length === 0 ||
+      enabledSources.some((source) => {
+        const persisted = state.sources[source.id];
+        const adapter = reconciliationAdapterFor(source.type);
+        return (
+          !persisted ||
+          persisted.configDigest !== sourceStateDigest(source) ||
+          persisted.adapterVersion !== adapter.version ||
+          persisted.coverageState === "unavailable" ||
+          persisted.coverageState === "stale"
+        );
+      });
     return {
       configured: true,
       configurationState: "ready",

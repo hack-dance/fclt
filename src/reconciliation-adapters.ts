@@ -37,6 +37,8 @@ const MARKDOWN_HEADING_RE = /^#{1,3}\s+(.+)$/m;
 const DATE_HEADING_RE = /^(\d{4}-\d{2}-\d{2})\b/;
 const LOG_TIMESTAMP_RE =
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})\b/;
+const UNBORN_GIT_RE =
+  /does not have any commits yet|bad default revision 'HEAD'/i;
 const LINEAR_CAPABILITY_RE =
   /capabilit|writeback|evolution|instruction|skill|agent|runbook|reconcil/;
 const LINEAR_OUTCOME_RE = /proof|verified|released|deployed|completed/;
@@ -397,19 +399,28 @@ const gitAdapter: ReconciliationAdapter = {
         throw new Error("Configured project is not a Git worktree");
       }
       const pathArgs = config.paths?.length ? ["--", ...config.paths] : [];
-      const output = await runGit(
-        [
-          "log",
-          ...(config.allBranches ? ["--all"] : []),
-          `--since=${context.window.since}`,
-          `--until=${context.window.until}`,
-          "--format=%x1e%H%x1f%cI%x1f%s%x1f%b%x00",
-          "--name-status",
-          "--find-renames",
-          ...pathArgs,
-        ],
-        projectRoot
-      );
+      let output: string;
+      try {
+        output = await runGit(
+          [
+            "log",
+            ...(config.allBranches ? ["--all"] : []),
+            `--since=${context.window.since}`,
+            `--until=${context.window.until}`,
+            "--format=%x1e%H%x1f%cI%x1f%s%x1f%b%x00",
+            "--name-status",
+            "--find-renames",
+            ...pathArgs,
+          ],
+          projectRoot
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (UNBORN_GIT_RE.test(message)) {
+          return resultFromRecords([]);
+        }
+        throw error;
+      }
       const parsed = parseGitRecords({ context, config, output, projectRoot });
       const records: SourceRecord[] = [];
       for (const entry of parsed) {
@@ -759,6 +770,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
       }
       try {
         const paths: string[] = [];
+        let truncated = false;
         for (const pattern of config.paths) {
           if (paths.length >= MAX_FILES) {
             break;
@@ -772,6 +784,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
           })) {
             paths.push(path);
             if (paths.length >= MAX_FILES) {
+              truncated = true;
               break;
             }
           }
@@ -873,6 +886,14 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
             records,
             cursor,
             unavailableReason: `${missingTimestamps} automation record(s) lacked a parseable timestamp`,
+          };
+        }
+        if (truncated) {
+          return {
+            state: "stale",
+            records,
+            cursor,
+            staleReason: `File scan truncated at the ${MAX_FILES}-file safety cap`,
           };
         }
         if (skippedFiles > 0) {

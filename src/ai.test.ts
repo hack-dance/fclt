@@ -103,6 +103,18 @@ describe("ai writeback", () => {
     process.env.HOME = tempHome;
     const rootDir = join(tempHome, ".ai");
     await mkdir(rootDir, { recursive: true });
+    const queuePath = facultAiWritebackQueuePath(tempHome, rootDir);
+    await mkdir(dirname(queuePath), { recursive: true });
+    await Bun.write(
+      queuePath,
+      JSON.stringify({
+        id: "WB-00001",
+        ts: "2026-07-05T12:00:00Z",
+        kind: "capability_gap",
+        summary: "Reconciled capability signal",
+        evidence: [{ type: "session", ref: "reconciled" }],
+      })
+    );
     const configPath = join(rootDir, "reconciliation.json");
     await Bun.write(
       configPath,
@@ -132,6 +144,7 @@ describe("ai writeback", () => {
 
     expect(assessment.recommendation).toBe("reconcile_sources");
     expect(assessment.reconciliation.coverageState).toBe("degraded");
+    expect(assessment.reconciliation.signalCount).toBe(1);
   });
 
   it("records a writeback with graph-backed asset resolution and journal entries", async () => {

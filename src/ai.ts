@@ -1346,7 +1346,10 @@ export async function assessEvolution(args: {
     recommendation = "record_more_writeback";
     confidence = "medium";
     rationale = `${selectedTarget} has only ${selectedWritebacks.length} evidenced writeback. Prefer recording another concrete recurrence or narrowing the target before proposing evolution.`;
-  } else if (matchingSignals.length > 0) {
+  } else if (
+    matchingSignals.length > 0 &&
+    reconciliation.coverageState === "complete"
+  ) {
     recommendation = "review_reconciled_signals";
     confidence = "high";
     rationale = `Reconciliation review ${latestReview?.reviewId} contains ${matchingSignals.length} correlated signal${matchingSignals.length === 1 ? "" : "s"}. Review their dispositions and linked work before concluding that nothing is pending.`;
@@ -1396,9 +1399,12 @@ export async function assessEvolution(args: {
   const qualityChecklist = [
     {
       item: "configured source coverage",
-      pass: Boolean(latestReview?.coverageComplete),
+      pass: Boolean(
+        reconciliation.coverageState === "complete" &&
+          latestReview?.coverageComplete
+      ),
       note: latestReview
-        ? `${latestReview.reviewId} coverage is ${latestReview.coverageComplete ? "complete" : "degraded"} with ${latestReview.signals.length} correlated signal(s).`
+        ? `${latestReview.reviewId} coverage is ${reconciliation.coverageState === "complete" && latestReview.coverageComplete ? "complete" : "degraded"} with ${latestReview.signals.length} correlated signal(s).`
         : "No completed reconciliation review is available for this scope.",
     },
     {
