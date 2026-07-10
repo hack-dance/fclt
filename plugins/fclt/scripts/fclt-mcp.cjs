@@ -5,8 +5,8 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const runtime = require("./fclt-runtime.cjs");
 
-const FCLT_BIN = process.env.FCLT_BIN || "fclt";
 const DEFAULT_TIMEOUT_MS = Number(process.env.FCLT_MCP_TIMEOUT_MS || 60_000);
 const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
@@ -23,6 +23,25 @@ const tools = [
         globalOnly: { type: "boolean" },
         dryRun: { type: "boolean" },
         installCodexPlugin: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "fclt_runtime",
+    description:
+      "Discover, bootstrap, update, or roll back the verified fclt runtime used by this plugin.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["status", "check", "stage", "apply", "rollback"],
+        },
+        version: { type: "string" },
+        expectedSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        expectedActiveVersion: { type: "string" },
+        approve: { type: "boolean" },
       },
     },
   },
@@ -275,12 +294,30 @@ function commandForTool(name, args = {}) {
   }
 }
 
-function runFclt(args, cwd) {
+async function runFclt(args, cwd) {
+  const discovery = await runtime.discoverRuntime();
+  if (!discovery.selected) {
+    return {
+      code: 1,
+      text: JSON.stringify(
+        {
+          schemaVersion: 1,
+          error: "no_compatible_runtime",
+          message:
+            "No compatible fclt runtime is available. Check, stage, and apply an explicit verified version with fclt_runtime.",
+          runtime: discovery,
+        },
+        null,
+        2
+      ),
+    };
+  }
+
   return new Promise((resolve) => {
-    const commandText = `$ ${FCLT_BIN} ${args.join(" ")}`;
+    const executable = discovery.selected.executable;
     let child;
     try {
-      child = spawn(FCLT_BIN, args, {
+      child = spawn(executable, args, {
         cwd: cwd || process.cwd(),
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -288,7 +325,15 @@ function runFclt(args, cwd) {
     } catch (error) {
       resolve({
         code: 1,
-        text: [commandText, `stderr:\n${error.message}`].join("\n\n"),
+        text: JSON.stringify(
+          {
+            schemaVersion: 1,
+            runtime: discovery.selected,
+            result: { exitCode: 1, stdout: "", stderr: error.message },
+          },
+          null,
+          2
+        ),
       });
       return;
     }
@@ -307,13 +352,19 @@ function runFclt(args, cwd) {
       const stderrText = [stderr.trim(), extraError].filter(Boolean).join("\n");
       resolve({
         code,
-        text: [
-          commandText,
-          stdout.trim(),
-          stderrText ? `stderr:\n${stderrText}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
+        text: JSON.stringify(
+          {
+            schemaVersion: 1,
+            runtime: discovery.selected,
+            result: {
+              exitCode: code,
+              stdout: parseJsonOrText(stdout.trim()),
+              stderr: stderrText,
+            },
+          },
+          null,
+          2
+        ),
       });
     };
     child.stdout.on("data", (chunk) => {
@@ -329,6 +380,47 @@ function runFclt(args, cwd) {
       finish(code);
     });
   });
+}
+
+function parseJsonOrText(value) {
+  if (!value) {
+    return "";
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+async function handleRuntimeTool(args = {}) {
+  const action = args.action || "status";
+  if (action === "status") {
+    return await runtime.discoverRuntime();
+  }
+  if (action === "check") {
+    return await runtime.checkRuntimeUpdate();
+  }
+  if (action === "stage") {
+    return await runtime.stageRuntime({
+      approve: args.approve,
+      version: args.version,
+    });
+  }
+  if (action === "apply") {
+    return await runtime.applyStagedRuntime({
+      approve: args.approve,
+      expectedSha256: args.expectedSha256,
+      version: args.version,
+    });
+  }
+  if (action === "rollback") {
+    return await runtime.rollbackRuntime({
+      approve: args.approve,
+      expectedActiveVersion: args.expectedActiveVersion,
+    });
+  }
+  throw new Error(`Unknown runtime action: ${action}`);
 }
 
 function send(message) {
@@ -351,7 +443,7 @@ async function handle(message) {
         result: {
           protocolVersion: "2025-06-18",
           capabilities: { tools: {} },
-          serverInfo: { name: "fclt", version: "0.1.0" },
+          serverInfo: { name: "fclt", version: runtime.pluginVersion() },
         },
       });
       return;
@@ -362,6 +454,18 @@ async function handle(message) {
     }
     if (message.method === "tools/call") {
       const { name, arguments: args = {} } = message.params || {};
+      if (name === "fclt_runtime") {
+        const result = await handleRuntimeTool(args);
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            isError: false,
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          },
+        });
+        return;
+      }
       const command = commandForTool(name, args);
       const result = await runFclt(command, resolveToolCwd(name, args));
       send({
@@ -428,7 +532,15 @@ process.stdin.on("data", (chunk) => {
 
 if (process.argv.includes("--self-test")) {
   console.log(
-    JSON.stringify({ tools: tools.map((tool) => tool.name) }, null, 2)
+    JSON.stringify(
+      {
+        pluginVersion: runtime.pluginVersion(),
+        protocolVersion: runtime.PLUGIN_PROTOCOL_VERSION,
+        tools: tools.map((tool) => tool.name),
+      },
+      null,
+      2
+    )
   );
   process.exit(0);
 }

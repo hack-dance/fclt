@@ -18,6 +18,12 @@ The plugin is for agent-led operation. After install, Codex gets focused skills 
 
 The MCP wrapper intentionally delegates to the local `fclt` binary instead of duplicating core logic. Set `FCLT_BIN` if Codex should call a specific binary.
 
+The runtime discovery, verified bootstrap/update lifecycle, safety tiers, and
+release-proof requirements are documented in [Codex Plugin Runtime and Safety
+Contract](./codex-plugin-runtime.md). The complete machine-readable CLI
+disposition is in
+[codex-plugin-capability-matrix.json](./codex-plugin-capability-matrix.json).
+
 ## MCP Tools
 
 The plugin exposes:

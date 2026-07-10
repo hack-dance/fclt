@@ -12,6 +12,18 @@ function frame(message: unknown): string {
   return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
 }
 
+function compatibleStubScript(): string {
+  return [
+    `#!${process.execPath}`,
+    "if (process.argv[2] === 'protocol') {",
+    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]}}));",
+    "} else {",
+    "  console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
+    "}",
+    "",
+  ].join("\n");
+}
+
 function readFrame(stream: NodeJS.ReadableStream): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let buffer = Buffer.alloc(0);
@@ -48,6 +60,29 @@ function readFrame(stream: NodeJS.ReadableStream): Promise<unknown> {
     stream.on("data", onData);
     stream.on("error", onError);
   });
+}
+
+function toolPayload(response: unknown): {
+  result: {
+    exitCode: number;
+    stdout: { argv: string[]; cwd: string } | string;
+    stderr: string;
+  };
+} {
+  const typed = response as {
+    result?: { content?: { text?: string }[] };
+  };
+  const text = typed.result?.content?.[0]?.text;
+  if (!text) {
+    throw new Error("MCP response did not include a text payload");
+  }
+  return JSON.parse(text) as {
+    result: {
+      exitCode: number;
+      stdout: { argv: string[]; cwd: string } | string;
+      stderr: string;
+    };
+  };
 }
 
 describe("bundled fclt MCP plugin", () => {
@@ -120,14 +155,7 @@ describe("bundled fclt MCP plugin", () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
     const stub = join(home, "fclt-stub.cjs");
-    await Bun.write(
-      stub,
-      [
-        "#!/usr/bin/env node",
-        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
-        "",
-      ].join("\n")
-    );
+    await Bun.write(stub, compatibleStubScript());
     await chmod(stub, 0o755);
     await mkdir(join(home, ".ai"), { recursive: true });
 
@@ -159,14 +187,13 @@ describe("bundled fclt MCP plugin", () => {
         result?: { content?: { text?: string }[]; isError?: boolean };
       };
       const expectedWorkspace = await realpath(workspace);
+      const payload = toolPayload(response);
 
       expect(response.result?.isError).toBe(false);
-      expect(response.result?.content?.[0]?.text).toContain(
-        `"cwd":"${expectedWorkspace}"`
-      );
-      expect(response.result?.content?.[0]?.text).toContain(
-        '"argv":["status","--json"]'
-      );
+      expect(payload.result.stdout).toEqual({
+        cwd: expectedWorkspace,
+        argv: ["status", "--json"],
+      });
     } finally {
       child.kill();
     }
@@ -176,14 +203,7 @@ describe("bundled fclt MCP plugin", () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
     const stub = join(home, "fclt-stub.cjs");
-    await Bun.write(
-      stub,
-      [
-        "#!/usr/bin/env node",
-        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
-        "",
-      ].join("\n")
-    );
+    await Bun.write(stub, compatibleStubScript());
     await chmod(stub, 0o755);
     await mkdir(join(home, ".ai"), { recursive: true });
 
@@ -215,14 +235,13 @@ describe("bundled fclt MCP plugin", () => {
         result?: { content?: { text?: string }[]; isError?: boolean };
       };
       const expectedWorkspace = await realpath(workspace);
+      const payload = toolPayload(response);
 
       expect(response.result?.isError).toBe(false);
-      expect(response.result?.content?.[0]?.text).toContain(
-        `"cwd":"${expectedWorkspace}"`
-      );
-      expect(response.result?.content?.[0]?.text).toContain(
-        '"argv":["status","--project","--json"]'
-      );
+      expect(payload.result.stdout).toEqual({
+        cwd: expectedWorkspace,
+        argv: ["status", "--project", "--json"],
+      });
     } finally {
       child.kill();
     }
@@ -232,14 +251,7 @@ describe("bundled fclt MCP plugin", () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
     const stub = join(home, "fclt-stub.cjs");
-    await Bun.write(
-      stub,
-      [
-        "#!/usr/bin/env node",
-        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
-        "",
-      ].join("\n")
-    );
+    await Bun.write(stub, compatibleStubScript());
     await chmod(stub, 0o755);
 
     const pluginRoot = facultBuiltinCodexPluginRoot();
@@ -271,11 +283,13 @@ describe("bundled fclt MCP plugin", () => {
         result?: { content?: { text?: string }[]; isError?: boolean };
       };
       const expectedWorkspace = await realpath(workspace);
+      const payload = toolPayload(response);
 
       expect(response.result?.isError).toBe(false);
-      expect(response.result?.content?.[0]?.text).toContain(
-        `"cwd":"${expectedWorkspace}"`
-      );
+      expect(payload.result.stdout).toEqual({
+        cwd: expectedWorkspace,
+        argv: ["status", "--json"],
+      });
     } finally {
       child.kill();
     }
@@ -354,14 +368,7 @@ describe("bundled fclt MCP plugin", () => {
   it("returns an MCP tool error when an explicit cwd cannot be spawned", async () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const stub = join(home, "fclt-stub.cjs");
-    await Bun.write(
-      stub,
-      [
-        "#!/usr/bin/env node",
-        "console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
-        "",
-      ].join("\n")
-    );
+    await Bun.write(stub, compatibleStubScript());
     await chmod(stub, 0o755);
 
     const pluginRoot = facultBuiltinCodexPluginRoot();
@@ -391,9 +398,10 @@ describe("bundled fclt MCP plugin", () => {
       const response = (await readFrame(child.stdout)) as {
         result?: { content?: { text?: string }[]; isError?: boolean };
       };
+      const payload = toolPayload(response);
 
       expect(response.result?.isError).toBe(true);
-      expect(response.result?.content?.[0]?.text).toContain("stderr:");
+      expect(payload.result.stderr).toContain("ENOENT");
     } finally {
       child.kill();
     }
