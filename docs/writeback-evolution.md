@@ -74,9 +74,10 @@ credentials:
 
 Tracked config accepts an environment-variable name, never an inline token.
 File patterns must stay inside the selected project or home root; symlink and
-path traversal escapes are rejected. Linear uses a fixed read-only query and a
-bounded timeout. Missing auth, missing logs, stale sources, and adapter failures
-produce degraded coverage instead of a false empty result.
+path traversal escapes are rejected. Linear credentials can be sent only to
+the fixed official `https://api.linear.app/graphql` endpoint, using a read-only
+query and bounded timeout. Missing auth, missing logs, stale sources, and
+adapter failures produce degraded coverage instead of a false empty result.
 
 Machine-local state stores per-source watermarks/cursors, dedupe history,
 extraction decisions, and deterministic review-window JSON. Human-readable

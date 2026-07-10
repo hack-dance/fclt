@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import {
   facultAiReconciliationConfigPath,
   projectRootFromAiRoot,
@@ -14,6 +14,8 @@ import type {
 
 const SOURCE_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const ENVIRONMENT_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
+const PATH_SEGMENT_RE = /[\\/]/;
+const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -90,6 +92,17 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
     }
     if (value.paths !== undefined) {
       source.paths = stringArray(value.paths, `Git source ${id} paths`);
+      for (const path of source.paths) {
+        if (
+          isAbsolute(path) ||
+          path.split(PATH_SEGMENT_RE).includes("..") ||
+          path.includes("\0")
+        ) {
+          throw new Error(
+            `Git source ${id} path must stay inside the project: ${path}`
+          );
+        }
+      }
     }
     if (value.allBranches !== undefined) {
       source.allBranches = value.allBranches === true;
@@ -132,8 +145,15 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
         `Linear source ${id} tokenEnv must name an environment variable`
       );
     }
-    if (source.endpoint && !source.endpoint.startsWith("https://")) {
-      throw new Error(`Linear source ${id} endpoint must use https`);
+    if (source.endpoint && source.endpoint !== LINEAR_GRAPHQL_ENDPOINT) {
+      throw new Error(
+        `Linear source ${id} endpoint must be ${LINEAR_GRAPHQL_ENDPOINT}`
+      );
+    }
+    if (!(source.exportPath || (source.teamKey && source.tokenEnv))) {
+      throw new Error(
+        `Linear source ${id} requires teamKey and tokenEnv unless exportPath is configured`
+      );
     }
     return source;
   }

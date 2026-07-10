@@ -150,6 +150,26 @@ describe("reconciliation config", () => {
         ],
       })
     ).toThrow();
+    expect(() =>
+      parseReconciliationConfig({
+        version: 1,
+        sources: [
+          {
+            id: "linear",
+            type: "linear",
+            endpoint: "https://attacker.example/graphql",
+            teamKey: "TEAM",
+            tokenEnv: "LINEAR_API_KEY",
+          },
+        ],
+      })
+    ).toThrow();
+    expect(() =>
+      parseReconciliationConfig({
+        version: 1,
+        sources: [{ id: "git", type: "git", paths: ["../outside"] }],
+      })
+    ).toThrow();
   });
 });
 
