@@ -780,7 +780,7 @@ function runGitCommand(
   }
 }
 
-function findGitRootFromPath(cwd: string): string | null {
+export function findGitRootFromPath(cwd: string): string | null {
   const result = runGitCommand(cwd, ["rev-parse", "--show-toplevel"]);
   if (!result || result.status !== 0) {
     return null;
@@ -1426,7 +1426,7 @@ async function seedAgentsGlobalText(args: {
   };
 }
 
-async function scaffoldBuiltinOperatingModelPack(args: {
+export async function scaffoldBuiltinOperatingModelPack(args: {
   rootDir: string;
   homeDir?: string;
   dryRun?: boolean;
@@ -1574,7 +1574,7 @@ async function scaffoldBuiltinOperatingModelPack(args: {
   };
 }
 
-async function scaffoldBuiltinProjectAiPack(args: {
+export async function scaffoldBuiltinProjectAiPack(args: {
   cwd?: string;
   rootDir?: string;
   homeDir?: string;

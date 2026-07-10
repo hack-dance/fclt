@@ -66,6 +66,18 @@ fclt --version
 
 The npm package is named `facult` for registry compatibility. The command is `fclt`.
 
+Then bootstrap the complete writeback/evolution loop from your home directory or a repository:
+
+```bash
+fclt setup
+```
+
+That one command safely initializes or updates global `~/.ai`, initializes the current git
+repository's `<repo>/.ai` when applicable, creates review-state paths, rebuilds capability
+discovery, and installs the Codex plugin when Codex is available. It preserves local edits and
+existing WB/EV history, and it is safe to run again. Use `fclt setup --global-only` outside a
+project or `fclt setup --no-codex-plugin` for a CLI-only install.
+
 One-off usage:
 
 ```bash
@@ -80,14 +92,19 @@ curl -fsSL https://github.com/hack-dance/fclt/releases/latest/download/fclt-inst
 
 Windows and manual installs can download binaries from the [latest release](https://github.com/hack-dance/fclt/releases/latest).
 
-Check and repair local setup:
+Check setup and exact repair actions:
 
 ```bash
 fclt doctor --json
 fclt doctor --repair
 ```
 
-`doctor --json` is read-only. `doctor --repair` is the self-heal path for legacy
+`doctor --json` is read-only and includes `loop` readiness for canonical roots, writable runtime
+and review state, asset targeting, required skills, Codex registration/discovery, and optional
+Linear integration. Missing Linear authentication is reported explicitly but does not block the
+core loop. Codex registration is reported separately from fresh-session tool discovery.
+
+`doctor --repair` is the self-heal path for legacy
 state, broken rendered global guidance, missing review artifacts, and stale
 local integration layout. It validates the rendered form of `AGENTS.global.md`
 while preserving that file as a composable source template, and it repairs
@@ -108,7 +125,14 @@ verifies the active `fclt --version`.
 
 ## Quick start
 
-### 1. Inspect existing AI state
+### 1. Bootstrap the loop
+
+```bash
+fclt setup
+fclt doctor --json
+```
+
+### 2. Inspect existing AI state
 
 Start read-only:
 
@@ -130,7 +154,7 @@ fclt inventory --json --tool codex
 
 `inventory` is the stable JSON surface for agents and automation. It redacts MCP secrets by default while preserving safe metadata such as env references and whether inline secrets were detected.
 
-### 2. Create a canonical store
+### 3. Advanced: create a canonical store manually
 
 Install the built-in operating-model pack into the global root:
 
@@ -165,7 +189,7 @@ fclt templates init skill project-review
 fclt templates init agent review-operator
 ```
 
-### 3. Consolidate existing skills or config
+### 4. Consolidate existing skills or config
 
 Bring existing tool-native assets into a canonical root deliberately:
 
@@ -176,7 +200,7 @@ fclt index
 
 `keep-current` is deterministic and non-interactive. Use other conflict modes only when you have reviewed the sources.
 
-### 4. Optional: manage a tool
+### 5. Optional: manage a tool
 
 Managed mode writes rendered files into a tool home. Use it only when `fclt` should own that rendered surface.
 
@@ -354,6 +378,7 @@ Keep tracked MCP config secret-free. Use local overlays such as `mcp/servers.loc
 Discovery:
 
 ```bash
+fclt setup [--global-only] [--no-codex-plugin] [--json]
 fclt status [--json]
 fclt doctor [--json] [--repair]
 fclt paths [--json]
@@ -384,7 +409,7 @@ fclt index [--force]
 Managed mode:
 
 ```bash
-fclt setup codex-plugin [--dry-run] [--json]
+fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
 fclt manage <tool> [--dry-run] [--adopt-existing]
 fclt sync [tool] [--dry-run] [--adopt-live]
 fclt enable <selector> --for codex,claude
