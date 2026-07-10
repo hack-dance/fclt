@@ -44,6 +44,7 @@ interface RuntimeModule {
   checksumForAsset(checksums: string, assetName: string): string;
   discoverRuntime(options: {
     env: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
   }): Promise<RuntimeDiscovery>;
   rollbackRuntime(options: {
     approve: boolean;
@@ -286,6 +287,31 @@ describe("fclt plugin runtime discovery", () => {
       "/c",
       `"${executable}" "status" "--json"`,
     ]);
+  });
+
+  it("discovers Windows install metadata from the released portable state root", async () => {
+    const { env } = await tempEnvironment();
+    const localStateRoot = join(env.HOME as string, "portable-state");
+    const executable = join(env.HOME as string, "installed-fclt.exe");
+    await writeFile(executable, runtimeScript("7.8.9"), { mode: 0o700 });
+    await chmod(executable, 0o700);
+    await mkdir(localStateRoot, { recursive: true });
+    await writeFile(
+      join(localStateRoot, "install.json"),
+      JSON.stringify({ binaryPath: executable, source: "release-script" })
+    );
+
+    const discovery = await runtime.discoverRuntime({
+      env: {
+        ...env,
+        FACULT_LOCAL_STATE_DIR: localStateRoot,
+        LOCALAPPDATA: join(env.HOME as string, "unused-local-app-data"),
+      },
+      platform: "win32",
+    });
+
+    expect(discovery.selected?.executable).toBe(executable);
+    expect(discovery.selected?.packageVersion).toBe("7.8.9");
   });
 });
 

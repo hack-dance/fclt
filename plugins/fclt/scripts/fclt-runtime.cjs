@@ -75,28 +75,33 @@ function runtimeStateRoot(env = process.env, platform = process.platform) {
 
 function installStatePaths(env = process.env, platform = process.platform) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
-  if (platform === "darwin") {
-    return [
-      path.join(home, "Library", "Application Support", "fclt", "install.json"),
-    ];
-  }
-  if (platform === "win32") {
-    return [
-      path.join(
-        env.LOCALAPPDATA || path.join(home, "AppData", "Local"),
-        "fclt",
-        "install.json"
-      ),
-    ];
-  }
-  return [
-    path.join(
-      env.XDG_STATE_HOME || path.join(home, ".local", "state"),
-      "fclt",
-      "install.json"
-    ),
+  const override = env.FACULT_LOCAL_STATE_DIR?.trim();
+  const portableRoot = override
+    ? path.resolve(override)
+    : platform === "darwin"
+      ? path.join(home, "Library", "Application Support", "fclt")
+      : path.join(
+          env.XDG_STATE_HOME
+            ? path.resolve(env.XDG_STATE_HOME)
+            : path.join(home, ".local", "state"),
+          "fclt"
+        );
+  const candidates = [
+    path.join(portableRoot, "install.json"),
+    ...(platform === "win32"
+      ? [
+          path.join(
+            env.LOCALAPPDATA || path.join(home, "AppData", "Local"),
+            "fclt",
+            "install.json"
+          ),
+        ]
+      : []),
+    path.join(home, ".ai", ".facult", "install.json"),
+    path.join(home, ".facult", "install.json"),
     path.join(home, ".local", "share", "fclt", "install.json"),
   ];
+  return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
 }
 
 function isSubpath(child, parent) {
