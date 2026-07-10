@@ -140,6 +140,20 @@ async function readJson(pathValue) {
   }
 }
 
+async function runtimePolicy(options = {}) {
+  const root = runtimeStateRoot(options.env, options.platform);
+  const persisted = await readJson(path.join(root, "policy.json"));
+  return {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    updateChecksEnabled: persisted?.updateChecksEnabled !== false,
+    pinnedVersion:
+      typeof persisted?.pinnedVersion === "string" &&
+      persisted.pinnedVersion.trim()
+        ? normalizeVersion(persisted.pinnedVersion)
+        : null,
+  };
+}
+
 function commandNames(platform = process.platform) {
   return platform === "win32" ? ["fclt.exe", "facult.exe"] : ["fclt", "facult"];
 }
@@ -392,6 +406,7 @@ async function inspectCandidate(candidate, options = {}) {
 }
 
 async function discoverRuntime(options = {}) {
+  const policy = await runtimePolicy(options);
   const inspected = [];
   for (const candidate of await runtimeCandidates(options)) {
     const result = await inspectCandidate(candidate, options);
@@ -403,6 +418,7 @@ async function discoverRuntime(options = {}) {
           version: pluginVersion(),
           protocolVersion: PLUGIN_PROTOCOL_VERSION,
         },
+        policy,
         selected: result,
         compatible: true,
         requiresFreshSession: false,
@@ -416,6 +432,7 @@ async function discoverRuntime(options = {}) {
       version: pluginVersion(),
       protocolVersion: PLUGIN_PROTOCOL_VERSION,
     },
+    policy,
     selected: null,
     compatible: false,
     requiresFreshSession: false,
@@ -592,6 +609,57 @@ function releaseUrls(version, target) {
   };
 }
 
+function releaseMetadataUrl(version) {
+  return `https://api.github.com/repos/${REPOSITORY}/releases/tags/v${version}`;
+}
+
+function releaseAssets(metadata, version, target) {
+  if (
+    !isPlainObject(metadata) ||
+    metadata.tag_name !== `v${version}` ||
+    !Array.isArray(metadata.assets)
+  ) {
+    throw new Error(
+      "Release metadata does not match the requested immutable tag."
+    );
+  }
+  const expected = releaseUrls(version, target);
+  const findAsset = (name) =>
+    metadata.assets.find(
+      (asset) =>
+        isPlainObject(asset) &&
+        asset.name === name &&
+        typeof asset.browser_download_url === "string"
+    );
+  const binary = findAsset(expected.assetName);
+  const checksums = findAsset("SHA256SUMS");
+  if (!(binary && checksums)) {
+    throw new Error(
+      "Release metadata is missing the required runtime or checksum asset."
+    );
+  }
+  assertAllowedUrl(binary.browser_download_url);
+  assertAllowedUrl(checksums.browser_download_url);
+  return { binary, checksums, expected };
+}
+
+function verifyPublishedDigest(asset, bytes) {
+  if (typeof asset.digest !== "string" || !asset.digest.trim()) {
+    return null;
+  }
+  const [algorithm, expected] = asset.digest.toLowerCase().split(":");
+  if (algorithm !== "sha256" || !SHA256_RE.test(expected || "")) {
+    throw new Error(`Release asset ${asset.name} has an unsupported digest.`);
+  }
+  const actual = sha256(bytes);
+  if (actual !== expected) {
+    throw new Error(
+      `Release asset ${asset.name} does not match its published digest.`
+    );
+  }
+  return asset.digest.toLowerCase();
+}
+
 async function resolveLatestVersion(fetchBuffer = downloadBuffer) {
   const bytes = await fetchBuffer(
     `https://api.github.com/repos/${REPOSITORY}/releases/latest`,
@@ -609,14 +677,26 @@ async function resolveLatestVersion(fetchBuffer = downloadBuffer) {
 
 async function checkRuntimeUpdate(options = {}) {
   const discovery = await discoverRuntime(options);
-  const latestVersion = await resolveLatestVersion(
-    options.fetchBuffer || downloadBuffer
-  );
+  if (!discovery.policy.updateChecksEnabled) {
+    return {
+      schemaVersion: STATE_SCHEMA_VERSION,
+      action: "check",
+      skipped: true,
+      reason: "update_checks_disabled",
+      currentVersion: discovery.selected?.packageVersion || null,
+      pinnedVersion: discovery.policy.pinnedVersion,
+      mutates: false,
+    };
+  }
+  const latestVersion =
+    discovery.policy.pinnedVersion ||
+    (await resolveLatestVersion(options.fetchBuffer || downloadBuffer));
   return {
     schemaVersion: STATE_SCHEMA_VERSION,
     action: "check",
     currentVersion: discovery.selected?.packageVersion || null,
     latestVersion,
+    channel: discovery.policy.pinnedVersion ? "pinned" : "latest",
     updateAvailable: discovery.selected?.packageVersion !== latestVersion,
     selected: discovery.selected,
     mutates: false,
@@ -632,12 +712,31 @@ async function stageRuntime(options) {
   const root = runtimeStateRoot(options.env, options.platform);
   const fetchBuffer = options.fetchBuffer || downloadBuffer;
   const urls = releaseUrls(version, target);
+  const policy = await runtimePolicy(options);
+  if (policy.pinnedVersion && policy.pinnedVersion !== version) {
+    throw new Error(`Runtime policy is pinned to ${policy.pinnedVersion}.`);
+  }
 
   return await withMutationLock(root, async () => {
+    const metadataBytes = await fetchBuffer(releaseMetadataUrl(version), {
+      maxBytes: MAX_METADATA_BYTES,
+      accept: "application/vnd.github+json",
+    });
+    const metadata = JSON.parse(metadataBytes.toString("utf8"));
+    const assets = releaseAssets(metadata, version, target);
     const [checksumBytes, binaryBytes] = await Promise.all([
-      fetchBuffer(urls.checksumUrl, { maxBytes: MAX_METADATA_BYTES }),
-      fetchBuffer(urls.binaryUrl, { maxBytes: MAX_BINARY_BYTES }),
+      fetchBuffer(assets.checksums.browser_download_url, {
+        maxBytes: MAX_METADATA_BYTES,
+      }),
+      fetchBuffer(assets.binary.browser_download_url, {
+        maxBytes: MAX_BINARY_BYTES,
+      }),
     ]);
+    const checksumDigest = verifyPublishedDigest(
+      assets.checksums,
+      checksumBytes
+    );
+    const binaryDigest = verifyPublishedDigest(assets.binary, binaryBytes);
     const expectedSha256 = checksumForAsset(
       checksumBytes.toString("utf8"),
       urls.assetName
@@ -684,8 +783,13 @@ async function stageRuntime(options) {
       sha256: actualSha256,
       source: {
         repository: REPOSITORY,
-        binaryUrl: urls.binaryUrl,
-        checksumUrl: urls.checksumUrl,
+        releaseMetadataUrl: releaseMetadataUrl(version),
+        binaryUrl: assets.binary.browser_download_url,
+        binaryAssetId: assets.binary.id ?? null,
+        binaryDigest,
+        checksumUrl: assets.checksums.browser_download_url,
+        checksumAssetId: assets.checksums.id ?? null,
+        checksumDigest,
       },
       protocol: inspected.protocol,
       platform: target.platform,
@@ -729,6 +833,31 @@ async function verifyManifestExecutable(manifest, root, expectedParent) {
     );
   }
   return inspected;
+}
+
+async function setRuntimePolicy(options = {}) {
+  if (options.approve !== true) {
+    throw new Error("Changing runtime update policy requires approve=true.");
+  }
+  const root = runtimeStateRoot(options.env, options.platform);
+  return await withMutationLock(root, async () => {
+    const current = await runtimePolicy(options);
+    const next = {
+      schemaVersion: STATE_SCHEMA_VERSION,
+      updateChecksEnabled:
+        typeof options.updateChecksEnabled === "boolean"
+          ? options.updateChecksEnabled
+          : current.updateChecksEnabled,
+      pinnedVersion: options.clearPin
+        ? null
+        : options.pinnedVersion
+          ? normalizeVersion(options.pinnedVersion)
+          : current.pinnedVersion,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeJsonAtomic(path.join(root, "policy.json"), next, root);
+    return { action: "policy", previous: current, policy: next };
+  });
 }
 
 async function applyStagedRuntime(options) {
@@ -862,7 +991,9 @@ module.exports = {
   releaseTarget,
   rollbackRuntime,
   runtimeCandidates,
+  runtimePolicy,
   runtimeStateRoot,
+  setRuntimePolicy,
   sha256,
   stageRuntime,
 };

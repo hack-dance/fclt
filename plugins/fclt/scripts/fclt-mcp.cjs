@@ -36,11 +36,14 @@ const tools = [
       properties: {
         action: {
           type: "string",
-          enum: ["status", "check", "stage", "apply", "rollback"],
+          enum: ["status", "check", "policy", "stage", "apply", "rollback"],
         },
         version: { type: "string" },
         expectedSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
         expectedActiveVersion: { type: "string" },
+        pinnedVersion: { type: "string" },
+        clearPin: { type: "boolean" },
+        updateChecksEnabled: { type: "boolean" },
         approve: { type: "boolean" },
       },
     },
@@ -1041,6 +1044,14 @@ async function handleRuntimeTool(args = {}) {
   }
   if (action === "check") {
     return await runtime.checkRuntimeUpdate();
+  }
+  if (action === "policy") {
+    return await runtime.setRuntimePolicy({
+      approve: args.approve,
+      pinnedVersion: args.pinnedVersion,
+      clearPin: args.clearPin,
+      updateChecksEnabled: args.updateChecksEnabled,
+    });
   }
   if (action === "stage") {
     return await runtime.stageRuntime({

@@ -51,6 +51,24 @@ interface RuntimeModule {
     expectedActiveVersion?: string;
   }): Promise<{ active: ProtocolInspection; rolledBackFrom: string }>;
   runtimeStateRoot(env: NodeJS.ProcessEnv): string;
+  checkRuntimeUpdate(options: {
+    env: NodeJS.ProcessEnv;
+    fetchBuffer?: (url: string) => Promise<Buffer>;
+  }): Promise<{
+    channel?: string;
+    latestVersion?: string;
+    reason?: string;
+    skipped?: boolean;
+  }>;
+  setRuntimePolicy(options: {
+    approve: boolean;
+    clearPin?: boolean;
+    env: NodeJS.ProcessEnv;
+    pinnedVersion?: string;
+    updateChecksEnabled?: boolean;
+  }): Promise<{
+    policy: { pinnedVersion: string | null; updateChecksEnabled: boolean };
+  }>;
   sha256(bytes: Buffer): string;
   stageRuntime(options: {
     approve: boolean;
@@ -111,13 +129,37 @@ function releaseFixture(version: string, bytes = runtimeScript(version)) {
   const extension = process.platform === "win32" ? ".exe" : "";
   const assetName = `fclt-${version}-${platform}-${process.arch}${extension}`;
   const checksum = runtime.sha256(bytes);
+  const checksumBytes = Buffer.from(`${checksum}  ${assetName}\n`);
+  const binaryUrl = `https://github.com/hack-dance/fclt/releases/download/v${version}/${assetName}`;
+  const checksumUrl = `https://github.com/hack-dance/fclt/releases/download/v${version}/SHA256SUMS`;
+  const metadata = Buffer.from(
+    JSON.stringify({
+      tag_name: `v${version}`,
+      assets: [
+        {
+          id: 1,
+          name: assetName,
+          browser_download_url: binaryUrl,
+          digest: `sha256:${checksum}`,
+        },
+        {
+          id: 2,
+          name: "SHA256SUMS",
+          browser_download_url: checksumUrl,
+          digest: `sha256:${runtime.sha256(checksumBytes)}`,
+        },
+      ],
+    })
+  );
   return {
     bytes,
     checksum,
     fetchBuffer: async (url: string): Promise<Buffer> =>
-      url.endsWith("SHA256SUMS")
-        ? Buffer.from(`${checksum}  ${assetName}\n`)
-        : bytes,
+      url.includes("/releases/tags/")
+        ? metadata
+        : url.endsWith("SHA256SUMS")
+          ? checksumBytes
+          : bytes,
   };
 }
 
@@ -179,6 +221,48 @@ describe("fclt plugin runtime discovery", () => {
 });
 
 describe("fclt plugin runtime staging and recovery", () => {
+  it("supports explicit pinning and update-check opt-out", async () => {
+    const { env } = await tempEnvironment();
+    await expect(
+      runtime.setRuntimePolicy({ approve: false, env, pinnedVersion: "9.9.9" })
+    ).rejects.toThrow("approve=true");
+    const pinned = await runtime.setRuntimePolicy({
+      approve: true,
+      env,
+      pinnedVersion: "9.9.9",
+      updateChecksEnabled: true,
+    });
+    expect(pinned.policy.pinnedVersion).toBe("9.9.9");
+
+    const check = await runtime.checkRuntimeUpdate({ env });
+    expect(check.channel).toBe("pinned");
+    expect(check.latestVersion).toBe("9.9.9");
+    await expect(
+      runtime.stageRuntime({
+        approve: true,
+        env,
+        fetchBuffer: releaseFixture("9.9.8").fetchBuffer,
+        version: "9.9.8",
+      })
+    ).rejects.toThrow("pinned to 9.9.9");
+
+    const disabled = await runtime.setRuntimePolicy({
+      approve: true,
+      clearPin: true,
+      env,
+      updateChecksEnabled: false,
+    });
+    expect(disabled.policy.pinnedVersion).toBeNull();
+    const skipped = await runtime.checkRuntimeUpdate({
+      env,
+      fetchBuffer: () => {
+        throw new Error("network should not be called");
+      },
+    });
+    expect(skipped.skipped).toBe(true);
+    expect(skipped.reason).toBe("update_checks_disabled");
+  });
+
   it("stages a checksummed immutable fixture, applies atomically, and discovers it", async () => {
     const { env } = await tempEnvironment();
     const staged = await stageAndApply({ env, version: "9.9.9" });
@@ -209,13 +293,34 @@ describe("fclt plugin runtime staging and recovery", () => {
         approve: true,
         env,
         version: "9.9.9",
-        fetchBuffer: async (url) =>
-          url.endsWith("SHA256SUMS")
+        fetchBuffer: async (url) => {
+          if (url.includes("/releases/tags/")) {
+            return await fixture.fetchBuffer(url);
+          }
+          return url.endsWith("SHA256SUMS")
             ? Buffer.from(`${badChecksum}  ${assetName}\n`)
-            : fixture.bytes,
+            : fixture.bytes;
+        },
       })
-    ).rejects.toThrow("checksum does not match");
+    ).rejects.toThrow("does not match");
     await expect(readFile(join(root, "active.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("refuses release metadata that does not match the requested tag", async () => {
+    const { env } = await tempEnvironment();
+    const fixture = releaseFixture("9.9.9");
+
+    await expect(
+      runtime.stageRuntime({
+        approve: true,
+        env,
+        version: "9.9.9",
+        fetchBuffer: async (url) =>
+          url.includes("/releases/tags/")
+            ? Buffer.from(JSON.stringify({ tag_name: "v9.9.8", assets: [] }))
+            : await fixture.fetchBuffer(url),
+      })
+    ).rejects.toThrow("requested immutable tag");
   });
 
   it("enforces staged checksum preconditions before activation", async () => {

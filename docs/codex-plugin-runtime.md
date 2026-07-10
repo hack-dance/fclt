@@ -58,6 +58,11 @@ the active manifest. Corrupt recovery data is refused. A mutation lock prevents
 concurrent stage, apply, and rollback operations. Temporary files and incomplete
 stages never become active.
 
+Runtime policy supports an explicit semantic-version pin and an update-check
+opt-out. Policy changes require approval. A pin prevents staging any other
+version, and disabling checks avoids network access while leaving explicit
+status and rollback available.
+
 The plugin does not curl-pipe scripts, execute a mutable unverified URL, replace
 an existing global installation, or claim that a staged update is active.
 
