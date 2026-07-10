@@ -45,6 +45,17 @@ export type ProposalStatus =
   | "failed"
   | "superseded";
 export type ConfidenceLevel = "low" | "medium" | "high";
+export type WritebackDisposition =
+  | "propose"
+  | "apply-local"
+  | "task"
+  | "resolve-watch"
+  | "defer";
+export type EvolutionEffectiveness =
+  | "improved"
+  | "unchanged"
+  | "regressed"
+  | "inconclusive";
 export type ProposalKind =
   | "update_asset"
   | "create_asset"
@@ -94,6 +105,11 @@ export interface AiWritebackRecord {
   domain?: string;
   tags: string[];
   status: WritebackStatus;
+  issueLinks?: string[];
+  disposition?: WritebackDisposition;
+  dispositionTarget?: string;
+  nextTrigger?: string;
+  expectedOutcome?: string;
 }
 
 export interface ProposalReviewHistoryEntry {
@@ -119,6 +135,14 @@ export interface ProposalApplyResult {
   changedFiles: string[];
   draftRefs: string[];
   message?: string;
+}
+
+export interface ProposalEffectivenessRecord {
+  effectiveness: EvolutionEffectiveness;
+  verifiedAt: string;
+  verifiedBy: string;
+  evidence: WritebackEvidence[];
+  note?: string;
 }
 
 export interface ProposalDraftHistoryEntry {
@@ -149,6 +173,7 @@ export interface AiProposalRecord {
   draftHistory?: ProposalDraftHistoryEntry[];
   review?: ProposalReviewRecord;
   applyResult?: ProposalApplyResult;
+  effectiveness?: ProposalEffectivenessRecord;
 }
 
 export interface AiWritebackGroup {
@@ -416,6 +441,13 @@ async function writeWritebackReviewArtifact(args: {
     `- asset: ${args.record.assetRef ?? "unassigned"}`,
     `- destination: ${args.record.suggestedDestination ?? "unassigned"}`,
     "",
+    "## Closed Loop",
+    `- disposition: ${args.record.disposition ?? "unassigned"}`,
+    `- disposition target: ${args.record.dispositionTarget ?? "unassigned"}`,
+    `- expected outcome: ${args.record.expectedOutcome ?? "unassigned"}`,
+    `- next trigger: ${args.record.nextTrigger ?? "unassigned"}`,
+    `- issues: ${(args.record.issueLinks ?? []).join(", ") || "none"}`,
+    "",
   ].join("\n");
   await Bun.write(pathValue, `${body.trimEnd()}\n`);
 }
@@ -453,6 +485,7 @@ async function writeProposalReviewArtifact(args: {
       rootDir: args.rootDir,
       createdAt: args.proposal.ts,
       updatedAt:
+        args.proposal.effectiveness?.verifiedAt ??
         args.proposal.review?.reviewedAt ??
         args.proposal.applyResult?.appliedAt ??
         args.proposal.draftHistory?.at(-1)?.ts ??
@@ -476,6 +509,12 @@ async function writeProposalReviewArtifact(args: {
     "",
     "## Draft Refs",
     ...markdownList(args.proposal.draftRefs),
+    "",
+    "## Effectiveness",
+    `- grade: ${args.proposal.effectiveness?.effectiveness ?? "unverified"}`,
+    `- verified at: ${args.proposal.effectiveness?.verifiedAt ?? "unverified"}`,
+    `- note: ${args.proposal.effectiveness?.note ?? "none"}`,
+    ...renderEvidenceList(args.proposal.effectiveness?.evidence ?? []),
     "",
     ...(args.draftBody
       ? [
@@ -789,6 +828,57 @@ async function updateWritebackStatus(
   return next;
 }
 
+async function updateWriteback(
+  id: string,
+  args: { homeDir?: string; rootDir: string },
+  mutate: (record: AiWritebackRecord) => AiWritebackRecord
+): Promise<AiWritebackRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const current = await showWriteback(id, { homeDir, rootDir: args.rootDir });
+  if (!current) {
+    throw new Error(`Writeback not found: ${id}`);
+  }
+  const next = { ...mutate(current), updatedAt: nowIso() };
+  await appendJsonLine(facultAiWritebackQueuePath(homeDir, args.rootDir), next);
+  await writeWritebackReviewArtifact({
+    homeDir,
+    rootDir: args.rootDir,
+    record: next,
+  });
+  return next;
+}
+
+export function linkWritebackIssue(
+  id: string,
+  issue: string,
+  args: { homeDir?: string; rootDir: string }
+): Promise<AiWritebackRecord> {
+  return updateWriteback(id, args, (record) => ({
+    ...record,
+    issueLinks: uniqueStrings([...(record.issueLinks ?? []), issue.trim()]),
+  }));
+}
+
+export function setWritebackDisposition(
+  id: string,
+  disposition: WritebackDisposition,
+  args: {
+    homeDir?: string;
+    rootDir: string;
+    target?: string;
+    nextTrigger?: string;
+    expectedOutcome?: string;
+  }
+): Promise<AiWritebackRecord> {
+  return updateWriteback(id, args, (record) => ({
+    ...record,
+    disposition,
+    dispositionTarget: args.target?.trim() || undefined,
+    nextTrigger: args.nextTrigger?.trim() || undefined,
+    expectedOutcome: args.expectedOutcome?.trim() || undefined,
+  }));
+}
+
 export function dismissWriteback(
   id: string,
   args: { homeDir?: string; rootDir: string }
@@ -1092,11 +1182,6 @@ export async function proposeEvolution(args: {
       tags: [],
     });
     proposals.push(proposal);
-    for (const entry of entries) {
-      if (entry.status !== "promoted") {
-        await promoteWriteback(entry.id, { homeDir, rootDir: args.rootDir });
-      }
-    }
   }
 
   return proposals.sort((a, b) => a.id.localeCompare(b.id));
@@ -1185,7 +1270,11 @@ export async function assessEvolution(args: {
 
   const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
   const activeProposalIds = proposals
-    .filter((proposal) => ACTIVE_PROPOSAL_STATUSES.includes(proposal.status))
+    .filter(
+      (proposal) =>
+        ACTIVE_PROPOSAL_STATUSES.includes(proposal.status) ||
+        (proposal.status === "applied" && !proposal.effectiveness)
+    )
     .filter((proposal) => {
       if (!selectedTarget) {
         return false;
@@ -1610,6 +1699,19 @@ function extractDraftAddition(proposalId: string, input: string): string {
   return input.slice(start, end + endMarker.length).trim();
 }
 
+function insertDraftRevision(
+  proposalId: string,
+  draft: string,
+  revision: string
+): string {
+  const marker = `<!-- facult:evolution:${proposalId}:end -->`;
+  const markerIndex = draft.indexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error(`Draft for ${proposalId} is missing apply markers`);
+  }
+  return `${draft.slice(0, markerIndex).trimEnd()}\n\n## Proposed Revision\n${revision.trim()}\n${draft.slice(markerIndex)}`;
+}
+
 async function resolveProposalTargetNode(
   proposal: AiProposalRecord,
   args: { homeDir?: string; rootDir: string }
@@ -1684,8 +1786,11 @@ export async function draftProposal(
     args.append && existingDraftPath
       ? await readFile(existingDraftPath, "utf8")
       : null;
+  const baseDraft = priorDraft ?? generatedBody;
   const draftBody = args.append
-    ? `${(priorDraft ?? generatedBody).trimEnd()}\n\n## Draft Revision\n${args.append.trim()}\n`
+    ? isAppendProposalKind(current.kind)
+      ? insertDraftRevision(id, baseDraft, args.append)
+      : `${baseDraft.trimEnd()}\n\n## Draft Revision\n${args.append.trim()}\n`
     : generatedBody;
   await Bun.write(draftPath, `${draftBody}\n`);
   const currentText = (await fileExists(targetNode.path!))
@@ -1805,31 +1910,48 @@ export function acceptProposal(
   });
 }
 
-export function rejectProposal(
+export async function rejectProposal(
   id: string,
   args: { homeDir?: string; rootDir: string; reason: string }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
   const actor = proposalActor();
-  return updateProposal(id, { homeDir, rootDir: args.rootDir }, (proposal) => {
-    const reviewedAt = nowIso();
-    return {
-      ...proposal,
-      status: "rejected",
-      review: {
-        ...nextReviewHistory(proposal, {
-          ts: reviewedAt,
-          action: "rejected",
-          actor,
-          note: args.reason,
-        }),
+  const rejected = await updateProposal(
+    id,
+    { homeDir, rootDir: args.rootDir },
+    (proposal) => {
+      const reviewedAt = nowIso();
+      return {
+        ...proposal,
         status: "rejected",
-        reviewer: actor,
-        reviewedAt,
-        rejectionReason: args.reason,
-      },
-    };
-  });
+        review: {
+          ...nextReviewHistory(proposal, {
+            ts: reviewedAt,
+            action: "rejected",
+            actor,
+            note: args.reason,
+          }),
+          status: "rejected",
+          reviewer: actor,
+          reviewedAt,
+          rejectionReason: args.reason,
+        },
+      };
+    }
+  );
+  for (const writebackId of rejected.sourceWritebacks) {
+    const writeback = await showWriteback(writebackId, {
+      homeDir,
+      rootDir: args.rootDir,
+    });
+    if (writeback?.status === "promoted") {
+      await updateWritebackStatus(writebackId, "recorded", {
+        homeDir,
+        rootDir: args.rootDir,
+      });
+    }
+  }
+  return rejected;
 }
 
 export function supersedeProposal(
@@ -1917,7 +2039,7 @@ export async function applyProposal(
     if (!writeback) {
       continue;
     }
-    await updateWritebackStatus(writebackId, "resolved", {
+    await updateWritebackStatus(writebackId, "promoted", {
       homeDir,
       rootDir: args.rootDir,
     });
@@ -1961,6 +2083,59 @@ export async function applyProposal(
     tags: [],
   });
 
+  return next;
+}
+
+export async function verifyProposalEffectiveness(
+  id: string,
+  args: {
+    homeDir?: string;
+    rootDir: string;
+    effectiveness: EvolutionEffectiveness;
+    evidence: WritebackEvidence[];
+    note?: string;
+  }
+): Promise<AiProposalRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
+  if (!current) {
+    throw new Error(`Proposal not found: ${id}`);
+  }
+  if (current.status !== "applied") {
+    throw new Error(`Proposal must be applied before verify: ${id}`);
+  }
+  if (args.evidence.length === 0) {
+    throw new Error("evolve verify requires at least one --evidence");
+  }
+
+  const verifiedAt = nowIso();
+  const verifiedBy = proposalActor();
+  const next = await updateProposal(
+    id,
+    { homeDir, rootDir: args.rootDir },
+    (proposal) => ({
+      ...proposal,
+      effectiveness: {
+        effectiveness: args.effectiveness,
+        verifiedAt,
+        verifiedBy,
+        evidence: args.evidence,
+        note: args.note?.trim() || undefined,
+      },
+    })
+  );
+  const sourceStatus: WritebackStatus =
+    args.effectiveness === "improved"
+      ? "resolved"
+      : args.effectiveness === "inconclusive"
+        ? "promoted"
+        : "recorded";
+  for (const writebackId of current.sourceWritebacks) {
+    await updateWritebackStatus(writebackId, sourceStatus, {
+      homeDir,
+      rootDir: args.rootDir,
+    });
+  }
   return next;
 }
 
@@ -2049,8 +2224,8 @@ function aiHelp(): string {
   return `fclt ai — writeback and evolution workflows
 
 Usage:
-  fclt ai writeback <add|list|show|dismiss|promote> [args...]
-  fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply> [args...]
+  fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
+  fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
 `;
 }
 
@@ -2061,6 +2236,8 @@ Usage:
   fclt ai writeback add --kind <kind> --summary <text> [--asset <selector>] [--tag <tag>] [--evidence <type:ref>] [--allow-empty-evidence]
   fclt ai writeback list [--json]
   fclt ai writeback show <id> [--json]
+  fclt ai writeback link <id> --issue <issue-id>
+  fclt ai writeback disposition <id> --type <propose|apply-local|task|resolve-watch|defer> [--target <ref>] [--next-trigger <text>] [--expected-outcome <text>]
   fclt ai writeback group --by <asset|kind|domain> [--json]
   fclt ai writeback summarize [--by <asset|kind|domain>] [--json]
   fclt ai writeback dismiss <id>
@@ -2082,6 +2259,7 @@ Usage:
   fclt ai evolve reject <id> --reason <text>
   fclt ai evolve supersede <id> --by <proposal-id>
   fclt ai evolve apply <id>
+  fclt ai evolve verify <id> --effectiveness <improved|unchanged|regressed|inconclusive> --evidence <type:ref> [--note <text>]
   fclt ai evolve promote <id> --to global
 `;
 }
@@ -2251,6 +2429,46 @@ async function writebackCommand(argv: string[]) {
       return;
     }
 
+    if (sub === "link") {
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
+      const issue = parseStringFlag(commandArgs, "--issue");
+      if (!(id && issue)) {
+        throw new Error("writeback link requires an id and --issue");
+      }
+      const row = await linkWritebackIssue(id, issue, { rootDir });
+      console.log(`Linked ${row.id} to ${issue}`);
+      console.log(JSON.stringify(row, null, 2));
+      return;
+    }
+
+    if (sub === "disposition") {
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
+      const disposition = parseStringFlag(commandArgs, "--type") as
+        | WritebackDisposition
+        | undefined;
+      const allowed: WritebackDisposition[] = [
+        "propose",
+        "apply-local",
+        "task",
+        "resolve-watch",
+        "defer",
+      ];
+      if (!(id && disposition && allowed.includes(disposition))) {
+        throw new Error(
+          "writeback disposition requires an id and valid --type"
+        );
+      }
+      const row = await setWritebackDisposition(id, disposition, {
+        rootDir,
+        target: parseStringFlag(commandArgs, "--target"),
+        nextTrigger: parseStringFlag(commandArgs, "--next-trigger"),
+        expectedOutcome: parseStringFlag(commandArgs, "--expected-outcome"),
+      });
+      console.log(`Updated disposition for ${row.id}`);
+      console.log(JSON.stringify(row, null, 2));
+      return;
+    }
+
     if (sub === "dismiss" || sub === "promote") {
       const id = commandArgs.find((arg) => !arg.startsWith("-"));
       if (!id) {
@@ -2356,6 +2574,33 @@ async function evolveCommand(argv: string[]) {
       if (!row) {
         throw new Error(`Proposal not found: ${id}`);
       }
+      console.log(JSON.stringify(row, null, 2));
+      return;
+    }
+
+    if (sub === "verify") {
+      const id = commandArgs.find((arg) => !arg.startsWith("-"));
+      const effectiveness = parseStringFlag(commandArgs, "--effectiveness") as
+        | EvolutionEffectiveness
+        | undefined;
+      const allowed: EvolutionEffectiveness[] = [
+        "improved",
+        "unchanged",
+        "regressed",
+        "inconclusive",
+      ];
+      if (!(id && effectiveness && allowed.includes(effectiveness))) {
+        throw new Error(
+          "evolve verify requires an id and valid --effectiveness"
+        );
+      }
+      const row = await verifyProposalEffectiveness(id, {
+        rootDir,
+        effectiveness,
+        evidence: parseEvidence(commandArgs),
+        note: parseStringFlag(commandArgs, "--note"),
+      });
+      console.log(`Verified ${row.id} as ${effectiveness}`);
       console.log(JSON.stringify(row, null, 2));
       return;
     }

@@ -80,12 +80,31 @@ describe("ai CLI", () => {
     expect(addOut.errors).toEqual([]);
     expect(addOut.logs.join("\n")).toContain("WB-00001");
 
+    await aiCommand(["writeback", "link", "WB-00001", "--issue", "HACK-791"]);
+    await aiCommand([
+      "writeback",
+      "disposition",
+      "WB-00001",
+      "--type",
+      "task",
+      "--target",
+      "HACK-791",
+      "--expected-outcome",
+      "The closed loop is measurable.",
+    ]);
+
     const listOut = await captureConsole(async () => {
       await aiCommand(["writeback", "list"]);
     });
     expect(listOut.errors).toEqual([]);
     expect(listOut.logs.join("\n")).toContain("WB-00001");
     expect(listOut.logs.join("\n")).toContain("capability_gap");
+
+    const showOut = await captureConsole(async () => {
+      await aiCommand(["writeback", "show", "WB-00001"]);
+    });
+    expect(showOut.logs.join("\n")).toContain('"issueLinks": [');
+    expect(showOut.logs.join("\n")).toContain('"disposition": "task"');
   });
 
   it("rejects evidence-free writebacks unless explicitly allowed", async () => {
@@ -754,6 +773,21 @@ describe("ai CLI", () => {
 
     await aiCommand(["evolve", "accept", "EV-00001"]);
     await aiCommand(["evolve", "apply", "EV-00001"]);
+    const verifyOut = await captureConsole(async () => {
+      await aiCommand([
+        "evolve",
+        "verify",
+        "EV-00001",
+        "--effectiveness",
+        "improved",
+        "--evidence",
+        "test:cli-post-apply",
+      ]);
+    });
+    expect(verifyOut.errors).toEqual([]);
+    expect(verifyOut.logs.join("\n")).toContain(
+      "Verified EV-00001 as improved"
+    );
 
     const targetText = await Bun.file(
       join(rootDir, "instructions", "WORK_UNITS.md")

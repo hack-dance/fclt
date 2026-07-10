@@ -268,7 +268,13 @@ fclt ai evolve propose
 fclt ai evolve list
 fclt ai evolve draft EV-00001
 fclt ai evolve review EV-00001
+fclt ai writeback link WB-00001 --issue TEAM-123
+fclt ai writeback disposition WB-00001 --type task --target TEAM-123
+fclt ai evolve verify EV-00001 --effectiveness improved --evidence test:post-apply
 ```
+
+Evolution is complete only after outcome verification. Applying a proposal preserves its source
+signal until evidence grades the result as improved, unchanged, regressed, or inconclusive.
 
 Project-scoped additive markdown changes can be lower risk. Global instructions, shared skills, plugins, and other broad surfaces require review before apply.
 

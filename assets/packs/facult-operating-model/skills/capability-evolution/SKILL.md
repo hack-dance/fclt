@@ -26,14 +26,15 @@ Reject global scope when the proposal depends on private examples, one repo's ar
 
 ## Working Flow
 
-1. Read current writebacks and existing proposals.
-2. Group or summarize repeated signal by asset, kind, and scope.
-3. Run a read-only evolution assessment for the target when possible.
-4. Check the current target asset before proposing a change.
-5. Choose the smallest valid proposal kind.
-6. Draft the proposal with evidence and intended target.
+1. Harvest the review window from work logs, commits, runbooks, tool notes, and task-system changes.
+2. Reconcile each source signal to a writeback, implementation task, local asset, or explicit exclusion.
+3. Group or summarize repeated signal by asset, kind, and scope.
+4. Run a read-only evolution assessment for the target when possible.
+5. Check the current target asset before proposing a change.
+6. Choose the smallest valid proposal kind and draft it.
 7. Accept only after the target and scope are correct.
 8. Apply only when the markdown target is the intended canonical asset.
+9. Verify the producing loop and grade effectiveness before resolving source writebacks.
 
 Use:
 
@@ -47,7 +48,14 @@ fclt ai evolve draft EV-00001
 fclt ai evolve draft EV-00001 --append "tighten the rule with a concrete verification step"
 fclt ai evolve accept EV-00001
 fclt ai evolve apply EV-00001
+fclt ai writeback link WB-00001 --issue TEAM-123
+fclt ai writeback disposition WB-00001 --type task --target TEAM-123
+fclt ai evolve verify EV-00001 --effectiveness improved --evidence test:post-apply
 ```
+
+Applying is not completion. Preserve baseline friction, expected behavior, the producing loop,
+implementation tickets, verification evidence, and an effectiveness grade. A recurrence after
+apply is `unchanged` or `regressed` evidence for the same evolution, not a new singleton.
 
 For background review loops, use:
 

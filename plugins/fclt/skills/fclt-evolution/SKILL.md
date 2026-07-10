@@ -53,6 +53,18 @@ fclt ai evolve accept EV-00001
 fclt ai evolve apply EV-00001
 ```
 
+6. Verify the outcome after the producing loop has had a real chance to run:
+
+```bash
+fclt ai writeback link WB-00001 --issue TEAM-123
+fclt ai writeback disposition WB-00001 --type task --target TEAM-123
+fclt ai evolve verify EV-00001 --effectiveness improved --evidence test:post-apply
+```
+
+Apply is not completion. Do not resolve source writebacks until post-apply evidence shows the
+intended behavior improved. Treat recurrence as unchanged or regressed evidence linked to the same
+evolution, not as an unrelated singleton.
+
 ## Proposal Kinds
 
 - `update_asset`

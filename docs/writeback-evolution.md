@@ -11,6 +11,7 @@ Use this loop when a task exposes durable friction:
 3. propose only when the evidence repeats or a missing capability is obvious
 4. draft the smallest valid proposal
 5. review, accept, and apply when the change is safe
+6. verify whether the producing loop improved before resolving the source signal
 
 ## Writeback
 
@@ -33,6 +34,20 @@ Useful kinds:
 - `bad_default`
 
 Avoid writeback for one-off preferences, vague complaints, or speculative ideas.
+
+Link implementation work and preserve the review disposition:
+
+```bash
+fclt ai writeback link WB-00021 --issue HACK-791
+fclt ai writeback disposition WB-00021 \
+  --type task \
+  --target HACK-791 \
+  --expected-outcome "The producing loop stops repeating unchanged blocker prose" \
+  --next-trigger "Implementation ships and the next review window completes"
+```
+
+Issue links are evidence and routing destinations, not capability assets. Group tickets by the
+underlying friction or reusable success rather than creating one writeback per ticket.
 
 ## Evolution
 
@@ -58,7 +73,20 @@ fclt ai evolve draft EV-00001
 fclt ai evolve review EV-00001
 fclt ai evolve accept EV-00001
 fclt ai evolve apply EV-00001
+fclt ai evolve verify EV-00001 \
+  --effectiveness improved \
+  --evidence test:post-apply-regression \
+  --note "The producing loop no longer repeats the failure"
 ```
+
+Applying a proposal moves its source writebacks into an awaiting-verification state. Verification
+then records one of `improved`, `unchanged`, `regressed`, or `inconclusive`. Improved evidence
+resolves the writebacks; unchanged or regressed evidence returns them to the pending queue;
+inconclusive evidence keeps them under watch.
+
+Proposal creation does not promote source writebacks. Rejecting a proposal restores any legacy
+promoted source writebacks to pending. Draft revisions for append-style proposals are included in
+the actual target patch, not only in review history.
 
 Supported durable proposal kinds include:
 

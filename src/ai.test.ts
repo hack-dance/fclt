@@ -10,6 +10,7 @@ import {
   dismissWriteback,
   draftProposal,
   groupWritebacks,
+  linkWritebackIssue,
   listProposals,
   listWritebacks,
   promoteProposal,
@@ -17,10 +18,12 @@ import {
   proposeEvolution,
   refreshAiReviewArtifacts,
   rejectProposal,
+  setWritebackDisposition,
   showProposal,
   showWriteback,
   summarizeWritebacks,
   supersedeProposal,
+  verifyProposalEffectiveness,
 } from "./ai";
 import {
   facultAiDraftDir,
@@ -623,7 +626,7 @@ describe("ai writeback", () => {
     );
 
     const nextWritebacks = await listWritebacks({ homeDir: tempHome, rootDir });
-    expect(nextWritebacks.every((entry) => entry.status === "promoted")).toBe(
+    expect(nextWritebacks.every((entry) => entry.status === "recorded")).toBe(
       true
     );
   });
@@ -724,6 +727,37 @@ describe("ai writeback", () => {
     expect(byDomain[0]?.key).toBe("testing");
     expect(byDomain[1]?.key).toBe("verification");
     expect(byDomain[1]?.count).toBe(2);
+  });
+
+  it("links implementation issues and persists a closed-loop disposition", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+
+    const writeback = await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "capability_gap",
+      summary: "Outcome tracking is missing.",
+      evidence: proposalEvidence("closed-loop"),
+    });
+    await linkWritebackIssue(writeback.id, "HACK-791", {
+      homeDir: tempHome,
+      rootDir,
+    });
+    const updated = await setWritebackDisposition(writeback.id, "task", {
+      homeDir: tempHome,
+      rootDir,
+      target: "HACK-791",
+      nextTrigger: "Implementation ships.",
+      expectedOutcome: "Applied proposals receive effectiveness grades.",
+    });
+
+    expect(updated.issueLinks).toEqual(["HACK-791"]);
+    expect(updated.disposition).toBe("task");
+    expect(updated.dispositionTarget).toBe("HACK-791");
+    expect(updated.nextTrigger).toBe("Implementation ships.");
   });
 
   it("creates, revises, and applies a create_instruction proposal with draft history", async () => {
@@ -1060,6 +1094,19 @@ describe("ai writeback", () => {
     expect(patchText).toContain(`+++ ${targetPath}`);
     expect(patchText).toContain("Facult Evolution Applied: EV-00001");
 
+    await draftProposal(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      append: "Require post-apply effectiveness verification.",
+    });
+    const revisedPatch = await readFile(
+      join(facultAiDraftDir(tempHome, rootDir), `${proposal!.id}.patch`),
+      "utf8"
+    );
+    expect(revisedPatch).toContain(
+      "Require post-apply effectiveness verification."
+    );
+
     const accepted = await acceptProposal(proposal!.id, {
       homeDir: tempHome,
       rootDir,
@@ -1085,23 +1132,26 @@ describe("ai writeback", () => {
       homeDir: tempHome,
       rootDir,
     });
-    expect(writeback?.status).toBe("resolved");
+    expect(writeback?.status).toBe("promoted");
 
     const assessment = await assessEvolution({
       homeDir: tempHome,
       rootDir,
       asset: "instruction:VERIFICATION",
     });
-    expect(assessment.recommendation).toBe("no_mutation");
-    expect(assessment.writebackCount).toBe(0);
-    expect(assessment.sourceWritebacks).toEqual([]);
-    await expect(
-      proposeEvolution({
-        homeDir: tempHome,
-        rootDir,
-        asset: "instruction:VERIFICATION",
-      })
-    ).resolves.toEqual([]);
+    expect(assessment.recommendation).toBe("review_existing_proposal");
+    expect(assessment.activeProposalIds).toEqual([proposal!.id]);
+
+    const verified = await verifyProposalEffectiveness(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      effectiveness: "improved",
+      evidence: proposalEvidence("effectiveness-proof"),
+    });
+    expect(verified.effectiveness?.effectiveness).toBe("improved");
+    expect(
+      (await showWriteback("WB-00001", { homeDir: tempHome, rootDir }))?.status
+    ).toBe("resolved");
 
     const refreshed = await showProposal(proposal!.id, {
       homeDir: tempHome,
@@ -1177,6 +1227,7 @@ describe("ai writeback", () => {
       evidence: proposalEvidence("supersede-first"),
     });
     const [first] = await proposeEvolution({ homeDir: tempHome, rootDir });
+    await promoteWriteback("WB-00001", { homeDir: tempHome, rootDir });
     const rejected = await rejectProposal(first!.id, {
       homeDir: tempHome,
       rootDir,
@@ -1184,6 +1235,9 @@ describe("ai writeback", () => {
     });
     expect(rejected.status).toBe("rejected");
     expect(rejected.review?.rejectionReason).toBe("Needs a better draft.");
+    expect(
+      (await showWriteback("WB-00001", { homeDir: tempHome, rootDir }))?.status
+    ).toBe("recorded");
 
     await addWriteback({
       homeDir: tempHome,
