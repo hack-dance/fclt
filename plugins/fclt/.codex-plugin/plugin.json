@@ -2,6 +2,10 @@
   "name": "fclt",
   "version": "0.1.0",
   "description": "Codex workflows and MCP tools for fclt setup, writeback, evolution, and capability review.",
+  "author": {
+    "name": "Hack Dance",
+    "url": "https://hack.dance"
+  },
   "license": "MIT",
   "keywords": [
     "fclt",
@@ -26,6 +30,8 @@
       "Record useful fclt writeback from this work.",
       "Review fclt evolution proposals and next actions."
     ],
-    "brandColor": "#166534"
+    "brandColor": "#166534",
+    "composerIcon": "./assets/fclt-mark.png",
+    "logo": "./assets/fclt-mark.png"
   }
 }

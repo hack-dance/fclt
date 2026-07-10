@@ -117,6 +117,7 @@ function printHelp() {
                 "Show active roots, managed tools, graph/index, and sync risks",
               ],
               ["paths", "Show canonical, generated, runtime, and review paths"],
+              ["protocol", "Report the CLI/plugin compatibility contract"],
               [
                 "audit",
                 "Run security audits with interactive or scripted flows",
@@ -1294,6 +1295,11 @@ async function main(argv: string[]) {
     case "paths":
       await import("./paths-command").then(({ pathsCommand }) =>
         pathsCommand(rest)
+      );
+      return;
+    case "protocol":
+      await import("./protocol").then(({ protocolCommand }) =>
+        protocolCommand(rest)
       );
       return;
     case "audit":

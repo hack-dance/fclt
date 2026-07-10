@@ -18,11 +18,24 @@ The plugin is for agent-led operation. After install, Codex gets focused skills 
 
 The MCP wrapper intentionally delegates to the local `fclt` binary instead of duplicating core logic. Set `FCLT_BIN` if Codex should call a specific binary.
 
+The runtime discovery, verified bootstrap/update lifecycle, safety tiers, and
+release-proof requirements are documented in [Codex Plugin Runtime and Safety
+Contract](./codex-plugin-runtime.md). The complete machine-readable CLI
+disposition is in
+[codex-plugin-capability-matrix.json](./codex-plugin-capability-matrix.json).
+
 ## MCP Tools
 
 The plugin exposes:
 
 - `fclt_setup`
+- `fclt_runtime`: discover, check, stage, atomically activate, or roll back a verified runtime
+- `fclt_capability`: typed capability, provenance, template, snippet, adapter, and managed-state reads
+- `fclt_workflow`: typed writeback and evolution read/review/lifecycle operations
+- `fclt_sync`: managed-state inspection and dry-run sync preview
+- `fclt_registry`: source search/verification and strict-trust install/update preview
+- `fclt_audit`: structured, redacted, non-interactive security audit
+- `fclt_automation`: read-only autosync service status
 - `fclt_status`
 - `fclt_doctor`
 - `fclt_paths`
@@ -31,7 +44,12 @@ The plugin exposes:
 - `fclt_writeback_review`
 - `fclt_evolve`
 
-These tools are thin wrappers around CLI commands and return command output. Mutating tools still rely on the normal fclt safety model: dry-run first when available, review broad changes before apply, and preserve existing user guidance.
+The typed routers use closed schemas, reject unknown fields, require explicit
+scope and approval for review-producing or reversible workflow changes, and do
+not expose arbitrary argv or shell passthrough. Canonical apply, live adoption,
+trust-policy mutation, destructive migration, and background-service mutation
+remain deliberately withheld until their CLI APIs provide transaction-safe
+preview, precondition, verification, and rollback contracts.
 
 ## Install In Codex
 
@@ -43,7 +61,9 @@ fclt setup
 
 It prepares global and current-repo capability, review state, indexes, and the plugin. The same
 command is available to Codex through `fclt_setup`, so a plugin-led install does not require the
-user to know capability roots or state paths.
+user to know capability roots or state paths. The MCP form requires an explicit `global` or
+`global_and_project` scope, defaults to dry-run, requires an explicit project `cwd`, and only
+applies when `dryRun: false` and `approve: true` are both present.
 
 Use the narrow plugin-only command when the CLI loop is already healthy:
 

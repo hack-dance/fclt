@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  BUILTIN_FCLT_CODEX_PLUGIN_BINARY_FILES,
   BUILTIN_FCLT_CODEX_PLUGIN_FILES,
   BUILTIN_OPERATING_MODEL_FILES,
 } from "./builtin-assets";
@@ -95,6 +96,23 @@ function materializeBuiltinCodexPlugin(): string {
       }
     }
     writeFileSync(pathValue, content, "utf8");
+  }
+  for (const [relativePath, base64] of Object.entries(
+    BUILTIN_FCLT_CODEX_PLUGIN_BINARY_FILES
+  )) {
+    const pathValue = join(root, relativePath);
+    const content = Buffer.from(base64, "base64");
+    mkdirSync(dirname(pathValue), { recursive: true });
+    if (existsSync(pathValue)) {
+      try {
+        if (readFileSync(pathValue).equals(content)) {
+          continue;
+        }
+      } catch {
+        // Rewrite unreadable materialized assets below.
+      }
+    }
+    writeFileSync(pathValue, content);
   }
   return root;
 }

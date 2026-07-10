@@ -1,0 +1,805 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "matrixVersion": 1,
+  "generatedFrom": {
+    "gitCommit": "eb48033",
+    "packageVersion": "2.19.2",
+    "pluginVersion": "0.1.0",
+    "auditedAt": "2026-07-10T18:20:00Z"
+  },
+  "dispositions": ["exposed", "withheld", "blocked_safer_api"],
+  "riskClasses": [
+    "read_only",
+    "review_producing",
+    "reversible_mutation",
+    "high_risk_destructive"
+  ],
+  "defaults": {
+    "mutationPreviewRequired": true,
+    "explicitScopeRequired": true,
+    "arbitraryShellAllowed": false,
+    "secretOutputAllowed": false
+  },
+  "capabilities": [
+    {
+      "id": "runtime.handshake",
+      "cli": "protocol --json",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_runtime",
+        "action": "status"
+      },
+      "risk": "read_only",
+      "scope": "runtime",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "selected executable reports a compatible CLI/plugin protocol and package version"
+    },
+    {
+      "id": "runtime.bootstrap_update_rollback",
+      "cli": "self-update",
+      "cliAvailability": "partial_unsafe",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_runtime",
+        "action": "check|stage|apply|rollback"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "runtime",
+      "preview": "check and immutable staging are non-activating",
+      "apply": "explicit approval, verified checksum, atomic active pointer",
+      "rollback": "retain and reactivate previous verified runtime",
+      "verification": "version, protocol, platform, architecture, checksum, active pointer, and fresh-session state"
+    },
+    {
+      "id": "core.version",
+      "cli": "--version",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_runtime",
+        "action": "status"
+      },
+      "risk": "read_only",
+      "scope": "runtime",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "parse semantic version from selected runtime"
+    },
+    {
+      "id": "core.status_doctor_paths",
+      "cli": "status|doctor|paths --json",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tools": ["fclt_status", "fclt_doctor", "fclt_paths"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "structured output includes selected scope, provenance, runtime handshake, and freshness"
+    },
+    {
+      "id": "core.scan_inventory",
+      "cli": "scan|inventory",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_capability",
+        "actions": ["scan", "inventory"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project|explicit_roots",
+      "preview": "not_applicable",
+      "apply": "scan persistence deliberately omitted",
+      "rollback": "not_applicable",
+      "verification": "JSON result is redacted and source roots are returned"
+    },
+    {
+      "id": "core.list_show_find_graph",
+      "cli": "list|show|find|graph",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_capability",
+        "actions": ["list", "show", "find", "graph"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "result includes canonical selector, source provenance, and generated/authored classification"
+    },
+    {
+      "id": "core.show_secrets",
+      "cli": "show --show-secrets|inventory --show-secrets",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "withheld",
+        "reason": "MCP output must never disclose inline credentials or local secret overlays"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "all",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "secret-shaped fixtures remain redacted"
+    },
+    {
+      "id": "core.adapters_managed",
+      "cli": "adapters|managed",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_capability",
+        "actions": ["adapters", "managed_status"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "structured adapters and managed state match CLI JSON contracts"
+    },
+    {
+      "id": "core.index",
+      "cli": "index",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "generated-state mutation needs a structured preview and stale-state precondition"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "explicit scope and precondition",
+      "rollback": "regenerate from canonical authored sources",
+      "verification": "index and graph load successfully and contain expected source roots"
+    },
+    {
+      "id": "setup.readiness",
+      "cli": "setup",
+      "cliAvailability": "available_v2.19.1",
+      "mcp": { "disposition": "exposed", "tool": "fclt_setup" },
+      "risk": "reversible_mutation",
+      "scope": "explicit global|global_and_project plus project cwd",
+      "preview": "default; calls released setup --dry-run JSON contract",
+      "apply": "dryRun=false plus approve=true against released HACK-792 contract",
+      "rollback": "preserved existing capability state and reported repair actions",
+      "verification": "doctor loop readiness plus fresh-session plugin discovery"
+    },
+    {
+      "id": "setup.codex_plugin",
+      "cli": "setup codex-plugin",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_setup",
+        "action": "codex_plugin"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global_plugin",
+      "preview": "required",
+      "apply": "explicit approval and local marketplace target",
+      "rollback": "retain previous cached plugin; report restart required",
+      "verification": "plugin registry, cache payload self-test, and genuinely fresh Codex task"
+    },
+    {
+      "id": "templates.list",
+      "cli": "templates list",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_capability",
+        "action": "templates_list"
+      },
+      "risk": "read_only",
+      "scope": "builtin",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "template ids and provenance match packaged built-ins"
+    },
+    {
+      "id": "templates.init_capability",
+      "cli": "templates init skill|mcp|agent|instruction|snippet|agents",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "asset creation needs a structured changed-file plan and hash-bound rollback"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "explicit asset type, name, scope, and precondition; force withheld",
+      "rollback": "remove only transaction-created files after hash match",
+      "verification": "created asset parses, remains inside canonical root, and is classified authored"
+    },
+    {
+      "id": "templates.init_operating_model",
+      "cli": "templates init operating-model|project-ai",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tools": ["fclt_init_operating_model", "fclt_capability"]
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "explicit scope; force requires stronger approval",
+      "rollback": "bounded snapshot of touched authored files and generated rebuild",
+      "verification": "doctor, index, graph, and preserved authored-file hashes"
+    },
+    {
+      "id": "templates.init_automation",
+      "cli": "templates init automation",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "needs typed schedule policy, destination ownership, and automation-specific rollback"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project|wide",
+      "preview": "required",
+      "apply": "withheld until safe automation transaction API exists",
+      "rollback": "required before exposure",
+      "verification": "automation schema, disabled-by-default state, and exact destination"
+    },
+    {
+      "id": "writeback.read",
+      "cli": "ai writeback list|show|group|summarize",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tools": ["fclt_writeback_review", "fclt_workflow"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "review mirror and queue ids agree"
+    },
+    {
+      "id": "writeback.add",
+      "cli": "ai writeback add",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tools": ["fclt_writeback_add", "fclt_workflow"]
+      },
+      "risk": "review_producing",
+      "scope": "global|project",
+      "preview": "structured intent returned before recording",
+      "apply": "explicit evidence, problem, target, expected outcome, and scope",
+      "rollback": "dismiss/reopen via journaled state transition; queue remains auditable",
+      "verification": "queue record, review artifact, evidence, and journal event agree"
+    },
+    {
+      "id": "writeback.review_links",
+      "cli": "ai writeback link|disposition",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_workflow",
+        "actions": ["writeback_link", "writeback_disposition"]
+      },
+      "risk": "review_producing",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "id, expected prior status, target, and scope required",
+      "rollback": "canonical capability unchanged; append-only journal retained",
+      "verification": "record, review artifact, and append-only journal agree"
+    },
+    {
+      "id": "writeback.dismiss_promote",
+      "cli": "ai writeback dismiss|promote",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "terminal writeback transitions need a bounded reopen/rollback API"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "queue, mirrors, and journal consistency"
+    },
+    {
+      "id": "writeback.reopen_repair",
+      "cli": "ai writeback reopen|repair",
+      "cliAvailability": "missing",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "CLI has no bounded reopen/repair state-transition API"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "queue, mirrors, and journal consistency"
+    },
+    {
+      "id": "evolution.read",
+      "cli": "ai evolve list|show|assess",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tools": ["fclt_evolve", "fclt_workflow"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "assessment includes evidence grade, active proposal ids, and approval boundary"
+    },
+    {
+      "id": "evolution.review",
+      "cli": "ai evolve propose|draft|review",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tools": ["fclt_evolve", "fclt_workflow"]
+      },
+      "risk": "review_producing",
+      "scope": "global|project",
+      "preview": "assessment required before propose",
+      "apply": "creates proposal/draft/review artifacts only",
+      "rollback": "reject or supersede; canonical assets unchanged",
+      "verification": "proposal targets, evidence, review artifact, and journal agree"
+    },
+    {
+      "id": "evolution.effectiveness",
+      "cli": "ai evolve verify",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_workflow",
+        "actions": ["evolve_verify"]
+      },
+      "risk": "review_producing",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "id, expected prior status, evidence, and scope required",
+      "rollback": "canonical capability unchanged; append-only outcome evidence retained",
+      "verification": "proposal metadata, mirror, and journal agree"
+    },
+    {
+      "id": "evolution.decision_lifecycle",
+      "cli": "ai evolve accept|reject|supersede",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "proposal decision transitions need stale-state preconditions and a tested inverse API"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "proposal metadata, mirror, and journal agree"
+    },
+    {
+      "id": "evolution.apply",
+      "cli": "ai evolve apply",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "canonical apply needs an atomic snapshot, stale hashes, and tested restore API"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project",
+      "preview": "required with accepted proposal and exact changed-file plan",
+      "apply": "explicit approval, lock, stale hash preconditions, bounded snapshot",
+      "rollback": "restore verified snapshot and rebuild generated state",
+      "verification": "target hashes, proposal apply result, index/graph, and restoration smoke"
+    },
+    {
+      "id": "evolution.promote",
+      "cli": "ai evolve promote --to global",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "cross-scope promotion needs conflict-aware transaction and rollback API"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "project_to_global",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "both source and target scopes remain consistent"
+    },
+    {
+      "id": "managed.preview_status",
+      "cli": "managed|sync --dry-run",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_sync",
+        "actions": ["preview", "status"]
+      },
+      "risk": "read_only",
+      "scope": "global|project plus explicit tool",
+      "preview": "required",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "rendered hashes, symlink targets, canonical provenance, and tool adapter parse"
+    },
+    {
+      "id": "managed.apply",
+      "cli": "manage|sync",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "tool-home mutation needs an atomic snapshot, stale-state precondition, and tested restore API"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus explicit tool",
+      "preview": "available through fclt_sync preview",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "rendered hashes, symlink targets, canonical provenance, and restoration smoke"
+    },
+    {
+      "id": "managed.adopt_live",
+      "cli": "sync --adopt-live|manage --adopt-existing",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "live-to-canonical adoption needs per-file conflict decisions and authored-boundary proof"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus explicit tool",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "canonical and live hashes plus generated/authored ownership"
+    },
+    {
+      "id": "managed.unmanage",
+      "cli": "unmanage",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "existing backup restore lacks corrupt-backup and stale-state guarantees required by MCP"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus explicit tool",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "restore pre-unmanage managed state",
+      "verification": "backup integrity and live tool smoke"
+    },
+    {
+      "id": "managed.enable_disable",
+      "cli": "enable|disable",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "policy and rendered-output changes need an atomic inverse transaction"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project plus explicit tools/assets",
+      "preview": "required",
+      "apply": "exact asset selectors and tool ids required",
+      "rollback": "inverse enable/disable transaction",
+      "verification": "managed policy and rendered tool inventory agree"
+    },
+    {
+      "id": "reconciliation.review",
+      "cli": "HACK-793 typed reconciliation command",
+      "cliAvailability": "pending_HACK_793_closed_schema",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "plannedRouter": "fclt_registry",
+        "reason": "HACK-793 owns the closed reconciliation schema and CLI contract; HACK-800 must not invent or expose it"
+      },
+      "risk": "review_producing",
+      "scope": "explicit source and global|project target",
+      "preview": "read-only/review-producing only after HACK-793 defines the typed contract",
+      "apply": "not_applicable in HACK-800",
+      "rollback": "canonical capability remains unchanged; discard the review artifact under the HACK-793 contract",
+      "verification": "HACK-793-owned provenance, watermarks, coverage, signals, correlation, dispositions, and review artifact contract"
+    },
+    {
+      "id": "remote.search_verify",
+      "cli": "search|verify-source|sources list",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_registry",
+        "actions": ["search", "verify_source", "source_list"]
+      },
+      "risk": "read_only",
+      "scope": "remote_registry",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "source URL, trust, integrity, signature status, and freshness returned"
+    },
+    {
+      "id": "remote.install_update_preview",
+      "cli": "install --dry-run|update",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_registry",
+        "actions": ["install_preview", "update_check"]
+      },
+      "risk": "read_only",
+      "scope": "global plus exact registry item; project scope blocked until the CLI accepts an explicit project root",
+      "preview": "required",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "integrity, source provenance, asset parse, index/graph, and restored-state smoke"
+    },
+    {
+      "id": "remote.install_update_apply",
+      "cli": "install|update --apply",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "registry mutation needs immutable provenance, atomic canonical snapshot, and tested restore API"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus exact registry item",
+      "preview": "available through fclt_registry",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "integrity, source provenance, asset parse, index/graph, and restored-state smoke"
+    },
+    {
+      "id": "remote.source_policy",
+      "cli": "sources trust|review|block|clear",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "trust-policy mutation needs explicit policy diff, stronger approval, and rollback journal"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global_trust_policy",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "policy file, effective trust decision, and audit history"
+    },
+    {
+      "id": "item.trust_untrust",
+      "cli": "trust|untrust",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "annotation changes can alter agent execution eligibility and need explicit audit/rollback"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus exact asset",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "effective trust list and asset audit"
+    },
+    {
+      "id": "audit.read",
+      "cli": "audit --non-interactive",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_audit",
+        "action": "scan"
+      },
+      "risk": "read_only",
+      "scope": "explicit asset or roots",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "static findings are redacted and source locations stay within allowed roots"
+    },
+    {
+      "id": "audit.fix_safe",
+      "cli": "audit fix|safe",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "fix/suppression operations need typed rule-specific diffs, preconditions, and rollback"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "explicit asset and rule",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "finding transition and exact file/policy diff"
+    },
+    {
+      "id": "doctor.repair",
+      "cli": "doctor --repair",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "multi-surface repair needs an explicit per-action transaction plan"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project",
+      "preview": "doctor read-only report",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "post-repair doctor plus state-specific restoration"
+    },
+    {
+      "id": "migration.copy",
+      "cli": "migrate --dry-run|migrate",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "legacy migration needs inventory, collision plan, bounded snapshot, and idempotency key"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "explicit legacy root to global canonical root",
+      "preview": "required",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "source and destination inventories, hashes, and doctor"
+    },
+    {
+      "id": "migration.move",
+      "cli": "migrate --move",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "withheld",
+        "reason": "destructive legacy-directory removal is not appropriate for plugin MCP"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "filesystem",
+      "preview": "available in CLI only",
+      "apply": "withheld",
+      "rollback": "not guaranteed",
+      "verification": "not_applicable"
+    },
+    {
+      "id": "consolidate",
+      "cli": "consolidate",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "bulk conflict resolution needs itemized typed decisions and transaction rollback"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "explicit scan roots to canonical root",
+      "preview": "required but missing in CLI",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "dedupe map, source hashes, destination hashes, and generated rebuild"
+    },
+    {
+      "id": "snippets.read",
+      "cli": "snippets list|show",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_capability",
+        "actions": ["snippet_list", "snippet_show"]
+      },
+      "risk": "read_only",
+      "scope": "global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "snippet markers and target hashes match expected content"
+    },
+    {
+      "id": "snippets.sync",
+      "cli": "snippets sync",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "target-file mutation needs explicit file allowlists, stale hashes, and snapshot restoration"
+      },
+      "risk": "reversible_mutation",
+      "scope": "global|project plus explicit target files",
+      "preview": "available in CLI",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "snippet markers and restored target hashes"
+    },
+    {
+      "id": "snippets.interactive_edit",
+      "cli": "snippets create|edit",
+      "cliAvailability": "available_interactive",
+      "mcp": {
+        "disposition": "withheld",
+        "reason": "interactive editor launch and arbitrary text replacement are not valid MCP APIs"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project",
+      "preview": "missing",
+      "apply": "withheld; use typed template_init or proposal draft",
+      "rollback": "not guaranteed",
+      "verification": "not_applicable"
+    },
+    {
+      "id": "autosync.status",
+      "cli": "autosync status",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_automation",
+        "action": "autosync_status"
+      },
+      "risk": "read_only",
+      "scope": "global|project plus explicit tool",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "service configuration, process state, and last-run freshness"
+    },
+    {
+      "id": "autosync.mutation",
+      "cli": "autosync install|uninstall|restart|run",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "background service and git-sync mutation is HACK-794-adjacent and needs dedicated service policy/rollback"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus explicit tool/service",
+      "preview": "required",
+      "apply": "withheld to preserve HACK-794 scope",
+      "rollback": "required before exposure",
+      "verification": "service lifecycle and remote-git safety"
+    },
+    {
+      "id": "plugins_agents_skills_instructions_hooks_automations.inventory",
+      "cli": "inventory|list|show",
+      "cliAvailability": "partial",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_capability",
+        "actions": ["inventory", "list", "show"]
+      },
+      "risk": "read_only",
+      "scope": "auto|global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "asset type, canonical/live/generated provenance, trust, and source path"
+    },
+    {
+      "id": "plugins_hooks_automations.direct_management",
+      "cli": "none_coherent",
+      "cliAvailability": "missing",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "no coherent typed CLI transaction exists for direct plugin/hook/automation lifecycle management"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project|tool_home",
+      "preview": "required",
+      "apply": "withheld; narrow setup/template paths remain separate",
+      "rollback": "required before exposure",
+      "verification": "schema, ownership, registry state, tool discovery, and restoration"
+    },
+    {
+      "id": "arbitrary_shell",
+      "cli": "arbitrary argv or shell passthrough",
+      "cliAvailability": "not_a_cli_command",
+      "mcp": {
+        "disposition": "withheld",
+        "reason": "violates schema validation, least privilege, auditability, and recovery requirements"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "unbounded",
+      "preview": "not_applicable",
+      "apply": "never",
+      "rollback": "not_guaranteed",
+      "verification": "tests reject unknown tools, actions, fields, and command fragments"
+    }
+  ]
+}
