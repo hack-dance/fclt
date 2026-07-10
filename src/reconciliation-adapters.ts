@@ -25,6 +25,7 @@ const ISSUE_REF_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 const WRITEBACK_REF_RE = /\bWB-\d{5}\b/g;
 const ASSET_REF_RE =
   /(?:@(?:ai|project)\/[^\s)`]+|(?:instructions|skills|agents|automations|snippets|mcp)\/[\w./-]+)/g;
+const TRAILING_REF_PUNCTUATION_RE = /[.,;:!?]+$/;
 const SECRET_VALUE_RE =
   /(bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi;
 const JSON_SECRET_VALUE_RE =
@@ -77,7 +78,11 @@ function references(value: string): {
   writebackRefs: string[];
 } {
   return {
-    assetRefs: unique(value.match(ASSET_REF_RE) ?? []),
+    assetRefs: unique(
+      (value.match(ASSET_REF_RE) ?? []).map((entry) =>
+        entry.replace(TRAILING_REF_PUNCTUATION_RE, "")
+      )
+    ),
     issueRefs: unique(
       (value.match(ISSUE_REF_RE) ?? []).filter(
         (entry) => !(entry.startsWith("WB-") || entry.startsWith("EV-"))
@@ -260,6 +265,11 @@ const writebackAdapter: ReconciliationAdapter = {
         )[0];
       const observedAt = entry?.updatedAt ?? entry?.ts;
       if (!(entry?.id && observedAt && inWindow(observedAt, context))) {
+        return [];
+      }
+      if (
+        ["resolved", "dismissed", "superseded"].includes(entry.status ?? "")
+      ) {
         return [];
       }
       return [

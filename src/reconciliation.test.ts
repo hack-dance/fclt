@@ -590,6 +590,49 @@ describe("source reconciliation", () => {
     expect(review.signals[0]?.writebackRefs).toEqual(["WB-00020"]);
   });
 
+  it("does not reopen terminal writebacks during reconciliation", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(queuePath, ".."), { recursive: true });
+    await Bun.write(
+      queuePath,
+      [
+        JSON.stringify({
+          id: "WB-00020",
+          ts: "2026-07-04T12:00:00Z",
+          summary: "Capability signal",
+          status: "recorded",
+        }),
+        JSON.stringify({
+          id: "WB-00020",
+          ts: "2026-07-04T12:00:00Z",
+          updatedAt: "2026-07-06T12:00:00Z",
+          summary: "Capability signal",
+          status: "resolved",
+        }),
+      ].join("\n")
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+
+    expect(review.coverage[0]?.state).toBe("checked");
+    expect(review.signals).toHaveLength(0);
+  });
+
   it("keeps identical global and project writeback ids distinct", async () => {
     const fixture = await makeFixture();
     const projectQueue = facultAiWritebackQueuePath(
