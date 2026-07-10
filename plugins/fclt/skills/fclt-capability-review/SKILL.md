@@ -41,6 +41,13 @@ fclt inventory --project --json
 - Use global scope only for broadly reusable behavior.
 - Keep generated state and review artifacts out of repo-local `.ai`.
 - Prefer adding or updating the smallest unit: instruction, snippet, skill, agent, MCP config, or automation.
+- Treat engineering implementation as task work. Do not force product changes
+  through capability evolution merely because evolution tools exist.
+- Before recommending mutation, state the observed problem, evidence, why the
+  proposed capability is the correct target, risk class, expected outcome,
+  verification plan, assumptions, and recovery route.
+- Never silently overwrite authored capability or confuse generated/rendered
+  output with canonical source.
 
 ## Output
 
@@ -49,3 +56,5 @@ fclt inventory --project --json
 - scope recommendation
 - missing or stale capability
 - safe next command
+- deliberately withheld operations or missing safer API
+- verification and undo path for any proposed mutation

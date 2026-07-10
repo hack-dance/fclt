@@ -47,6 +47,11 @@ fclt ai writeback summarize --by domain
 - Do not copy private project detail into global writebacks.
 - Use task tracking for executable product/tooling work; use writeback for reusable operating-layer learning.
 - If the same signal repeats and the target is clear, hand off to `fclt-evolution`.
+- State the observed problem, evidence, target, reason, expected outcome, and
+  assumptions before recording.
+- Do not capture secrets, private tokens, or raw sensitive payloads as evidence.
+- For lifecycle mutations, use an explicit scope and expected prior state.
+  Report the journal/review evidence and the available undo transition.
 
 ## Output
 
@@ -55,3 +60,6 @@ fclt ai writeback summarize --by domain
 - target asset
 - evidence summary
 - whether this is ready for evolution
+- risk class and approval boundary
+- actual changed records/artifacts
+- verification result and recovery route

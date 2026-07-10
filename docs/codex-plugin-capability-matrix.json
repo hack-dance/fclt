@@ -24,9 +24,9 @@
     {
       "id": "runtime.handshake",
       "cli": "protocol --json",
-      "cliAvailability": "missing",
+      "cliAvailability": "available",
       "mcp": {
-        "disposition": "blocked_safer_api",
+        "disposition": "exposed",
         "tool": "fclt_runtime",
         "action": "status"
       },
@@ -42,7 +42,7 @@
       "cli": "self-update",
       "cliAvailability": "partial_unsafe",
       "mcp": {
-        "disposition": "blocked_safer_api",
+        "disposition": "exposed",
         "tool": "fclt_runtime",
         "action": "check|stage|apply|rollback"
       },
@@ -152,9 +152,8 @@
       "cli": "index",
       "cliAvailability": "available",
       "mcp": {
-        "disposition": "exposed",
-        "tool": "fclt_capability",
-        "action": "rebuild_index"
+        "disposition": "blocked_safer_api",
+        "reason": "generated-state mutation needs a structured preview and stale-state precondition"
       },
       "risk": "reversible_mutation",
       "scope": "global|project",
@@ -212,9 +211,8 @@
       "cli": "templates init skill|mcp|agent|instruction|snippet|agents",
       "cliAvailability": "available",
       "mcp": {
-        "disposition": "exposed",
-        "tool": "fclt_capability",
-        "action": "template_init"
+        "disposition": "blocked_safer_api",
+        "reason": "asset creation needs a structured changed-file plan and hash-bound rollback"
       },
       "risk": "reversible_mutation",
       "scope": "global|project",
@@ -375,9 +373,8 @@
       "cli": "ai evolve apply",
       "cliAvailability": "available",
       "mcp": {
-        "disposition": "exposed",
-        "tool": "fclt_workflow",
-        "action": "evolve_apply"
+        "disposition": "blocked_safer_api",
+        "reason": "canonical apply needs an atomic snapshot, stale hashes, and tested restore API"
       },
       "risk": "high_risk_destructive",
       "scope": "global|project",
@@ -402,20 +399,35 @@
       "verification": "both source and target scopes remain consistent"
     },
     {
-      "id": "managed.preview_apply",
-      "cli": "manage|sync --dry-run; sync",
+      "id": "managed.preview_status",
+      "cli": "managed|sync --dry-run",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_sync",
-        "actions": ["preview", "apply", "status"]
+        "actions": ["preview", "status"]
       },
-      "risk": "reversible_mutation",
+      "risk": "read_only",
       "scope": "global|project plus explicit tool",
       "preview": "required",
-      "apply": "explicit tool/scope, lock, stale precondition, bounded tool-home snapshot",
-      "rollback": "restore snapshot and managed-state journal",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
       "verification": "rendered hashes, symlink targets, canonical provenance, and tool adapter parse"
+    },
+    {
+      "id": "managed.apply",
+      "cli": "manage|sync",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "tool-home mutation needs an atomic snapshot, stale-state precondition, and tested restore API"
+      },
+      "risk": "high_risk_destructive",
+      "scope": "global|project plus explicit tool",
+      "preview": "available through fclt_sync preview",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "rendered hashes, symlink targets, canonical provenance, and restoration smoke"
     },
     {
       "id": "managed.adopt_live",
@@ -452,9 +464,8 @@
       "cli": "enable|disable",
       "cliAvailability": "available",
       "mcp": {
-        "disposition": "exposed",
-        "tool": "fclt_capability",
-        "actions": ["enable", "disable"]
+        "disposition": "blocked_safer_api",
+        "reason": "policy and rendered-output changes need an atomic inverse transaction"
       },
       "risk": "reversible_mutation",
       "scope": "global|project plus explicit tools/assets",
@@ -480,24 +491,34 @@
       "verification": "source URL, trust, integrity, signature status, and freshness returned"
     },
     {
-      "id": "remote.install_update",
-      "cli": "install --dry-run|update; install|update --apply",
+      "id": "remote.install_update_preview",
+      "cli": "install --dry-run|update",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_registry",
-        "actions": [
-          "install_preview",
-          "install_apply",
-          "update_check",
-          "update_apply"
-        ]
+        "actions": ["install_preview", "update_check"]
+      },
+      "risk": "read_only",
+      "scope": "global|project plus exact registry item",
+      "preview": "required",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "integrity, source provenance, asset parse, index/graph, and restored-state smoke"
+    },
+    {
+      "id": "remote.install_update_apply",
+      "cli": "install|update --apply",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "registry mutation needs immutable provenance, atomic canonical snapshot, and tested restore API"
       },
       "risk": "high_risk_destructive",
       "scope": "global|project plus exact registry item",
-      "preview": "required",
-      "apply": "strict source trust, immutable manifest/integrity, lock, snapshot, no force",
-      "rollback": "restore prior canonical files and remote metadata",
+      "preview": "available through fclt_registry",
+      "apply": "withheld",
+      "rollback": "required before exposure",
       "verification": "integrity, source provenance, asset parse, index/graph, and restored-state smoke"
     },
     {
@@ -622,25 +643,35 @@
       "verification": "dedupe map, source hashes, destination hashes, and generated rebuild"
     },
     {
-      "id": "snippets.read_sync",
-      "cli": "snippets list|show|sync --dry-run|sync",
+      "id": "snippets.read",
+      "cli": "snippets list|show",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_capability",
-        "actions": [
-          "snippet_list",
-          "snippet_show",
-          "snippet_sync_preview",
-          "snippet_sync_apply"
-        ]
+        "actions": ["snippet_list", "snippet_show"]
+      },
+      "risk": "read_only",
+      "scope": "global|project",
+      "preview": "not_applicable",
+      "apply": "not_applicable",
+      "rollback": "not_applicable",
+      "verification": "snippet markers and target hashes match expected content"
+    },
+    {
+      "id": "snippets.sync",
+      "cli": "snippets sync",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "target-file mutation needs explicit file allowlists, stale hashes, and snapshot restoration"
       },
       "risk": "reversible_mutation",
       "scope": "global|project plus explicit target files",
-      "preview": "required for sync",
-      "apply": "target files, scope, precondition hashes, lock, and snapshot required",
-      "rollback": "restore exact target-file snapshot",
-      "verification": "snippet markers and target hashes match expected content"
+      "preview": "available in CLI",
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "snippet markers and restored target hashes"
     },
     {
       "id": "snippets.interactive_edit",

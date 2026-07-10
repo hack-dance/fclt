@@ -81,6 +81,14 @@ evolution, not as an unrelated singleton.
 - Reject or park proposals that are stale, duplicated, vague, or unsupported.
 - Use Linear or another task system for executable implementation work that needs owner, priority, or state.
 - A no-op answer must still be useful: include the evidence grade, missing signal, next writeback target, and exact approval boundary.
+- State the problem, source evidence, reason for the selected target, risk,
+  expected outcome, verification plan, assumptions, and undo path before any
+  review-producing or mutating action.
+- Preview and verify the exact scope. Never overwrite authored capability
+  silently or treat generated/rendered output as the canonical target.
+- Canonical apply and cross-scope promotion are unavailable through the plugin
+  until a transaction-safe API can return tested rollback data. Do not bypass
+  that boundary with shell or arbitrary CLI arguments.
 
 ## Output
 
@@ -90,3 +98,4 @@ evolution, not as an unrelated singleton.
 - proposal created or updated
 - approvals needed
 - apply/reject/no-op rationale
+- actual changed records/artifacts, verification result, and recovery route

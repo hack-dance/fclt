@@ -29,6 +29,13 @@ disposition is in
 The plugin exposes:
 
 - `fclt_setup`
+- `fclt_runtime`: discover, check, stage, atomically activate, or roll back a verified runtime
+- `fclt_capability`: typed capability, provenance, template, snippet, adapter, and managed-state reads
+- `fclt_workflow`: typed writeback and evolution read/review/lifecycle operations
+- `fclt_sync`: managed-state inspection and dry-run sync preview
+- `fclt_registry`: source search/verification and strict-trust install/update preview
+- `fclt_audit`: structured, redacted, non-interactive security audit
+- `fclt_automation`: read-only autosync service status
 - `fclt_status`
 - `fclt_doctor`
 - `fclt_paths`
@@ -37,7 +44,12 @@ The plugin exposes:
 - `fclt_writeback_review`
 - `fclt_evolve`
 
-These tools are thin wrappers around CLI commands and return command output. Mutating tools still rely on the normal fclt safety model: dry-run first when available, review broad changes before apply, and preserve existing user guidance.
+The typed routers use closed schemas, reject unknown fields, require explicit
+scope and approval for review-producing or reversible workflow changes, and do
+not expose arbitrary argv or shell passthrough. Canonical apply, live adoption,
+trust-policy mutation, destructive migration, and background-service mutation
+remain deliberately withheld until their CLI APIs provide transaction-safe
+preview, precondition, verification, and rollback contracts.
 
 ## Install In Codex
 
