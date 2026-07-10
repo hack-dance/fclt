@@ -1,3 +1,21 @@
+## [2.20.0](https://github.com/hack-dance/fclt/compare/v2.19.2...v2.20.0) (2026-07-10)
+
+### Features
+
+* add fclt brand mark to codex plugin ([ea885ee](https://github.com/hack-dance/fclt/commit/ea885eee4a5f250508e240332050340331c4385a))
+* add verified plugin runtime lifecycle ([63b1a27](https://github.com/hack-dance/fclt/commit/63b1a271f44b651466b8da07fb5f81644bf7d63d))
+* enforce plugin runtime update policy ([2f4e69f](https://github.com/hack-dance/fclt/commit/2f4e69faea4ddfb7aa301d74b3ba237bdaba9554))
+* expose typed safe fclt mcp routers ([d55803f](https://github.com/hack-dance/fclt/commit/d55803fedf306b0ef06f0a1fac2e4eaa27b53956))
+
+### Bug Fixes
+
+* discover portable Windows install state ([66b3bed](https://github.com/hack-dance/fclt/commit/66b3bed140fc0997ce3e38bf87915eb267f3869e))
+* harden runtime and registry discovery ([b7c64d5](https://github.com/hack-dance/fclt/commit/b7c64d5c5d66507b00cdb35e7afa865fa039b553))
+* honor active plugin runtime and mutation risk ([2732f5a](https://github.com/hack-dance/fclt/commit/2732f5a695bdb5c40219fe120b68cbd571231163))
+* integrate released setup safety contract ([2bfeaa5](https://github.com/hack-dance/fclt/commit/2bfeaa5e11092f040375ab165d91675a9a7df19c))
+* preserve plugin mutation and shim safety ([c9f9d39](https://github.com/hack-dance/fclt/commit/c9f9d394e296a92583239f686a811049374277c0))
+* withhold unsafe plugin lifecycle mutations ([4cff43e](https://github.com/hack-dance/fclt/commit/4cff43e8b3695d3244448deee84a4f0ccef53d97))
+
 ## [2.19.2](https://github.com/hack-dance/fclt/compare/v2.19.1...v2.19.2) (2026-07-10)
 
 ### Bug Fixes
