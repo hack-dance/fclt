@@ -30,7 +30,8 @@ const SECRET_VALUE_RE =
   /(bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi;
 const JSON_SECRET_VALUE_RE =
   /("[^"]*(?:api[_-]?key|token|secret|password|authorization)[^"]*"\s*:\s*")[^"]*(")/gi;
-const SECRET_TOKEN_RE = /\b(?:sk|ghp|github_pat|lin_api)_[A-Za-z0-9_-]{12,}\b/g;
+const SECRET_TOKEN_RE =
+  /\b(?:sk[-_]|ghp_|github_pat_|lin_api_)[A-Za-z0-9_-]{12,}\b/g;
 const LINE_SPLIT_RE = /\r?\n/;
 const PATH_SEGMENT_RE = /[\\/]/;
 const MARKDOWN_SECTION_RE = /(?=^#{1,3}\s+)/m;

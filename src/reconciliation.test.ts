@@ -179,6 +179,12 @@ describe("reconciliation config", () => {
     expect(() =>
       parseReconciliationConfig({
         version: 1,
+        sources: [{ id: "git", type: "git", allBranches: "true" }],
+      })
+    ).toThrow("allBranches must be a boolean");
+    expect(() =>
+      parseReconciliationConfig({
+        version: 1,
         sources: [
           {
             id: "linear-export",
@@ -845,6 +851,7 @@ describe("source reconciliation", () => {
           message: "Reconciliation verified HACK-793",
           token: "super-secret-json-token",
           OPENAI_API_KEY: "prefixed-secret-value",
+          output: "accidentally logged sk-proj-abcdefghijklmnopqrstuv",
         }),
         JSON.stringify({
           ts: "2026-07-05T00:00:00.999Z",
@@ -890,6 +897,9 @@ describe("source reconciliation", () => {
     expect(review.coverage[0]?.watermarkAfter).toBe("2026-07-05T00:00:00.999Z");
     expect(JSON.stringify(review)).not.toContain("super-secret-json-token");
     expect(JSON.stringify(review)).not.toContain("prefixed-secret-value");
+    expect(JSON.stringify(review)).not.toContain(
+      "sk-proj-abcdefghijklmnopqrstuv"
+    );
     expect(JSON.stringify(review)).not.toContain("HACK-700");
   });
 

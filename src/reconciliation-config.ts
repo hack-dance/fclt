@@ -106,7 +106,10 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
       }
     }
     if (value.allBranches !== undefined) {
-      source.allBranches = value.allBranches === true;
+      if (typeof value.allBranches !== "boolean") {
+        throw new Error(`Git source ${id} allBranches must be a boolean`);
+      }
+      source.allBranches = value.allBranches;
     }
     return source;
   }
