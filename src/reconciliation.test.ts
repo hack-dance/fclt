@@ -444,7 +444,10 @@ describe("source reconciliation", () => {
       fixture.rootDir
     );
     await mkdir(join(queuePath, ".."), { recursive: true });
-    await Bun.write(queuePath, "{malformed\n");
+    await Bun.write(
+      queuePath,
+      `{malformed\n${JSON.stringify({ id: "WB-99999", summary: "missing timestamp" })}\n`
+    );
     await Bun.write(
       join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
@@ -467,10 +470,12 @@ describe("source reconciliation", () => {
     });
     expect(review.coverageComplete).toBe(false);
     expect(review.coverage[0]?.state).toBe("unavailable");
-    expect(review.decisions[0]).toMatchObject({
-      included: false,
-      classification: "noise",
-    });
+    expect(review.decisions).toHaveLength(2);
+    expect(
+      review.decisions.every(
+        (decision) => !decision.included && decision.classification === "noise"
+      )
+    ).toBe(true);
     await expect(
       reconcileSources({
         ...fixture,

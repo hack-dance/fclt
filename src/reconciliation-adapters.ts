@@ -49,6 +49,10 @@ function unique(values: string[]): string[] {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 export function redactReconciliationText(value: string): string {
   return value
     .replace(JSON_SECRET_VALUE_RE, "$1<redacted>$2")
@@ -169,13 +173,24 @@ const writebackAdapter: ReconciliationAdapter = {
         continue;
       }
       try {
-        const parsed = JSON.parse(line) as WritebackQueueRecord;
-        if (parsed.id) {
-          entriesById.set(parsed.id, [
-            ...(entriesById.get(parsed.id) ?? []),
-            parsed,
-          ]);
+        const value: unknown = JSON.parse(line);
+        if (!isPlainObject(value)) {
+          throw new Error("record is not an object");
         }
+        const parsed = value as WritebackQueueRecord;
+        const timestamp = parsed.updatedAt ?? parsed.ts;
+        if (
+          typeof parsed.id !== "string" ||
+          !parsed.id ||
+          typeof timestamp !== "string" ||
+          !Number.isFinite(Date.parse(timestamp))
+        ) {
+          throw new Error("record is missing a valid id or timestamp");
+        }
+        entriesById.set(parsed.id, [
+          ...(entriesById.get(parsed.id) ?? []),
+          parsed,
+        ]);
       } catch {
         malformed.push(
           record({
@@ -737,6 +752,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
         const records: SourceRecord[] = [];
         const contentDigests: string[] = [];
         let missingTimestamps = 0;
+        let skippedFiles = 0;
         let latestMtime = 0;
         let latestObserved = 0;
         for (const path of unique(paths)) {
@@ -744,16 +760,19 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
           const absolutePath = await realpath(resolve(root, path));
           const rel = relative(rootReal, absolutePath);
           if (rel.startsWith("..") || isAbsolute(rel)) {
+            skippedFiles += 1;
             continue;
           }
           const info = await stat(absolutePath);
           latestMtime = Math.max(latestMtime, info.mtimeMs);
           if (info.size > MAX_FILE_BYTES) {
+            skippedFiles += 1;
             continue;
           }
           const text = await readFile(absolutePath, "utf8");
           contentDigests.push(`${path}:${sha256(text)}`);
           if (text.includes("\0")) {
+            skippedFiles += 1;
             continue;
           }
           for (const fragment of splitTextRecords(text, path)) {
@@ -820,6 +839,14 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
             records,
             cursor,
             unavailableReason: `${missingTimestamps} automation record(s) lacked a parseable timestamp`,
+          };
+        }
+        if (skippedFiles > 0) {
+          return {
+            state: "unavailable",
+            records,
+            cursor,
+            unavailableReason: `${skippedFiles} configured file(s) could not be safely extracted`,
           };
         }
         return { ...resultFromRecords(records, staleReason), cursor };
