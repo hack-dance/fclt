@@ -1,3 +1,9 @@
+## [2.19.0](https://github.com/hack-dance/fclt/compare/v2.18.0...v2.19.0) (2026-07-10)
+
+### Features
+
+* bootstrap zero-config evolution loops ([#46](https://github.com/hack-dance/fclt/issues/46)) ([9ddd512](https://github.com/hack-dance/fclt/commit/9ddd5124a33b8eba93e5053056ac2359a89f172f))
+
 ## [2.18.0](https://github.com/hack-dance/fclt/compare/v2.17.14...v2.18.0) (2026-07-10)
 
 ### Features
