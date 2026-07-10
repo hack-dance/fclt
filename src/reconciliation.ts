@@ -921,11 +921,11 @@ export async function reconciliationStatus(args: {
       statePath,
       sourceCount: enabledSources.length,
       lastReviewId: lastReview?.[0],
-      coverageState: lastReview
-        ? degraded || lastReview[1].coverageComplete !== true
-          ? "degraded"
-          : "complete"
-        : undefined,
+      coverageState: degraded
+        ? "degraded"
+        : lastReview?.[1].coverageComplete === true
+          ? "complete"
+          : undefined,
     };
   } catch (error) {
     return {

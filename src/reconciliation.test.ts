@@ -129,6 +129,20 @@ afterEach(async () => {
 });
 
 describe("reconciliation config", () => {
+  it("reports an enabled-source-free config as degraded before first review", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({ version: 1, sources: [] })
+    );
+
+    expect(await reconciliationStatus(fixture)).toMatchObject({
+      configured: true,
+      sourceCount: 0,
+      coverageState: "degraded",
+    });
+  });
+
   it("seeds safe automatic defaults and rejects unknown or secret-shaped config", async () => {
     const fixture = await makeFixture();
     const initialized = await initializeReconciliationConfig(fixture);
