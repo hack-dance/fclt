@@ -11,6 +11,7 @@ import {
   legacyFacultStateDirForRoot,
   projectRootFromAiRoot,
 } from "./paths";
+import { gitEnvironmentForRepository } from "./util/git-environment";
 
 const AUTOSYNC_VERSION = 1 as const;
 const DEFAULT_DEBOUNCE_MS = 1500;
@@ -413,9 +414,14 @@ async function runCommand(
   argv: string[],
   opts?: { cwd?: string }
 ): Promise<CommandResult> {
+  const commandEnv =
+    argv[0] === "git" && opts?.cwd
+      ? gitEnvironmentForRepository({ repoDir: opts.cwd })
+      : process.env;
   const proc = Bun.spawn({
     cmd: argv,
     cwd: opts?.cwd,
+    env: commandEnv,
     stdout: "pipe",
     stderr: "pipe",
   });

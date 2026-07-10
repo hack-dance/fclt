@@ -90,7 +90,7 @@ Common commands:
 ```bash
 bun run check
 bun run type-check
-bun test
+./scripts/test-safe.sh
 bun run build
 bun run build:verify
 bun run pack:dry-run
@@ -99,17 +99,20 @@ bun run pack:dry-run
 Useful focused checks:
 
 ```bash
-bun test src/ai.test.ts src/ai-cli.test.ts
-bun test src/manage.test.ts src/doctor.test.ts
-bun test src/remote.test.ts src/builtin.test.ts
-bun test bin/fclt.test.ts
+./scripts/test-safe.sh src/ai.test.ts src/ai-cli.test.ts
+./scripts/test-safe.sh src/manage.test.ts src/doctor.test.ts
+./scripts/test-safe.sh src/remote.test.ts src/builtin.test.ts
+./scripts/test-safe.sh bin/fclt.test.ts
 ```
+
+Git-writing tests are isolated by `bunfig.toml` and `test/git-fixture.ts`. Keep new fixtures on that
+harness and follow `docs/git-test-safety.md` if a fixture escape is suspected.
 
 Regenerate embedded built-ins after changing `assets/packs/facult-operating-model/**`:
 
 ```bash
 bun run scripts/generate-builtin-assets.ts
-bun test src/builtin.test.ts
+./scripts/test-safe.sh src/builtin.test.ts
 ```
 
 Run the compiled binary verifier before claiming a packaging or release-path change works:
@@ -147,12 +150,12 @@ Useful checks include searching changed public surfaces for personal names, mach
 
 - Docs-only changes: `bun run check`, `bun run type-check`, relevant link/reference scan, and `git diff --check`.
 - Public docs or bundled docs/assets: also run `bun run pack:dry-run` and a privacy review that does not leave private identifiers in committed files.
-- Built-in pack changes: regenerate `src/builtin-assets.ts`, then run `bun test src/builtin.test.ts src/remote.test.ts`, `bun run pack:dry-run`, and `bun run build:verify`.
+- Built-in pack changes: regenerate `src/builtin-assets.ts`, then run `./scripts/test-safe.sh src/builtin.test.ts src/remote.test.ts`, `bun run pack:dry-run`, and `bun run build:verify`.
 - CLI parser/output changes: run focused CLI tests plus `bun run type-check`; preserve JSON contracts.
-- Path/state/doctor changes: run `bun test src/paths.test.ts src/doctor.test.ts` where applicable, plus an installed or temp-home smoke when behavior depends on real home dirs.
-- Writeback/evolution changes: run `bun test src/ai.test.ts src/ai-cli.test.ts` and verify global vs project review artifact placement.
-- Managed sync/adapters: run `bun test src/manage.test.ts src/adapters/tool-adapters.test.ts` where applicable, and use `--dry-run` before live sync.
-- Release or launcher changes: run full `bun test`, `bun run build`, `bun run build:verify`, `bun run pack:dry-run`, and verify the GitHub release workflow after merge.
+- Path/state/doctor changes: run `./scripts/test-safe.sh src/paths.test.ts src/doctor.test.ts` where applicable, plus an installed or temp-home smoke when behavior depends on real home dirs.
+- Writeback/evolution changes: run `./scripts/test-safe.sh src/ai.test.ts src/ai-cli.test.ts` and verify global vs project review artifact placement.
+- Managed sync/adapters: run `./scripts/test-safe.sh src/manage.test.ts src/adapters/tool-adapters.test.ts` where applicable, and use `--dry-run` before live sync.
+- Release or launcher changes: run full `./scripts/test-safe.sh`, `bun run build`, `bun run build:verify`, `bun run pack:dry-run`, and verify the GitHub release workflow after merge.
 
 ## Dogfooding fclt
 

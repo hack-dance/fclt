@@ -3,6 +3,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { manageTool } from "../manage";
+import { gitEnvironmentForRepository } from "../util/git-environment";
 import { runStaticAudit } from "./static";
 
 async function writeFile(p: string, content: string) {
@@ -17,6 +18,13 @@ async function runCommand(
   const proc = Bun.spawn({
     cmd,
     cwd,
+    env:
+      cmd[0] === "git"
+        ? gitEnvironmentForRepository({
+            repoDir: cwd,
+            isolatedHome: join(dirname(cwd), ".git-home"),
+          })
+        : process.env,
     stdout: "pipe",
     stderr: "pipe",
   });

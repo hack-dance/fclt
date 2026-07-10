@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { runFixtureGit } from "../test/git-fixture";
 import { manageTool } from "./manage";
 import {
   facultAiEvolutionReviewDir,
@@ -582,16 +583,11 @@ test("project doctor accepts loop skills inherited from the global root", async 
 
   try {
     await mkdir(repo, { recursive: true });
-    const gitInit = Bun.spawn(["git", "init", repo], {
-      stdout: "pipe",
-      stderr: "pipe",
+    await runFixtureGit({
+      argv: ["init", repo],
+      repoDir: repo,
+      homeDir: join(dir, ".git-home"),
     });
-    const [gitInitCode] = await Promise.all([
-      gitInit.exited,
-      new Response(gitInit.stdout).text(),
-      new Response(gitInit.stderr).text(),
-    ]);
-    expect(gitInitCode).toBe(0);
 
     const env = { ...process.env, HOME: dir };
     const setup = Bun.spawn(

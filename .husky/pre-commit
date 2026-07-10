@@ -2,7 +2,7 @@
 # Exit on any error
 set -e
 
-bun test
+./scripts/test-safe.sh
 
 # Check if there are any staged files
 if [ -z "$(git diff --cached --name-only)" ]; then

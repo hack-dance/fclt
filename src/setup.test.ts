@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmod, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { runFixtureGit } from "../test/git-fixture";
 import { bootstrapFclt } from "./setup";
 
 const cleanupPaths: string[] = [];
@@ -22,17 +23,11 @@ async function tempHome(prefix: string): Promise<string> {
 async function initRepo(home: string): Promise<string> {
   const repo = join(home, "repo");
   await mkdir(repo, { recursive: true });
-  const proc = Bun.spawn(["git", "init", "--quiet", repo], {
-    stdout: "ignore",
-    stderr: "pipe",
+  await runFixtureGit({
+    argv: ["init", "--quiet", repo],
+    repoDir: repo,
+    homeDir: join(home, ".git-home"),
   });
-  const [code, stderr] = await Promise.all([
-    proc.exited,
-    new Response(proc.stderr).text(),
-  ]);
-  if (code !== 0) {
-    throw new Error(stderr);
-  }
   return repo;
 }
 
@@ -147,16 +142,11 @@ describe("zero-config setup", () => {
     const home = await tempHome("fclt-setup-global-root-");
     const globalRoot = join(home, ".ai");
     await mkdir(globalRoot, { recursive: true });
-    const proc = Bun.spawn(["git", "init", "--quiet", globalRoot], {
-      stdout: "ignore",
-      stderr: "pipe",
+    await runFixtureGit({
+      argv: ["init", "--quiet", globalRoot],
+      repoDir: globalRoot,
+      homeDir: join(home, ".git-home"),
     });
-    const [code, stderr] = await Promise.all([
-      proc.exited,
-      new Response(proc.stderr).text(),
-    ]);
-    expect(code).toBe(0);
-    expect(stderr).toBe("");
 
     const result = await bootstrapFclt({
       homeDir: home,
