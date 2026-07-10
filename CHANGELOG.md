@@ -1,3 +1,9 @@
+## [2.18.0](https://github.com/hack-dance/fclt/compare/v2.17.14...v2.18.0) (2026-07-10)
+
+### Features
+
+* **ai:** close the evolution outcome loop ([610ef3e](https://github.com/hack-dance/fclt/commit/610ef3e451bae957a00fcf134a6c917784d8ed8e))
+
 ## [2.17.14](https://github.com/hack-dance/fclt/compare/v2.17.13...v2.17.14) (2026-07-06)
 
 ### Bug Fixes
