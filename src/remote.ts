@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -1287,8 +1287,17 @@ async function pathExists(pathValue: string): Promise<boolean> {
 async function ensurePackDirectory(pathValue: string): Promise<void> {
   try {
     const entry = await lstat(pathValue);
-    if (entry.isSymbolicLink() && !(await pathExists(pathValue))) {
-      await rm(pathValue, { force: true });
+    if (entry.isSymbolicLink()) {
+      try {
+        await stat(pathValue);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") {
+          await rm(pathValue, { force: true });
+        } else {
+          throw error;
+        }
+      }
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {

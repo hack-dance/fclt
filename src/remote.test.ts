@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -15,6 +16,7 @@ import { facultAiIndexPath } from "./paths";
 import {
   checkRemoteUpdates,
   installRemoteItem,
+  scaffoldBuiltinOperatingModelPack,
   searchRemoteItems,
   sourcesCommand,
   templatesCommand,
@@ -1883,6 +1885,26 @@ describe("templates command", () => {
     expect(await readFile(join(skillPath, "SKILL.md"), "utf8")).toContain(
       "# project-operating-layer-design"
     );
+  });
+
+  it("preserves symlinks when target stat fails for a non-missing reason", async () => {
+    const { home } = await makeTempRoot();
+    const globalRoot = join(home, ".ai");
+    const skillPath = join(
+      globalRoot,
+      "skills",
+      "project-operating-layer-design"
+    );
+    await mkdir(join(globalRoot, "skills"), { recursive: true });
+    await symlink(skillPath, skillPath);
+
+    await expect(
+      scaffoldBuiltinOperatingModelPack({
+        homeDir: home,
+        rootDir: globalRoot,
+      })
+    ).rejects.toThrow();
+    expect((await lstat(skillPath)).isSymbolicLink()).toBe(true);
   });
 
   it("bootstraps the builtin operating-model pack into a project root", async () => {
