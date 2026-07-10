@@ -340,8 +340,12 @@ describe("source reconciliation", () => {
       until: "2026-07-11T00:00:00.000Z",
     });
     expect(second.reviewId).toBe(first.reviewId);
-    expect(second.generatedAt).toBe(first.generatedAt);
-    expect(second.evidence).toEqual(first.evidence);
+    expect(second.evidence.map((entry) => entry.dedupeKey)).toEqual(
+      first.evidence.map((entry) => entry.dedupeKey)
+    );
+    expect(second.signals.map((signal) => signal.id)).toEqual(
+      first.signals.map((signal) => signal.id)
+    );
     const state = JSON.parse(
       await readFile(
         facultAiReconciliationStatePath(fixture.homeDir, fixture.rootDir),
@@ -437,6 +441,81 @@ describe("source reconciliation", () => {
     expect(historical.signals[0]?.disposition).toBe("task");
   });
 
+  it("includes the full final day for date-only windows and rescans bounded reruns", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(queuePath, ".."), { recursive: true });
+    await Bun.write(queuePath, "");
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const first = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(first.signals).toHaveLength(0);
+    expect(first.window.until).toBe("2026-07-10T23:59:59.999Z");
+
+    await Bun.write(
+      queuePath,
+      JSON.stringify({
+        id: "WB-00020",
+        ts: "2026-07-10T18:00:00Z",
+        summary: "Signal added after the first bounded review",
+      })
+    );
+    const rerun = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(rerun.reviewId).toBe(first.reviewId);
+    expect(rerun.signals[0]?.writebackRefs).toEqual(["WB-00020"]);
+  });
+
+  it("reconciles legacy writeback queues on upgraded installs", async () => {
+    const fixture = await makeFixture();
+    const legacyQueue = join(
+      fixture.rootDir,
+      ".facult",
+      "ai",
+      "project",
+      "writeback",
+      "queue.jsonl"
+    );
+    await mkdir(join(legacyQueue, ".."), { recursive: true });
+    await Bun.write(
+      legacyQueue,
+      JSON.stringify({
+        id: "WB-00020",
+        ts: "2026-07-10T18:00:00Z",
+        summary: "Legacy reconciliation signal",
+      })
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.signals[0]?.writebackRefs).toEqual(["WB-00020"]);
+  });
+
   it("degrades malformed writeback input and filtered coverage", async () => {
     const fixture = await makeFixture();
     const queuePath = facultAiWritebackQueuePath(
@@ -511,6 +590,45 @@ describe("source reconciliation", () => {
     expect(await reconciliationStatus(fixture)).toMatchObject({
       lastReviewId: review.reviewId,
       coverageState: "degraded",
+    });
+  });
+
+  it("ignores retired source state after complete active coverage", async () => {
+    const fixture = await makeFixture();
+    await writeQueue(fixture);
+    const configPath = join(fixture.rootDir, "reconciliation.json");
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "retired", type: "markdown", paths: ["missing/*.md"] },
+        ],
+      })
+    );
+    await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const activeReview = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+
+    expect(activeReview.coverageComplete).toBe(true);
+    expect(await reconciliationStatus(fixture)).toMatchObject({
+      lastReviewId: activeReview.reviewId,
+      coverageState: "complete",
     });
   });
 

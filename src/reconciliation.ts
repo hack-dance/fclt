@@ -43,6 +43,7 @@ const STOP_WORD_RE =
   /\b(?:the|and|for|with|from|this|that|into|was|were|are|has|have)\b/g;
 const NON_ALPHANUMERIC_RE = /[^a-z0-9]+/g;
 const WHITESPACE_RE = /\s+/g;
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -157,7 +158,9 @@ function createWindow(args: {
   mode: "window" | "incremental";
 }): ReconciliationWindow {
   const since = new Date(args.since).toISOString();
-  const until = new Date(args.until).toISOString();
+  const until = DATE_ONLY_RE.test(args.until)
+    ? new Date(`${args.until}T23:59:59.999Z`).toISOString()
+    : new Date(args.until).toISOString();
   if (Date.parse(since) > Date.parse(until)) {
     throw new Error("Reconciliation --since must be before --until");
   }
@@ -667,11 +670,6 @@ export async function reconcileSources(args: {
   return await withStateLock(statePath, async () => {
     const state = await loadState(statePath);
     const windowPath = join(dirname(statePath), "windows", `${window.id}.json`);
-    if (state.reviews[window.id] && (await Bun.file(windowPath).exists())) {
-      return JSON.parse(
-        await readFile(windowPath, "utf8")
-      ) as ReconciliationReview;
-    }
     const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
     const checkedAt = new Date().toISOString();
     const coverage: SourceCoverage[] = [];
@@ -845,10 +843,16 @@ export async function reconciliationStatus(args: {
     const lastReview = Object.entries(state.reviews).sort(
       ([, left], [, right]) => right.generatedAt.localeCompare(left.generatedAt)
     )[0];
-    const degraded = Object.values(state.sources).some(
-      (source) =>
-        source.coverageState === "unavailable" ||
-        source.coverageState === "stale"
+    const enabledSourceIds = new Set(
+      config.sources
+        .filter((source) => source.enabled !== false)
+        .map((source) => source.id)
+    );
+    const degraded = Object.entries(state.sources).some(
+      ([sourceId, source]) =>
+        (enabledSourceIds.has(sourceId) &&
+          source.coverageState === "unavailable") ||
+        (enabledSourceIds.has(sourceId) && source.coverageState === "stale")
     );
     return {
       configured: true,

@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { facultAiWritebackQueuePath, facultRootDir } from "./paths";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  facultAiStateDir,
+  facultAiWritebackQueuePath,
+  facultRootDir,
+  legacyFacultAiStateDirs,
+  projectRootFromAiRoot,
+} from "./paths";
 import type {
   AdapterScanResult,
   FileSourceConfig,
@@ -159,51 +165,77 @@ const writebackAdapter: ReconciliationAdapter = {
       config.scope === "global"
         ? facultRootDir(context.homeDir)
         : context.rootDir;
-    const path = facultAiWritebackQueuePath(context.homeDir, sourceRoot);
-    const file = Bun.file(path);
-    if (!(await file.exists())) {
+    const scope = projectRootFromAiRoot(sourceRoot, context.homeDir)
+      ? "project"
+      : "global";
+    const paths = [
+      ...legacyFacultAiStateDirs(context.homeDir, sourceRoot).map((dir) =>
+        join(dir, scope, "writeback", "queue.jsonl")
+      ),
+      join(
+        facultAiStateDir(context.homeDir, sourceRoot),
+        scope,
+        "writeback",
+        "queue.jsonl"
+      ),
+      facultAiWritebackQueuePath(context.homeDir, sourceRoot),
+    ];
+    const existingPaths = [
+      ...new Set(
+        (
+          await Promise.all(
+            paths.map(async (path) =>
+              (await Bun.file(path).exists()) ? path : null
+            )
+          )
+        ).filter((path): path is string => Boolean(path))
+      ),
+    ];
+    if (existingPaths.length === 0) {
       return resultFromRecords([]);
     }
     const entriesById = new Map<string, WritebackQueueRecord[]>();
     const malformed: SourceRecord[] = [];
-    for (const [index, line] of (await file.text())
-      .split(LINE_SPLIT_RE)
-      .entries()) {
-      if (!line.trim()) {
-        continue;
-      }
-      try {
-        const value: unknown = JSON.parse(line);
-        if (!isPlainObject(value)) {
-          throw new Error("record is not an object");
+    for (const path of existingPaths) {
+      for (const [index, line] of (await Bun.file(path).text())
+        .split(LINE_SPLIT_RE)
+        .entries()) {
+        if (!line.trim()) {
+          continue;
         }
-        const parsed = value as WritebackQueueRecord;
-        const timestamp = parsed.updatedAt ?? parsed.ts;
-        if (
-          typeof parsed.id !== "string" ||
-          !parsed.id ||
-          typeof timestamp !== "string" ||
-          !Number.isFinite(Date.parse(timestamp))
-        ) {
-          throw new Error("record is missing a valid id or timestamp");
+        try {
+          const value: unknown = JSON.parse(line);
+          if (!isPlainObject(value)) {
+            throw new Error("record is not an object");
+          }
+          const parsed = value as WritebackQueueRecord;
+          const timestamp = parsed.updatedAt ?? parsed.ts;
+          if (
+            typeof parsed.id !== "string" ||
+            !parsed.id ||
+            typeof timestamp !== "string" ||
+            !Number.isFinite(Date.parse(timestamp))
+          ) {
+            throw new Error("record is missing a valid id or timestamp");
+          }
+          entriesById.set(parsed.id, [
+            ...(entriesById.get(parsed.id) ?? []),
+            parsed,
+          ]);
+        } catch {
+          malformed.push(
+            record({
+              context,
+              recordId: `malformed-line-${index + 1}`,
+              dedupeKey: `writeback-malformed:${sha256(line)}`,
+              observedAt: context.window.since,
+              title: `Malformed writeback queue line ${index + 1}`,
+              body: line,
+              classification: "noise",
+              provenance: { path, line: index + 1, parseError: true },
+            })
+          );
         }
-        entriesById.set(parsed.id, [
-          ...(entriesById.get(parsed.id) ?? []),
-          parsed,
-        ]);
-      } catch {
-        malformed.push(
-          record({
-            context,
-            recordId: `malformed-line-${index + 1}`,
-            dedupeKey: `writeback-malformed:${sha256(line)}`,
-            observedAt: context.window.since,
-            title: `Malformed writeback queue line ${index + 1}`,
-            body: line,
-            classification: "noise",
-            provenance: { path, line: index + 1, parseError: true },
-          })
-        );
       }
     }
     const records = [...entriesById.values()].flatMap((entries) => {
@@ -239,7 +271,7 @@ const writebackAdapter: ReconciliationAdapter = {
           }),
           classification: "capability-source",
           provenance: {
-            path,
+            path: existingPaths,
             writebackId: entry.id,
             disposition: entry.disposition ?? null,
             dispositionTarget: entry.dispositionTarget ?? null,
