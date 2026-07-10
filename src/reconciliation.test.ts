@@ -524,6 +524,21 @@ describe("source reconciliation", () => {
         }),
       ].join("\n")
     );
+    await mkdir(join(fixture.projectRoot, "notes"), { recursive: true });
+    await Bun.write(
+      join(fixture.projectRoot, "notes", "signals.md"),
+      "# 2026-07-04 capability signal\n\nNew source evidence.\n"
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "notes", type: "markdown", paths: ["notes/*.md"] },
+        ],
+      })
+    );
 
     const second = await reconcileSources({
       ...fixture,
@@ -534,11 +549,10 @@ describe("source reconciliation", () => {
 
     expect(second.reviewId).not.toBe(first.reviewId);
     expect(first.window.since).toBe("2026-07-03T00:00:00.000Z");
-    expect(second.window.since).toBe("2026-07-05T11:59:59.999Z");
-    expect(second.signals.map((signal) => signal.writebackRefs[0])).toEqual([
-      "WB-00020",
-      "WB-00021",
-    ]);
+    expect(second.window.since).toBe("2026-07-03T00:00:00.000Z");
+    expect(
+      second.signals.some((signal) => signal.title.includes("2026-07-04"))
+    ).toBe(true);
   });
 
   it("reconciles legacy writeback queues on upgraded installs", async () => {
@@ -608,6 +622,7 @@ describe("source reconciliation", () => {
       sourceIds: ["writebacks"],
     });
     expect(review.coverageComplete).toBe(false);
+    expect(review.degraded).toBe(true);
     expect(review.coverage[0]?.state).toBe("unavailable");
     expect(review.decisions).toHaveLength(2);
     expect(
@@ -646,6 +661,7 @@ describe("source reconciliation", () => {
       sourceIds: ["writebacks"],
     });
     expect(review.coverageComplete).toBe(false);
+    expect(review.degraded).toBe(true);
     expect(review.coverage[0]?.state).toBe("changed");
     expect(await reconciliationStatus(fixture)).toMatchObject({
       lastReviewId: review.reviewId,

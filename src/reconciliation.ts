@@ -697,7 +697,7 @@ export async function reconcileSources(args: {
           config: selectedConfig,
           rootDir: args.rootDir,
           homeDir: args.homeDir,
-          since: effectiveStarts.sort().at(-1) ?? requestedWindow.since,
+          since: effectiveStarts.sort().at(0) ?? requestedWindow.since,
           until: requestedWindow.until,
           mode: "incremental",
         })
@@ -782,9 +782,11 @@ export async function reconcileSources(args: {
       coverage.every(
         (entry) => entry.state === "checked" || entry.state === "changed"
       );
-    const degraded = coverage.some(
-      (entry) => entry.state === "unavailable" || entry.state === "stale"
-    );
+    const degraded =
+      filteredCoverage ||
+      coverage.some(
+        (entry) => entry.state === "unavailable" || entry.state === "stale"
+      );
     const reviewDir = facultAiReconciliationReviewDir(
       args.homeDir,
       args.rootDir
