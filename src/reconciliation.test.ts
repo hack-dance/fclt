@@ -987,6 +987,40 @@ describe("source reconciliation", () => {
     ).toBe(true);
   });
 
+  it("treats a terminal current Linear state as outcome proof", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.projectRoot, "linear.json"),
+      JSON.stringify({
+        issues: [
+          {
+            id: "issue-901",
+            identifier: "HACK-901",
+            title: "Implement source reader",
+            updatedAt: "2026-07-05T12:00:00Z",
+            state: { name: "Done" },
+          },
+        ],
+      })
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "linear", type: "linear", exportPath: "linear.json" }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+
+    expect(review.decisions[0]?.classification).toBe("outcome-proof");
+    expect(review.signals[0]?.disposition).toBe("resolve-watch");
+  });
+
   it("targets the project asset for apply-local dispositions", async () => {
     const fixture = await makeFixture();
     const notesDir = join(fixture.projectRoot, "notes");

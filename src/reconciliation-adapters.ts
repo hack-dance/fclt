@@ -592,6 +592,11 @@ async function loadLinearIssues(args: {
 }
 
 function linearClassification(issue: LinearIssueExport): SignalClassification {
+  const state =
+    typeof issue.state === "string" ? issue.state : issue.state?.name;
+  if (TERMINAL_LINEAR_STATE_RE.test(state ?? "")) {
+    return "outcome-proof";
+  }
   const text = `${issue.title ?? ""} ${issue.description ?? ""}`.toLowerCase();
   if (LINEAR_CAPABILITY_RE.test(text)) {
     return "capability-implementation";
