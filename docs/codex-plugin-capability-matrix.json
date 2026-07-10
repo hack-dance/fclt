@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "gitCommit": "eb48033",
-    "packageVersion": "2.19.2",
+    "gitCommit": "24b470b",
+    "packageVersion": "2.20.0",
     "pluginVersion": "0.1.0",
-    "auditedAt": "2026-07-10T18:20:00Z"
+    "auditedAt": "2026-07-10T19:45:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
