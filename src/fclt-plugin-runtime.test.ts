@@ -55,6 +55,14 @@ interface RuntimeModule {
     platform?: NodeJS.Platform;
   }): Promise<{ executable: string }[]>;
   runtimeStateRoot(env: NodeJS.ProcessEnv): string;
+  runCommand(
+    executable: string,
+    args: string[],
+    options: {
+      env: NodeJS.ProcessEnv;
+      platform?: NodeJS.Platform;
+    }
+  ): Promise<{ code: number; stdout: string; stderr: string }>;
   checkRuntimeUpdate(options: {
     env: NodeJS.ProcessEnv;
     fetchBuffer?: (url: string) => Promise<Buffer>;
@@ -252,6 +260,32 @@ describe("fclt plugin runtime discovery", () => {
     expect(candidates.map((candidate) => candidate.executable)).toContain(
       join(binDir, "fclt.cmd")
     );
+  });
+
+  it("executes Windows npm command shims through a constrained command shell", async () => {
+    const { env } = await tempEnvironment();
+    const commandShell = join(env.HOME as string, "cmd-stub.cjs");
+    await writeFile(
+      commandShell,
+      `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`,
+      { mode: 0o700 }
+    );
+    await chmod(commandShell, 0o700);
+    const executable = join(env.HOME as string, "fclt.cmd");
+
+    const result = await runtime.runCommand(executable, ["status", "--json"], {
+      env: { ...env, ComSpec: commandShell },
+      platform: "win32",
+    });
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      "/d",
+      "/v:off",
+      "/s",
+      "/c",
+      `"${executable}" "status" "--json"`,
+    ]);
   });
 });
 

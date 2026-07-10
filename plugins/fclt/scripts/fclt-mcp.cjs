@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 "use strict";
 
-const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -904,7 +903,12 @@ function commandForTool(name, args = {}) {
 }
 
 function operationMetadata(name, args, command) {
-  const action = args.action || name;
+  const action =
+    name === "fclt_writeback_add"
+      ? "writeback_add"
+      : name === "fclt_evolve"
+        ? `evolve_${args.action || "list"}`
+        : args.action || name;
   const reviewActions = new Set([
     "writeback_add",
     "writeback_link",
@@ -987,81 +991,34 @@ async function runFclt(args, cwd, operation) {
     };
   }
 
-  return new Promise((resolve) => {
-    const executable = discovery.selected.executable;
-    let child;
-    try {
-      child = spawn(executable, args, {
-        cwd: cwd || process.cwd(),
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (error) {
-      resolve({
-        code: 1,
-        text: JSON.stringify(
-          {
-            schemaVersion: 1,
-            operation,
-            runtime: discovery.selected,
-            result: { exitCode: 1, stdout: "", stderr: error.message },
-          },
-          null,
-          2
-        ),
-      });
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, DEFAULT_TIMEOUT_MS);
-    const finish = (code, extraError) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      const stderrText = [stderr.trim(), extraError].filter(Boolean).join("\n");
-      const parsedStdout = parseJsonOrText(stdout.trim());
-      resolve({
-        code,
-        text: JSON.stringify(
-          {
-            schemaVersion: 1,
-            operation,
-            runtime: discovery.selected,
-            result: {
-              exitCode: code,
-              stdout: parsedStdout,
-              stderr: stderrText,
-            },
-            verification: {
-              status: code === 0 ? "passed" : "failed",
-              exitCode: code,
-            },
-            recovery: recoveryForOperation(operation, parsedStdout),
-          },
-          null,
-          2
-        ),
-      });
-    };
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => {
-      finish(1, error.message);
-    });
-    child.on("close", (code) => {
-      finish(code);
-    });
+  const result = await runtime.runCommand(discovery.selected.executable, args, {
+    cwd: cwd || process.cwd(),
+    env: process.env,
+    timeoutMs: DEFAULT_TIMEOUT_MS,
   });
+  const parsedStdout = parseJsonOrText(result.stdout.trim());
+  return {
+    code: result.code,
+    text: JSON.stringify(
+      {
+        schemaVersion: 1,
+        operation,
+        runtime: discovery.selected,
+        result: {
+          exitCode: result.code,
+          stdout: parsedStdout,
+          stderr: result.stderr,
+        },
+        verification: {
+          status: result.code === 0 ? "passed" : "failed",
+          exitCode: result.code,
+        },
+        recovery: recoveryForOperation(operation, parsedStdout),
+      },
+      null,
+      2
+    ),
+  };
 }
 
 function parseJsonOrText(value) {

@@ -395,6 +395,54 @@ describe("bundled fclt MCP plugin", () => {
           "session:runtime-router",
         ],
       });
+      expect(workflow.operation.risk).toBe("review_producing");
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "fclt_writeback_add",
+            arguments: {
+              approve: true,
+              scope: "project",
+              kind: "capability_gap",
+              summary: "Legacy review context",
+              evidence: "session:legacy-router",
+            },
+          },
+        })
+      );
+      const legacyWritebackResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(legacyWritebackResponse).operation.risk).toBe(
+        "review_producing"
+      );
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: {
+            name: "fclt_evolve",
+            arguments: {
+              action: "propose",
+              approve: true,
+              scope: "project",
+              asset: "AGENTS.md",
+            },
+          },
+        })
+      );
+      const legacyEvolveResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(legacyEvolveResponse).operation.risk).toBe(
+        "review_producing"
+      );
     } finally {
       child.kill();
     }

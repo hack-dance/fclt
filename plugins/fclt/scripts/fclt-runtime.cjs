@@ -1063,6 +1063,7 @@ module.exports = {
   protocolCompatibility,
   releaseTarget,
   rollbackRuntime,
+  runCommand,
   runtimeCandidates,
   runtimePolicy,
   runtimeStateRoot,
