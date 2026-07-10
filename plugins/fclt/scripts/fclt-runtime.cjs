@@ -231,6 +231,7 @@ async function runtimeCandidates(options = {}) {
   const home = env.HOME || env.USERPROFILE || os.homedir();
   const root = runtimeStateRoot(env, platform);
   const candidates = [];
+  let configuredPathCandidate = null;
 
   if (env.FCLT_BIN?.trim()) {
     const explicit = env.FCLT_BIN.trim();
@@ -244,13 +245,19 @@ async function runtimeCandidates(options = {}) {
         (candidate) =>
           path.basename(candidate) === explicit && fs.existsSync(candidate)
       );
-      candidates.push({ executable: resolved || explicit, source: "explicit" });
+      configuredPathCandidate = {
+        executable: resolved || explicit,
+        source: "configured_path",
+      };
     }
   }
 
   const active = await activeRuntimeCandidate(root);
   if (active) {
     candidates.push(active);
+  }
+  if (configuredPathCandidate) {
+    candidates.push(configuredPathCandidate);
   }
   candidates.push(...(await persistedInstallCandidates(env, platform)));
   candidates.push(

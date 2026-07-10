@@ -63,6 +63,12 @@ function readFrame(stream: NodeJS.ReadableStream): Promise<unknown> {
 }
 
 function toolPayload(response: unknown): {
+  operation: { preview: boolean; risk: string };
+  recovery: {
+    changedPaths?: string[];
+    rollbackAvailable?: boolean;
+    verification?: string;
+  } | null;
   result: {
     exitCode: number;
     stdout: { argv: string[]; cwd: string } | string;
@@ -77,6 +83,12 @@ function toolPayload(response: unknown): {
     throw new Error("MCP response did not include a text payload");
   }
   return JSON.parse(text) as {
+    operation: { preview: boolean; risk: string };
+    recovery: {
+      changedPaths?: string[];
+      rollbackAvailable?: boolean;
+      verification?: string;
+    } | null;
     result: {
       exitCode: number;
       stdout: { argv: string[]; cwd: string } | string;
@@ -150,6 +162,14 @@ describe("bundled fclt MCP plugin", () => {
         cwd: await realpath(workspace),
         argv: ["setup", "--json", "--no-codex-plugin"],
       });
+      expect(toolPayload(disabledResponse).operation).toMatchObject({
+        preview: false,
+        risk: "reversible_mutation",
+      });
+      expect(toolPayload(disabledResponse).recovery).toMatchObject({
+        rollbackAvailable: false,
+        changedPaths: [],
+      });
 
       child.stdin.write(
         frame({
@@ -166,6 +186,34 @@ describe("bundled fclt MCP plugin", () => {
         error?: { message?: string };
       };
       expect(unapproved.error?.message).toContain("requires approve=true");
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "fclt_init_operating_model",
+            arguments: {
+              scope: "project",
+              dryRun: false,
+              approve: true,
+            },
+          },
+        })
+      );
+      const applyResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      const apply = toolPayload(applyResponse);
+      expect(apply.operation).toMatchObject({
+        preview: false,
+        risk: "high_risk_destructive",
+      });
+      expect(apply.recovery).toMatchObject({
+        rollbackAvailable: false,
+        changedPaths: [],
+      });
 
       child.stdin.write(
         frame({

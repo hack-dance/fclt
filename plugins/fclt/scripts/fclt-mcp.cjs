@@ -920,7 +920,14 @@ function operationMetadata(name, args, command) {
     "evolve_review",
     "evolve_verify",
   ]);
-  const risk = reviewActions.has(action) ? "review_producing" : "read_only";
+  const preview = command.includes("--dry-run");
+  const risk = reviewActions.has(action)
+    ? "review_producing"
+    : !preview && name === "fclt_setup"
+      ? "reversible_mutation"
+      : !preview && name === "fclt_init_operating_model"
+        ? "high_risk_destructive"
+        : "read_only";
   return {
     tool: name,
     action,
@@ -934,7 +941,35 @@ function operationMetadata(name, args, command) {
       args.source ||
       args.tool ||
       null,
-    preview: command.includes("--dry-run"),
+    preview,
+  };
+}
+
+function recoveryForOperation(operation, stdout) {
+  if (operation.risk === "review_producing") {
+    return {
+      canonicalCapabilityChanged: false,
+      audit: "native fclt review artifacts and append-only journal",
+    };
+  }
+  if (
+    operation.risk !== "reversible_mutation" &&
+    operation.risk !== "high_risk_destructive"
+  ) {
+    return null;
+  }
+  const report = isPlainObject(stdout) ? stdout : {};
+  return {
+    rollbackAvailable: false,
+    changedPaths: Array.isArray(report.changedPaths) ? report.changedPaths : [],
+    skippedPaths: Array.isArray(report.skippedPaths) ? report.skippedPaths : [],
+    repairActions: Array.isArray(report.repairActions)
+      ? report.repairActions
+      : [],
+    verification:
+      operation.tool === "fclt_setup"
+        ? "rerun fclt_setup in preview mode and verify doctor readiness"
+        : "verify doctor, generated state, authored-file hashes, and exact target paths",
   };
 }
 
@@ -996,6 +1031,7 @@ async function runFclt(args, cwd, operation) {
       settled = true;
       clearTimeout(timer);
       const stderrText = [stderr.trim(), extraError].filter(Boolean).join("\n");
+      const parsedStdout = parseJsonOrText(stdout.trim());
       resolve({
         code,
         text: JSON.stringify(
@@ -1005,21 +1041,14 @@ async function runFclt(args, cwd, operation) {
             runtime: discovery.selected,
             result: {
               exitCode: code,
-              stdout: parseJsonOrText(stdout.trim()),
+              stdout: parsedStdout,
               stderr: stderrText,
             },
             verification: {
               status: code === 0 ? "passed" : "failed",
               exitCode: code,
             },
-            recovery:
-              operation.risk === "review_producing"
-                ? {
-                    canonicalCapabilityChanged: false,
-                    audit:
-                      "native fclt review artifacts and append-only journal",
-                  }
-                : null,
+            recovery: recoveryForOperation(operation, parsedStdout),
           },
           null,
           2

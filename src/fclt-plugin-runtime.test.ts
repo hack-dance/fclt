@@ -218,6 +218,24 @@ describe("fclt plugin runtime discovery", () => {
     expect(discovery.selected).toBeNull();
     expect(discovery.candidates[0]?.reason).toBe("protocol_version_skew");
   });
+
+  it("prefers an activated runtime over the default configured PATH name", async () => {
+    const { env } = await tempEnvironment();
+    await stageAndApply({ env, version: "9.9.9" });
+    const binDir = join(env.HOME as string, "bin");
+    const commandName = process.platform === "win32" ? "fclt.exe" : "fclt";
+    const pathRuntime = join(binDir, commandName);
+    await mkdir(binDir, { recursive: true });
+    await writeFile(pathRuntime, runtimeScript("8.8.8"), { mode: 0o700 });
+    await chmod(pathRuntime, 0o700);
+
+    const discovery = await runtime.discoverRuntime({
+      env: { ...env, FCLT_BIN: "fclt", PATH: binDir },
+    });
+
+    expect(discovery.selected?.packageVersion).toBe("9.9.9");
+    expect(discovery.selected?.executable).toContain(join("versions", "9.9.9"));
+  });
 });
 
 describe("fclt plugin runtime staging and recovery", () => {
