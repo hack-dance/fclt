@@ -238,4 +238,33 @@ printf '{"ok":true}\n'
       true
     );
   }, 20_000);
+
+  it("prepares the Codex plugin without a Codex binary when installation is disabled", async () => {
+    const home = await tempHome("fclt-setup-codex-payload-");
+    const repo = await initRepo(home);
+
+    const result = await bootstrapFclt({
+      homeDir: home,
+      cwd: repo,
+      codexBin: null,
+      installInCodex: false,
+    });
+
+    expect(result.codexPlugin?.codexInstall).toEqual({
+      status: "skipped",
+      reason: "codex plugin install disabled by --no-codex-install",
+    });
+    expect(
+      await Bun.file(
+        join(
+          result.codexPlugin?.pluginDir ?? "",
+          ".codex-plugin",
+          "plugin.json"
+        )
+      ).exists()
+    ).toBe(true);
+    expect(
+      await Bun.file(result.codexPlugin?.marketplacePath ?? "").exists()
+    ).toBe(true);
+  }, 20_000);
 });

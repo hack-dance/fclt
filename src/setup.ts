@@ -103,7 +103,9 @@ export async function bootstrapFclt(
 
   const codexBin =
     opts.codexBin === undefined ? Bun.which("codex") : opts.codexBin;
-  const installCodexPlugin = opts.installCodexPlugin ?? codexBin !== null;
+  const installCodexPlugin =
+    opts.installCodexPlugin ??
+    (opts.installInCodex === false || codexBin !== null);
   const codexPlugin = installCodexPlugin
     ? await setupCodexPlugin({
         homeDir,
