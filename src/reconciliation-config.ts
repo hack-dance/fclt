@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import {
   facultAiReconciliationConfigPath,
@@ -44,6 +44,7 @@ function validateId(value: unknown): string {
 function stringArray(value: unknown, field: string): string[] {
   if (
     !Array.isArray(value) ||
+    value.length === 0 ||
     value.some((entry) => typeof entry !== "string" || !entry.trim())
   ) {
     throw new Error(`${field} must be a non-empty string array`);
@@ -252,17 +253,39 @@ export async function initializeReconciliationConfig(args: {
   homeDir: string;
   rootDir: string;
   dryRun?: boolean;
-}): Promise<{ path: string; created: boolean; config: ReconciliationConfig }> {
+  force?: boolean;
+}): Promise<{
+  path: string;
+  created: boolean;
+  config: ReconciliationConfig;
+  backupPath?: string;
+}> {
   const path = facultAiReconciliationConfigPath(args.homeDir, args.rootDir);
   const config = defaultReconciliationConfig(args);
   if (await Bun.file(path).exists()) {
-    return {
-      path,
-      created: false,
-      config: parseReconciliationConfig(
-        JSON.parse(await Bun.file(path).text())
-      ),
-    };
+    try {
+      return {
+        path,
+        created: false,
+        config: parseReconciliationConfig(
+          JSON.parse(await Bun.file(path).text())
+        ),
+      };
+    } catch (error) {
+      if (!args.force) {
+        throw new Error(
+          `Existing reconciliation config is invalid: ${error instanceof Error ? error.message : String(error)}. Review it or run fclt ai review init --force to back it up and replace it.`
+        );
+      }
+      const backupPath = `${path}.invalid-${new Date()
+        .toISOString()
+        .replaceAll(":", "-")}`;
+      if (!args.dryRun) {
+        await copyFile(path, backupPath);
+        await Bun.write(path, `${JSON.stringify(config, null, 2)}\n`);
+      }
+      return { path, created: true, config, backupPath };
+    }
   }
   if (!args.dryRun) {
     await mkdir(dirname(path), { recursive: true });

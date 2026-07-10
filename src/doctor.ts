@@ -120,6 +120,9 @@ interface LoopReadiness {
     automationTemplates: string[];
     reconciliation: {
       configured: boolean;
+      configurationState: "ready" | "not_configured" | "invalid";
+      configurationError?: string;
+      stateError?: string;
       sourceCount: number;
       coverageState?: "complete" | "degraded";
       lastReviewId?: string;
@@ -1247,6 +1250,7 @@ export async function buildDoctorReport(opts?: {
     Promise.all([
       pathCanBeWritten(writebackReviewDir),
       pathCanBeWritten(evolutionReviewDir),
+      pathCanBeWritten(reconciliationReviewDir),
     ]).then((values) => values.every(Boolean)),
     Promise.all([
       pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
@@ -1287,6 +1291,12 @@ export async function buildDoctorReport(opts?: {
   }
   if (!reviewArtifactsWritable) {
     loopBlockers.push("review_artifacts_not_writable");
+  }
+  if (reconciliation.configurationState === "invalid") {
+    loopBlockers.push("reconciliation_config_invalid");
+  }
+  if (reconciliation.stateError) {
+    loopBlockers.push("reconciliation_state_invalid");
   }
   if (!writebackSkill) {
     loopBlockers.push("writeback_skill_missing");
@@ -1439,7 +1449,7 @@ export async function buildDoctorReport(opts?: {
     });
   }
 
-  if (!reconciliation.configured) {
+  if (reconciliation.configurationState === "not_configured") {
     issues.push({
       severity: "warning",
       code: "reconciliation-not-configured",
@@ -1452,6 +1462,32 @@ export async function buildDoctorReport(opts?: {
       label: "Initialize automatic source reconciliation",
       command: "fclt ai review init",
       risk: "canonical_write",
+    });
+  }
+
+  if (reconciliation.configurationState === "invalid") {
+    issues.push({
+      severity: "error",
+      code: "reconciliation-config-invalid",
+      message:
+        reconciliation.configurationError ??
+        "Automatic source reconciliation configuration is invalid.",
+      fix: "Review the invalid file or run `fclt ai review init --force` to back it up and replace it.",
+    });
+    actions.push({
+      id: "replace-invalid-reconciliation-config",
+      label: "Back up and replace invalid reconciliation configuration",
+      command: "fclt ai review init --force",
+      risk: "canonical_write",
+    });
+  }
+
+  if (reconciliation.stateError) {
+    issues.push({
+      severity: "error",
+      code: "reconciliation-state-invalid",
+      message: reconciliation.stateError,
+      fix: "Preserve the state file for inspection, then explicitly move or repair it before reconciling again.",
     });
   }
 
@@ -1479,7 +1515,7 @@ export async function buildDoctorReport(opts?: {
       code: "loop-state-not-writable",
       message:
         "Writeback runtime state or review artifact paths are not writable.",
-      fix: `Restore write access to ${stateDir}, ${writebackReviewDir}, and ${evolutionReviewDir}, then run \`fclt setup\` again.`,
+      fix: `Restore write access to ${stateDir}, ${writebackReviewDir}, ${evolutionReviewDir}, and ${reconciliationReviewDir}, then run \`fclt setup\` again.`,
     });
   }
 
@@ -1607,6 +1643,9 @@ export async function buildDoctorReport(opts?: {
         ],
         reconciliation: {
           configured: reconciliation.configured,
+          configurationState: reconciliation.configurationState,
+          configurationError: reconciliation.configurationError,
+          stateError: reconciliation.stateError,
           sourceCount: reconciliation.sourceCount,
           coverageState: reconciliation.coverageState,
           lastReviewId: reconciliation.lastReviewId,

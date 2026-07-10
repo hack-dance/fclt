@@ -62,30 +62,37 @@ function emptyState(): ReconciliationState {
 
 function parseState(value: unknown): ReconciliationState {
   if (!isPlainObject(value) || value.version !== 1) {
-    return emptyState();
+    throw new Error("Unsupported reconciliation state schema");
+  }
+  if (
+    !(
+      isPlainObject(value.sources) &&
+      isPlainObject(value.evidence) &&
+      isPlainObject(value.decisions) &&
+      isPlainObject(value.reviews)
+    )
+  ) {
+    throw new Error("Malformed reconciliation state schema");
   }
   return {
     version: 1,
-    sources: isPlainObject(value.sources)
-      ? (value.sources as ReconciliationState["sources"])
-      : {},
-    evidence: isPlainObject(value.evidence)
-      ? (value.evidence as ReconciliationState["evidence"])
-      : {},
-    decisions: isPlainObject(value.decisions)
-      ? (value.decisions as ReconciliationState["decisions"])
-      : {},
-    reviews: isPlainObject(value.reviews)
-      ? (value.reviews as ReconciliationState["reviews"])
-      : {},
+    sources: value.sources as ReconciliationState["sources"],
+    evidence: value.evidence as ReconciliationState["evidence"],
+    decisions: value.decisions as ReconciliationState["decisions"],
+    reviews: value.reviews as ReconciliationState["reviews"],
   };
 }
 
 async function loadState(path: string): Promise<ReconciliationState> {
+  if (!(await Bun.file(path).exists())) {
+    return emptyState();
+  }
   try {
     return parseState(JSON.parse(await readFile(path, "utf8")));
-  } catch {
-    return emptyState();
+  } catch (error) {
+    throw new Error(
+      `Invalid reconciliation state at ${path}; the file was preserved: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -147,6 +154,7 @@ function createWindow(args: {
   homeDir: string;
   since: string;
   until: string;
+  mode: "window" | "incremental";
 }): ReconciliationWindow {
   const since = new Date(args.since).toISOString();
   const until = new Date(args.until).toISOString();
@@ -157,9 +165,10 @@ function createWindow(args: {
   const scope = projectRootFromAiRoot(args.rootDir, args.homeDir)
     ? "project"
     : "global";
-  const id = `RV-${sha256(`${scope}\n${args.rootDir}\n${since}\n${until}\n${digest}`).slice(0, 16)}`;
+  const id = `RV-${sha256(`${scope}\n${args.rootDir}\n${args.mode}\n${since}\n${until}\n${digest}`).slice(0, 16)}`;
   return {
     id,
+    mode: args.mode,
     since,
     until,
     scope,
@@ -620,16 +629,28 @@ export async function reconcileSources(args: {
   until?: string;
   configPath?: string;
   sourceIds?: string[];
+  incremental?: boolean;
 }): Promise<ReconciliationReview> {
   const { config } = await loadReconciliationConfig(args);
+  const enabledSources = config.sources.filter(
+    (source) => source.enabled !== false
+  );
+  const unknownSourceIds = (args.sourceIds ?? []).filter(
+    (sourceId) => !enabledSources.some((source) => source.id === sourceId)
+  );
+  if (unknownSourceIds.length > 0) {
+    throw new Error(
+      `Unknown or disabled reconciliation source ids: ${unknownSourceIds.join(", ")}`
+    );
+  }
   const selectedConfig: ReconciliationConfig = {
     version: 1,
-    sources: config.sources.filter(
-      (source) =>
-        source.enabled !== false &&
-        (!args.sourceIds?.length || args.sourceIds.includes(source.id))
+    sources: enabledSources.filter(
+      (source) => !args.sourceIds?.length || args.sourceIds.includes(source.id)
     ),
   };
+  const filteredCoverage =
+    selectedConfig.sources.length < enabledSources.length;
   if (selectedConfig.sources.length === 0) {
     throw new Error("No enabled reconciliation sources matched the request");
   }
@@ -639,6 +660,7 @@ export async function reconcileSources(args: {
     homeDir: args.homeDir,
     since: args.since,
     until: args.until ?? new Date().toISOString(),
+    mode: args.incremental ? "incremental" : "window",
   });
   const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
   return await withStateLock(statePath, async () => {
@@ -665,7 +687,9 @@ export async function reconcileSources(args: {
           : undefined;
       const sourceWindow = {
         ...window,
-        since: incrementalSince(window.since, prior?.watermark),
+        since: args.incremental
+          ? incrementalSince(window.since, prior?.watermark)
+          : window.since,
       };
       const result = await adapter.scan({
         config: source,
@@ -717,9 +741,11 @@ export async function reconcileSources(args: {
         coverageEntry.signalsDiscovered += 1;
       }
     }
-    const coverageComplete = coverage.every(
-      (entry) => entry.state === "checked" || entry.state === "changed"
-    );
+    const coverageComplete =
+      !filteredCoverage &&
+      coverage.every(
+        (entry) => entry.state === "checked" || entry.state === "changed"
+      );
     const degraded = coverage.some(
       (entry) => entry.state === "unavailable" || entry.state === "stale"
     );
@@ -731,9 +757,11 @@ export async function reconcileSources(args: {
     const emptyReason =
       correlated.signals.length > 0
         ? undefined
-        : coverageComplete
-          ? "Zero signals discovered after every configured source was checked for this review window."
-          : "No signals are reported, but configured coverage is degraded; this is not a proven empty review.";
+        : filteredCoverage
+          ? "No signals are reported, but the run checked only a filtered source subset; this is not a proven empty review."
+          : coverageComplete
+            ? "Zero signals discovered after every configured source was checked for this review window."
+            : "No signals are reported, but configured coverage is degraded; this is not a proven empty review.";
     const review: ReconciliationReview = {
       version: 1,
       reviewId: window.id,
@@ -776,6 +804,9 @@ export async function reconciliationStatus(args: {
   rootDir: string;
 }): Promise<{
   configured: boolean;
+  configurationState: "ready" | "not_configured" | "invalid";
+  configurationError?: string;
+  stateError?: string;
   configPath: string;
   statePath: string;
   sourceCount: number;
@@ -783,8 +814,32 @@ export async function reconciliationStatus(args: {
   coverageState?: "complete" | "degraded";
 }> {
   const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
+  const configPath = join(args.rootDir, "reconciliation.json");
+  if (!(await Bun.file(configPath).exists())) {
+    return {
+      configured: false,
+      configurationState: "not_configured",
+      configPath,
+      statePath,
+      sourceCount: 0,
+    };
+  }
+  let loaded: Awaited<ReturnType<typeof loadReconciliationConfig>>;
   try {
-    const { config, path } = await loadReconciliationConfig(args);
+    loaded = await loadReconciliationConfig(args);
+  } catch (error) {
+    return {
+      configured: false,
+      configurationState: "invalid",
+      configurationError:
+        error instanceof Error ? error.message : String(error),
+      configPath,
+      statePath,
+      sourceCount: 0,
+    };
+  }
+  const { config, path } = loaded;
+  try {
     const state = await loadState(statePath);
     const lastReview = Object.entries(state.reviews).sort(
       ([, left], [, right]) => right.generatedAt.localeCompare(left.generatedAt)
@@ -796,6 +851,7 @@ export async function reconciliationStatus(args: {
     );
     return {
       configured: true,
+      configurationState: "ready",
       configPath: path,
       statePath,
       sourceCount: config.sources.filter((source) => source.enabled !== false)
@@ -807,12 +863,16 @@ export async function reconciliationStatus(args: {
           : "complete"
         : undefined,
     };
-  } catch {
+  } catch (error) {
     return {
-      configured: false,
-      configPath: join(args.rootDir, "reconciliation.json"),
+      configured: true,
+      configurationState: "ready",
+      stateError: error instanceof Error ? error.message : String(error),
+      configPath: path,
       statePath,
-      sourceCount: 0,
+      sourceCount: config.sources.filter((source) => source.enabled !== false)
+        .length,
+      coverageState: "degraded",
     };
   }
 }

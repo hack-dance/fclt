@@ -21,12 +21,16 @@ const ASSET_REF_RE =
   /(?:@(?:ai|project)\/[^\s)`]+|(?:instructions|skills|agents|automations|snippets|mcp)\/[\w./-]+)/g;
 const SECRET_VALUE_RE =
   /(bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi;
+const JSON_SECRET_VALUE_RE =
+  /("(?:api[_-]?key|token|secret|password|authorization)"\s*:\s*")[^"]*(")/gi;
 const SECRET_TOKEN_RE = /\b(?:sk|ghp|github_pat|lin_api)_[A-Za-z0-9_-]{12,}\b/g;
 const LINE_SPLIT_RE = /\r?\n/;
 const PATH_SEGMENT_RE = /[\\/]/;
 const MARKDOWN_SECTION_RE = /(?=^#{1,3}\s+)/m;
 const MARKDOWN_HEADING_RE = /^#{1,3}\s+(.+)$/m;
 const DATE_HEADING_RE = /^(\d{4}-\d{2}-\d{2})\b/;
+const LOG_TIMESTAMP_RE =
+  /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})\b/;
 const LINEAR_CAPABILITY_RE =
   /capabilit|writeback|evolution|instruction|skill|agent|runbook|reconcil/;
 const LINEAR_OUTCOME_RE = /proof|verified|released|deployed|completed/;
@@ -47,6 +51,7 @@ function unique(values: string[]): string[] {
 
 export function redactReconciliationText(value: string): string {
   return value
+    .replace(JSON_SECRET_VALUE_RE, "$1<redacted>$2")
     .replace(SECRET_VALUE_RE, "$1<redacted>")
     .replace(SECRET_TOKEN_RE, "<redacted-token>")
     .slice(0, MAX_BODY_CHARS);
@@ -155,23 +160,53 @@ const writebackAdapter: ReconciliationAdapter = {
     if (!(await file.exists())) {
       return resultFromRecords([]);
     }
-    const latestById = new Map<string, WritebackQueueRecord>();
-    for (const line of (await file.text()).split(LINE_SPLIT_RE)) {
+    const entriesById = new Map<string, WritebackQueueRecord[]>();
+    const malformed: SourceRecord[] = [];
+    for (const [index, line] of (await file.text())
+      .split(LINE_SPLIT_RE)
+      .entries()) {
       if (!line.trim()) {
         continue;
       }
       try {
         const parsed = JSON.parse(line) as WritebackQueueRecord;
         if (parsed.id) {
-          latestById.set(parsed.id, parsed);
+          entriesById.set(parsed.id, [
+            ...(entriesById.get(parsed.id) ?? []),
+            parsed,
+          ]);
         }
       } catch {
-        // A malformed append-only line is ignored without hiding source coverage.
+        malformed.push(
+          record({
+            context,
+            recordId: `malformed-line-${index + 1}`,
+            dedupeKey: `writeback-malformed:${sha256(line)}`,
+            observedAt: context.window.since,
+            title: `Malformed writeback queue line ${index + 1}`,
+            body: line,
+            classification: "noise",
+            provenance: { path, line: index + 1, parseError: true },
+          })
+        );
       }
     }
-    const records = [...latestById.values()].flatMap((entry) => {
-      const observedAt = entry.updatedAt ?? entry.ts;
-      if (!(entry.id && observedAt && inWindow(observedAt, context))) {
+    const records = [...entriesById.values()].flatMap((entries) => {
+      const entry = entries
+        .filter((candidate) => {
+          const timestamp = candidate.updatedAt ?? candidate.ts;
+          return (
+            timestamp &&
+            Date.parse(timestamp) <= Date.parse(context.window.until)
+          );
+        })
+        .sort((left, right) =>
+          (right.updatedAt ?? right.ts ?? "").localeCompare(
+            left.updatedAt ?? left.ts ?? ""
+          )
+        )[0];
+      const observedAt = entry?.updatedAt ?? entry?.ts;
+      if (!(entry?.id && observedAt && inWindow(observedAt, context))) {
         return [];
       }
       return [
@@ -203,6 +238,14 @@ const writebackAdapter: ReconciliationAdapter = {
         }),
       ];
     });
+    records.push(...malformed);
+    if (malformed.length > 0) {
+      return {
+        state: "unavailable",
+        records,
+        unavailableReason: `${malformed.length} malformed writeback queue line(s) prevented complete coverage`,
+      };
+    }
     return resultFromRecords(records);
   },
 };
@@ -325,7 +368,7 @@ const gitAdapter: ReconciliationAdapter = {
       const records: SourceRecord[] = [];
       for (const entry of parsed) {
         const patch = await runGit(
-          ["show", "--format=", "--no-ext-diff", entry.commit],
+          ["show", "--format=", "--no-ext-diff", entry.commit, ...pathArgs],
           projectRoot
         );
         const { commit: _commit, ...base } = entry;
@@ -358,6 +401,11 @@ interface LinearHistoryExport {
   toState?: { name?: string } | null;
 }
 
+interface LinearConnection<T> {
+  nodes?: T[];
+  pageInfo?: { hasNextPage?: boolean };
+}
+
 interface LinearIssueExport {
   id?: string;
   identifier?: string;
@@ -366,34 +414,47 @@ interface LinearIssueExport {
   updatedAt?: string;
   state?: { name?: string; type?: string } | string;
   labels?: { nodes?: Array<{ name?: string }> } | string[];
-  comments?: { nodes?: LinearCommentExport[] } | LinearCommentExport[];
-  history?: { nodes?: LinearHistoryExport[] } | LinearHistoryExport[];
+  comments?: LinearConnection<LinearCommentExport> | LinearCommentExport[];
+  history?: LinearConnection<LinearHistoryExport> | LinearHistoryExport[];
 }
 
-function linearNodes<T>(value: { nodes?: T[] } | T[] | undefined): T[] {
+function linearNodes<T>(value: LinearConnection<T> | T[] | undefined): T[] {
   return Array.isArray(value) ? value : (value?.nodes ?? []);
 }
 
-function parseLinearPayload(value: unknown): LinearIssueExport[] {
+function parseLinearPayload(value: unknown): {
+  issues: LinearIssueExport[];
+  truncated: boolean;
+} {
   if (Array.isArray(value)) {
-    return value as LinearIssueExport[];
+    return { issues: value as LinearIssueExport[], truncated: false };
   }
   if (!value || typeof value !== "object") {
-    return [];
+    return { issues: [], truncated: false };
   }
   const object = value as Record<string, unknown>;
   const data = (object.data ?? object) as Record<string, unknown>;
   const issues = data.issues as
-    | { nodes?: LinearIssueExport[] }
+    | LinearConnection<LinearIssueExport>
     | LinearIssueExport[]
     | undefined;
-  return linearNodes(issues);
+  const nodes = linearNodes(issues);
+  const truncated =
+    (!Array.isArray(issues) && issues?.pageInfo?.hasNextPage === true) ||
+    nodes.some(
+      (issue) =>
+        (!Array.isArray(issue.comments) &&
+          issue.comments?.pageInfo?.hasNextPage === true) ||
+        (!Array.isArray(issue.history) &&
+          issue.history?.pageInfo?.hasNextPage === true)
+    );
+  return { issues: nodes, truncated };
 }
 
 async function loadLinearIssues(args: {
   config: LinearSourceConfig;
   context: ReconciliationAdapterContext;
-}): Promise<LinearIssueExport[]> {
+}): Promise<{ issues: LinearIssueExport[]; truncated: boolean }> {
   if (args.config.exportPath) {
     if (
       isAbsolute(args.config.exportPath) ||
@@ -420,9 +481,10 @@ async function loadLinearIssues(args: {
   const endpoint = args.config.endpoint ?? "https://api.linear.app/graphql";
   const query = `query ReconciliationIssues($since: DateTimeOrDuration!, $until: DateTimeOrDuration!, $team: String) {
     issues(first: 250, orderBy: updatedAt, filter: { updatedAt: { gte: $since, lte: $until }, team: { key: { eq: $team } } }) {
+      pageInfo { hasNextPage }
       nodes { id identifier title description updatedAt state { name type } labels { nodes { name } }
-        comments(first: 100) { nodes { id body createdAt updatedAt } }
-        history(first: 100) { nodes { id createdAt updatedAt fromState { name } toState { name } } }
+        comments(first: 100) { pageInfo { hasNextPage } nodes { id body createdAt updatedAt } }
+        history(first: 100) { pageInfo { hasNextPage } nodes { id createdAt updatedAt fromState { name } toState { name } } }
       }
     }
   }`;
@@ -472,7 +534,7 @@ const linearAdapter: ReconciliationAdapter = {
   async scan(context): Promise<AdapterScanResult> {
     const config = context.config as LinearSourceConfig;
     try {
-      const issues = await loadLinearIssues({ config, context });
+      const { issues, truncated } = await loadLinearIssues({ config, context });
       const records: SourceRecord[] = [];
       for (const issue of issues) {
         const issueRef = issue.identifier ?? issue.id;
@@ -535,6 +597,14 @@ const linearAdapter: ReconciliationAdapter = {
           );
         }
       }
+      if (truncated) {
+        return {
+          state: "unavailable",
+          records,
+          unavailableReason:
+            "Linear result exceeded a bounded page; coverage is incomplete",
+        };
+      }
       return resultFromRecords(records);
     } catch (error) {
       return {
@@ -570,15 +640,46 @@ function validateGlob(pattern: string): void {
 function splitTextRecords(
   text: string,
   path: string
-): Array<{ id: string; title: string; body: string; observedAt?: string }> {
+): Array<{
+  id: string;
+  title: string;
+  body: string;
+  observedAt?: string;
+  timestampMissing?: boolean;
+}> {
   if (path.endsWith(".jsonl") || path.endsWith(".log")) {
     return text
       .split(LINE_SPLIT_RE)
-      .map((body, index) => ({
-        id: `line-${index + 1}`,
-        title: `${path}:${index + 1}`,
-        body,
-      }))
+      .map((body, index) => {
+        let observedAt = body.match(LOG_TIMESTAMP_RE)?.[0];
+        if (path.endsWith(".jsonl")) {
+          try {
+            const parsed = JSON.parse(body) as Record<string, unknown>;
+            const value = [
+              parsed.updatedAt,
+              parsed.createdAt,
+              parsed.ts,
+              parsed.timestamp,
+              parsed.startedAt,
+              parsed.completedAt,
+            ].find(
+              (candidate): candidate is string =>
+                typeof candidate === "string" &&
+                Number.isFinite(Date.parse(candidate))
+            );
+            observedAt = value ?? observedAt;
+          } catch {
+            // Malformed JSONL remains an undated extraction decision below.
+          }
+        }
+        return {
+          id: `line-${index + 1}`,
+          title: `${path}:${index + 1}`,
+          body,
+          observedAt,
+          timestampMissing: !observedAt,
+        };
+      })
       .filter((entry) => entry.body.trim());
   }
   const sections = text
@@ -634,6 +735,8 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
           };
         }
         const records: SourceRecord[] = [];
+        const contentDigests: string[] = [];
+        let missingTimestamps = 0;
         let latestMtime = 0;
         let latestObserved = 0;
         for (const path of unique(paths)) {
@@ -649,10 +752,32 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
             continue;
           }
           const text = await readFile(absolutePath, "utf8");
+          contentDigests.push(`${path}:${sha256(text)}`);
           if (text.includes("\0")) {
             continue;
           }
           for (const fragment of splitTextRecords(text, path)) {
+            if (type === "automation" && fragment.timestampMissing) {
+              missingTimestamps += 1;
+              records.push(
+                record({
+                  context,
+                  recordId: `${path}#${fragment.id}`,
+                  dedupeKey: `${type}-undated:${sha256(fragment.body)}`,
+                  observedAt: context.window.since,
+                  title: fragment.title,
+                  body: fragment.body,
+                  classification: "noise",
+                  provenance: {
+                    path,
+                    root: config.root ?? "project",
+                    bytes: info.size,
+                    timestampMissing: true,
+                  },
+                })
+              );
+              continue;
+            }
             const observedAt = fragment.observedAt ?? info.mtime.toISOString();
             if (!inWindow(observedAt, context)) {
               continue;
@@ -688,7 +813,16 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
             Date.parse(context.window.since)
             ? "Configured files exist but none changed in the review window"
             : undefined;
-        return resultFromRecords(records, staleReason);
+        const cursor = sha256(contentDigests.sort().join("\n"));
+        if (missingTimestamps > 0) {
+          return {
+            state: "unavailable",
+            records,
+            cursor,
+            unavailableReason: `${missingTimestamps} automation record(s) lacked a parseable timestamp`,
+          };
+        }
+        return { ...resultFromRecords(records, staleReason), cursor };
       } catch (error) {
         return {
           state: "unavailable",

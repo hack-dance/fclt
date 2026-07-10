@@ -100,6 +100,22 @@ describe("zero-config setup", () => {
     expect(result.readiness.project.loop.state).toBe("ready");
     expect(result.readiness.global.loop.capabilities.writebackSkill).toBe(true);
     expect(result.readiness.global.loop.capabilities.evolutionSkill).toBe(true);
+    expect(
+      result.readiness.global.loop.capabilities.reconciliation
+    ).toMatchObject({ configured: true, sourceCount: 1 });
+    expect(
+      result.readiness.project.loop.capabilities.reconciliation
+    ).toMatchObject({ configured: true, sourceCount: 2 });
+    expect(
+      JSON.parse(
+        await Bun.file(join(home, ".ai", "reconciliation.json")).text()
+      ).sources
+    ).toHaveLength(1);
+    expect(
+      JSON.parse(
+        await Bun.file(join(repo, ".ai", "reconciliation.json")).text()
+      ).sources
+    ).toHaveLength(2);
 
     const add = await runCli({
       home,

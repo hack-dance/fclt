@@ -104,9 +104,9 @@ fclt ai evolve reject EV-00001 --reason <text>
 fclt ai evolve apply EV-00001
 fclt ai evolve promote EV-00003 --to global --project
 
-fclt ai review init [--dry-run] [--json]
+fclt ai review init [--dry-run] [--force] [--json]
 fclt ai review status [--json]
-fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--json]
+fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incremental] [--json]
 ```
 
 Use these to turn repeated work friction into reviewed capability changes.
@@ -119,6 +119,9 @@ canonical capability. It persists only machine-local cursors/window state and a
 Markdown review mirror. JSON reports `checked`, `changed`, `stale`, or
 `unavailable` coverage for every configured source plus extraction decisions,
 correlated signals, linked work, exclusions, and mandatory dispositions.
+Bounded windows always rescan their complete requested range. Use
+`--incremental` only when advancing from the stored per-source watermarks is
+intended. A source-filtered run cannot prove an empty review.
 
 ## Sources, Audit, And Updates
 

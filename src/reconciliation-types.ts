@@ -65,6 +65,7 @@ export interface ReconciliationConfig {
 
 export interface ReconciliationWindow {
   id: string;
+  mode: "window" | "incremental";
   since: string;
   until: string;
   scope: "global" | "project";

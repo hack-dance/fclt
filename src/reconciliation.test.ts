@@ -7,7 +7,7 @@ import {
   facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
 } from "./paths";
-import { reconcileSources } from "./reconciliation";
+import { reconcileSources, reconciliationStatus } from "./reconciliation";
 import {
   initializeReconciliationConfig,
   parseReconciliationConfig,
@@ -170,6 +170,28 @@ describe("reconciliation config", () => {
         sources: [{ id: "git", type: "git", paths: ["../outside"] }],
       })
     ).toThrow();
+    expect(() =>
+      parseReconciliationConfig({
+        version: 1,
+        sources: [{ id: "git", type: "git", paths: [] }],
+      })
+    ).toThrow();
+  });
+
+  it("backs up an invalid config only through explicit force repair", async () => {
+    const fixture = await makeFixture();
+    const path = join(fixture.rootDir, "reconciliation.json");
+    await Bun.write(path, "{invalid");
+    await expect(initializeReconciliationConfig(fixture)).rejects.toThrow(
+      "review init --force"
+    );
+    const repaired = await initializeReconciliationConfig({
+      ...fixture,
+      force: true,
+    });
+    expect(repaired.backupPath).toBeDefined();
+    expect(await Bun.file(repaired.backupPath!).text()).toBe("{invalid");
+    expect(JSON.parse(await Bun.file(path).text()).sources).toHaveLength(2);
   });
 });
 
@@ -339,6 +361,223 @@ describe("source reconciliation", () => {
     expect(review.emptyReason).toContain("not a proven empty review");
   });
 
+  it("rescans explicit historical windows and selects the latest writeback state within the window", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(queuePath, ".."), { recursive: true });
+    await Bun.write(
+      queuePath,
+      [
+        JSON.stringify({
+          id: "WB-00020",
+          ts: "2026-07-05T12:00:00Z",
+          summary: "Historical reconciliation capability signal",
+          issueLinks: ["HACK-793"],
+          disposition: "task",
+        }),
+        JSON.stringify({
+          id: "WB-00020",
+          ts: "2026-07-05T12:00:00Z",
+          updatedAt: "2026-07-11T12:00:00Z",
+          summary: "Later state outside the historical window",
+          issueLinks: ["HACK-793"],
+          disposition: "resolve-watch",
+        }),
+      ].join("\n")
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+
+    await reconcileSources({
+      ...fixture,
+      since: "2026-07-10T00:00:00Z",
+      until: "2026-07-12T00:00:00Z",
+    });
+    const historical = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(historical.window.mode).toBe("window");
+    expect(historical.evidence).toHaveLength(1);
+    expect(historical.evidence[0]?.title).toContain("Historical");
+    expect(historical.signals[0]?.disposition).toBe("task");
+  });
+
+  it("degrades malformed writeback input and filtered coverage", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(queuePath, ".."), { recursive: true });
+    await Bun.write(queuePath, "{malformed\n");
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          {
+            id: "notes",
+            type: "markdown",
+            paths: ["notes/*.md"],
+          },
+        ],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+      sourceIds: ["writebacks"],
+    });
+    expect(review.coverageComplete).toBe(false);
+    expect(review.coverage[0]?.state).toBe("unavailable");
+    expect(review.decisions[0]).toMatchObject({
+      included: false,
+      classification: "noise",
+    });
+    await expect(
+      reconcileSources({
+        ...fixture,
+        since: "2026-07-03T00:00:00Z",
+        until: "2026-07-10T00:00:00Z",
+        sourceIds: ["unknown"],
+      })
+    ).rejects.toThrow("Unknown or disabled");
+  });
+
+  it("uses automation record timestamps, exposes undated degradation, and redacts JSON secrets", async () => {
+    const fixture = await makeFixture();
+    const logPath = join(
+      fixture.homeDir,
+      ".codex",
+      "automations",
+      "review",
+      "runs",
+      "events.jsonl"
+    );
+    await mkdir(join(logPath, ".."), { recursive: true });
+    await Bun.write(
+      logPath,
+      [
+        JSON.stringify({
+          ts: "2026-06-01T00:00:00Z",
+          message: "Old capability signal HACK-700",
+        }),
+        JSON.stringify({
+          ts: "2026-07-05T00:00:00Z",
+          message: "Reconciliation verified HACK-793",
+          token: "super-secret-json-token",
+        }),
+        JSON.stringify({ message: "Undated reconciliation signal" }),
+      ].join("\n")
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          {
+            id: "runs",
+            type: "automation",
+            root: "home",
+            paths: [".codex/automations/**/runs/*.jsonl"],
+          },
+        ],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(review.coverage[0]).toMatchObject({
+      state: "unavailable",
+      recordsScanned: 2,
+    });
+    expect(review.coverage[0]?.cursorAfter).toBeDefined();
+    expect(JSON.stringify(review)).not.toContain("super-secret-json-token");
+    expect(JSON.stringify(review)).not.toContain("HACK-700");
+  });
+
+  it("marks bounded Linear exports unavailable when any connection is truncated", async () => {
+    const fixture = await makeFixture();
+    const exportPath = join(fixture.projectRoot, "linear.json");
+    await Bun.write(
+      exportPath,
+      JSON.stringify({
+        issues: {
+          pageInfo: { hasNextPage: true },
+          nodes: [
+            {
+              id: "issue-793",
+              identifier: "HACK-793",
+              title: "Reconciliation implementation",
+              updatedAt: "2026-07-05T00:00:00Z",
+            },
+          ],
+        },
+      })
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "linear", type: "linear", exportPath: "linear.json" }],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(review.coverage[0]?.state).toBe("unavailable");
+    expect(review.coverage[0]?.unavailableReason).toContain("bounded page");
+    expect(review.linkedWork).toContain("HACK-793");
+  });
+
+  it("preserves invalid state and reports it separately from configuration", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const statePath = facultAiReconciliationStatePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(statePath, ".."), { recursive: true });
+    await Bun.write(statePath, "{corrupt-state");
+    const status = await reconciliationStatus(fixture);
+    expect(status).toMatchObject({
+      configured: true,
+      configurationState: "ready",
+      coverageState: "degraded",
+    });
+    expect(status.stateError).toContain("file was preserved");
+    await expect(
+      reconcileSources({
+        ...fixture,
+        since: "2026-07-03T00:00:00Z",
+        until: "2026-07-10T00:00:00Z",
+      })
+    ).rejects.toThrow("Invalid reconciliation state");
+    expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
   it("deduplicates a renamed capability patch across branches and overlapping windows", async () => {
     const fixture = await makeFixture();
     await runFixtureGit({
@@ -422,6 +661,81 @@ describe("source reconciliation", () => {
     });
     expect(overlap.evidence).toHaveLength(1);
     expect(overlap.evidence[0]?.isNew).toBe(false);
+  });
+
+  it("deduplicates equivalent canonical patches from distinct branch commits", async () => {
+    const fixture = await makeFixture();
+    for (const argv of [
+      ["init", "--quiet"],
+      ["config", "user.email", "fixture@example.invalid"],
+      ["config", "user.name", "Fixture"],
+    ]) {
+      await runFixtureGit({ projectRoot: fixture.projectRoot, argv });
+    }
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["commit", "--allow-empty", "--quiet", "-m", "chore: base"],
+      date: "2026-07-03T12:00:00Z",
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["branch", "branch-a"],
+    });
+    const capabilityPath = join(
+      fixture.rootDir,
+      "instructions",
+      "RECONCILIATION.md"
+    );
+    await mkdir(join(capabilityPath, ".."), { recursive: true });
+    await Bun.write(capabilityPath, "# Reconciliation\n\nTrack HACK-793.\n");
+    await Bun.write(join(fixture.projectRoot, "outside.txt"), "branch a\n");
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["add", ".ai", "outside.txt"],
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["commit", "--quiet", "-m", "feat: branch a reconciliation"],
+      date: "2026-07-04T12:00:00Z",
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["switch", "--quiet", "-c", "branch-b", "HEAD~1"],
+    });
+    await mkdir(join(capabilityPath, ".."), { recursive: true });
+    await Bun.write(capabilityPath, "# Reconciliation\n\nTrack HACK-793.\n");
+    await Bun.write(join(fixture.projectRoot, "outside.txt"), "branch b\n");
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["add", ".ai", "outside.txt"],
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["commit", "--quiet", "-m", "feat: branch b reconciliation"],
+      date: "2026-07-05T12:00:00Z",
+    });
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          {
+            id: "git",
+            type: "git",
+            allBranches: true,
+            paths: [".ai/instructions"],
+          },
+        ],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(review.coverage[0]?.recordsScanned).toBe(2);
+    expect(review.evidence).toHaveLength(1);
+    expect(review.evidence[0]?.sourceRecordIds).toHaveLength(2);
   });
 
   it("permits a proven empty review only after every configured source is checked", async () => {

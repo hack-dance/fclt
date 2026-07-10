@@ -2305,9 +2305,9 @@ function reviewHelp(): string {
   return `fclt ai review
 
 Usage:
-  fclt ai review init [--dry-run] [--json]
+  fclt ai review init [--dry-run] [--force] [--json]
   fclt ai review status [--json]
-  fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--config <path>] [--json]
+  fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incremental] [--config <path>] [--json]
 
 Reconciliation reads configured sources and writes machine-local cursors plus a
 human-readable review artifact. It never mutates external sources or applies a
@@ -2797,6 +2797,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
         homeDir,
         rootDir,
         dryRun: commandArgs.includes("--dry-run"),
+        force: commandArgs.includes("--force"),
       });
       console.log(
         json
@@ -2828,6 +2829,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
         until: parseStringFlag(commandArgs, "--until"),
         configPath: parseStringFlag(commandArgs, "--config"),
         sourceIds: parseRepeatedFlag(commandArgs, "--source"),
+        incremental: commandArgs.includes("--incremental"),
       });
       console.log(
         json
