@@ -184,7 +184,7 @@ const tools = [
             "update_check",
           ],
         },
-        scope: { type: "string", enum: ["global", "project"] },
+        scope: { type: "string", enum: ["global"] },
         cwd: { type: "string" },
         query: { type: "string" },
         source: { type: "string" },
@@ -706,19 +706,13 @@ function registryCommand(args) {
       "install",
       requireString("item", args.item),
       ...stringFlag("--as", args.as),
-      ...scopeArgs(args.scope),
       "--dry-run",
       "--strict-source-trust",
       "--json",
     ];
   }
   if (args.action === "update_check") {
-    return [
-      "update",
-      ...scopeArgs(args.scope),
-      "--strict-source-trust",
-      "--json",
-    ];
+    return ["update", "--strict-source-trust", "--json"];
   }
   throw new Error(`Unsupported registry action: ${args.action}`);
 }

@@ -193,6 +193,28 @@ describe("bundled fclt MCP plugin", () => {
           id: 3,
           method: "tools/call",
           params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "install_preview",
+              scope: "project",
+              item: "skill:test",
+            },
+          },
+        })
+      );
+      const unsupportedProjectPreview = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(unsupportedProjectPreview.error?.message).toContain(
+        "not an allowed value"
+      );
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
             name: "fclt_init_operating_model",
             arguments: {
               scope: "project",

@@ -50,6 +50,10 @@ interface RuntimeModule {
     env: NodeJS.ProcessEnv;
     expectedActiveVersion?: string;
   }): Promise<{ active: ProtocolInspection; rolledBackFrom: string }>;
+  runtimeCandidates(options: {
+    env: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
+  }): Promise<{ executable: string }[]>;
   runtimeStateRoot(env: NodeJS.ProcessEnv): string;
   checkRuntimeUpdate(options: {
     env: NodeJS.ProcessEnv;
@@ -236,6 +240,19 @@ describe("fclt plugin runtime discovery", () => {
     expect(discovery.selected?.packageVersion).toBe("9.9.9");
     expect(discovery.selected?.executable).toContain(join("versions", "9.9.9"));
   });
+
+  it("includes Windows npm command shims in PATH discovery", async () => {
+    const { env } = await tempEnvironment();
+    const binDir = join(env.HOME as string, "node_modules", ".bin");
+    const candidates = await runtime.runtimeCandidates({
+      env: { ...env, PATH: binDir },
+      platform: "win32",
+    });
+
+    expect(candidates.map((candidate) => candidate.executable)).toContain(
+      join(binDir, "fclt.cmd")
+    );
+  });
 });
 
 describe("fclt plugin runtime staging and recovery", () => {
@@ -295,6 +312,22 @@ describe("fclt plugin runtime staging and recovery", () => {
     expect(active.version).toBe("9.9.9");
     expect(active.sha256).toBe(staged.manifest.sha256);
     expect(active.executable).toContain(join("versions", "9.9.9"));
+  });
+
+  it("rejects an active runtime whose executable no longer matches its checksum", async () => {
+    const { env } = await tempEnvironment();
+    await stageAndApply({ env, version: "9.9.9" });
+    const active = JSON.parse(
+      await readFile(join(runtime.runtimeStateRoot(env), "active.json"), "utf8")
+    ) as { executable: string };
+    await writeFile(active.executable, `${runtimeScript("9.9.9")}\n`, {
+      mode: 0o700,
+    });
+
+    const discovery = await runtime.discoverRuntime({ env });
+
+    expect(discovery.selected).toBeNull();
+    expect(discovery.candidates[0]?.reason).toBe("checksum_mismatch");
   });
 
   it("refuses checksum mismatch without creating an active runtime", async () => {

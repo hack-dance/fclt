@@ -536,7 +536,7 @@
         "actions": ["install_preview", "update_check"]
       },
       "risk": "read_only",
-      "scope": "global|project plus exact registry item",
+      "scope": "global plus exact registry item; project scope blocked until the CLI accepts an explicit project root",
       "preview": "required",
       "apply": "not_applicable",
       "rollback": "not_applicable",

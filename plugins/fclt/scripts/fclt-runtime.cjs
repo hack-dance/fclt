@@ -25,6 +25,7 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const NEWLINE_RE = /\r?\n/;
 const CHECKSUM_LINE_RE = /^([a-fA-F0-9]{64})\s+\*?(.+)$/;
+const WINDOWS_SHIM_RE = /\.(?:bat|cmd)$/i;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -155,7 +156,9 @@ async function runtimePolicy(options = {}) {
 }
 
 function commandNames(platform = process.platform) {
-  return platform === "win32" ? ["fclt.exe", "facult.exe"] : ["fclt", "facult"];
+  return platform === "win32"
+    ? ["fclt.exe", "fclt.cmd", "facult.exe", "facult.cmd"]
+    : ["fclt", "facult"];
 }
 
 function pathCandidates(env = process.env, platform = process.platform) {
@@ -203,7 +206,12 @@ async function activeRuntimeCandidate(root) {
   if (!isSubpath(executable, path.join(root, "versions"))) {
     return null;
   }
-  return { executable, source: "plugin_runtime", active };
+  return {
+    executable,
+    source: "plugin_runtime",
+    expectedSha256: active.sha256,
+    active,
+  };
 }
 
 async function persistedInstallCandidates(
@@ -294,7 +302,29 @@ function runCommand(executable, args, options = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(executable, args, {
+      const platform = options.platform || process.platform;
+      const windowsShim =
+        platform === "win32" && WINDOWS_SHIM_RE.test(executable);
+      const command = windowsShim
+        ? options.env?.ComSpec || process.env.ComSpec || "cmd.exe"
+        : executable;
+      const commandArgs = windowsShim
+        ? [
+            "/d",
+            "/v:off",
+            "/s",
+            "/c",
+            [executable, ...args]
+              .map(
+                (value) =>
+                  `"${String(value)
+                    .replaceAll("%", "%%")
+                    .replace(/[\^&|<>()!"]/g, "^$&")}"`
+              )
+              .join(" "),
+          ]
+        : args;
+      child = spawn(command, commandArgs, {
         cwd: options.cwd || process.cwd(),
         env: options.env || process.env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -393,6 +423,41 @@ async function inspectCandidate(candidate, options = {}) {
       compatible: false,
       reason: "not_found",
     };
+  }
+
+  if (candidate.source === "plugin_runtime") {
+    if (
+      typeof candidate.expectedSha256 !== "string" ||
+      !SHA256_RE.test(candidate.expectedSha256)
+    ) {
+      return {
+        ...candidate,
+        executable,
+        available: true,
+        compatible: false,
+        reason: "missing_checksum",
+      };
+    }
+    try {
+      const actualSha256 = sha256(await fsp.readFile(executable));
+      if (actualSha256 !== candidate.expectedSha256) {
+        return {
+          ...candidate,
+          executable,
+          available: true,
+          compatible: false,
+          reason: "checksum_mismatch",
+        };
+      }
+    } catch {
+      return {
+        ...candidate,
+        executable,
+        available: false,
+        compatible: false,
+        reason: "checksum_unreadable",
+      };
+    }
   }
 
   const result = await runCommand(executable, ["protocol", "--json"], options);
@@ -833,6 +898,7 @@ async function verifyManifestExecutable(manifest, root, expectedParent) {
   const inspected = await inspectCandidate({
     executable,
     source: "plugin_runtime",
+    expectedSha256: manifest.sha256,
   });
   if (!inspected.compatible || inspected.packageVersion !== manifest.version) {
     throw new Error(
