@@ -15,6 +15,81 @@ The doctor report's `loop` object is the readiness contract. Core setup can be r
 Linear issue lookup is `not_configured` or `configured_unverified`; that integration state is never
 silently treated as successful.
 
+## Automatic source reconciliation
+
+Manual writeback remains useful, but it is no longer the only source of review
+signal. Setup creates `reconciliation.json` in the selected canonical root.
+Run a bounded review window before deciding that nothing is pending:
+
+```bash
+fclt ai review status --json
+fclt ai review reconcile \
+  --since 2026-07-03T00:00:00Z \
+  --until 2026-07-10T23:59:59Z \
+  --json
+```
+
+The adapter contract supports explicit writebacks, Git commits and canonical
+asset changes, Linear issue/comment/status events, automation memory/log files,
+and configured Markdown logs, runbooks, or research. Defaults are read-only:
+reconciliation does not edit Linear, Git, automation state, canonical assets,
+writebacks, or proposals.
+
+A project configuration can opt into additional sources without storing
+credentials:
+
+```json
+{
+  "version": 1,
+  "sources": [
+    { "id": "writebacks", "type": "writebacks", "scope": "global" },
+    {
+      "id": "git",
+      "type": "git",
+      "repository": "project",
+      "allBranches": true,
+      "paths": [".ai", "AGENTS.md", "docs"]
+    },
+    {
+      "id": "linear",
+      "type": "linear",
+      "teamKey": "TEAM",
+      "tokenEnv": "LINEAR_API_KEY"
+    },
+    {
+      "id": "runbooks",
+      "type": "markdown",
+      "root": "project",
+      "paths": ["notes/**/*.md", "research/**/*.md"]
+    },
+    {
+      "id": "automation-memory",
+      "type": "automation",
+      "root": "home",
+      "paths": [".codex/automations/**/memory.md"]
+    }
+  ]
+}
+```
+
+Tracked config accepts an environment-variable name, never an inline token.
+File patterns must stay inside the selected project or home root; symlink and
+path traversal escapes are rejected. Linear uses a fixed read-only query and a
+bounded timeout. Missing auth, missing logs, stale sources, and adapter failures
+produce degraded coverage instead of a false empty result.
+
+Machine-local state stores per-source watermarks/cursors, dedupe history,
+extraction decisions, and deterministic review-window JSON. Human-readable
+mirrors live under `~/.ai/reconciliation/global/` or
+`~/.ai/reconciliation/projects/<slug-hash>/`. Exact reruns reuse the completed
+window; overlapping windows resume from source watermarks with a tie overlap.
+
+Every discovered signal is classified as `implementation-only`,
+`capability-source`, `capability-implementation`, `outcome-proof`, or `noise`.
+Included signals receive exactly one disposition: `propose`, `apply-local`,
+`task`, `resolve-watch`, or `defer`. Tickets remain linked evidence and task
+targets rather than becoming one capability proposal per ticket.
+
 Use this loop when a task exposes durable friction:
 
 1. record one targeted writeback
@@ -73,7 +148,12 @@ fclt ai evolve propose
 fclt ai evolve list
 ```
 
-Use `assess` as the read-only gate for agent-led review UI. It returns a recommendation (`no_mutation`, `record_more_writeback`, `propose`, or `review_existing_proposal`), source writeback ids, active proposal ids, a quality checklist, suggested commands, and the next agent instruction.
+Use `assess` as the read-only gate for agent-led review UI. It returns a
+recommendation (`reconcile_sources`, `review_reconciled_signals`,
+`no_mutation`, `record_more_writeback`, `propose`, or
+`review_existing_proposal`), source writeback ids, reconciliation coverage and
+signal ids, active proposal ids, a quality checklist, suggested commands, and
+the next agent instruction.
 
 For a single weak or medium-confidence writeback, the right answer is usually more evidence, not a proposal. A useful no-op still explains what recurrence would change the decision and where the next writeback should land.
 
@@ -132,6 +212,8 @@ Human-readable Markdown mirrors live under global `~/.ai`:
 ~/.ai/writebacks/projects/<slug-hash>/
 ~/.ai/evolution/global/
 ~/.ai/evolution/projects/<slug-hash>/
+~/.ai/reconciliation/global/
+~/.ai/reconciliation/projects/<slug-hash>/
 ```
 
 Project-scoped artifacts include project metadata in frontmatter. They do not get written into repo-local `<repo>/.ai/writebacks` or `<repo>/.ai/evolution`.

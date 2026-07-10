@@ -35,6 +35,9 @@ import {
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
   facultAiIndexPath,
+  facultAiReconciliationConfigPath,
+  facultAiReconciliationReviewDir,
+  facultAiReconciliationStatePath,
   facultAiWritebackReviewDir,
   facultConfigPath,
   facultRootDir,
@@ -47,6 +50,7 @@ import {
   loadConfiguredProjectSyncTools,
   writeProjectSyncPolicy,
 } from "./project-sync";
+import { reconciliationStatus } from "./reconciliation";
 import { renderSnippetText } from "./snippets";
 import { packageVersion } from "./status";
 
@@ -114,6 +118,12 @@ interface LoopReadiness {
     writebackSkill: boolean;
     evolutionSkill: boolean;
     automationTemplates: string[];
+    reconciliation: {
+      configured: boolean;
+      sourceCount: number;
+      coverageState?: "complete" | "degraded";
+      lastReviewId?: string;
+    };
   };
   integrations: {
     codex: CodexReadiness;
@@ -140,6 +150,9 @@ export interface DoctorReport {
     legacyIndex: string;
     writebackReviewDir: string;
     evolutionReviewDir: string;
+    reconciliationConfigPath: string;
+    reconciliationStatePath: string;
+    reconciliationReviewDir: string;
   };
   checks: {
     rootExists: boolean;
@@ -149,6 +162,8 @@ export interface DoctorReport {
     generatedGraphExists: boolean;
     writebackReviewDirExists: boolean;
     evolutionReviewDirExists: boolean;
+    reconciliationConfigured: boolean;
+    reconciliationSourceCount: number;
     canonicalGlobalDocsValid: boolean;
     canonicalGlobalDocsIssueCodes: string[];
     canonicalTemplateRefsValid: boolean;
@@ -1177,6 +1192,18 @@ export async function buildDoctorReport(opts?: {
   const legacy = legacyAiIndexPath(rootDir);
   const writebackReviewDir = facultAiWritebackReviewDir(home, rootDir);
   const evolutionReviewDir = facultAiEvolutionReviewDir(home, rootDir);
+  const reconciliationConfigPath = facultAiReconciliationConfigPath(
+    home,
+    rootDir
+  );
+  const reconciliationStatePath = facultAiReconciliationStatePath(
+    home,
+    rootDir
+  );
+  const reconciliationReviewDir = facultAiReconciliationReviewDir(
+    home,
+    rootDir
+  );
 
   const [
     rootExists,
@@ -1189,6 +1216,7 @@ export async function buildDoctorReport(opts?: {
     canonicalGlobalDocs,
     canonicalTemplateRefs,
     projectSyncPlan,
+    reconciliation,
   ] = await Promise.all([
     pathExists(rootDir),
     hasCanonicalSource(rootDir),
@@ -1200,6 +1228,7 @@ export async function buildDoctorReport(opts?: {
     inspectCanonicalGlobalDocs(rootDir, { projectRoot }),
     inspectCanonicalTemplateRefs(rootDir),
     planProjectSyncPolicyRepair({ home, rootDir }),
+    reconciliationStatus({ homeDir: home, rootDir }),
   ]);
 
   const projectSyncRepairTools = Object.keys(projectSyncPlan.toolPolicies).sort(
@@ -1268,7 +1297,10 @@ export async function buildDoctorReport(opts?: {
   const loopState: LoopReadinessState =
     loopBlockers.length > 0
       ? "blocked"
-      : assetTargeting && writebackReviewDirExists && evolutionReviewDirExists
+      : assetTargeting &&
+          writebackReviewDirExists &&
+          evolutionReviewDirExists &&
+          reconciliation.configured
         ? "ready"
         : "degraded";
   const issues: DoctorIssue[] = [];
@@ -1407,6 +1439,22 @@ export async function buildDoctorReport(opts?: {
     });
   }
 
+  if (!reconciliation.configured) {
+    issues.push({
+      severity: "warning",
+      code: "reconciliation-not-configured",
+      message:
+        "Automatic source reconciliation is not configured, so an empty writeback queue cannot prove an empty review window.",
+      fix: "Run `fclt ai review init` or `fclt setup`.",
+    });
+    actions.push({
+      id: "init-reconciliation",
+      label: "Initialize automatic source reconciliation",
+      command: "fclt ai review init",
+      risk: "canonical_write",
+    });
+  }
+
   if (!(writebackSkill && evolutionSkill)) {
     issues.push({
       severity: "error",
@@ -1511,6 +1559,9 @@ export async function buildDoctorReport(opts?: {
       legacyIndex: legacy,
       writebackReviewDir,
       evolutionReviewDir,
+      reconciliationConfigPath,
+      reconciliationStatePath,
+      reconciliationReviewDir,
     },
     checks: {
       rootExists,
@@ -1520,6 +1571,8 @@ export async function buildDoctorReport(opts?: {
       generatedGraphExists,
       writebackReviewDirExists,
       evolutionReviewDirExists,
+      reconciliationConfigured: reconciliation.configured,
+      reconciliationSourceCount: reconciliation.sourceCount,
       canonicalGlobalDocsValid: canonicalGlobalDocs.valid,
       canonicalGlobalDocsIssueCodes: canonicalGlobalDocs.issues.map(
         (issue) => issue.code
@@ -1552,6 +1605,12 @@ export async function buildDoctorReport(opts?: {
           "evolution-review",
           "tool-call-audit",
         ],
+        reconciliation: {
+          configured: reconciliation.configured,
+          sourceCount: reconciliation.sourceCount,
+          coverageState: reconciliation.coverageState,
+          lastReviewId: reconciliation.lastReviewId,
+        },
       },
       integrations: {
         codex: codexReadiness,

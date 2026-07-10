@@ -13,6 +13,9 @@ import {
   facultAiIndexPath,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiReconciliationConfigPath,
+  facultAiReconciliationReviewDir,
+  facultAiReconciliationStatePath,
   facultAiRuntimeScopeDir,
   facultAiStateDir,
   facultAiWritebackQueuePath,
@@ -43,6 +46,7 @@ export interface FacultPaths {
     globalRoot: string;
     contextRoot: string;
     configPath: string;
+    reconciliationConfigPath: string;
   };
   generated: {
     stateDir: string;
@@ -61,10 +65,12 @@ export interface FacultPaths {
     writebackQueuePath: string;
     proposalDir: string;
     draftDir: string;
+    reconciliationStatePath: string;
   };
   review: {
     writebackDir: string;
     evolutionDir: string;
+    reconciliationDir: string;
   };
   managedTools: string[];
 }
@@ -103,6 +109,10 @@ export async function buildPaths(opts?: {
       globalRoot: preferredGlobalAiRoot(homeDir),
       contextRoot,
       configPath: facultConfigPath(homeDir),
+      reconciliationConfigPath: facultAiReconciliationConfigPath(
+        homeDir,
+        contextRoot
+      ),
     },
     generated: {
       stateDir: facultGeneratedStateDir({
@@ -124,10 +134,15 @@ export async function buildPaths(opts?: {
       writebackQueuePath: facultAiWritebackQueuePath(homeDir, contextRoot),
       proposalDir: facultAiProposalDir(homeDir, contextRoot),
       draftDir: facultAiDraftDir(homeDir, contextRoot),
+      reconciliationStatePath: facultAiReconciliationStatePath(
+        homeDir,
+        contextRoot
+      ),
     },
     review: {
       writebackDir: facultAiWritebackReviewDir(homeDir, contextRoot),
       evolutionDir: facultAiEvolutionReviewDir(homeDir, contextRoot),
+      reconciliationDir: facultAiReconciliationReviewDir(homeDir, contextRoot),
     },
     managedTools: Object.keys(managed.tools).sort(),
   };
@@ -165,6 +180,7 @@ function printPaths(paths: FacultPaths) {
             ["context root", paths.contextRoot],
             ["project root", paths.projectRoot ?? "(none)"],
             ["config", paths.canonical.configPath],
+            ["reconciliation config", paths.canonical.reconciliationConfigPath],
           ]),
         },
         {
@@ -182,6 +198,7 @@ function printPaths(paths: FacultPaths) {
             ["writeback queue", paths.runtime.writebackQueuePath],
             ["proposal dir", paths.runtime.proposalDir],
             ["draft dir", paths.runtime.draftDir],
+            ["reconciliation state", paths.runtime.reconciliationStatePath],
           ]),
         },
         {
@@ -189,6 +206,7 @@ function printPaths(paths: FacultPaths) {
           lines: renderKeyValue([
             ["writebacks", paths.review.writebackDir],
             ["evolution", paths.review.evolutionDir],
+            ["reconciliation", paths.review.reconciliationDir],
           ]),
         },
       ],

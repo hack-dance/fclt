@@ -39,6 +39,7 @@ Reject global scope when the proposal depends on private examples, one repo's ar
 Use:
 
 ```bash
+fclt ai review reconcile --since <window-start> --until <window-end> --json
 fclt ai writeback add ...
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by domain
@@ -52,6 +53,12 @@ fclt ai writeback link WB-00001 --issue TEAM-123
 fclt ai writeback disposition WB-00001 --type task --target TEAM-123
 fclt ai evolve verify EV-00001 --effectiveness improved --evidence test:post-apply
 ```
+
+The writeback queue alone cannot prove an empty window. Run configured source
+reconciliation first and preserve its coverage, exclusions, correlations,
+linked work, and dispositions. If any source is stale or unavailable, report a
+degraded review rather than "nothing pending." Implementation tickets remain
+evidence and task targets; do not turn each ticket into a capability proposal.
 
 Applying is not completion. Preserve baseline friction, expected behavior, the producing loop,
 implementation tickets, verification evidence, and an effectiveness grade. A recurrence after

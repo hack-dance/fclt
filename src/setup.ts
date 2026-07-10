@@ -4,6 +4,7 @@ import { refreshAiReviewArtifacts } from "./ai";
 import { buildDoctorReport, type DoctorReport } from "./doctor";
 import { type SetupCodexPluginResult, setupCodexPlugin } from "./manage";
 import { facultRootDir } from "./paths";
+import { initializeReconciliationConfig } from "./reconciliation-config";
 import {
   findGitRootFromPath,
   scaffoldBuiltinOperatingModelPack,
@@ -85,6 +86,15 @@ export async function bootstrapFclt(
   changedPaths.push(...globalInstall.changedPaths);
   skippedPaths.push(...(globalInstall.skippedPaths ?? []));
 
+  const globalReconciliation = await initializeReconciliationConfig({
+    homeDir,
+    rootDir: globalRoot,
+    dryRun: opts.dryRun,
+  });
+  if (globalReconciliation.created) {
+    changedPaths.push(globalReconciliation.path);
+  }
+
   if (!opts.dryRun) {
     await refreshAiReviewArtifacts({ homeDir, rootDir: globalRoot });
   }
@@ -99,6 +109,14 @@ export async function bootstrapFclt(
     });
     changedPaths.push(...projectInstall.changedPaths);
     skippedPaths.push(...(projectInstall.skippedPaths ?? []));
+    const projectReconciliation = await initializeReconciliationConfig({
+      homeDir,
+      rootDir: projectRoot,
+      dryRun: opts.dryRun,
+    });
+    if (projectReconciliation.created) {
+      changedPaths.push(projectReconciliation.path);
+    }
     if (!opts.dryRun) {
       await refreshAiReviewArtifacts({ homeDir, rootDir: projectRoot });
     }
