@@ -997,8 +997,15 @@ describe("source reconciliation", () => {
             id: "issue-901",
             identifier: "HACK-901",
             title: "Implement source reader",
-            updatedAt: "2026-07-05T12:00:00Z",
+            updatedAt: "2026-06-01T12:00:00Z",
             state: { name: "Done" },
+            comments: [
+              {
+                id: "comment-901",
+                createdAt: "2026-07-05T12:00:00Z",
+                body: "Published reconciliation outcome",
+              },
+            ],
           },
         ],
       })
@@ -1018,6 +1025,7 @@ describe("source reconciliation", () => {
     });
 
     expect(review.decisions[0]?.classification).toBe("outcome-proof");
+    expect(review.decisions[0]?.sourceRecordId).toBe("comment:comment-901");
     expect(review.signals[0]?.disposition).toBe("resolve-watch");
   });
 
@@ -1421,7 +1429,10 @@ describe("source reconciliation", () => {
     expect(
       review.coverage.find((entry) => entry.sourceId === "memory")
         ?.recordsScanned
-    ).toBe(2);
+    ).toBe(1);
+    expect(
+      review.coverage.find((entry) => entry.sourceId === "memory")?.state
+    ).not.toBe("unavailable");
     const wb20 = review.signals.find(
       (signal) =>
         signal.writebackRefs.includes("WB-00020") &&

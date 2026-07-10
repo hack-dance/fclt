@@ -617,26 +617,26 @@ const linearAdapter: ReconciliationAdapter = {
       const records: SourceRecord[] = [];
       for (const issue of issues) {
         const issueRef = issue.identifier ?? issue.id;
-        if (
-          !(issueRef && issue.updatedAt && inWindow(issue.updatedAt, context))
-        ) {
+        if (!issueRef) {
           continue;
         }
         const state =
           typeof issue.state === "string" ? issue.state : issue.state?.name;
-        records.push(
-          record({
-            context,
-            recordId: `issue:${issueRef}`,
-            dedupeKey: `linear:issue:${issueRef}`,
-            observedAt: issue.updatedAt,
-            title: issue.title ?? issueRef,
-            body: `${issue.description ?? ""}\nState: ${state ?? "unknown"}`,
-            classification: linearClassification(issue),
-            provenance: { issue: issueRef, state: state ?? null },
-            extraRefs: [issueRef],
-          })
-        );
+        if (issue.updatedAt && inWindow(issue.updatedAt, context)) {
+          records.push(
+            record({
+              context,
+              recordId: `issue:${issueRef}`,
+              dedupeKey: `linear:issue:${issueRef}`,
+              observedAt: issue.updatedAt,
+              title: issue.title ?? issueRef,
+              body: `${issue.description ?? ""}\nState: ${state ?? "unknown"}`,
+              classification: linearClassification(issue),
+              provenance: { issue: issueRef, state: state ?? null },
+              extraRefs: [issueRef],
+            })
+          );
+        }
         for (const comment of linearNodes(issue.comments)) {
           const observedAt = comment.updatedAt ?? comment.createdAt;
           if (!(comment.id && observedAt && inWindow(observedAt, context))) {
@@ -768,7 +768,7 @@ function splitTextRecords(
   const sections = text
     .split(MARKDOWN_SECTION_RE)
     .filter((entry) => entry.trim());
-  return sections.map((body, index) => {
+  const mapped = sections.map((body, index) => {
     const heading = body.match(MARKDOWN_HEADING_RE)?.[1]?.trim();
     const headingDate = heading?.match(DATE_HEADING_RE)?.[1];
     return {
@@ -778,6 +778,13 @@ function splitTextRecords(
       observedAt: headingDate ? `${headingDate}T12:00:00.000Z` : undefined,
     };
   });
+  if (!mapped.some((entry) => entry.observedAt)) {
+    return mapped;
+  }
+  return mapped.filter(
+    (entry) =>
+      entry.observedAt || entry.body.replace(MARKDOWN_HEADING_RE, "").trim()
+  );
 }
 
 function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
