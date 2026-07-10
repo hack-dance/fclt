@@ -1,3 +1,9 @@
+## [2.19.2](https://github.com/hack-dance/fclt/compare/v2.19.1...v2.19.2) (2026-07-10)
+
+### Bug Fixes
+
+* isolate Git test harness ([#49](https://github.com/hack-dance/fclt/issues/49)) ([bafc916](https://github.com/hack-dance/fclt/commit/bafc916bd296339a84921bc9ca9eb087b99784c9))
+
 ## [2.19.1](https://github.com/hack-dance/fclt/compare/v2.19.0...v2.19.1) (2026-07-10)
 
 ### Bug Fixes
