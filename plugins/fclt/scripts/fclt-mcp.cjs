@@ -1110,8 +1110,14 @@ function runtimeOperationMetadata(args, result) {
   };
 }
 
+let transportFraming = "content-length";
+
 function send(message) {
   const body = JSON.stringify(message);
+  if (transportFraming === "newline") {
+    process.stdout.write(`${body}\n`);
+    return;
+  }
   process.stdout.write(
     `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
   );
@@ -1195,9 +1201,41 @@ async function handle(message) {
 
 let buffer = Buffer.alloc(0);
 
+function dispatch(body, framing) {
+  transportFraming = framing;
+  handle(JSON.parse(body)).catch((error) => {
+    send({
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32_000,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  });
+}
+
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   while (true) {
+    while (buffer[0] === 10 || buffer[0] === 13) {
+      buffer = buffer.subarray(1);
+    }
+    if (buffer.length === 0) {
+      return;
+    }
+    if (buffer[0] === 123 || buffer[0] === 91) {
+      const lineEnd = buffer.indexOf("\n");
+      if (lineEnd === -1) {
+        return;
+      }
+      const body = buffer.subarray(0, lineEnd).toString("utf8").trim();
+      buffer = buffer.subarray(lineEnd + 1);
+      if (body) {
+        dispatch(body, "newline");
+      }
+      continue;
+    }
     const headerEnd = buffer.indexOf("\r\n\r\n");
     if (headerEnd === -1) {
       return;
@@ -1215,16 +1253,7 @@ process.stdin.on("data", (chunk) => {
     }
     const body = buffer.slice(headerEnd + 4, frameEnd).toString("utf8");
     buffer = buffer.slice(frameEnd);
-    handle(JSON.parse(body)).catch((error) => {
-      send({
-        jsonrpc: "2.0",
-        id: null,
-        error: {
-          code: -32_000,
-          message: error instanceof Error ? error.message : String(error),
-        },
-      });
-    });
+    dispatch(body, "content-length");
   }
 });
 

@@ -12,6 +12,10 @@ function frame(message: unknown): string {
   return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
 }
 
+function lineFrame(message: unknown): string {
+  return `${JSON.stringify(message)}\n`;
+}
+
 function compatibleStubScript(): string {
   return [
     `#!${process.execPath}`,
@@ -62,6 +66,35 @@ function readFrame(stream: NodeJS.ReadableStream): Promise<unknown> {
   });
 }
 
+function readLine(stream: NodeJS.ReadableStream): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      const lineEnd = buffer.indexOf("\n");
+      if (lineEnd === -1) {
+        return;
+      }
+      cleanup();
+      try {
+        resolve(JSON.parse(buffer.slice(0, lineEnd)));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      stream.off("data", onData);
+      stream.off("error", onError);
+    };
+    stream.on("data", onData);
+    stream.on("error", onError);
+  });
+}
+
 function toolPayload(response: unknown): {
   operation: { preview: boolean; risk: string };
   recovery: {
@@ -98,6 +131,55 @@ function toolPayload(response: unknown): {
 }
 
 describe("bundled fclt MCP plugin", () => {
+  it("negotiates newline-delimited stdio framing used by Codex", async () => {
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
+
+    try {
+      child.stdin.write(
+        lineFrame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "codex-test", version: "1" },
+          },
+        })
+      );
+      const initialized = (await readLine(child.stdout)) as {
+        result?: { serverInfo?: { name?: string } };
+      };
+      expect(initialized.result?.serverInfo?.name).toBe("fclt");
+
+      child.stdin.write(
+        lineFrame({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+          params: {},
+        })
+      );
+      const listed = (await readLine(child.stdout)) as {
+        result?: { tools?: { name?: string }[] };
+      };
+      expect(listed.result?.tools?.map((tool) => tool.name)).toContain(
+        "fclt_runtime"
+      );
+    } finally {
+      child.kill();
+    }
+  });
+
   it("wraps the released setup contract with preview, scope, and approval gates", async () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
