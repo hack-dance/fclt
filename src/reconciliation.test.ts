@@ -176,6 +176,31 @@ describe("reconciliation config", () => {
         sources: [{ id: "git", type: "git", paths: [] }],
       })
     ).toThrow();
+    expect(() =>
+      parseReconciliationConfig({
+        version: 1,
+        sources: [
+          {
+            id: "linear-export",
+            type: "linear",
+            exportPath: "../linear.json",
+          },
+        ],
+      })
+    ).toThrow();
+    expect(() =>
+      parseReconciliationConfig({
+        version: 1,
+        sources: [
+          {
+            id: "logs",
+            type: "automation",
+            root: "home",
+            paths: ["../shared/*.jsonl"],
+          },
+        ],
+      })
+    ).toThrow();
   });
 
   it("backs up an invalid config only through explicit force repair", async () => {

@@ -151,6 +151,16 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
         `Linear source ${id} endpoint must be ${LINEAR_GRAPHQL_ENDPOINT}`
       );
     }
+    if (
+      source.exportPath &&
+      (isAbsolute(source.exportPath) ||
+        source.exportPath.split(PATH_SEGMENT_RE).includes("..") ||
+        source.exportPath.includes("\0"))
+    ) {
+      throw new Error(
+        `Linear source ${id} exportPath must stay inside the project`
+      );
+    }
     if (!(source.exportPath || (source.teamKey && source.tokenEnv))) {
       throw new Error(
         `Linear source ${id} requires teamKey and tokenEnv unless exportPath is configured`
@@ -178,6 +188,17 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
       root,
       paths: stringArray(value.paths, `${value.type} source ${id} paths`),
     };
+    for (const path of source.paths) {
+      if (
+        isAbsolute(path) ||
+        path.split(PATH_SEGMENT_RE).includes("..") ||
+        path.includes("\0")
+      ) {
+        throw new Error(
+          `${value.type} source ${id} path must stay inside its configured root: ${path}`
+        );
+      }
+    }
     return source;
   }
   throw new Error(
