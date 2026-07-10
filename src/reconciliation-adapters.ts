@@ -10,9 +10,9 @@ import {
 } from "./paths";
 import type {
   AdapterScanResult,
+  EvidenceExportSourceConfig,
   FileSourceConfig,
   GitSourceConfig,
-  LinearSourceConfig,
   ReconciliationAdapter,
   ReconciliationAdapterContext,
   ReconciliationSourceType,
@@ -41,11 +41,9 @@ const LOG_TIMESTAMP_RE =
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})\b/;
 const UNBORN_GIT_RE =
   /does not have any commits yet|bad default revision 'HEAD'/i;
-const LINEAR_CAPABILITY_RE =
+const ISSUE_CAPABILITY_RE =
   /capabilit|writeback|evolution|instruction|skill|agent|runbook|reconcil/;
-const TERMINAL_LINEAR_STATE_RE =
-  /^(?:completed|done|closed|canceled|cancelled|released)$/i;
-const LINEAR_OUTCOME_RE = /proof|verified|released|deployed|completed/;
+const ISSUE_OUTCOME_RE = /proof|verified|released|deployed|completed/;
 const FILE_RELEVANCE_RE =
   /capabilit|writeback|evolution|instruction|skill|runbook|verification|reconcil|outcome|signal/i;
 const WHITESPACE_RE = /\s+/g;
@@ -467,240 +465,241 @@ const gitAdapter: ReconciliationAdapter = {
   },
 };
 
-interface LinearCommentExport {
-  id?: string;
-  body?: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
+type EvidenceEventKind = "work-item" | "comment" | "status-change";
 
-interface LinearHistoryExport {
-  id?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  fromState?: { name?: string } | null;
-  toState?: { name?: string } | null;
-}
-
-interface LinearConnection<T> {
-  nodes?: T[];
-  pageInfo?: { hasNextPage?: boolean };
-}
-
-interface LinearIssueExport {
-  id?: string;
-  identifier?: string;
+interface EvidenceExportEvent {
+  id: string;
+  kind: EvidenceEventKind;
+  observedAt: string;
   title?: string;
-  description?: string;
-  updatedAt?: string;
-  state?: { name?: string; type?: string } | string;
-  labels?: { nodes?: Array<{ name?: string }> } | string[];
-  comments?: LinearConnection<LinearCommentExport> | LinearCommentExport[];
-  history?: LinearConnection<LinearHistoryExport> | LinearHistoryExport[];
+  body?: string;
+  refs?: string[];
+  terminal?: boolean;
+  sourceUri?: string;
 }
 
-function linearNodes<T>(value: LinearConnection<T> | T[] | undefined): T[] {
-  return Array.isArray(value) ? value : (value?.nodes ?? []);
+interface EvidenceExportEnvelope {
+  version: 1;
+  producer: string;
+  generatedAt: string;
+  coverage: {
+    since: string;
+    until: string;
+    complete: boolean;
+    partialReasons?: string[];
+  };
+  cursor?: string;
+  events: EvidenceExportEvent[];
 }
 
-function parseLinearPayload(value: unknown): {
-  issues: LinearIssueExport[];
-  truncated: boolean;
-} {
-  if (Array.isArray(value)) {
-    return { issues: value as LinearIssueExport[], truncated: false };
-  }
-  if (!value || typeof value !== "object") {
-    return { issues: [], truncated: false };
-  }
-  const object = value as Record<string, unknown>;
-  const data = (object.data ?? object) as Record<string, unknown>;
-  const issues = data.issues as
-    | LinearConnection<LinearIssueExport>
-    | LinearIssueExport[]
-    | undefined;
-  const nodes = linearNodes(issues);
-  const truncated =
-    (!Array.isArray(issues) && issues?.pageInfo?.hasNextPage === true) ||
-    nodes.some(
-      (issue) =>
-        (!Array.isArray(issue.comments) &&
-          issue.comments?.pageInfo?.hasNextPage === true) ||
-        (!Array.isArray(issue.history) &&
-          issue.history?.pageInfo?.hasNextPage === true)
-    );
-  return { issues: nodes, truncated };
-}
+const MAX_EVIDENCE_EVENTS = 1000;
+const MAX_EVIDENCE_FIELD_LENGTH = 16_384;
+const EVIDENCE_EVENT_KINDS = new Set<EvidenceEventKind>([
+  "work-item",
+  "comment",
+  "status-change",
+]);
 
-async function loadLinearIssues(args: {
-  config: LinearSourceConfig;
-  context: ReconciliationAdapterContext;
-}): Promise<{ issues: LinearIssueExport[]; truncated: boolean }> {
-  if (args.config.exportPath) {
-    if (
-      isAbsolute(args.config.exportPath) ||
-      args.config.exportPath.includes("..")
-    ) {
-      throw new Error("Linear exportPath must be relative to the project root");
-    }
-    const base = args.context.projectRoot ?? args.context.rootDir;
-    const baseReal = await realpath(base).catch(() => resolve(base));
-    const exportReal = await realpath(resolve(base, args.config.exportPath));
-    const rel = relative(baseReal, exportReal);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
-      throw new Error("Linear exportPath resolves outside the project root");
-    }
-    return parseLinearPayload(JSON.parse(await readFile(exportReal, "utf8")));
+function parseEvidenceExport(value: unknown): EvidenceExportEnvelope {
+  if (!isPlainObject(value) || value.version !== 1) {
+    throw new Error("Evidence export must be a version 1 object");
   }
-  const tokenEnv = args.config.tokenEnv;
-  const token = tokenEnv ? process.env[tokenEnv] : undefined;
-  if (!(tokenEnv && token)) {
+  if (
+    typeof value.producer !== "string" ||
+    !value.producer.trim() ||
+    value.producer.length > 200
+  ) {
+    throw new Error("Evidence export producer must be a bounded string");
+  }
+  if (
+    typeof value.generatedAt !== "string" ||
+    !Number.isFinite(Date.parse(value.generatedAt))
+  ) {
+    throw new Error("Evidence export generatedAt must be an ISO timestamp");
+  }
+  if (!isPlainObject(value.coverage)) {
+    throw new Error("Evidence export coverage is required");
+  }
+  const { since, until, complete, partialReasons } = value.coverage;
+  if (
+    typeof since !== "string" ||
+    typeof until !== "string" ||
+    !Number.isFinite(Date.parse(since)) ||
+    !Number.isFinite(Date.parse(until)) ||
+    typeof complete !== "boolean"
+  ) {
+    throw new Error("Evidence export coverage window is invalid");
+  }
+  if (
+    partialReasons !== undefined &&
+    (!Array.isArray(partialReasons) ||
+      partialReasons.some((entry) => typeof entry !== "string"))
+  ) {
+    throw new Error("Evidence export partialReasons must be strings");
+  }
+  if (
+    !Array.isArray(value.events) ||
+    value.events.length > MAX_EVIDENCE_EVENTS
+  ) {
     throw new Error(
-      `Linear token environment variable is unavailable: ${tokenEnv ?? "not configured"}`
+      `Evidence export events must contain at most ${MAX_EVIDENCE_EVENTS} records`
     );
   }
-  const endpoint = args.config.endpoint ?? "https://api.linear.app/graphql";
-  const query = `query ReconciliationIssues($since: DateTimeOrDuration!, $until: DateTimeOrDuration!, $team: String) {
-    issues(first: 250, orderBy: updatedAt, filter: { updatedAt: { gte: $since, lte: $until }, team: { key: { eq: $team } } }) {
-      pageInfo { hasNextPage }
-      nodes { id identifier title description updatedAt state { name type } labels { nodes { name } }
-        comments(first: 100) { pageInfo { hasNextPage } nodes { id body createdAt updatedAt } }
-        history(first: 100) { pageInfo { hasNextPage } nodes { id createdAt updatedAt fromState { name } toState { name } } }
+  const seenIds = new Set<string>();
+  const events = value.events.map((entry, index) => {
+    if (!isPlainObject(entry)) {
+      throw new Error(`Evidence export event ${index + 1} must be an object`);
+    }
+    const { id, kind, observedAt, title, body, refs, terminal, sourceUri } =
+      entry;
+    if (typeof id !== "string" || !id || id.length > 500 || seenIds.has(id)) {
+      throw new Error(`Evidence export event ${index + 1} has an invalid id`);
+    }
+    seenIds.add(id);
+    if (
+      typeof kind !== "string" ||
+      !EVIDENCE_EVENT_KINDS.has(kind as EvidenceEventKind)
+    ) {
+      throw new Error(`Evidence export event ${id} has an invalid kind`);
+    }
+    if (
+      typeof observedAt !== "string" ||
+      !Number.isFinite(Date.parse(observedAt))
+    ) {
+      throw new Error(`Evidence export event ${id} has an invalid observedAt`);
+    }
+    for (const [field, fieldValue] of [
+      ["title", title],
+      ["body", body],
+      ["sourceUri", sourceUri],
+    ] as const) {
+      if (
+        fieldValue !== undefined &&
+        (typeof fieldValue !== "string" ||
+          fieldValue.length > MAX_EVIDENCE_FIELD_LENGTH)
+      ) {
+        throw new Error(`Evidence export event ${id} has an invalid ${field}`);
       }
     }
-  }`;
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { Authorization: token, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query,
-      variables: {
-        since: args.context.window.since,
-        until: args.context.window.until,
-        team: args.config.teamKey ?? null,
-      },
-    }),
-    signal: AbortSignal.timeout(15_000),
+    if (
+      refs !== undefined &&
+      (!Array.isArray(refs) ||
+        refs.length > 100 ||
+        refs.some((ref) => typeof ref !== "string" || !ref || ref.length > 500))
+    ) {
+      throw new Error(`Evidence export event ${id} has invalid refs`);
+    }
+    if (terminal !== undefined && typeof terminal !== "boolean") {
+      throw new Error(`Evidence export event ${id} has invalid terminal state`);
+    }
+    return {
+      id,
+      kind: kind as EvidenceEventKind,
+      observedAt,
+      title: title as string | undefined,
+      body: body as string | undefined,
+      refs: refs as string[] | undefined,
+      terminal: terminal as boolean | undefined,
+      sourceUri: sourceUri as string | undefined,
+    };
   });
-  if (!response.ok) {
-    throw new Error(`Linear read failed with HTTP ${response.status}`);
-  }
-  const payload = (await response.json()) as {
-    errors?: Array<{ message?: string }>;
+  return {
+    version: 1,
+    producer: value.producer.trim(),
+    generatedAt: value.generatedAt,
+    coverage: {
+      since,
+      until,
+      complete,
+      partialReasons: partialReasons as string[] | undefined,
+    },
+    cursor: typeof value.cursor === "string" ? value.cursor : undefined,
+    events,
   };
-  if (payload.errors?.length) {
-    throw new Error(
-      payload.errors
-        .map((entry) => entry.message ?? "Linear GraphQL error")
-        .join("; ")
-    );
-  }
-  return parseLinearPayload(payload);
 }
 
-function linearClassification(issue: LinearIssueExport): SignalClassification {
-  const state =
-    typeof issue.state === "string" ? issue.state : issue.state?.name;
-  const stateType =
-    typeof issue.state === "string" ? undefined : issue.state?.type;
-  if (
-    TERMINAL_LINEAR_STATE_RE.test(state ?? "") ||
-    TERMINAL_LINEAR_STATE_RE.test(stateType ?? "")
-  ) {
+async function loadEvidenceExport(args: {
+  config: EvidenceExportSourceConfig;
+  context: ReconciliationAdapterContext;
+}): Promise<EvidenceExportEnvelope> {
+  if (isAbsolute(args.config.path) || args.config.path.includes("..")) {
+    throw new Error(
+      "Evidence export path must be relative to the project root"
+    );
+  }
+  const base = args.context.projectRoot ?? args.context.rootDir;
+  const baseReal = await realpath(base).catch(() => resolve(base));
+  const exportReal = await realpath(resolve(base, args.config.path));
+  const rel = relative(baseReal, exportReal);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Evidence export path resolves outside the project root");
+  }
+  const info = await stat(exportReal);
+  if (info.size > MAX_FILE_BYTES) {
+    throw new Error(`Evidence export exceeds ${MAX_FILE_BYTES} bytes`);
+  }
+  return parseEvidenceExport(JSON.parse(await readFile(exportReal, "utf8")));
+}
+
+function evidenceClassification(
+  event: EvidenceExportEvent
+): SignalClassification {
+  if (event.terminal) {
     return "outcome-proof";
   }
-  const text = `${issue.title ?? ""} ${issue.description ?? ""}`.toLowerCase();
-  if (LINEAR_CAPABILITY_RE.test(text)) {
+  const text = `${event.title ?? ""} ${event.body ?? ""}`.toLowerCase();
+  if (ISSUE_CAPABILITY_RE.test(text)) {
     return "capability-implementation";
   }
-  if (LINEAR_OUTCOME_RE.test(text)) {
+  if (ISSUE_OUTCOME_RE.test(text)) {
     return "outcome-proof";
   }
   return "implementation-only";
 }
 
-const linearAdapter: ReconciliationAdapter = {
-  type: "linear",
+const evidenceExportAdapter: ReconciliationAdapter = {
+  type: "evidence-export",
   version: 1,
   async scan(context): Promise<AdapterScanResult> {
-    const config = context.config as LinearSourceConfig;
+    const config = context.config as EvidenceExportSourceConfig;
     try {
-      const { issues, truncated } = await loadLinearIssues({ config, context });
-      const records: SourceRecord[] = [];
-      for (const issue of issues) {
-        const issueRef = issue.identifier ?? issue.id;
-        if (!issueRef) {
-          continue;
-        }
-        const state =
-          typeof issue.state === "string" ? issue.state : issue.state?.name;
-        if (issue.updatedAt && inWindow(issue.updatedAt, context)) {
-          records.push(
-            record({
-              context,
-              recordId: `issue:${issueRef}`,
-              dedupeKey: `linear:issue:${issueRef}`,
-              observedAt: issue.updatedAt,
-              title: issue.title ?? issueRef,
-              body: `${issue.description ?? ""}\nState: ${state ?? "unknown"}`,
-              classification: linearClassification(issue),
-              provenance: { issue: issueRef, state: state ?? null },
-              extraRefs: [issueRef],
-            })
-          );
-        }
-        for (const comment of linearNodes(issue.comments)) {
-          const observedAt = comment.updatedAt ?? comment.createdAt;
-          if (!(comment.id && observedAt && inWindow(observedAt, context))) {
-            continue;
-          }
-          records.push(
-            record({
-              context,
-              recordId: `comment:${comment.id}`,
-              dedupeKey: `linear:comment:${comment.id}`,
-              observedAt,
-              title: `${issueRef} comment`,
-              body: comment.body ?? "",
-              classification: linearClassification(issue),
-              provenance: { issue: issueRef, commentId: comment.id },
-              extraRefs: [issueRef],
-            })
-          );
-        }
-        for (const history of linearNodes(issue.history)) {
-          const observedAt = history.updatedAt ?? history.createdAt;
-          if (!(history.id && observedAt && inWindow(observedAt, context))) {
-            continue;
-          }
-          records.push(
-            record({
-              context,
-              recordId: `status:${history.id}`,
-              dedupeKey: `linear:status:${history.id}`,
-              observedAt,
-              title: `${issueRef} status changed`,
-              body: `${history.fromState?.name ?? "unknown"} -> ${history.toState?.name ?? "unknown"}`,
-              classification: TERMINAL_LINEAR_STATE_RE.test(
-                history.toState?.name ?? ""
-              )
-                ? "outcome-proof"
-                : linearClassification(issue),
-              provenance: { issue: issueRef, historyId: history.id },
-              extraRefs: [issueRef],
-            })
-          );
-        }
-      }
-      if (truncated) {
+      const envelope = await loadEvidenceExport({ config, context });
+      const coversWindow =
+        Date.parse(envelope.coverage.since) <=
+          Date.parse(context.window.since) &&
+        Date.parse(envelope.coverage.until) >= Date.parse(context.window.until);
+      const records = envelope.events
+        .filter((event) => inWindow(event.observedAt, context))
+        .map((event) =>
+          record({
+            context,
+            recordId: event.id,
+            dedupeKey: `evidence-export:${envelope.producer}:${event.id}`,
+            observedAt: event.observedAt,
+            title: event.title ?? `${event.kind} ${event.id}`,
+            body: event.body ?? "",
+            classification: evidenceClassification(event),
+            provenance: {
+              producer: envelope.producer,
+              generatedAt: envelope.generatedAt,
+              kind: event.kind,
+              sourceUri: event.sourceUri ?? null,
+            },
+            extraRefs: event.refs ?? [],
+          })
+        );
+      if (!(envelope.coverage.complete && coversWindow)) {
         return {
           state: "unavailable",
           records,
           unavailableReason:
-            "Linear result exceeded a bounded page; coverage is incomplete",
+            envelope.coverage.partialReasons?.join("; ") ||
+            "Evidence export does not prove complete coverage for the requested window",
         };
       }
-      return resultFromRecords(records);
+      const result = resultFromRecords(records);
+      result.cursor = envelope.cursor ?? result.cursor;
+      return result;
     } catch (error) {
       return {
         state: "unavailable",
@@ -965,7 +964,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
 const adapters = new Map<ReconciliationSourceType, ReconciliationAdapter>([
   [writebackAdapter.type, writebackAdapter],
   [gitAdapter.type, gitAdapter],
-  [linearAdapter.type, linearAdapter],
+  [evidenceExportAdapter.type, evidenceExportAdapter],
   ["automation", fileAdapter("automation")],
   ["markdown", fileAdapter("markdown")],
 ]);

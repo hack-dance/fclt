@@ -3,7 +3,7 @@ import type { WritebackDisposition } from "./ai";
 export type ReconciliationSourceType =
   | "writebacks"
   | "git"
-  | "linear"
+  | "evidence-export"
   | "automation"
   | "markdown";
 
@@ -38,12 +38,9 @@ export interface GitSourceConfig extends BaseSourceConfig {
   allBranches?: boolean;
 }
 
-export interface LinearSourceConfig extends BaseSourceConfig {
-  type: "linear";
-  endpoint?: string;
-  teamKey?: string;
-  tokenEnv?: string;
-  exportPath?: string;
+export interface EvidenceExportSourceConfig extends BaseSourceConfig {
+  type: "evidence-export";
+  path: string;
 }
 
 export interface FileSourceConfig extends BaseSourceConfig {
@@ -55,7 +52,7 @@ export interface FileSourceConfig extends BaseSourceConfig {
 export type ReconciliationSourceConfig =
   | WritebackSourceConfig
   | GitSourceConfig
-  | LinearSourceConfig
+  | EvidenceExportSourceConfig
   | FileSourceConfig;
 
 export interface ReconciliationConfig {

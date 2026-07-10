@@ -5,17 +5,15 @@ import {
   projectRootFromAiRoot,
 } from "./paths";
 import type {
+  EvidenceExportSourceConfig,
   FileSourceConfig,
   GitSourceConfig,
-  LinearSourceConfig,
   ReconciliationConfig,
   ReconciliationSourceConfig,
 } from "./reconciliation-types";
 
 const SOURCE_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
-const ENVIRONMENT_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 const PATH_SEGMENT_RE = /[\\/]/;
-const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -113,60 +111,30 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
     }
     return source;
   }
-  if (value.type === "linear") {
+  if (value.type === "evidence-export") {
     assertKnownFields(
       value,
-      [
-        "id",
-        "type",
-        "enabled",
-        "endpoint",
-        "teamKey",
-        "tokenEnv",
-        "exportPath",
-      ],
-      `Linear source ${id}`
+      ["id", "type", "enabled", "path"],
+      `Evidence export source ${id}`
     );
-    const source: LinearSourceConfig = { id, type: "linear", enabled };
-    for (const field of [
-      "endpoint",
-      "teamKey",
-      "tokenEnv",
-      "exportPath",
-    ] as const) {
-      const fieldValue = value[field];
-      if (fieldValue !== undefined) {
-        if (typeof fieldValue !== "string" || !fieldValue.trim()) {
-          throw new Error(
-            `Linear source ${id} ${field} must be a non-empty string`
-          );
-        }
-        source[field] = fieldValue.trim();
-      }
-    }
-    if (source.tokenEnv && !ENVIRONMENT_NAME_RE.test(source.tokenEnv)) {
+    if (typeof value.path !== "string" || !value.path.trim()) {
       throw new Error(
-        `Linear source ${id} tokenEnv must name an environment variable`
+        `Evidence export source ${id} path must be a non-empty string`
       );
     }
-    if (source.endpoint && source.endpoint !== LINEAR_GRAPHQL_ENDPOINT) {
-      throw new Error(
-        `Linear source ${id} endpoint must be ${LINEAR_GRAPHQL_ENDPOINT}`
-      );
-    }
+    const source: EvidenceExportSourceConfig = {
+      id,
+      type: "evidence-export",
+      enabled,
+      path: value.path.trim(),
+    };
     if (
-      source.exportPath &&
-      (isAbsolute(source.exportPath) ||
-        source.exportPath.split(PATH_SEGMENT_RE).includes("..") ||
-        source.exportPath.includes("\0"))
+      isAbsolute(source.path) ||
+      source.path.split(PATH_SEGMENT_RE).includes("..") ||
+      source.path.includes("\0")
     ) {
       throw new Error(
-        `Linear source ${id} exportPath must stay inside the project`
-      );
-    }
-    if (!(source.exportPath || (source.teamKey && source.tokenEnv))) {
-      throw new Error(
-        `Linear source ${id} requires teamKey and tokenEnv unless exportPath is configured`
+        `Evidence export source ${id} path must stay inside the project`
       );
     }
     return source;

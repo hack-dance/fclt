@@ -1046,7 +1046,7 @@ describe("bundled fclt MCP plugin", () => {
 });
 
 describe("Codex plugin capability matrix", () => {
-  it("tracks the released setup contract and exposes the closed HACK-793 router", async () => {
+  it("tracks the released setup contract and exposes the closed reconciliation router", async () => {
     const repoRoot = join(import.meta.dir, "..");
     const packageJson = (await Bun.file(
       join(repoRoot, "package.json")

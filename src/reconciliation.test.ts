@@ -47,9 +47,9 @@ async function writeQueue(args: {
       kind: "capability_gap",
       summary: "Full-window source reconciliation is missing.",
       status: "recorded",
-      issueLinks: ["HACK-793"],
+      issueLinks: ["TICKET-793"],
       disposition: "task",
-      dispositionTarget: "HACK-793",
+      dispositionTarget: "TICKET-793",
     },
     {
       id: "WB-00021",
@@ -58,9 +58,9 @@ async function writeQueue(args: {
       kind: "bad_default",
       summary: "Unchanged heartbeat blocker prose repeats.",
       status: "recorded",
-      issueLinks: ["HACK-794"],
+      issueLinks: ["TICKET-794"],
       disposition: "resolve-watch",
-      dispositionTarget: "HACK-794",
+      dispositionTarget: "TICKET-794",
     },
     {
       id: "WB-00022",
@@ -68,10 +68,10 @@ async function writeQueue(args: {
       kind: "missing_context",
       summary: "Evolution needs outcome and effectiveness links.",
       status: "recorded",
-      evidence: [{ type: "issue", ref: "HACK-795" }],
-      issueLinks: ["HACK-791"],
+      evidence: [{ type: "issue", ref: "TICKET-795" }],
+      issueLinks: ["TICKET-791"],
       disposition: "resolve-watch",
-      dispositionTarget: "HACK-791",
+      dispositionTarget: "TICKET-791",
     },
     {
       id: "WB-00023",
@@ -79,15 +79,33 @@ async function writeQueue(args: {
       kind: "false_positive",
       summary: "EV-00006 draft lifecycle reported a false positive.",
       status: "recorded",
-      issueLinks: ["HACK-791"],
+      issueLinks: ["TICKET-791"],
       disposition: "resolve-watch",
-      dispositionTarget: "HACK-791",
+      dispositionTarget: "TICKET-791",
     },
   ];
   await Bun.write(
     path,
     `${records.map((record) => JSON.stringify(record)).join("\n")}\n`
   );
+}
+
+function evidenceExport(
+  events: Record<string, unknown>[],
+  options?: { complete?: boolean; partialReasons?: string[] }
+): Record<string, unknown> {
+  return {
+    version: 1,
+    producer: "fixture-issue-exporter",
+    generatedAt: "2026-07-10T18:00:00Z",
+    coverage: {
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-11T00:00:00Z",
+      complete: options?.complete ?? true,
+      partialReasons: options?.partialReasons,
+    },
+    events,
+  };
 }
 
 async function runFixtureGit(args: {
@@ -157,24 +175,10 @@ describe("reconciliation config", () => {
         version: 1,
         sources: [
           {
-            id: "linear",
-            type: "linear",
-            endpoint: "http://linear.invalid/graphql",
+            id: "issues",
+            type: "evidence-export",
             token: "inline-secret",
-          },
-        ],
-      })
-    ).toThrow();
-    expect(() =>
-      parseReconciliationConfig({
-        version: 1,
-        sources: [
-          {
-            id: "linear",
-            type: "linear",
-            endpoint: "https://attacker.example/graphql",
-            teamKey: "TEAM",
-            tokenEnv: "LINEAR_API_KEY",
+            path: "evidence.json",
           },
         ],
       })
@@ -202,9 +206,9 @@ describe("reconciliation config", () => {
         version: 1,
         sources: [
           {
-            id: "linear-export",
-            type: "linear",
-            exportPath: "../linear.json",
+            id: "issues",
+            type: "evidence-export",
+            path: "../issues.json",
           },
         ],
       })
@@ -242,13 +246,13 @@ describe("reconciliation config", () => {
 });
 
 describe("source reconciliation", () => {
-  it("recovers the COS writeback cluster without ticket proposal spam and is idempotent", async () => {
+  it("recovers the writeback cluster without ticket proposal spam and is idempotent", async () => {
     const fixture = await makeFixture();
     await writeQueue(fixture);
-    const linearPath = join(
+    const evidenceExportPath = join(
       fixture.projectRoot,
       "fixtures",
-      "linear-window.json"
+      "issues-window.json"
     );
     const markdownPath = join(
       fixture.projectRoot,
@@ -258,47 +262,40 @@ describe("source reconciliation", () => {
     await mkdir(join(fixture.projectRoot, "fixtures"), { recursive: true });
     await mkdir(join(fixture.projectRoot, "notes"), { recursive: true });
     await Bun.write(
-      linearPath,
-      JSON.stringify({
-        issues: {
-          nodes: [
-            {
-              id: "issue-793",
-              identifier: "HACK-793",
-              title: "Add automatic source reconciliation",
-              description: "Implementation target for WB-00020.",
-              updatedAt: "2026-07-10T16:15:45.198Z",
-              state: { name: "In Progress", type: "started" },
-              comments: {
-                nodes: [
-                  {
-                    id: "comment-793",
-                    body: "Preserve implementation tickets as evidence, not proposals.",
-                    updatedAt: "2026-07-10T16:20:00.000Z",
-                  },
-                ],
-              },
-              history: {
-                nodes: [
-                  {
-                    id: "history-793",
-                    createdAt: "2026-07-10T16:15:45.198Z",
-                    fromState: { name: "Backlog" },
-                    toState: { name: "In Progress" },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      })
+      evidenceExportPath,
+      JSON.stringify(
+        evidenceExport([
+          {
+            id: "issue-793",
+            kind: "work-item",
+            observedAt: "2026-07-10T16:15:45.198Z",
+            title: "Add automatic source reconciliation",
+            body: "Implementation target for WB-00020.",
+            refs: ["TICKET-793", "WB-00020"],
+          },
+          {
+            id: "comment-793",
+            kind: "comment",
+            observedAt: "2026-07-10T16:20:00.000Z",
+            body: "Preserve implementation tickets as evidence, not proposals.",
+            refs: ["TICKET-793"],
+          },
+          {
+            id: "history-793",
+            kind: "status-change",
+            observedAt: "2026-07-10T16:15:45.198Z",
+            body: "Backlog -> In Progress",
+            refs: ["TICKET-793"],
+          },
+        ])
+      )
     );
     await Bun.write(
       markdownPath,
       [
         "# Full-window reconciliation",
         "",
-        "WB-00020 requires HACK-793 to harvest all configured sources.",
+        "WB-00020 requires TICKET-793 to harvest all configured sources.",
         "Never copy token=lin_api_abcdefghijklmnopqrstuvwxyz into review output.",
       ].join("\n")
     );
@@ -312,9 +309,9 @@ describe("source reconciliation", () => {
           sources: [
             { id: "writebacks", type: "writebacks" },
             {
-              id: "linear",
-              type: "linear",
-              exportPath: "fixtures/linear-window.json",
+              id: "issues",
+              type: "evidence-export",
+              path: "fixtures/issues-window.json",
             },
             {
               id: "runbooks",
@@ -340,7 +337,12 @@ describe("source reconciliation", () => {
       expect.arrayContaining(["WB-00020", "WB-00021", "WB-00022", "WB-00023"])
     );
     expect(first.linkedWork).toEqual(
-      expect.arrayContaining(["HACK-791", "HACK-793", "HACK-794", "HACK-795"])
+      expect.arrayContaining([
+        "TICKET-791",
+        "TICKET-793",
+        "TICKET-794",
+        "TICKET-795",
+      ])
     );
     expect(
       first.signals.some((signal) => signal.disposition === "propose")
@@ -425,7 +427,7 @@ describe("source reconciliation", () => {
           id: "WB-00020",
           ts: "2026-07-05T12:00:00Z",
           summary: "Historical reconciliation capability signal",
-          issueLinks: ["HACK-793"],
+          issueLinks: ["TICKET-793"],
           disposition: "task",
         }),
         JSON.stringify({
@@ -433,7 +435,7 @@ describe("source reconciliation", () => {
           ts: "2026-07-05T12:00:00Z",
           updatedAt: "2026-07-11T12:00:00Z",
           summary: "Later state outside the historical window",
-          issueLinks: ["HACK-793"],
+          issueLinks: ["TICKET-793"],
           disposition: "resolve-watch",
         }),
       ].join("\n")
@@ -866,11 +868,11 @@ describe("source reconciliation", () => {
       [
         JSON.stringify({
           ts: "2026-06-01T00:00:00Z",
-          message: "Old capability signal HACK-700",
+          message: "Old capability signal TICKET-700",
         }),
         JSON.stringify({
           ts: "2026-07-05T00:00:00Z",
-          message: "Reconciliation verified HACK-793",
+          message: "Reconciliation verified TICKET-793",
           token: "super-secret-json-token",
           OPENAI_API_KEY: "prefixed-secret-value",
           output: "accidentally logged sk-proj-abcdefghijklmnopqrstuv",
@@ -922,33 +924,39 @@ describe("source reconciliation", () => {
     expect(JSON.stringify(review)).not.toContain(
       "sk-proj-abcdefghijklmnopqrstuv"
     );
-    expect(JSON.stringify(review)).not.toContain("HACK-700");
+    expect(JSON.stringify(review)).not.toContain("TICKET-700");
   });
 
-  it("marks bounded Linear exports unavailable when any connection is truncated", async () => {
+  it("marks incomplete evidence exports unavailable", async () => {
     const fixture = await makeFixture();
-    const exportPath = join(fixture.projectRoot, "linear.json");
+    const exportPath = join(fixture.projectRoot, "issues.json");
     await Bun.write(
       exportPath,
-      JSON.stringify({
-        issues: {
-          pageInfo: { hasNextPage: true },
-          nodes: [
+      JSON.stringify(
+        evidenceExport(
+          [
             {
               id: "issue-793",
-              identifier: "HACK-793",
+              kind: "work-item",
+              observedAt: "2026-07-05T00:00:00Z",
               title: "Reconciliation implementation",
-              updatedAt: "2026-07-05T00:00:00Z",
+              refs: ["TICKET-793"],
             },
           ],
-        },
-      })
+          {
+            complete: false,
+            partialReasons: ["producer pagination incomplete"],
+          }
+        )
+      )
     );
     await Bun.write(
       join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
         version: 1,
-        sources: [{ id: "linear", type: "linear", exportPath: "linear.json" }],
+        sources: [
+          { id: "issues", type: "evidence-export", path: "issues.json" },
+        ],
       })
     );
     const review = await reconcileSources({
@@ -957,39 +965,76 @@ describe("source reconciliation", () => {
       until: "2026-07-10T00:00:00Z",
     });
     expect(review.coverage[0]?.state).toBe("unavailable");
-    expect(review.coverage[0]?.unavailableReason).toContain("bounded page");
-    expect(review.linkedWork).toContain("HACK-793");
+    expect(review.coverage[0]?.unavailableReason).toContain(
+      "pagination incomplete"
+    );
+    expect(review.linkedWork).toContain("TICKET-793");
   });
 
-  it("keeps non-terminal Linear status changes as implementation evidence", async () => {
+  it("rejects unattested and narrower evidence exports as coverage proof", async () => {
     const fixture = await makeFixture();
+    const exportPath = join(fixture.projectRoot, "evidence.json");
+    await Bun.write(exportPath, JSON.stringify([]));
     await Bun.write(
-      join(fixture.projectRoot, "linear.json"),
+      join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
-        issues: [
-          {
-            id: "issue-900",
-            identifier: "HACK-900",
-            title: "Implement source reader",
-            updatedAt: "2026-07-05T12:00:00Z",
-            state: { name: "In Progress" },
-            history: [
-              {
-                id: "history-1",
-                createdAt: "2026-07-05T12:00:00Z",
-                fromState: { name: "Backlog" },
-                toState: { name: "In Progress" },
-              },
-            ],
-          },
+        version: 1,
+        sources: [
+          { id: "external", type: "evidence-export", path: "evidence.json" },
         ],
       })
+    );
+    const unattested = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(unattested.coverage[0]?.state).toBe("unavailable");
+    expect(unattested.coverageComplete).toBe(false);
+
+    await Bun.write(
+      exportPath,
+      JSON.stringify({
+        ...evidenceExport([]),
+        coverage: {
+          since: "2026-07-05T00:00:00Z",
+          until: "2026-07-06T00:00:00Z",
+          complete: true,
+        },
+      })
+    );
+    const narrower = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(narrower.coverage[0]?.state).toBe("unavailable");
+    expect(narrower.emptyReason).toContain("not a proven empty review");
+  });
+
+  it("keeps non-terminal exported status changes as implementation evidence", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.projectRoot, "issues.json"),
+      JSON.stringify(
+        evidenceExport([
+          {
+            id: "history-1",
+            kind: "status-change",
+            observedAt: "2026-07-05T12:00:00Z",
+            body: "Backlog -> In Progress",
+            refs: ["TICKET-900"],
+          },
+        ])
+      )
     );
     await Bun.write(
       join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
         version: 1,
-        sources: [{ id: "linear", type: "linear", exportPath: "linear.json" }],
+        sources: [
+          { id: "issues", type: "evidence-export", path: "issues.json" },
+        ],
       })
     );
 
@@ -1000,7 +1045,7 @@ describe("source reconciliation", () => {
     });
     expect(
       review.decisions.find(
-        (decision) => decision.sourceRecordId === "status:history-1"
+        (decision) => decision.sourceRecordId === "history-1"
       )?.classification
     ).toBe("implementation-only");
     expect(
@@ -1008,34 +1053,30 @@ describe("source reconciliation", () => {
     ).toBe(true);
   });
 
-  it("treats a terminal current Linear state as outcome proof", async () => {
+  it("treats a terminal exported event as outcome proof", async () => {
     const fixture = await makeFixture();
     await Bun.write(
-      join(fixture.projectRoot, "linear.json"),
-      JSON.stringify({
-        issues: [
+      join(fixture.projectRoot, "issues.json"),
+      JSON.stringify(
+        evidenceExport([
           {
-            id: "issue-901",
-            identifier: "HACK-901",
-            title: "Implement source reader",
-            updatedAt: "2026-06-01T12:00:00Z",
-            state: { name: "Shipped", type: "completed" },
-            comments: [
-              {
-                id: "comment-901",
-                createdAt: "2026-07-05T12:00:00Z",
-                body: "Published reconciliation outcome",
-              },
-            ],
+            id: "comment-901",
+            kind: "comment",
+            observedAt: "2026-07-05T12:00:00Z",
+            body: "Published reconciliation outcome",
+            refs: ["TICKET-901"],
+            terminal: true,
           },
-        ],
-      })
+        ])
+      )
     );
     await Bun.write(
       join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
         version: 1,
-        sources: [{ id: "linear", type: "linear", exportPath: "linear.json" }],
+        sources: [
+          { id: "issues", type: "evidence-export", path: "issues.json" },
+        ],
       })
     );
 
@@ -1046,7 +1087,7 @@ describe("source reconciliation", () => {
     });
 
     expect(review.decisions[0]?.classification).toBe("outcome-proof");
-    expect(review.decisions[0]?.sourceRecordId).toBe("comment:comment-901");
+    expect(review.decisions[0]?.sourceRecordId).toBe("comment-901");
     expect(review.signals[0]?.disposition).toBe("resolve-watch");
   });
 
@@ -1146,7 +1187,7 @@ describe("source reconciliation", () => {
         "-m",
         "First body paragraph.",
         "-m",
-        "Capability reconciliation evidence for HACK-793.",
+        "Capability reconciliation evidence for TICKET-793.",
       ],
       date: "2026-07-05T12:00:00Z",
     });
@@ -1163,7 +1204,7 @@ describe("source reconciliation", () => {
       since: "2026-07-03",
       until: "2026-07-10",
     });
-    expect(review.linkedWork).toContain("HACK-793");
+    expect(review.linkedWork).toContain("TICKET-793");
     expect(review.decisions[0]?.classification).toBe("capability-source");
   });
 
@@ -1250,7 +1291,7 @@ describe("source reconciliation", () => {
     await mkdir(join(fixture.rootDir, "instructions"), { recursive: true });
     await Bun.write(
       firstPath,
-      "# Source\n\nReconcile HACK-793 capability signal.\n"
+      "# Source\n\nReconcile TICKET-793 capability signal.\n"
     );
     await runFixtureGit({
       projectRoot: fixture.projectRoot,
@@ -1258,7 +1299,12 @@ describe("source reconciliation", () => {
     });
     await runFixtureGit({
       projectRoot: fixture.projectRoot,
-      argv: ["commit", "--quiet", "-m", "docs: add HACK-793 capability source"],
+      argv: [
+        "commit",
+        "--quiet",
+        "-m",
+        "docs: add TICKET-793 capability source",
+      ],
       date: "2026-07-04T12:00:00Z",
     });
     await runFixtureGit({
@@ -1275,7 +1321,7 @@ describe("source reconciliation", () => {
         "commit",
         "--quiet",
         "-m",
-        "docs: rename HACK-793 capability source",
+        "docs: rename TICKET-793 capability source",
       ],
       date: "2026-07-05T12:00:00Z",
     });
@@ -1306,7 +1352,7 @@ describe("source reconciliation", () => {
     });
     expect(full.evidence).toHaveLength(2);
     expect(full.signals).toHaveLength(1);
-    expect(full.signals[0]?.issueRefs).toEqual(["HACK-793"]);
+    expect(full.signals[0]?.issueRefs).toEqual(["TICKET-793"]);
 
     const overlap = await reconcileSources({
       ...fixture,
@@ -1341,7 +1387,7 @@ describe("source reconciliation", () => {
       "RECONCILIATION.md"
     );
     await mkdir(join(capabilityPath, ".."), { recursive: true });
-    await Bun.write(capabilityPath, "# Reconciliation\n\nTrack HACK-793.\n");
+    await Bun.write(capabilityPath, "# Reconciliation\n\nTrack TICKET-793.\n");
     await Bun.write(join(fixture.projectRoot, "outside.txt"), "branch a\n");
     await runFixtureGit({
       projectRoot: fixture.projectRoot,
@@ -1357,7 +1403,7 @@ describe("source reconciliation", () => {
       argv: ["switch", "--quiet", "-c", "branch-b", "HEAD~1"],
     });
     await mkdir(join(capabilityPath, ".."), { recursive: true });
-    await Bun.write(capabilityPath, "# Reconciliation\n\nTrack HACK-793.\n");
+    await Bun.write(capabilityPath, "# Reconciliation\n\nTrack TICKET-793.\n");
     await Bun.write(join(fixture.projectRoot, "outside.txt"), "branch b\n");
     await runFixtureGit({
       projectRoot: fixture.projectRoot,
@@ -1429,10 +1475,10 @@ describe("source reconciliation", () => {
         "# Memory",
         "",
         "## 2026-06-19 12:00 EDT",
-        "Old capability signal HACK-700 WB-00001.",
+        "Old capability signal TICKET-700 WB-00001.",
         "",
         "## 2026-07-10 12:00 EDT",
-        "Ledger links WB-00020 WB-00021 to HACK-793 HACK-794 without making them one signal.",
+        "Ledger links WB-00020 WB-00021 to TICKET-793 TICKET-794 without making them one signal.",
       ].join("\n")
     );
     await Bun.write(

@@ -898,21 +898,21 @@ describe("ai writeback", () => {
       summary: "Outcome tracking is missing.",
       evidence: proposalEvidence("closed-loop"),
     });
-    await linkWritebackIssue(writeback.id, "HACK-791", {
+    await linkWritebackIssue(writeback.id, "TICKET-791", {
       homeDir: tempHome,
       rootDir,
     });
     const updated = await setWritebackDisposition(writeback.id, "task", {
       homeDir: tempHome,
       rootDir,
-      target: "HACK-791",
+      target: "TICKET-791",
       nextTrigger: "Implementation ships.",
       expectedOutcome: "Applied proposals receive effectiveness grades.",
     });
 
-    expect(updated.issueLinks).toEqual(["HACK-791"]);
+    expect(updated.issueLinks).toEqual(["TICKET-791"]);
     expect(updated.disposition).toBe("task");
-    expect(updated.dispositionTarget).toBe("HACK-791");
+    expect(updated.dispositionTarget).toBe("TICKET-791");
     expect(updated.nextTrigger).toBe("Implementation ships.");
   });
 

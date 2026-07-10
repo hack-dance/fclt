@@ -144,7 +144,7 @@ describe("ai CLI", () => {
     expect(addOut.errors).toEqual([]);
     expect(addOut.logs.join("\n")).toContain("WB-00001");
 
-    await aiCommand(["writeback", "link", "WB-00001", "--issue", "HACK-791"]);
+    await aiCommand(["writeback", "link", "WB-00001", "--issue", "TICKET-791"]);
     await aiCommand([
       "writeback",
       "disposition",
@@ -152,7 +152,7 @@ describe("ai CLI", () => {
       "--type",
       "task",
       "--target",
-      "HACK-791",
+      "TICKET-791",
       "--expected-outcome",
       "The closed loop is measurable.",
     ]);

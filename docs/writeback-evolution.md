@@ -11,9 +11,9 @@ fclt setup
 fclt doctor --json
 ```
 
-The doctor report's `loop` object is the readiness contract. Core setup can be ready while optional
-Linear issue lookup is `not_configured` or `configured_unverified`; that integration state is never
-silently treated as successful.
+The doctor report's `loop` object is the readiness contract. Optional external
+integrations never count as successful source coverage unless their exported
+evidence is explicitly configured and checked.
 
 ## Automatic source reconciliation
 
@@ -30,9 +30,9 @@ fclt ai review reconcile \
 ```
 
 The adapter contract supports explicit writebacks, Git commits and canonical
-asset changes, Linear issue/comment/status events, automation memory/log files,
+asset changes, vendor-neutral evidence exports, automation memory/log files,
 and configured Markdown logs, runbooks, or research. Defaults are read-only:
-reconciliation does not edit Linear, Git, automation state, canonical assets,
+reconciliation does not edit issue trackers, Git, automation state, canonical assets,
 writebacks, or proposals.
 
 A project configuration can opt into additional sources without storing
@@ -51,10 +51,9 @@ credentials:
       "paths": [".ai", "AGENTS.md", "docs"]
     },
     {
-      "id": "linear",
-      "type": "linear",
-      "teamKey": "TEAM",
-      "tokenEnv": "LINEAR_API_KEY"
+      "id": "external-work",
+      "type": "evidence-export",
+      "path": "reconciliation/evidence.json"
     },
     {
       "id": "runbooks",
@@ -72,12 +71,38 @@ credentials:
 }
 ```
 
-Tracked config accepts an environment-variable name, never an inline token.
+Evidence exports use a versioned manifest whose coverage window must contain
+the requested review window:
+
+```json
+{
+  "version": 1,
+  "producer": "example-tracker-exporter",
+  "generatedAt": "2026-07-10T18:00:00Z",
+  "coverage": {
+    "since": "2026-07-03T00:00:00Z",
+    "until": "2026-07-10T23:59:59Z",
+    "complete": true
+  },
+  "events": [
+    {
+      "id": "event-123",
+      "kind": "status-change",
+      "observedAt": "2026-07-08T14:30:00Z",
+      "body": "Implementation completed",
+      "refs": ["EXAMPLE-123"],
+      "terminal": true
+    }
+  ]
+}
+```
+
 File patterns must stay inside the selected project or home root; symlink and
-path traversal escapes are rejected. Linear credentials can be sent only to
-the fixed official `https://api.linear.app/graphql` endpoint, using a read-only
-query and bounded timeout. Missing auth, missing logs, stale sources, and
-adapter failures produce degraded coverage instead of a false empty result.
+path traversal escapes are rejected. The evidence adapter reads only a local
+file and performs no network or credential access. A separate plugin or
+user-owned exporter can produce that file from any external system.
+Missing exports, missing logs, stale sources, and adapter failures produce
+degraded coverage instead of a false empty result.
 
 Machine-local state stores per-source watermarks/cursors, dedupe history,
 extraction decisions, and deterministic review-window JSON. Human-readable
@@ -125,10 +150,10 @@ Avoid writeback for one-off preferences, vague complaints, or speculative ideas.
 Link implementation work and preserve the review disposition:
 
 ```bash
-fclt ai writeback link WB-00021 --issue HACK-791
+fclt ai writeback link WB-00021 --issue TICKET-791
 fclt ai writeback disposition WB-00021 \
   --type task \
-  --target HACK-791 \
+  --target TICKET-791 \
   --expected-outcome "The producing loop stops repeating unchanged blocker prose" \
   --next-trigger "Implementation ships and the next review window completes"
 ```

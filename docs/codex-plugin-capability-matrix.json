@@ -170,7 +170,7 @@
       "risk": "reversible_mutation",
       "scope": "explicit global|global_and_project plus project cwd",
       "preview": "default; calls released setup --dry-run JSON contract",
-      "apply": "dryRun=false plus approve=true against released HACK-792 contract",
+      "apply": "dryRun=false plus approve=true against the released setup contract",
       "rollback": "preserved existing capability state and reported repair actions",
       "verification": "doctor loop readiness plus fresh-session plugin discovery"
     },
@@ -747,12 +747,12 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "blocked_safer_api",
-        "reason": "background service and git-sync mutation is HACK-794-adjacent and needs dedicated service policy/rollback"
+        "reason": "background service and git-sync mutation needs dedicated service policy and rollback"
       },
       "risk": "high_risk_destructive",
       "scope": "global|project plus explicit tool/service",
       "preview": "required",
-      "apply": "withheld to preserve HACK-794 scope",
+      "apply": "withheld pending a dedicated scheduling and service-lifecycle contract",
       "rollback": "required before exposure",
       "verification": "service lifecycle and remote-git safety"
     },
