@@ -1019,7 +1019,7 @@ describe("source reconciliation", () => {
             identifier: "HACK-901",
             title: "Implement source reader",
             updatedAt: "2026-06-01T12:00:00Z",
-            state: { name: "Done" },
+            state: { name: "Shipped", type: "completed" },
             comments: [
               {
                 id: "comment-901",
@@ -1123,6 +1123,14 @@ describe("source reconciliation", () => {
       projectRoot: fixture.projectRoot,
       argv: ["config", "user.name", "Fixture"],
     });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["config", "diff.fail.textconv", "false"],
+    });
+    await Bun.write(
+      join(fixture.projectRoot, ".gitattributes"),
+      "notes.txt diff=fail\n"
+    );
     await Bun.write(join(fixture.projectRoot, "notes.txt"), "updated\n");
     await runFixtureGit({
       projectRoot: fixture.projectRoot,

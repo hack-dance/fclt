@@ -442,7 +442,14 @@ const gitAdapter: ReconciliationAdapter = {
       const records: SourceRecord[] = [];
       for (const entry of parsed) {
         const patch = await runGit(
-          ["show", "--format=", "--no-ext-diff", entry.commit, ...pathArgs],
+          [
+            "show",
+            "--format=",
+            "--no-ext-diff",
+            "--no-textconv",
+            entry.commit,
+            ...pathArgs,
+          ],
           projectRoot
         );
         const { commit: _commit, ...base } = entry;
@@ -594,7 +601,12 @@ async function loadLinearIssues(args: {
 function linearClassification(issue: LinearIssueExport): SignalClassification {
   const state =
     typeof issue.state === "string" ? issue.state : issue.state?.name;
-  if (TERMINAL_LINEAR_STATE_RE.test(state ?? "")) {
+  const stateType =
+    typeof issue.state === "string" ? undefined : issue.state?.type;
+  if (
+    TERMINAL_LINEAR_STATE_RE.test(state ?? "") ||
+    TERMINAL_LINEAR_STATE_RE.test(stateType ?? "")
+  ) {
     return "outcome-proof";
   }
   const text = `${issue.title ?? ""} ${issue.description ?? ""}`.toLowerCase();
