@@ -36,6 +36,7 @@ import {
   facultAiWritebackReviewDir,
   facultMachineStateDir,
 } from "./paths";
+import { reconcileSources } from "./reconciliation";
 
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
@@ -95,6 +96,42 @@ describe("ai writeback", () => {
       signalCount: 0,
     });
     expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
+  it("requires reconciliation after enabled source configuration changes", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    const configPath = join(rootDir, "reconciliation.json");
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    await reconcileSources({
+      homeDir: tempHome,
+      rootDir,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "notes", type: "markdown", paths: ["notes/*.md"] },
+        ],
+      })
+    );
+
+    const assessment = await assessEvolution({ homeDir: tempHome, rootDir });
+
+    expect(assessment.recommendation).toBe("reconcile_sources");
+    expect(assessment.reconciliation.coverageState).toBe("degraded");
   });
 
   it("records a writeback with graph-backed asset resolution and journal entries", async () => {

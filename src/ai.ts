@@ -1353,6 +1353,7 @@ export async function assessEvolution(args: {
   } else if (
     !(
       reconciliation.configured &&
+      reconciliation.coverageState === "complete" &&
       latestReview &&
       latestReview.coverageComplete
     )
