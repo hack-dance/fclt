@@ -33,6 +33,7 @@
     "bin/facult.cjs",
     "docs/**/*.md",
     "docs/**/*.png",
+    "docs/**/*.svg",
     "plugins/fclt/.codex-plugin/*.json",
     "plugins/fclt/.mcp.json",
     "plugins/fclt/**/*.cjs",

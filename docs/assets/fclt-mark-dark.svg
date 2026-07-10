@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 900" role="img" aria-labelledby="title desc">
+  <title id="title">fclt mark</title>
+  <desc id="desc">Four modular facets forming a continuous hexagonal capability loop.</desc>
+  <g fill="#ffffff">
+    <path d="m368 180 44-35q39-22 78 1l191 113q37 22 37 65v220q0 34-29 51l-77 44V364q0-28-24-42L368 180Z"/>
+    <path d="M170 327q0-27 25-42l72-42v280q0 34 29 51l212 123-30 18q-25 15-51 0L200 584q-30-18-30-53V327Z"/>
+    <path d="m283 229 82-49 115 89-197 118V229Z"/>
+    <path d="m397 594 197-117v151q0 14-12 22l-59 34-126-72v-18Z"/>
+  </g>
+</svg>

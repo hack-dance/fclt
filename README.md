@@ -1,5 +1,12 @@
 # fclt
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/fclt-mark-dark.svg">
+    <img alt="fclt" src="./docs/assets/fclt-mark.svg" width="144">
+  </picture>
+</p>
+
 <div align="center">
   <a aria-label="NPM version" href="https://www.npmjs.com/package/facult">
     <img alt="facult npm version" src="https://img.shields.io/npm/v/facult.svg?style=flat-square&logo=npm&labelColor=000000&label=facult">
@@ -429,6 +436,10 @@ Start with:
 - [Writeback and evolution](./docs/writeback-evolution.md): the feedback-loop workflow and review surfaces
 - [Managed mode](./docs/managed-mode.md): when to let `fclt` write tool files
 - [Roadmap](./docs/roadmap.md): current gaps and planned work
+
+## Brand assets
+
+The fclt mark represents composable capability moving through a continuous improvement loop. Use the [SVG master](./docs/assets/fclt-mark.svg) for scalable applications or the [transparent 1024 px PNG](./docs/assets/fclt-mark.png) for raster surfaces. A [white SVG variant](./docs/assets/fclt-mark-dark.svg) is available for dark backgrounds.
 
 ## FAQ
 
