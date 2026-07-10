@@ -446,6 +446,13 @@ describe("source reconciliation", () => {
     expect(historical.evidence).toHaveLength(1);
     expect(historical.evidence[0]?.title).toContain("Historical");
     expect(historical.signals[0]?.disposition).toBe("task");
+    const state = JSON.parse(
+      await readFile(
+        facultAiReconciliationStatePath(fixture.homeDir, fixture.rootDir),
+        "utf8"
+      )
+    ) as { sources: Record<string, { watermark?: string }> };
+    expect(state.sources.writebacks?.watermark).toBe("2026-07-11T12:00:00Z");
   });
 
   it("includes the full final day for date-only windows and rescans bounded reruns", async () => {

@@ -598,11 +598,22 @@ function updateState(args: {
       continue;
     }
     const advances = coverage.state !== "unavailable";
+    const resultWatermark = result?.watermark;
+    const keepsPriorWatermark = Boolean(
+      advances &&
+        prior?.watermark &&
+        resultWatermark &&
+        Date.parse(prior.watermark) > Date.parse(resultWatermark)
+    );
     next.sources[coverage.sourceId] = {
-      watermark: advances
-        ? (result?.watermark ?? prior?.watermark)
-        : prior?.watermark,
-      cursor: advances ? (result?.cursor ?? prior?.cursor) : prior?.cursor,
+      watermark:
+        advances && !keepsPriorWatermark
+          ? (resultWatermark ?? prior?.watermark)
+          : prior?.watermark,
+      cursor:
+        advances && !keepsPriorWatermark
+          ? (result?.cursor ?? prior?.cursor)
+          : prior?.cursor,
       configDigest: sourceStateDigest(source),
       adapterVersion: reconciliationAdapterFor(source.type).version,
       lastCheckedAt: coverage.checkedAt,
