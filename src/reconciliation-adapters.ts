@@ -28,7 +28,7 @@ const ASSET_REF_RE =
 const SECRET_VALUE_RE =
   /(bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi;
 const JSON_SECRET_VALUE_RE =
-  /("(?:api[_-]?key|token|secret|password|authorization)"\s*:\s*")[^"]*(")/gi;
+  /("[^"]*(?:api[_-]?key|token|secret|password|authorization)[^"]*"\s*:\s*")[^"]*(")/gi;
 const SECRET_TOKEN_RE = /\b(?:sk|ghp|github_pat|lin_api)_[A-Za-z0-9_-]{12,}\b/g;
 const LINE_SPLIT_RE = /\r?\n/;
 const PATH_SEGMENT_RE = /[\\/]/;
@@ -100,10 +100,12 @@ function inWindow(
 }
 
 function latestTimestamp(records: SourceRecord[]): string | undefined {
-  return records
-    .map((record) => record.observedAt)
-    .sort()
-    .at(-1);
+  return records.reduce<string | undefined>((latest, record) => {
+    if (!latest || Date.parse(record.observedAt) > Date.parse(latest)) {
+      return record.observedAt;
+    }
+    return latest;
+  }, undefined);
 }
 
 function resultFromRecords(

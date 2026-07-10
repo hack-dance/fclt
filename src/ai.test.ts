@@ -53,12 +53,7 @@ async function makeTempHome(): Promise<string> {
 }
 
 async function writeGraph(home: string, rootDir: string, graph: unknown) {
-  const graphPath = join(
-    rootDir.startsWith(join(home, ".ai"))
-      ? join(home, ".ai", ".facult", "ai")
-      : join(rootDir, ".facult", "ai"),
-    "graph.json"
-  );
+  const graphPath = facultAiGraphPath(home, rootDir);
   await mkdir(dirname(graphPath), { recursive: true });
   await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
 }
@@ -145,6 +140,59 @@ describe("ai writeback", () => {
     expect(assessment.recommendation).toBe("reconcile_sources");
     expect(assessment.reconciliation.coverageState).toBe("degraded");
     expect(assessment.reconciliation.signalCount).toBe(1);
+  });
+
+  it("matches reconciled path refs to canonical selected assets", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const projectRoot = join(tempHome, "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const targetPath = join(rootDir, "instructions", "TESTING.md");
+    await mkdir(join(projectRoot, "notes"), { recursive: true });
+    await mkdir(dirname(targetPath), { recursive: true });
+    await Bun.write(targetPath, "# Testing\n");
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-07-10T00:00:00.000Z",
+      nodes: {
+        "instruction:project:project:TESTING": {
+          id: "instruction:project:project:TESTING",
+          kind: "instruction",
+          name: "TESTING",
+          sourceKind: "project",
+          scope: "project",
+          canonicalRef: "@project/instructions/TESTING.md",
+          path: targetPath,
+        },
+      },
+      edges: [],
+    });
+    await Bun.write(
+      join(projectRoot, "notes", "signal.md"),
+      "# 2026-07-05 capability signal\n\ninstructions/TESTING.md needs reconciliation.\n"
+    );
+    await Bun.write(
+      join(rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "notes", type: "markdown", paths: ["notes/*.md"] }],
+      })
+    );
+    await reconcileSources({
+      homeDir: tempHome,
+      rootDir,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+
+    const assessment = await assessEvolution({
+      homeDir: tempHome,
+      rootDir,
+      asset: "instruction:TESTING",
+    });
+
+    expect(assessment.recommendation).toBe("review_reconciled_signals");
+    expect(assessment.reconciliation.matchingSignalIds).toHaveLength(1);
   });
 
   it("records a writeback with graph-backed asset resolution and journal entries", async () => {

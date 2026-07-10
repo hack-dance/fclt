@@ -801,8 +801,12 @@ describe("source reconciliation", () => {
           ts: "2026-07-05T00:00:00Z",
           message: "Reconciliation verified HACK-793",
           token: "super-secret-json-token",
+          OPENAI_API_KEY: "prefixed-secret-value",
         }),
-        JSON.stringify({ message: "Undated reconciliation signal" }),
+        JSON.stringify({
+          ts: "2026-07-05T00:00:00.999Z",
+          message: "Later reconciliation observation",
+        }),
       ].join("\n")
     );
     await Bun.write(
@@ -819,6 +823,18 @@ describe("source reconciliation", () => {
         ],
       })
     );
+    const datedReview = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(datedReview.coverage[0]?.watermarkAfter).toBe(
+      "2026-07-05T00:00:00.999Z"
+    );
+    await Bun.write(
+      logPath,
+      `${await Bun.file(logPath).text()}\n${JSON.stringify({ message: "Undated reconciliation signal" })}`
+    );
     const review = await reconcileSources({
       ...fixture,
       since: "2026-07-03T00:00:00Z",
@@ -826,10 +842,11 @@ describe("source reconciliation", () => {
     });
     expect(review.coverage[0]).toMatchObject({
       state: "unavailable",
-      recordsScanned: 2,
+      recordsScanned: 3,
     });
-    expect(review.coverage[0]?.cursorAfter).toBeDefined();
+    expect(review.coverage[0]?.watermarkAfter).toBe("2026-07-05T00:00:00.999Z");
     expect(JSON.stringify(review)).not.toContain("super-secret-json-token");
+    expect(JSON.stringify(review)).not.toContain("prefixed-secret-value");
     expect(JSON.stringify(review)).not.toContain("HACK-700");
   });
 
@@ -914,6 +931,33 @@ describe("source reconciliation", () => {
     expect(
       review.signals.every((signal) => signal.disposition === "task")
     ).toBe(true);
+  });
+
+  it("targets the project asset for apply-local dispositions", async () => {
+    const fixture = await makeFixture();
+    const notesDir = join(fixture.projectRoot, "notes");
+    await mkdir(notesDir, { recursive: true });
+    await Bun.write(
+      join(notesDir, "signal.md"),
+      "# 2026-07-05 capability signal\n\n@ai/instructions/GLOBAL.md and @project/instructions/LOCAL.md\n"
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "notes", type: "markdown", paths: ["notes/*.md"] }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.signals[0]).toMatchObject({
+      disposition: "apply-local",
+      dispositionTarget: "@project/instructions/LOCAL.md",
+    });
   });
 
   it("preserves invalid state and reports it separately from configuration", async () => {

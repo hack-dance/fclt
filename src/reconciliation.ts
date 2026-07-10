@@ -343,9 +343,12 @@ function dispositionFor(args: {
     args.records.map((record) => record.sourceId)
   ).length;
   if (args.assetRefs.some((asset) => asset.startsWith("@project/"))) {
+    const projectTarget = args.assetRefs.find((asset) =>
+      asset.startsWith("@project/")
+    );
     return {
       disposition: "apply-local",
-      target: args.assetRefs[0],
+      target: projectTarget,
       rationale:
         "Project-local capability evidence has a concrete local target",
     };

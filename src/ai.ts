@@ -26,6 +26,7 @@ const SLUG_SPLIT_RE = /[/_-]+/;
 const SKILL_MD_SUFFIX_RE = /\/SKILL\.md$/;
 const MARKDOWN_SUFFIX_RE = /\.md$/;
 const SKILL_SUFFIX_RE = /SKILL$/;
+const CANONICAL_SCOPE_PREFIX_RE = /^@(?:ai|project)\//;
 
 export type WritebackStatus =
   | "suggested"
@@ -1320,11 +1321,18 @@ export async function assessEvolution(args: {
         homeDir,
         rootDir: args.rootDir,
       });
+  const normalizedSelectedTarget = selectedTarget
+    ?.replace(CANONICAL_SCOPE_PREFIX_RE, "")
+    .toLowerCase();
   const matchingSignals = (latestReview?.signals ?? []).filter((signal) => {
     if (!selectedTarget) {
       return true;
     }
-    return signal.assetRefs.includes(selectedTarget);
+    return signal.assetRefs.some(
+      (assetRef) =>
+        assetRef.replace(CANONICAL_SCOPE_PREFIX_RE, "").toLowerCase() ===
+        normalizedSelectedTarget
+    );
   });
 
   let recommendation: EvolutionAssessmentRecommendation = "no_mutation";
