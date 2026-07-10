@@ -148,13 +148,30 @@ describe("ai writeback", () => {
     const projectRoot = join(tempHome, "repo");
     const rootDir = join(projectRoot, ".ai");
     const targetPath = join(rootDir, "instructions", "TESTING.md");
+    const globalTargetPath = join(
+      tempHome,
+      ".ai",
+      "instructions",
+      "TESTING.md"
+    );
     await mkdir(join(projectRoot, "notes"), { recursive: true });
     await mkdir(dirname(targetPath), { recursive: true });
+    await mkdir(dirname(globalTargetPath), { recursive: true });
     await Bun.write(targetPath, "# Testing\n");
+    await Bun.write(globalTargetPath, "# Global testing\n");
     await writeGraph(tempHome, rootDir, {
       version: 1,
       generatedAt: "2026-07-10T00:00:00.000Z",
       nodes: {
+        "instruction:global:global:TESTING": {
+          id: "instruction:global:global:TESTING",
+          kind: "instruction",
+          name: "TESTING",
+          sourceKind: "global",
+          scope: "global",
+          canonicalRef: "@ai/instructions/TESTING.md",
+          path: globalTargetPath,
+        },
         "instruction:project:project:TESTING": {
           id: "instruction:project:project:TESTING",
           kind: "instruction",
@@ -169,7 +186,7 @@ describe("ai writeback", () => {
     });
     await Bun.write(
       join(projectRoot, "notes", "signal.md"),
-      "# 2026-07-05 capability signal\n\ninstructions/TESTING.md. needs reconciliation.\n"
+      "# 2026-07-05 capability signal\n\n@project/instructions/TESTING.md. needs reconciliation.\n"
     );
     await Bun.write(
       join(rootDir, "reconciliation.json"),
@@ -184,6 +201,14 @@ describe("ai writeback", () => {
       since: "2026-07-03",
       until: "2026-07-10",
     });
+    await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "capability_gap",
+      summary: "Repeated project testing guidance gap.",
+      asset: "@project/instructions/TESTING.md",
+      evidence: proposalEvidence("testing-gap"),
+    });
 
     const assessment = await assessEvolution({
       homeDir: tempHome,
@@ -193,6 +218,12 @@ describe("ai writeback", () => {
 
     expect(assessment.recommendation).toBe("review_reconciled_signals");
     expect(assessment.reconciliation.matchingSignalIds).toHaveLength(1);
+    const globalAssessment = await assessEvolution({
+      homeDir: tempHome,
+      rootDir,
+      asset: "@ai/instructions/TESTING.md",
+    });
+    expect(globalAssessment.reconciliation.matchingSignalIds).toHaveLength(0);
   });
 
   it("records a writeback with graph-backed asset resolution and journal entries", async () => {

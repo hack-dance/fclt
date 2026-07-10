@@ -1328,11 +1328,13 @@ export async function assessEvolution(args: {
     if (!selectedTarget) {
       return true;
     }
-    return signal.assetRefs.some(
-      (assetRef) =>
-        assetRef.replace(CANONICAL_SCOPE_PREFIX_RE, "").toLowerCase() ===
-        normalizedSelectedTarget
-    );
+    return signal.assetRefs.some((assetRef) => {
+      const normalizedAssetRef = assetRef.toLowerCase();
+      if (assetRef.startsWith("@")) {
+        return normalizedAssetRef === selectedTarget.toLowerCase();
+      }
+      return normalizedAssetRef === normalizedSelectedTarget;
+    });
   });
 
   let recommendation: EvolutionAssessmentRecommendation = "no_mutation";
@@ -1344,6 +1346,13 @@ export async function assessEvolution(args: {
     recommendation = "review_existing_proposal";
     confidence = "high";
     rationale = `Existing active proposal${activeProposalIds.length === 1 ? "" : "s"} already cover ${selectedTarget}. Review or revise before creating another proposal.`;
+  } else if (
+    matchingSignals.length > 0 &&
+    reconciliation.coverageState === "complete"
+  ) {
+    recommendation = "review_reconciled_signals";
+    confidence = "high";
+    rationale = `Reconciliation review ${latestReview?.reviewId} contains ${matchingSignals.length} correlated signal${matchingSignals.length === 1 ? "" : "s"}. Review their dispositions and linked work before concluding that nothing is pending.`;
   } else if (shouldPropose) {
     recommendation = "propose";
     confidence = repeatedSignal ? "high" : "medium";
@@ -1354,13 +1363,6 @@ export async function assessEvolution(args: {
     recommendation = "record_more_writeback";
     confidence = "medium";
     rationale = `${selectedTarget} has only ${selectedWritebacks.length} evidenced writeback. Prefer recording another concrete recurrence or narrowing the target before proposing evolution.`;
-  } else if (
-    matchingSignals.length > 0 &&
-    reconciliation.coverageState === "complete"
-  ) {
-    recommendation = "review_reconciled_signals";
-    confidence = "high";
-    rationale = `Reconciliation review ${latestReview?.reviewId} contains ${matchingSignals.length} correlated signal${matchingSignals.length === 1 ? "" : "s"}. Review their dispositions and linked work before concluding that nothing is pending.`;
   } else if (
     !(
       reconciliation.configured &&
