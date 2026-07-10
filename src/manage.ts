@@ -4676,6 +4676,7 @@ async function planCodexPluginFileChanges(args: {
 async function runCodexPluginAdd(args: {
   codexBin: string;
   cwd: string;
+  homeDir: string;
   marketplaceName: string;
 }): Promise<SetupCodexPluginResult["codexInstall"]> {
   const command = [
@@ -4688,7 +4689,7 @@ async function runCodexPluginAdd(args: {
   return await new Promise((resolve) => {
     const child = spawn(args.codexBin, command.slice(1), {
       cwd: args.cwd,
-      env: process.env,
+      env: { ...process.env, HOME: args.homeDir },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -4774,7 +4775,12 @@ export async function setupCodexPlugin(
       const codexBin =
         opts.codexBin === undefined ? Bun.which("codex") : opts.codexBin;
       codexInstall = codexBin
-        ? await runCodexPluginAdd({ codexBin, cwd: home, marketplaceName })
+        ? await runCodexPluginAdd({
+            codexBin,
+            cwd: home,
+            homeDir: home,
+            marketplaceName,
+          })
         : {
             status: "skipped",
             reason: "codex command not found",

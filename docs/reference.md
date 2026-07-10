@@ -5,6 +5,7 @@ This page groups the main `fclt` commands by job. Use `fclt --help` and `fclt <c
 ## Discovery
 
 ```bash
+fclt setup [--global-only] [--no-codex-plugin] [--json]
 fclt status [--json]
 fclt doctor [--json] [--repair]
 fclt paths [--json]
@@ -15,10 +16,13 @@ fclt show <selector>
 fclt find <query>
 ```
 
-Use these first. They let you inspect tool state without claiming ownership of any files.
-`doctor --json` is read-only and reports setup health, issues, and recommended
-actions. `paths --json` reports canonical, generated, runtime, and review paths
-for agents and integrations.
+Use `fclt setup` once after installation to bootstrap global capability, the current repository
+when present, review state, indexes, and optional Codex integration. It is idempotent and preserves
+local edits and WB/EV history. The remaining commands let you inspect tool state without claiming
+ownership of rendered files.
+`doctor --json` is read-only and reports setup health, loop readiness, optional integration
+degradation, and recommended actions. `paths --json` reports canonical, generated, runtime, and
+review paths for agents and integrations.
 
 Use `fclt doctor --repair` as the one-command self-heal path for local state.
 It repairs legacy generated state, stale Codex authoring paths, explicit project

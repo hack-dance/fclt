@@ -1370,7 +1370,7 @@ async function main(argv: string[]) {
       await import("./manage").then(({ syncCommand }) => syncCommand(rest));
       return;
     case "setup":
-      await import("./manage").then(({ setupCommand }) => setupCommand(rest));
+      await import("./setup").then(({ setupCommand }) => setupCommand(rest));
       return;
     case "autosync":
       await import("./autosync").then(({ autosyncCommand }) =>

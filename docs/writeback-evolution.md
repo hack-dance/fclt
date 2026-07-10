@@ -4,6 +4,17 @@ Writeback preserves useful signal from real work. Evolution turns repeated signa
 
 Use this when normal work exposes the same problem more than once: shallow tests, missing context, stale guidance, a slow tool path, or a missing skill. Ignore it for one-off preferences and vague complaints.
 
+For a new CLI or Codex-plugin install, initialize the whole loop first:
+
+```bash
+fclt setup
+fclt doctor --json
+```
+
+The doctor report's `loop` object is the readiness contract. Core setup can be ready while optional
+Linear issue lookup is `not_configured` or `configured_unverified`; that integration state is never
+silently treated as successful.
+
 Use this loop when a task exposes durable friction:
 
 1. record one targeted writeback

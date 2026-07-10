@@ -2629,6 +2629,12 @@ describe("syncManagedTools", () => {
         join(home, "plugins", "fclt", "scripts", "fclt-mcp.cjs"),
         "utf8"
       )
+    ).toContain('name: "fclt_setup"');
+    expect(
+      await readFile(
+        join(home, "plugins", "fclt", "scripts", "fclt-mcp.cjs"),
+        "utf8"
+      )
     ).toContain(
       'enum: ["assess", "list", "propose", "draft", "review", "show"]'
     );

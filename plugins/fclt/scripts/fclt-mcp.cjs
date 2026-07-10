@@ -13,6 +13,20 @@ const PLUGIN_ROOT = path.resolve(__dirname, "..");
 
 const tools = [
   {
+    name: "fclt_setup",
+    description:
+      "Bootstrap or repair the complete fclt writeback/evolution loop and return readiness JSON.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: { type: "string" },
+        globalOnly: { type: "boolean" },
+        dryRun: { type: "boolean" },
+        installCodexPlugin: { type: "boolean" },
+      },
+    },
+  },
+  {
     name: "fclt_status",
     description:
       "Return fclt status for the current, global, or project scope.",
@@ -193,6 +207,14 @@ function resolveToolCwd(name, args = {}) {
 
 function commandForTool(name, args = {}) {
   switch (name) {
+    case "fclt_setup":
+      return [
+        "setup",
+        "--json",
+        ...boolFlag("--global-only", args.globalOnly),
+        ...boolFlag("--dry-run", args.dryRun),
+        ...(args.installCodexPlugin === false ? ["--no-codex-plugin"] : []),
+      ];
     case "fclt_status":
       return ["status", ...scopeArgs(args.scope), "--json"];
     case "fclt_doctor":

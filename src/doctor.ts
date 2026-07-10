@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
+import { constants } from "node:fs";
 import {
+  access,
   copyFile,
   lstat,
   mkdir,
@@ -55,6 +57,7 @@ type DoctorHealthState =
   | "healthy"
   | "uninitialized"
   | "canonical_source_attention"
+  | "loop_blocked"
   | "partial_global_config"
   | "project_generated_only"
   | "project_policy_attention"
@@ -77,6 +80,45 @@ interface DoctorAction {
     | "generated_state_write"
     | "canonical_write"
     | "tool_home_write";
+}
+
+type LoopReadinessState = "ready" | "degraded" | "blocked";
+
+interface OptionalIntegrationReadiness {
+  optional: true;
+  state: "ready" | "not_configured" | "configured_unverified";
+  message: string;
+  repair?: string;
+}
+
+interface CodexReadiness {
+  state: "ready" | "not_installed" | "registered_unverified" | "misconfigured";
+  pluginPayloadPresent: boolean;
+  mcpDeclared: boolean;
+  registered: boolean;
+  freshSessionDiscovery: "not_applicable" | "requires_fresh_session";
+  repair?: string;
+}
+
+interface LoopReadiness {
+  state: LoopReadinessState;
+  ready: boolean;
+  blockers: string[];
+  capabilities: {
+    canonicalRoot: boolean;
+    generatedIndex: boolean;
+    generatedGraph: boolean;
+    runtimeStateWritable: boolean;
+    reviewArtifactsWritable: boolean;
+    assetTargeting: boolean;
+    writebackSkill: boolean;
+    evolutionSkill: boolean;
+    automationTemplates: string[];
+  };
+  integrations: {
+    codex: CodexReadiness;
+    linear: OptionalIntegrationReadiness;
+  };
 }
 
 export interface DoctorReport {
@@ -115,6 +157,7 @@ export interface DoctorReport {
     projectSyncRepairNeeded: boolean;
     projectSyncRepairTools: string[];
   };
+  loop: LoopReadiness;
   issues: DoctorIssue[];
   actions: DoctorAction[];
 }
@@ -188,6 +231,168 @@ async function pathEntryExists(pathValue: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function nearestExistingPath(pathValue: string): Promise<string | null> {
+  let current = pathValue;
+  while (true) {
+    if (await pathExists(current)) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+async function pathCanBeWritten(pathValue: string): Promise<boolean> {
+  const existing = await nearestExistingPath(pathValue);
+  if (!existing) {
+    return false;
+  }
+  try {
+    await access(existing, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function configuredCodexPlugins(home: string): Promise<Set<string>> {
+  const configPath = join(home, ".codex", "config.toml");
+  try {
+    const parsed = Bun.TOML.parse(await readFile(configPath, "utf8"));
+    if (!(isObject(parsed) && isObject(parsed.plugins))) {
+      return new Set();
+    }
+    return new Set(
+      Object.entries(parsed.plugins)
+        .filter(([, value]) => !isObject(value) || value.enabled !== false)
+        .map(([name]) => name)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+async function canonicalMcpNames(rootDir: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  for (const candidate of [
+    join(rootDir, "mcp", "servers.json"),
+    join(rootDir, "mcp", "servers.local.json"),
+  ]) {
+    try {
+      const parsed = JSON.parse(await readFile(candidate, "utf8")) as unknown;
+      const servers = isObject(parsed) ? extractServersObject(parsed) : null;
+      if (servers) {
+        for (const name of Object.keys(servers)) {
+          names.add(name);
+        }
+      }
+    } catch {
+      // Try the next canonical MCP source.
+    }
+  }
+  return names;
+}
+
+async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
+  const pluginRoot = join(home, "plugins", "fclt");
+  const pluginPayloadPresent = await pathExists(
+    join(pluginRoot, ".codex-plugin", "plugin.json")
+  );
+  let mcpDeclared = false;
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(pluginRoot, ".mcp.json"), "utf8")
+    ) as unknown;
+    mcpDeclared = Boolean(
+      isObject(parsed) &&
+        isObject(parsed.mcpServers) &&
+        isObject(parsed.mcpServers.fclt)
+    );
+  } catch {
+    mcpDeclared = false;
+  }
+  const configured = await configuredCodexPlugins(home);
+  const registered = [...configured].some((name) => name.startsWith("fclt@"));
+
+  if (!(pluginPayloadPresent || registered)) {
+    return {
+      state: "not_installed",
+      pluginPayloadPresent,
+      mcpDeclared,
+      registered,
+      freshSessionDiscovery: "not_applicable",
+      repair: "Run `fclt setup codex-plugin` if Codex integration is wanted.",
+    };
+  }
+  if (!(pluginPayloadPresent && mcpDeclared && registered)) {
+    return {
+      state: "misconfigured",
+      pluginPayloadPresent,
+      mcpDeclared,
+      registered,
+      freshSessionDiscovery: "not_applicable",
+      repair:
+        "Run `fclt setup codex-plugin`, then inspect `codex plugin list --json`.",
+    };
+  }
+  return {
+    state: "registered_unverified",
+    pluginPayloadPresent,
+    mcpDeclared,
+    registered,
+    freshSessionDiscovery: "requires_fresh_session",
+    repair:
+      "Start a fresh Codex session and confirm the `fclt_status` and `fclt_setup` tools are discoverable.",
+  };
+}
+
+async function inspectLinearReadiness(args: {
+  home: string;
+  rootDir: string;
+}): Promise<OptionalIntegrationReadiness> {
+  const [codexPlugins, mcpNames] = await Promise.all([
+    configuredCodexPlugins(args.home),
+    canonicalMcpNames(args.rootDir),
+  ]);
+  const configuredByPlugin = [...codexPlugins].some((name) =>
+    name.startsWith("linear@")
+  );
+  const configuredByMcp = [...mcpNames].some((name) =>
+    name.toLowerCase().includes("linear")
+  );
+  const configuredByEnv = [
+    "LINEAR_API_KEY",
+    "LINEAR_ACCESS_TOKEN",
+    "LINEAR_TOKEN",
+  ].some((name) => Boolean(process.env[name]?.trim()));
+
+  if (!(configuredByPlugin || configuredByMcp || configuredByEnv)) {
+    return {
+      optional: true,
+      state: "not_configured",
+      message:
+        "Linear is not configured. Core writeback/evolution remains ready; issue linking must be updated manually.",
+      repair:
+        "Install/configure a Linear connector or canonical Linear MCP only if linked issue workflows are needed.",
+    };
+  }
+  return {
+    optional: true,
+    state: "configured_unverified",
+    message:
+      "Linear configuration was detected, but doctor does not perform an authenticated mutation or API probe.",
+    repair:
+      "Run a read-only Linear issue lookup in the host agent before relying on linked issue status.",
+  };
 }
 
 async function hasCanonicalSource(rootDir: string): Promise<boolean> {
@@ -1016,6 +1221,72 @@ export async function buildDoctorReport(opts?: {
   const projectSyncRepairTools = Object.keys(projectSyncPlan.toolPolicies).sort(
     (a, b) => a.localeCompare(b)
   );
+  const stateDir = facultStateDir(home, rootDir);
+  const [
+    runtimeStateWritable,
+    reviewArtifactsWritable,
+    writebackSkill,
+    evolutionSkill,
+    codexReadiness,
+    linearReadiness,
+  ] = await Promise.all([
+    pathCanBeWritten(stateDir),
+    Promise.all([
+      pathCanBeWritten(writebackReviewDir),
+      pathCanBeWritten(evolutionReviewDir),
+    ]).then((values) => values.every(Boolean)),
+    Promise.all([
+      pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
+      projectRoot
+        ? pathExists(
+            join(facultRootDir(home), "skills", "fclt-writeback", "SKILL.md")
+          )
+        : Promise.resolve(false),
+    ]).then((values) => values.some(Boolean)),
+    Promise.all([
+      pathExists(join(rootDir, "skills", "capability-evolution", "SKILL.md")),
+      projectRoot
+        ? pathExists(
+            join(
+              facultRootDir(home),
+              "skills",
+              "capability-evolution",
+              "SKILL.md"
+            )
+          )
+        : Promise.resolve(false),
+    ]).then((values) => values.some(Boolean)),
+    inspectCodexReadiness(home),
+    inspectLinearReadiness({ home, rootDir }),
+  ]);
+  const generatedIndexReady = result.source !== "missing";
+  const assetTargeting =
+    generatedIndexReady &&
+    generatedGraphExists &&
+    writebackSkill &&
+    evolutionSkill;
+  const loopBlockers: string[] = [];
+  if (!(rootExists && canonicalSourceExists)) {
+    loopBlockers.push("canonical_root");
+  }
+  if (!runtimeStateWritable) {
+    loopBlockers.push("runtime_state_not_writable");
+  }
+  if (!reviewArtifactsWritable) {
+    loopBlockers.push("review_artifacts_not_writable");
+  }
+  if (!writebackSkill) {
+    loopBlockers.push("writeback_skill_missing");
+  }
+  if (!evolutionSkill) {
+    loopBlockers.push("evolution_skill_missing");
+  }
+  const loopState: LoopReadinessState =
+    loopBlockers.length > 0
+      ? "blocked"
+      : assetTargeting && writebackReviewDirExists && evolutionReviewDirExists
+        ? "ready"
+        : "degraded";
   const issues: DoctorIssue[] = [];
   const actions: DoctorAction[] = [];
 
@@ -1152,6 +1423,57 @@ export async function buildDoctorReport(opts?: {
     });
   }
 
+  if (!(writebackSkill && evolutionSkill)) {
+    issues.push({
+      severity: "error",
+      code: "missing-loop-skills",
+      message:
+        "Required writeback/evolution skills are missing from the selected root.",
+      fix: projectRoot
+        ? "Run `fclt setup` from the project root."
+        : "Run `fclt setup --global-only`.",
+    });
+    actions.push({
+      id: "bootstrap-loop-assets",
+      label: "Install required writeback/evolution assets",
+      command: projectRoot ? "fclt setup" : "fclt setup --global-only",
+      risk: "canonical_write",
+    });
+  }
+
+  if (!(runtimeStateWritable && reviewArtifactsWritable)) {
+    issues.push({
+      severity: "error",
+      code: "loop-state-not-writable",
+      message:
+        "Writeback runtime state or review artifact paths are not writable.",
+      fix: `Restore write access to ${stateDir}, ${writebackReviewDir}, and ${evolutionReviewDir}, then run \`fclt setup\` again.`,
+    });
+  }
+
+  if (codexReadiness.state === "misconfigured") {
+    issues.push({
+      severity: "warning",
+      code: "codex-plugin-misconfigured",
+      message:
+        "Codex plugin payload, MCP declaration, and registration are inconsistent.",
+      fix: codexReadiness.repair,
+    });
+    actions.push({
+      id: "repair-codex-plugin",
+      label: "Repair Codex plugin installation",
+      command: "fclt setup codex-plugin",
+      risk: "tool_home_write",
+    });
+  }
+
+  issues.push({
+    severity: "info",
+    code: `linear-${linearReadiness.state.replaceAll("_", "-")}`,
+    message: linearReadiness.message,
+    fix: linearReadiness.repair,
+  });
+
   if (projectSyncPlan.needed) {
     issues.push({
       severity: "warning",
@@ -1174,6 +1496,8 @@ export async function buildDoctorReport(opts?: {
     state = "uninitialized";
   } else if (!(canonicalGlobalDocs.valid && canonicalTemplateRefs.valid)) {
     state = "canonical_source_attention";
+  } else if (loopState === "blocked") {
+    state = "loop_blocked";
   } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
     state = "partial_global_config";
   } else if (projectSyncPlan.needed) {
@@ -1225,6 +1549,30 @@ export async function buildDoctorReport(opts?: {
       ),
       projectSyncRepairNeeded: projectSyncPlan.needed,
       projectSyncRepairTools,
+    },
+    loop: {
+      state: loopState,
+      ready: loopState === "ready",
+      blockers: loopBlockers,
+      capabilities: {
+        canonicalRoot: rootExists && canonicalSourceExists,
+        generatedIndex: generatedIndexReady,
+        generatedGraph: generatedGraphExists,
+        runtimeStateWritable,
+        reviewArtifactsWritable,
+        assetTargeting,
+        writebackSkill,
+        evolutionSkill,
+        automationTemplates: [
+          "learning-review",
+          "evolution-review",
+          "tool-call-audit",
+        ],
+      },
+      integrations: {
+        codex: codexReadiness,
+        linear: linearReadiness,
+      },
     },
     issues,
     actions,

@@ -65,6 +65,21 @@ if (status.packageVersion !== version) {
   );
 }
 
+const setup = JSON.parse(
+  await run(["setup", "--global-only", "--no-codex-plugin", "--json"])
+) as {
+  health?: string;
+  readiness?: { global?: { loop?: { state?: string } } };
+};
+if (
+  setup.health !== "ready" ||
+  setup.readiness?.global?.loop?.state !== "ready"
+) {
+  throw new Error(
+    `Expected compiled setup readiness, got ${JSON.stringify(setup)}`
+  );
+}
+
 await run(["manage", "codex", "--global"]);
 await run(["sync", "codex", "--global"]);
 

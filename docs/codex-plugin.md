@@ -22,6 +22,7 @@ The MCP wrapper intentionally delegates to the local `fclt` binary instead of du
 
 The plugin exposes:
 
+- `fclt_setup`
 - `fclt_status`
 - `fclt_doctor`
 - `fclt_paths`
@@ -34,7 +35,17 @@ These tools are thin wrappers around CLI commands and return command output. Mut
 
 ## Install In Codex
 
-Use the narrow setup command for normal installs:
+For a new install, prefer the complete one-command bootstrap:
+
+```bash
+fclt setup
+```
+
+It prepares global and current-repo capability, review state, indexes, and the plugin. The same
+command is available to Codex through `fclt_setup`, so a plugin-led install does not require the
+user to know capability roots or state paths.
+
+Use the narrow plugin-only command when the CLI loop is already healthy:
 
 ```bash
 fclt setup codex-plugin
@@ -73,8 +84,14 @@ For local plugin development, run the lightweight checks that ship with the repo
 
 ```bash
 node plugins/fclt/scripts/fclt-mcp.cjs --self-test
+bun run bootstrap:verify
 bun run check
 ```
+
+`codex plugin list --json` proves registration, and the MCP self-test proves the packaged server
+declares its tools. Neither proves a running task has refreshed its tool registry. After plugin
+installation, start a fresh Codex task and confirm `fclt_setup` and `fclt_status` are discoverable;
+`doctor --json` reports this boundary as `requires_fresh_session` instead of inferring success.
 
 ## Recommended Agent Use
 

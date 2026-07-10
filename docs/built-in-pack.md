@@ -22,6 +22,7 @@ Instructions:
 Skills:
 
 - `capability-evolution`
+- `fclt-writeback`
 - `project-operating-layer-design`
 
 Agents:
@@ -62,6 +63,9 @@ fclt templates init operating-model --root /path/to/.ai
 ```
 
 That writes the pack into the selected `.ai` root and rebuilds its index. It does not render files into Codex, Claude, or any other tool home.
+
+For normal onboarding, prefer `fclt setup`. The lower-level template commands remain available for
+advanced scope selection, dry-runs, and recovery.
 
 Refresh an existing root non-destructively:
 

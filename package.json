@@ -54,6 +54,7 @@
     "scan": "bun run ./src/index.ts scan",
     "build": "bun run scripts/build-binary.ts",
     "build:verify": "bun run scripts/verify-binary.ts",
+    "bootstrap:verify": "bun run scripts/verify-bootstrap-package.ts",
     "install:dev": "bun run scripts/install-cli.ts --mode=dev --force",
     "install:bin": "bun run build && bun run scripts/install-cli.ts --mode=bin --force",
     "install:status": "bun run scripts/install-status.ts",
