@@ -1,4 +1,4 @@
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseJsonLenient } from "./util/json";
 
 const INLINE_SECRET_PLACEHOLDER_VALUES = new Set(["<set-me>", "<redacted>"]);
@@ -75,12 +75,9 @@ export function canonicalMcpPaths(
   trackedPath?: string | null
 ): { trackedPath: string; localPath: string } {
   const resolvedTrackedPath = trackedPath ?? canonicalMcpTrackedPath(rootDir);
-  const fileName = basename(resolvedTrackedPath);
-  const localFileName =
-    fileName === "mcp.json" ? "mcp.local.json" : "servers.local.json";
   return {
     trackedPath: resolvedTrackedPath,
-    localPath: join(dirname(resolvedTrackedPath), localFileName),
+    localPath: join(dirname(resolvedTrackedPath), "servers.local.json"),
   };
 }
 
@@ -117,7 +114,16 @@ export async function loadCanonicalMcpState(
     : (await Bun.file(mcpPath).exists())
       ? mcpPath
       : serversPath;
-  const { localPath } = canonicalMcpPaths(rootDir, trackedPath);
+  const { localPath: canonicalLocalPath } = canonicalMcpPaths(
+    rootDir,
+    trackedPath
+  );
+  const legacyLocalPath = join(dirname(trackedPath), "mcp.local.json");
+  const localPath = (await Bun.file(canonicalLocalPath).exists())
+    ? canonicalLocalPath
+    : (await Bun.file(legacyLocalPath).exists())
+      ? legacyLocalPath
+      : canonicalLocalPath;
   const trackedServers = await loadServersFromPath(trackedPath);
   const localServers =
     opts?.includeLocal === true ? await loadServersFromPath(localPath) : {};
