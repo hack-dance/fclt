@@ -402,6 +402,59 @@ test("doctor --json reports read-only setup health", async () => {
   }
 }, 10_000);
 
+test("doctor detects Linear in canonical mcp.json", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-linear-mcp-"));
+  const aiRoot = join(dir, ".ai");
+
+  try {
+    await mkdir(join(aiRoot, "mcp"), { recursive: true });
+    await writeJson(join(aiRoot, "mcp", "mcp.json"), {
+      mcpServers: {
+        linear: {
+          command: "linear-mcp",
+        },
+      },
+    });
+    const env = {
+      ...process.env,
+      HOME: dir,
+      LINEAR_API_KEY: "",
+      LINEAR_ACCESS_TOKEN: "",
+      LINEAR_TOKEN: "",
+    };
+    const proc = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json", "--root", aiRoot],
+      {
+        cwd: process.cwd(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    const report = JSON.parse(out) as {
+      loop: {
+        integrations: {
+          linear: { state: string; message: string };
+        };
+      };
+    };
+    expect(report.loop.integrations.linear.state).toBe("configured_unverified");
+    expect(report.loop.integrations.linear.message).toContain(
+      "Linear configuration was detected"
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
 test("doctor health is non-OK when loop readiness is blocked", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-loop-blocked-"));
 

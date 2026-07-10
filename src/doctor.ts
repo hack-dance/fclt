@@ -30,7 +30,7 @@ import {
 } from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { loadManagedState } from "./manage";
-import { extractServersObject } from "./mcp-config";
+import { extractServersObject, loadCanonicalMcpState } from "./mcp-config";
 import {
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
@@ -282,24 +282,8 @@ async function configuredCodexPlugins(home: string): Promise<Set<string>> {
 }
 
 async function canonicalMcpNames(rootDir: string): Promise<Set<string>> {
-  const names = new Set<string>();
-  for (const candidate of [
-    join(rootDir, "mcp", "servers.json"),
-    join(rootDir, "mcp", "servers.local.json"),
-  ]) {
-    try {
-      const parsed = JSON.parse(await readFile(candidate, "utf8")) as unknown;
-      const servers = isObject(parsed) ? extractServersObject(parsed) : null;
-      if (servers) {
-        for (const name of Object.keys(servers)) {
-          names.add(name);
-        }
-      }
-    } catch {
-      // Try the next canonical MCP source.
-    }
-  }
-  return names;
+  const state = await loadCanonicalMcpState(rootDir, { includeLocal: true });
+  return new Set(Object.keys(state.servers));
 }
 
 async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {

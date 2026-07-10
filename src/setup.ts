@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { refreshAiReviewArtifacts } from "./ai";
 import { buildDoctorReport, type DoctorReport } from "./doctor";
 import { type SetupCodexPluginResult, setupCodexPlugin } from "./manage";
@@ -67,9 +67,12 @@ export async function bootstrapFclt(
   const globalRoot = facultRootDir(homeDir);
   const detectedProject = findGitRootFromPath(cwd);
   const includeProject = opts.includeProject ?? detectedProject !== null;
-  const projectRoot = includeProject
-    ? join(detectedProject ?? cwd, ".ai")
-    : null;
+  const projectCandidateRoot = resolve(detectedProject ?? cwd, ".ai");
+  const projectTargetsGlobalRoot =
+    (detectedProject !== null && resolve(detectedProject) === globalRoot) ||
+    projectCandidateRoot === globalRoot;
+  const projectRoot =
+    includeProject && !projectTargetsGlobalRoot ? projectCandidateRoot : null;
   const changedPaths: string[] = [];
   const skippedPaths: string[] = [];
 
