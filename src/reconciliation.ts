@@ -238,7 +238,7 @@ function correlationKeys(record: SourceRecord): string[] {
   const referenceCount =
     record.assetRefs.length +
     record.issueRefs.length +
-    record.writebackRefs.length;
+    (record.sourceType === "writebacks" ? 0 : record.writebackRefs.length);
   const boundedReferenceKeys =
     referenceCount <= 2
       ? [

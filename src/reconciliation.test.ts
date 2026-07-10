@@ -47,6 +47,7 @@ async function writeQueue(args: {
       kind: "capability_gap",
       summary: "Full-window source reconciliation is missing.",
       status: "recorded",
+      assetRef: "@project/instructions/RECONCILIATION.md",
       issueLinks: ["TICKET-793"],
       disposition: "task",
       dispositionTarget: "TICKET-793",
@@ -271,7 +272,11 @@ describe("source reconciliation", () => {
             observedAt: "2026-07-10T16:15:45.198Z",
             title: "Add automatic source reconciliation",
             body: "Implementation target for WB-00020.",
-            refs: ["TICKET-793", "WB-00020"],
+            refs: [
+              "TICKET-793",
+              "WB-00020",
+              "@project/instructions/RECONCILIATION.md",
+            ],
           },
           {
             id: "comment-793",
@@ -347,6 +352,14 @@ describe("source reconciliation", () => {
     expect(
       first.signals.some((signal) => signal.disposition === "propose")
     ).toBe(false);
+    expect(
+      first.signals.some(
+        (signal) =>
+          signal.issueRefs.includes("TICKET-793") &&
+          signal.sourceIds.includes("writebacks") &&
+          signal.sourceIds.includes("issues")
+      )
+    ).toBe(true);
     expect(
       first.decisions
         .filter((decision) => decision.included)
@@ -1116,6 +1129,33 @@ describe("source reconciliation", () => {
       disposition: "apply-local",
       dispositionTarget: "@project/instructions/LOCAL.md",
     });
+  });
+
+  it("extracts canonical assets from Markdown links", async () => {
+    const fixture = await makeFixture();
+    const notesDir = join(fixture.projectRoot, "notes");
+    await mkdir(notesDir, { recursive: true });
+    await Bun.write(
+      join(notesDir, "signal.md"),
+      "# 2026-07-05 capability signal\n\nSee [the rule](@project/instructions/TESTING.md) and [@project/instructions/TESTING.md](./target).\n"
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "notes", type: "markdown", paths: ["notes/*.md"] }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+
+    expect(review.signals[0]?.assetRefs).toEqual([
+      "@project/instructions/TESTING.md",
+    ]);
   });
 
   it("preserves invalid state and reports it separately from configuration", async () => {
