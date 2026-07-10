@@ -50,7 +50,7 @@ jobs:
         run: bun run type-check
 
       - name: Test (CI-safe set)
-        run: bun run test:ci
+        run: ./scripts/test-safe.sh --ci
 
       - name: Build compiled binary
         run: bun run build

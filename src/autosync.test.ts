@@ -8,7 +8,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { runFixtureGit } from "../test/git-fixture";
 import {
   type AutosyncServiceConfig,
   buildLaunchAgentPlist,
@@ -21,25 +22,79 @@ import {
 } from "./autosync";
 
 async function run(cmd: string[], cwd?: string) {
-  const proc = Bun.spawn({
-    cmd,
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      [`command failed: ${cmd.join(" ")}`, stdout.trim(), stderr.trim()]
-        .filter(Boolean)
-        .join("\n")
-    );
+  if (cmd[0] !== "git") {
+    throw new Error(`Expected a git fixture command, received: ${cmd[0]}`);
   }
-  return stdout.trim();
+  const gitDirArgIndex = cmd.indexOf("--git-dir");
+  const explicitGitDir =
+    gitDirArgIndex >= 0 ? cmd[gitDirArgIndex + 1] : undefined;
+  const explicitTarget = cmd.at(-1);
+  let repoDir = cwd;
+  if (!repoDir) {
+    repoDir = explicitGitDir
+      ? resolve(explicitGitDir)
+      : resolve(explicitTarget ?? process.cwd());
+  }
+  return await runFixtureGit({
+    argv: cmd.slice(1),
+    repoDir,
+    homeDir: join(dirname(repoDir), ".git-home"),
+    cwd,
+  });
+}
+
+async function readGitPath(
+  repoDir: string,
+  gitPath: string
+): Promise<string | null> {
+  const pathValue = await run(
+    ["git", "rev-parse", "--git-path", gitPath],
+    repoDir
+  );
+  const absolutePath = resolve(repoDir, pathValue);
+  return await readFile(absolutePath)
+    .then((value) => value.toString("base64"))
+    .catch(() => null);
+}
+
+async function snapshotRepository(
+  repoDir: string
+): Promise<Record<string, unknown>> {
+  const trackedPaths = (await run(["git", "ls-files"], repoDir))
+    .split("\n")
+    .filter(Boolean);
+  const trackedFiles = await Promise.all(
+    trackedPaths.map(async (pathValue) => [
+      pathValue,
+      (await readFile(join(repoDir, pathValue))).toString("base64"),
+    ])
+  );
+  const commonDir = resolve(
+    repoDir,
+    await run(["git", "rev-parse", "--git-common-dir"], repoDir)
+  );
+
+  return {
+    head: await run(["git", "rev-parse", "HEAD"], repoDir),
+    symbolicHead: await run(["git", "symbolic-ref", "HEAD"], repoDir),
+    coreBare: await run(["git", "config", "--get", "core.bare"], repoDir),
+    commonConfig: (await readFile(join(commonDir, "config"))).toString(
+      "base64"
+    ),
+    worktreeConfig: await readGitPath(repoDir, "config.worktree"),
+    index: await readGitPath(repoDir, "index"),
+    refs: await run(
+      ["git", "for-each-ref", "--format=%(refname) %(objectname)"],
+      repoDir
+    ),
+    trackedIndex: await run(["git", "ls-files", "--stage"], repoDir),
+    trackedFiles,
+    status: await run(["git", "status", "--porcelain=v2", "--branch"], repoDir),
+    topLevel: await run(["git", "rev-parse", "--show-toplevel"], repoDir),
+    gitDir: await run(["git", "rev-parse", "--git-dir"], repoDir),
+    commonDir,
+    worktrees: await run(["git", "worktree", "list", "--porcelain"], repoDir),
+  };
 }
 
 function testConfig(rootDir: string, service = "codex"): AutosyncServiceConfig {
@@ -204,6 +259,121 @@ describe("autosync launch agent migration", () => {
 });
 
 describe("git autosync", () => {
+  it("cannot mutate an ambient linked worktree repository", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facult-autosync-isolation-"));
+    tempDirs.push(dir);
+    const callerDir = join(dir, "caller");
+    const linkedDir = join(dir, "caller-linked");
+    const targetRemoteDir = join(dir, "target-remote.git");
+    const targetDir = join(dir, "target");
+
+    await run(["git", "init", "--initial-branch=main", callerDir]);
+    await run(["git", "config", "user.email", "test@example.com"], callerDir);
+    await run(["git", "config", "user.name", "Test User"], callerDir);
+    await writeFile(
+      join(callerDir, "README.md"),
+      "caller repository\n",
+      "utf8"
+    );
+    await run(["git", "add", "README.md"], callerDir);
+    await run(["git", "commit", "-m", "caller initial"], callerDir);
+    await run(
+      ["git", "config", "extensions.worktreeConfig", "true"],
+      callerDir
+    );
+    await run(
+      ["git", "worktree", "add", "-b", "fixture-linked", linkedDir],
+      callerDir
+    );
+    await run(
+      ["git", "config", "--worktree", "fixture.identity", "linked"],
+      linkedDir
+    );
+
+    await run([
+      "git",
+      "init",
+      "--bare",
+      "--initial-branch=main",
+      targetRemoteDir,
+    ]);
+    await run(["git", "clone", targetRemoteDir, targetDir]);
+    await writeFile(join(targetDir, "README.md"), "target initial\n", "utf8");
+    await run(["git", "add", "README.md"], targetDir);
+    await run(
+      [
+        "git",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test User",
+        "commit",
+        "-m",
+        "target initial",
+      ],
+      targetDir
+    );
+    await run(["git", "push", "origin", "main"], targetDir);
+    await writeFile(
+      join(targetDir, "README.md"),
+      "target initial\ntarget change\n",
+      "utf8"
+    );
+
+    const before = await snapshotRepository(linkedDir);
+    const gitDir = await run(["git", "rev-parse", "--git-dir"], linkedDir);
+    const commonDir = await run(
+      ["git", "rev-parse", "--git-common-dir"],
+      linkedDir
+    );
+    const indexPath = await run(
+      ["git", "rev-parse", "--git-path", "index"],
+      linkedDir
+    );
+    const probePath = join(
+      import.meta.dir,
+      "..",
+      "test",
+      "fixtures",
+      "run-autosync-once.ts"
+    );
+    const managedGitConfig = join(dir, "managed.gitconfig");
+    await writeFile(
+      managedGitConfig,
+      "[user]\n\tname = Managed User\n\temail = managed@example.com\n",
+      "utf8"
+    );
+    const probe = Bun.spawn({
+      cmd: [process.execPath, "run", probePath, targetDir],
+      cwd: linkedDir,
+      env: {
+        ...process.env,
+        HOME: join(dir, "probe-home"),
+        GIT_DIR: resolve(linkedDir, gitDir),
+        GIT_COMMON_DIR: resolve(linkedDir, commonDir),
+        GIT_WORK_TREE: linkedDir,
+        GIT_INDEX_FILE: resolve(linkedDir, indexPath),
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.bare",
+        GIT_CONFIG_VALUE_0: "true",
+        GIT_CONFIG_GLOBAL: managedGitConfig,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [probeCode, probeOut, probeErr] = await Promise.all([
+      probe.exited,
+      new Response(probe.stdout).text(),
+      new Response(probe.stderr).text(),
+    ]);
+
+    expect(probeCode).toBe(0);
+    expect(probeErr).toBe("");
+    expect(JSON.parse(probeOut)).toEqual({ changed: true, blocked: false });
+    expect(await snapshotRepository(linkedDir)).toEqual(before);
+    expect(await run(["git", "status", "--short"], targetDir)).toBe("");
+  }, 20_000);
+
   it("auto-commits dirty canonical changes and pushes them", async () => {
     const dir = await mkdtemp(join(tmpdir(), "facult-autosync-"));
     tempDirs.push(dir);

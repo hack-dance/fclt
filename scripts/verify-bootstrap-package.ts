@@ -3,6 +3,10 @@
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+  gitEnvironmentForRepository,
+  withoutLocalGitEnvironment,
+} from "../src/util/git-environment";
 
 interface CommandResult {
   code: number;
@@ -15,9 +19,18 @@ async function run(args: {
   cwd: string;
   env?: Record<string, string>;
 }): Promise<CommandResult> {
+  const mergedEnv = { ...process.env, ...args.env };
+  const env =
+    args.command[0] === "git"
+      ? gitEnvironmentForRepository({
+          repoDir: args.cwd,
+          isolatedHome: args.env?.HOME ?? join(args.cwd, ".git-home"),
+          env: mergedEnv,
+        })
+      : withoutLocalGitEnvironment(mergedEnv);
   const proc = Bun.spawn(args.command, {
     cwd: args.cwd,
-    env: { ...process.env, ...args.env },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -43,11 +56,15 @@ async function main(): Promise<void> {
   try {
     const packageDir = join(tempRoot, "package");
     const appDir = join(tempRoot, "app");
+    const bunInstallDir = join(tempRoot, "bun-install");
+    const bunTempDir = join(tempRoot, "bun-tmp");
     const homeDir = join(tempRoot, "home");
     const sampleRepo = join(homeDir, "sample-repo");
     await Promise.all([
       mkdir(packageDir, { recursive: true }),
       mkdir(appDir, { recursive: true }),
+      mkdir(bunInstallDir, { recursive: true }),
+      mkdir(bunTempDir, { recursive: true }),
       mkdir(sampleRepo, { recursive: true }),
     ]);
 
@@ -73,6 +90,10 @@ async function main(): Promise<void> {
     const installed = await run({
       command: ["bun", "add", "--cwd", appDir, packageSpec],
       cwd: repoRoot,
+      env: {
+        BUN_INSTALL: bunInstallDir,
+        BUN_TMPDIR: bunTempDir,
+      },
     });
     assertSuccess(installed, "package install");
 
