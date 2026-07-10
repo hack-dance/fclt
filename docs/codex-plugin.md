@@ -33,7 +33,8 @@ The plugin exposes:
 - `fclt_capability`: typed capability, provenance, template, snippet, adapter, and managed-state reads
 - `fclt_workflow`: typed writeback and evolution read/review/lifecycle operations
 - `fclt_sync`: managed-state inspection and dry-run sync preview
-- `fclt_registry`: source search/verification and strict-trust install/update preview
+- `fclt_registry`: source search/verification, strict-trust install/update preview,
+  and bounded reconciliation status/review through a closed scope/window/source-id schema
 - `fclt_audit`: structured, redacted, non-interactive security audit
 - `fclt_automation`: read-only autosync service status
 - `fclt_status`

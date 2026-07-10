@@ -98,6 +98,7 @@ function readLine(stream: NodeJS.ReadableStream): Promise<unknown> {
 function toolPayload(response: unknown): {
   operation: { preview: boolean; risk: string };
   recovery: {
+    canonicalCapabilityChanged?: boolean;
     changedPaths?: string[];
     rollbackAvailable?: boolean;
     verification?: string;
@@ -118,6 +119,7 @@ function toolPayload(response: unknown): {
   return JSON.parse(text) as {
     operation: { preview: boolean; risk: string };
     recovery: {
+      canonicalCapabilityChanged?: boolean;
       changedPaths?: string[];
       rollbackAvailable?: boolean;
       verification?: string;
@@ -288,7 +290,125 @@ describe("bundled fclt MCP plugin", () => {
         error?: { message?: string };
       };
       expect(unsupportedProjectPreview.error?.message).toContain(
-        "not an allowed value"
+        "only supports global scope"
+      );
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 31,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "reconcile_status",
+              scope: "project",
+            },
+          },
+        })
+      );
+      const statusResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(statusResponse)).toMatchObject({
+        operation: { preview: false, risk: "read_only" },
+        result: {
+          stdout: {
+            cwd: await realpath(workspace),
+            argv: ["ai", "review", "--project", "status", "--json"],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 32,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "reconcile",
+              scope: "project",
+              since: "2026-07-03",
+              until: "2026-07-10",
+              sourceIds: ["writebacks", "cos-git"],
+              incremental: true,
+            },
+          },
+        })
+      );
+      const reconcileResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(reconcileResponse)).toMatchObject({
+        operation: { preview: false, risk: "review_producing" },
+        recovery: { canonicalCapabilityChanged: false },
+        result: {
+          stdout: {
+            cwd: await realpath(workspace),
+            argv: [
+              "ai",
+              "review",
+              "--project",
+              "reconcile",
+              "--since",
+              "2026-07-03",
+              "--until",
+              "2026-07-10",
+              "--source",
+              "writebacks",
+              "--source",
+              "cos-git",
+              "--incremental",
+              "--json",
+            ],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 33,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "reconcile",
+              scope: "global",
+              since: "2026-07-03",
+              config: "/tmp/unsafe.json",
+            },
+          },
+        })
+      );
+      const unsafeConfig = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(unsafeConfig.error?.message).toContain("unknown argument fields");
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 34,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "reconcile",
+              scope: "global",
+              since: "2026-07-03",
+              query: "ignored passthrough",
+            },
+          },
+        })
+      );
+      const actionSpecificField = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(actionSpecificField.error?.message).toContain(
+        "received unsupported fields"
       );
 
       child.stdin.write(
@@ -393,6 +513,24 @@ describe("bundled fclt MCP plugin", () => {
       expect(workflow?.inputSchema?.properties?.action?.enum).not.toContain(
         "evolve_accept"
       );
+      const registry = published.find(
+        (tool) => tool.name === "fclt_registry"
+      ) as
+        | {
+            inputSchema?: {
+              properties?: {
+                action?: { enum?: string[] };
+                sourceIds?: { items?: { pattern?: string } };
+              };
+            };
+          }
+        | undefined;
+      expect(registry?.inputSchema?.properties?.action?.enum).toEqual(
+        expect.arrayContaining(["reconcile_status", "reconcile"])
+      );
+      expect(
+        registry?.inputSchema?.properties?.sourceIds?.items?.pattern
+      ).toBeDefined();
     } finally {
       child.kill();
     }
@@ -908,7 +1046,7 @@ describe("bundled fclt MCP plugin", () => {
 });
 
 describe("Codex plugin capability matrix", () => {
-  it("tracks the released setup contract and preserves the HACK-793 extension boundary", async () => {
+  it("tracks the released setup contract and exposes the closed HACK-793 router", async () => {
     const repoRoot = join(import.meta.dir, "..");
     const packageJson = (await Bun.file(
       join(repoRoot, "package.json")
@@ -923,6 +1061,7 @@ describe("Codex plugin capability matrix", () => {
         id: string;
         mcp: {
           disposition: string;
+          actions?: string[];
           plannedRouter?: string;
           tool?: string;
         };
@@ -945,8 +1084,9 @@ describe("Codex plugin capability matrix", () => {
     });
     expect(reconciliation?.risk).toBe("review_producing");
     expect(reconciliation?.mcp).toMatchObject({
-      disposition: "blocked_safer_api",
-      plannedRouter: "fclt_registry",
+      disposition: "exposed",
+      tool: "fclt_registry",
+      actions: ["reconcile_status", "reconcile"],
     });
   });
 });

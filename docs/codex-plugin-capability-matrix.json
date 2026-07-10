@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "gitCommit": "24b470b",
-    "packageVersion": "2.20.0",
+    "gitCommit": "170b0d3",
+    "packageVersion": "2.20.1",
     "pluginVersion": "0.1.0",
-    "auditedAt": "2026-07-10T19:45:00Z"
+    "auditedAt": "2026-07-10T20:00:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
@@ -496,19 +496,20 @@
     },
     {
       "id": "reconciliation.review",
-      "cli": "HACK-793 typed reconciliation command",
-      "cliAvailability": "pending_HACK_793_closed_schema",
+      "cli": "ai review status|reconcile --since <date> [--until <date>] [--source <id>] [--incremental] --json",
+      "cliAvailability": "available",
       "mcp": {
-        "disposition": "blocked_safer_api",
-        "plannedRouter": "fclt_registry",
-        "reason": "HACK-793 owns the closed reconciliation schema and CLI contract; HACK-800 must not invent or expose it"
+        "disposition": "exposed",
+        "tool": "fclt_registry",
+        "actions": ["reconcile_status", "reconcile"],
+        "reason": "closed schema exposes only explicit scope, bounded window, configured source ids, and incremental mode; arbitrary config, endpoint, token, argv, and source mutation are not accepted"
       },
       "risk": "review_producing",
       "scope": "explicit source and global|project target",
-      "preview": "read-only/review-producing only after HACK-793 defines the typed contract",
-      "apply": "not_applicable in HACK-800",
-      "rollback": "canonical capability remains unchanged; discard the review artifact under the HACK-793 contract",
-      "verification": "HACK-793-owned provenance, watermarks, coverage, signals, correlation, dispositions, and review artifact contract"
+      "preview": "reconcile_status is read-only; reconcile reads configured sources and produces machine-local state plus a review artifact",
+      "apply": "not_applicable; external sources and canonical capability remain read-only",
+      "rollback": "canonical capability remains unchanged; preserve or discard the generated review artifact and machine-local window state",
+      "verification": "structured coverage, degraded/unavailable sources, extraction decisions, provenance, correlation, mandatory dispositions, linked work, exclusions, and review artifact identity"
     },
     {
       "id": "remote.search_verify",

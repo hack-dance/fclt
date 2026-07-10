@@ -169,7 +169,7 @@ const tools = [
   {
     name: "fclt_registry",
     description:
-      "Search and verify remote capability or preview installs and updates. Registry mutation remains withheld.",
+      "Search and verify remote capability, preview installs and updates, or run typed source reconciliation reviews. Registry mutation remains withheld.",
     inputSchema: {
       type: "object",
       properties: {
@@ -181,14 +181,34 @@ const tools = [
             "source_list",
             "install_preview",
             "update_check",
+            "reconcile_status",
+            "reconcile",
           ],
         },
-        scope: { type: "string", enum: ["global"] },
+        scope: { type: "string", enum: ["global", "project"] },
         cwd: { type: "string" },
         query: { type: "string" },
         source: { type: "string" },
         item: { type: "string" },
         as: { type: "string" },
+        since: {
+          type: "string",
+          pattern:
+            "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2}))?$",
+        },
+        until: {
+          type: "string",
+          pattern:
+            "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2}))?$",
+        },
+        sourceIds: {
+          type: "array",
+          items: {
+            type: "string",
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          },
+        },
+        incremental: { type: "boolean" },
       },
       required: ["action"],
     },
@@ -381,6 +401,13 @@ function validateToolArguments(name, args) {
       property.type === "array" &&
       property.items?.type &&
       value.some((item) => typeof item !== property.items.type)
+    ) {
+      throw new Error(`${name}.${key} contains an invalid item`);
+    }
+    if (
+      property.type === "array" &&
+      property.items?.pattern &&
+      value.some((item) => !new RegExp(property.items.pattern).test(item))
     ) {
       throw new Error(`${name}.${key} contains an invalid item`);
     }
@@ -690,17 +717,38 @@ function syncCommand(args) {
   throw new Error(`Unsupported sync action: ${args.action}`);
 }
 
+function requireOnlyRegistryFields(args, fields) {
+  const allowed = new Set(["action", "scope", "cwd", ...fields]);
+  const unexpected = Object.keys(args).filter((key) => !allowed.has(key));
+  if (unexpected.length > 0) {
+    throw new Error(
+      `${args.action} received unsupported fields: ${unexpected.join(", ")}`
+    );
+  }
+}
+
 function registryCommand(args) {
+  if (
+    args.scope === "project" &&
+    args.action !== "reconcile_status" &&
+    args.action !== "reconcile"
+  ) {
+    throw new Error(`${args.action} only supports global scope`);
+  }
   if (args.action === "search") {
+    requireOnlyRegistryFields(args, ["query"]);
     return ["search", requireString("query", args.query), "--json"];
   }
   if (args.action === "verify_source") {
+    requireOnlyRegistryFields(args, ["source"]);
     return ["verify-source", requireString("source", args.source), "--json"];
   }
   if (args.action === "source_list") {
+    requireOnlyRegistryFields(args, []);
     return ["sources", "list", "--json"];
   }
   if (args.action === "install_preview") {
+    requireOnlyRegistryFields(args, ["item", "as"]);
     return [
       "install",
       requireString("item", args.item),
@@ -711,7 +759,40 @@ function registryCommand(args) {
     ];
   }
   if (args.action === "update_check") {
+    requireOnlyRegistryFields(args, []);
     return ["update", "--strict-source-trust", "--json"];
+  }
+  if (args.action === "reconcile_status") {
+    requireOnlyRegistryFields(args, []);
+    if (args.scope !== "global" && args.scope !== "project") {
+      throw new Error(
+        "reconcile_status requires an explicit global or project scope"
+      );
+    }
+    return ["ai", "review", ...scopeArgs(args.scope), "status", "--json"];
+  }
+  if (args.action === "reconcile") {
+    requireOnlyRegistryFields(args, [
+      "since",
+      "until",
+      "sourceIds",
+      "incremental",
+    ]);
+    if (args.scope !== "global" && args.scope !== "project") {
+      throw new Error("reconcile requires an explicit global or project scope");
+    }
+    return [
+      "ai",
+      "review",
+      ...scopeArgs(args.scope),
+      "reconcile",
+      "--since",
+      requireString("since", args.since),
+      ...stringFlag("--until", args.until),
+      ...repeatedStringFlag("--source", args.sourceIds),
+      ...boolFlag("--incremental", args.incremental),
+      "--json",
+    ];
   }
   throw new Error(`Unsupported registry action: ${args.action}`);
 }
@@ -917,6 +998,7 @@ function operationMetadata(name, args, command) {
     "evolve_draft",
     "evolve_review",
     "evolve_verify",
+    "reconcile",
   ]);
   const preview = command.includes("--dry-run");
   const risk = reviewActions.has(action)
