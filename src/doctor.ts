@@ -1235,8 +1235,27 @@ export async function buildDoctorReport(opts?: {
       pathCanBeWritten(writebackReviewDir),
       pathCanBeWritten(evolutionReviewDir),
     ]).then((values) => values.every(Boolean)),
-    pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
-    pathExists(join(rootDir, "skills", "capability-evolution", "SKILL.md")),
+    Promise.all([
+      pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
+      projectRoot
+        ? pathExists(
+            join(facultRootDir(home), "skills", "fclt-writeback", "SKILL.md")
+          )
+        : Promise.resolve(false),
+    ]).then((values) => values.some(Boolean)),
+    Promise.all([
+      pathExists(join(rootDir, "skills", "capability-evolution", "SKILL.md")),
+      projectRoot
+        ? pathExists(
+            join(
+              facultRootDir(home),
+              "skills",
+              "capability-evolution",
+              "SKILL.md"
+            )
+          )
+        : Promise.resolve(false),
+    ]).then((values) => values.some(Boolean)),
     inspectCodexReadiness(home),
     inspectLinearReadiness({ home, rootDir }),
   ]);
