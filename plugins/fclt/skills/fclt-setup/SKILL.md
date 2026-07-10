@@ -51,6 +51,11 @@ fclt paths --json
 fclt doctor --json
 ```
 
+Through MCP, call `fclt_setup` with an explicit `global` or
+`global_and_project` scope. Project setup also requires the exact `cwd`.
+Preview is the default; apply requires both `dryRun: false` and
+`approve: true`.
+
 4. For advanced manual recovery, initialize global capability when missing:
 
 ```bash

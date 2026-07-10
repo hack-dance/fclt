@@ -19,11 +19,16 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
+        scope: {
+          type: "string",
+          enum: ["global", "global_and_project"],
+        },
         cwd: { type: "string" },
-        globalOnly: { type: "boolean" },
         dryRun: { type: "boolean" },
         installCodexPlugin: { type: "boolean" },
+        approve: { type: "boolean" },
       },
+      required: ["scope"],
     },
   },
   {
@@ -779,14 +784,27 @@ function resolveToolCwd(name, args = {}) {
 
 function commandForTool(name, args = {}) {
   switch (name) {
-    case "fclt_setup":
+    case "fclt_setup": {
+      const apply = args.dryRun === false;
+      if (apply && args.approve !== true) {
+        throw new Error("fclt_setup apply requires approve=true");
+      }
+      if (
+        args.scope === "global_and_project" &&
+        (typeof args.cwd !== "string" || !args.cwd.trim())
+      ) {
+        throw new Error(
+          "fclt_setup global_and_project scope requires an explicit cwd"
+        );
+      }
       return [
         "setup",
         "--json",
-        ...boolFlag("--global-only", args.globalOnly),
-        ...boolFlag("--dry-run", args.dryRun),
+        ...(args.scope === "global" ? ["--global-only"] : []),
+        ...(apply ? [] : ["--dry-run"]),
         ...(args.installCodexPlugin === false ? ["--no-codex-plugin"] : []),
       ];
+    }
     case "fclt_capability":
       return capabilityCommand(args);
     case "fclt_workflow":

@@ -61,7 +61,9 @@ fclt setup
 
 It prepares global and current-repo capability, review state, indexes, and the plugin. The same
 command is available to Codex through `fclt_setup`, so a plugin-led install does not require the
-user to know capability roots or state paths.
+user to know capability roots or state paths. The MCP form requires an explicit `global` or
+`global_and_project` scope, defaults to dry-run, requires an explicit project `cwd`, and only
+applies when `dryRun: false` and `approve: true` are both present.
 
 Use the narrow plugin-only command when the CLI loop is already healthy:
 

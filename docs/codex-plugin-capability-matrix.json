@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "gitCommit": "09d9b3b",
-    "packageVersion": "2.18.0",
+    "gitCommit": "fef37d1",
+    "packageVersion": "2.19.1",
     "pluginVersion": "0.1.0",
-    "auditedAt": "2026-07-10T16:55:00Z"
+    "auditedAt": "2026-07-10T18:20:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
@@ -165,13 +165,13 @@
     {
       "id": "setup.readiness",
       "cli": "setup",
-      "cliAvailability": "pending_HACK_792",
-      "mcp": { "disposition": "blocked_safer_api", "tool": "fclt_setup" },
+      "cliAvailability": "available_v2.19.1",
+      "mcp": { "disposition": "exposed", "tool": "fclt_setup" },
       "risk": "reversible_mutation",
-      "scope": "global|project",
-      "preview": "required",
-      "apply": "released HACK-792 contract only",
-      "rollback": "bounded setup journal and preserved existing capability state",
+      "scope": "explicit global|global_and_project plus project cwd",
+      "preview": "default; calls released setup --dry-run JSON contract",
+      "apply": "dryRun=false plus approve=true against released HACK-792 contract",
+      "rollback": "preserved existing capability state and reported repair actions",
       "verification": "doctor loop readiness plus fresh-session plugin discovery"
     },
     {
@@ -493,6 +493,22 @@
       "apply": "exact asset selectors and tool ids required",
       "rollback": "inverse enable/disable transaction",
       "verification": "managed policy and rendered tool inventory agree"
+    },
+    {
+      "id": "reconciliation.review",
+      "cli": "HACK-793 typed reconciliation command",
+      "cliAvailability": "pending_HACK_793_closed_schema",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "plannedRouter": "fclt_registry",
+        "reason": "HACK-793 owns the closed reconciliation schema and CLI contract; HACK-800 must not invent or expose it"
+      },
+      "risk": "review_producing",
+      "scope": "explicit source and global|project target",
+      "preview": "read-only/review-producing only after HACK-793 defines the typed contract",
+      "apply": "not_applicable in HACK-800",
+      "rollback": "canonical capability remains unchanged; discard the review artifact under the HACK-793 contract",
+      "verification": "HACK-793-owned provenance, watermarks, coverage, signals, correlation, dispositions, and review artifact contract"
     },
     {
       "id": "remote.search_verify",

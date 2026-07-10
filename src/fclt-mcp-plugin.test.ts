@@ -86,7 +86,7 @@ function toolPayload(response: unknown): {
 }
 
 describe("bundled fclt MCP plugin", () => {
-  it("preserves the released setup contract unless plugin install is explicitly disabled", async () => {
+  it("wraps the released setup contract with preview, scope, and approval gates", async () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "facult-mcp-workspace-"));
     const stub = join(home, "fclt-stub.cjs");
@@ -110,7 +110,10 @@ describe("bundled fclt MCP plugin", () => {
           jsonrpc: "2.0",
           id: 1,
           method: "tools/call",
-          params: { name: "fclt_setup", arguments: {} },
+          params: {
+            name: "fclt_setup",
+            arguments: { scope: "global" },
+          },
         })
       );
       const defaultResponse = (await readFrame(child.stdout)) as {
@@ -119,7 +122,7 @@ describe("bundled fclt MCP plugin", () => {
       expect(defaultResponse.result?.isError).toBe(false);
       expect(toolPayload(defaultResponse).result.stdout).toEqual({
         cwd: await realpath(workspace),
-        argv: ["setup", "--json"],
+        argv: ["setup", "--json", "--global-only", "--dry-run"],
       });
 
       child.stdin.write(
@@ -129,7 +132,13 @@ describe("bundled fclt MCP plugin", () => {
           method: "tools/call",
           params: {
             name: "fclt_setup",
-            arguments: { installCodexPlugin: false },
+            arguments: {
+              scope: "global_and_project",
+              cwd: workspace,
+              dryRun: false,
+              installCodexPlugin: false,
+              approve: true,
+            },
           },
         })
       );
@@ -141,6 +150,38 @@ describe("bundled fclt MCP plugin", () => {
         cwd: await realpath(workspace),
         argv: ["setup", "--json", "--no-codex-plugin"],
       });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "fclt_setup",
+            arguments: { scope: "global", dryRun: false },
+          },
+        })
+      );
+      const unapproved = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(unapproved.error?.message).toContain("requires approve=true");
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: {
+            name: "fclt_setup",
+            arguments: { scope: "global_and_project" },
+          },
+        })
+      );
+      const missingTarget = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(missingTarget.error?.message).toContain("explicit cwd");
     } finally {
       child.kill();
     }
@@ -663,5 +704,49 @@ describe("bundled fclt MCP plugin", () => {
     } finally {
       child.kill();
     }
+  });
+});
+
+describe("Codex plugin capability matrix", () => {
+  it("tracks the released setup contract and preserves the HACK-793 extension boundary", async () => {
+    const repoRoot = join(import.meta.dir, "..");
+    const packageJson = (await Bun.file(
+      join(repoRoot, "package.json")
+    ).json()) as {
+      version: string;
+    };
+    const matrix = (await Bun.file(
+      join(repoRoot, "docs", "codex-plugin-capability-matrix.json")
+    ).json()) as {
+      generatedFrom: { packageVersion: string };
+      capabilities: {
+        id: string;
+        mcp: {
+          disposition: string;
+          plannedRouter?: string;
+          tool?: string;
+        };
+        risk: string;
+      }[];
+    };
+    const ids = matrix.capabilities.map((capability) => capability.id);
+    const setup = matrix.capabilities.find(
+      (capability) => capability.id === "setup.readiness"
+    );
+    const reconciliation = matrix.capabilities.find(
+      (capability) => capability.id === "reconciliation.review"
+    );
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(matrix.generatedFrom.packageVersion).toBe(packageJson.version);
+    expect(setup?.mcp).toMatchObject({
+      disposition: "exposed",
+      tool: "fclt_setup",
+    });
+    expect(reconciliation?.risk).toBe("review_producing");
+    expect(reconciliation?.mcp).toMatchObject({
+      disposition: "blocked_safer_api",
+      plannedRouter: "fclt_registry",
+    });
   });
 });
