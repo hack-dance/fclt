@@ -343,14 +343,13 @@ function parseGitRecords(args: {
     if (!trimmed) {
       continue;
     }
-    const [header, ...changeLines] = trimmed.split(LINE_SPLIT_RE);
-    const [commit, observedAt, subject, body = ""] = (header ?? "").split(
-      "\u001f"
-    );
+    const [header = "", changes = ""] = trimmed.split("\0", 2);
+    const [commit, observedAt, subject, body = ""] = header.split("\u001f");
     if (!(commit && observedAt && subject)) {
       continue;
     }
-    const files = changeLines
+    const files = changes
+      .split(LINE_SPLIT_RE)
       .map((line) => line.trim().split("\t"))
       .filter((parts) => parts.length >= 2)
       .map((parts) => (parts[0]?.startsWith("R") ? parts.at(-1) : parts[1]))
@@ -404,7 +403,7 @@ const gitAdapter: ReconciliationAdapter = {
           ...(config.allBranches ? ["--all"] : []),
           `--since=${context.window.since}`,
           `--until=${context.window.until}`,
-          "--format=%x1e%H%x1f%cI%x1f%s%x1f%b",
+          "--format=%x1e%H%x1f%cI%x1f%s%x1f%b%x00",
           "--name-status",
           "--find-renames",
           ...pathArgs,
@@ -761,6 +760,9 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
       try {
         const paths: string[] = [];
         for (const pattern of config.paths) {
+          if (paths.length >= MAX_FILES) {
+            break;
+          }
           validateGlob(pattern);
           const glob = new Bun.Glob(pattern);
           for await (const path of glob.scan({

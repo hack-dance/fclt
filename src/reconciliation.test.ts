@@ -630,6 +630,20 @@ describe("source reconciliation", () => {
       lastReviewId: activeReview.reviewId,
       coverageState: "complete",
     });
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "new-source", type: "markdown", paths: ["notes/*.md"] },
+        ],
+      })
+    );
+    expect(await reconciliationStatus(fixture)).toMatchObject({
+      lastReviewId: activeReview.reviewId,
+      coverageState: "degraded",
+    });
   });
 
   it("uses automation record timestamps, exposes undated degradation, and redacts JSON secrets", async () => {
@@ -752,6 +766,90 @@ describe("source reconciliation", () => {
       })
     ).rejects.toThrow("Invalid reconciliation state");
     expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
+  it("preserves multiline Git body evidence", async () => {
+    const fixture = await makeFixture();
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["init", "--quiet"],
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["config", "user.email", "fixture@example.invalid"],
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["config", "user.name", "Fixture"],
+    });
+    await Bun.write(join(fixture.projectRoot, "notes.txt"), "updated\n");
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["add", "."],
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: [
+        "commit",
+        "--quiet",
+        "-m",
+        "chore: update notes",
+        "-m",
+        "First body paragraph.",
+        "-m",
+        "Capability reconciliation evidence for HACK-793.",
+      ],
+      date: "2026-07-05T12:00:00Z",
+    });
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "git", type: "git" }],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.linkedWork).toContain("HACK-793");
+    expect(review.decisions[0]?.classification).toBe("capability-source");
+  });
+
+  it("enforces the file scan cap across multiple patterns", async () => {
+    const fixture = await makeFixture();
+    const logDir = join(fixture.projectRoot, "logs");
+    await mkdir(logDir, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 501 }, (_, index) =>
+        Bun.write(
+          join(logDir, `${index < 500 ? "a" : "b"}-${index}.md`),
+          `# Capability signal ${index}\n`
+        )
+      )
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          {
+            id: "logs",
+            type: "markdown",
+            paths: ["logs/a-*.md", "logs/b-*.md"],
+          },
+        ],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.coverage[0]?.recordsScanned).toBe(500);
   });
 
   it("deduplicates a renamed capability patch across branches and overlapping windows", async () => {

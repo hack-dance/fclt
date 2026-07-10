@@ -843,24 +843,26 @@ export async function reconciliationStatus(args: {
     const lastReview = Object.entries(state.reviews).sort(
       ([, left], [, right]) => right.generatedAt.localeCompare(left.generatedAt)
     )[0];
-    const enabledSourceIds = new Set(
-      config.sources
-        .filter((source) => source.enabled !== false)
-        .map((source) => source.id)
+    const enabledSources = config.sources.filter(
+      (source) => source.enabled !== false
     );
-    const degraded = Object.entries(state.sources).some(
-      ([sourceId, source]) =>
-        (enabledSourceIds.has(sourceId) &&
-          source.coverageState === "unavailable") ||
-        (enabledSourceIds.has(sourceId) && source.coverageState === "stale")
-    );
+    const degraded = enabledSources.some((source) => {
+      const persisted = state.sources[source.id];
+      const adapter = reconciliationAdapterFor(source.type);
+      return (
+        !persisted ||
+        persisted.configDigest !== sourceStateDigest(source) ||
+        persisted.adapterVersion !== adapter.version ||
+        persisted.coverageState === "unavailable" ||
+        persisted.coverageState === "stale"
+      );
+    });
     return {
       configured: true,
       configurationState: "ready",
       configPath: path,
       statePath,
-      sourceCount: config.sources.filter((source) => source.enabled !== false)
-        .length,
+      sourceCount: enabledSources.length,
       lastReviewId: lastReview?.[0],
       coverageState: lastReview
         ? degraded || lastReview[1].coverageComplete !== true
