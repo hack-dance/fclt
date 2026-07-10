@@ -108,17 +108,12 @@ const tools = [
             "writeback_add",
             "writeback_link",
             "writeback_disposition",
-            "writeback_dismiss",
-            "writeback_promote",
             "evolve_assess",
             "evolve_list",
             "evolve_show",
             "evolve_propose",
             "evolve_draft",
             "evolve_review",
-            "evolve_accept",
-            "evolve_reject",
-            "evolve_supersede",
             "evolve_verify",
           ],
         },
@@ -900,25 +895,14 @@ function operationMetadata(name, args, command) {
   const action = args.action || name;
   const reviewActions = new Set([
     "writeback_add",
+    "writeback_link",
+    "writeback_disposition",
     "evolve_propose",
     "evolve_draft",
     "evolve_review",
-  ]);
-  const reversibleActions = new Set([
-    "writeback_link",
-    "writeback_disposition",
-    "writeback_dismiss",
-    "writeback_promote",
-    "evolve_accept",
-    "evolve_reject",
-    "evolve_supersede",
     "evolve_verify",
   ]);
-  const risk = reviewActions.has(action)
-    ? "review_producing"
-    : reversibleActions.has(action)
-      ? "reversible_mutation"
-      : "read_only";
+  const risk = reviewActions.has(action) ? "review_producing" : "read_only";
   return {
     tool: name,
     action,
@@ -944,6 +928,7 @@ async function runFclt(args, cwd, operation) {
       text: JSON.stringify(
         {
           schemaVersion: 1,
+          operation,
           error: "no_compatible_runtime",
           message:
             "No compatible fclt runtime is available. Check, stage, and apply an explicit verified version with fclt_runtime.",
@@ -1005,6 +990,18 @@ async function runFclt(args, cwd, operation) {
               stdout: parseJsonOrText(stdout.trim()),
               stderr: stderrText,
             },
+            verification: {
+              status: code === 0 ? "passed" : "failed",
+              exitCode: code,
+            },
+            recovery:
+              operation.risk === "review_producing"
+                ? {
+                    canonicalCapabilityChanged: false,
+                    audit:
+                      "native fclt review artifacts and append-only journal",
+                  }
+                : null,
           },
           null,
           2
@@ -1075,6 +1072,46 @@ async function handleRuntimeTool(args = {}) {
   throw new Error(`Unknown runtime action: ${action}`);
 }
 
+function runtimeOperationMetadata(args, result) {
+  const action = args.action || "status";
+  const risk =
+    action === "status" || action === "check"
+      ? "read_only"
+      : action === "stage"
+        ? "review_producing"
+        : "high_risk_destructive";
+  return {
+    operation: {
+      tool: "fclt_runtime",
+      action,
+      risk,
+      scope: "plugin_runtime",
+      target:
+        args.version ||
+        args.pinnedVersion ||
+        args.expectedActiveVersion ||
+        null,
+      approved: args.approve === true,
+    },
+    verification: {
+      status: "passed",
+      activeVersion:
+        result.active?.packageVersion ||
+        result.selected?.packageVersion ||
+        null,
+    },
+    recovery:
+      action === "apply" || action === "rollback"
+        ? {
+            rollbackAvailable: result.rollbackAvailable === true,
+            previous: result.previous || null,
+          }
+        : action === "policy"
+          ? { previousPolicy: result.previous || null }
+          : null,
+  };
+}
+
 function send(message) {
   const body = JSON.stringify(message);
   process.stdout.write(
@@ -1109,12 +1146,18 @@ async function handle(message) {
       validateToolArguments(name, args);
       if (name === "fclt_runtime") {
         const result = await handleRuntimeTool(args);
+        const metadata = runtimeOperationMetadata(args, result);
         send({
           jsonrpc: "2.0",
           id: message.id,
           result: {
             isError: false,
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ ...result, ...metadata }, null, 2),
+              },
+            ],
           },
         });
         return;

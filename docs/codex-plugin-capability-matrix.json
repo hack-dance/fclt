@@ -282,25 +282,35 @@
       "verification": "queue record, review artifact, evidence, and journal event agree"
     },
     {
-      "id": "writeback.lifecycle",
-      "cli": "ai writeback link|disposition|dismiss|promote",
+      "id": "writeback.review_links",
+      "cli": "ai writeback link|disposition",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_workflow",
-        "actions": [
-          "writeback_link",
-          "writeback_disposition",
-          "writeback_dismiss",
-          "writeback_promote"
-        ]
+        "actions": ["writeback_link", "writeback_disposition"]
+      },
+      "risk": "review_producing",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "id, expected prior status, target, and scope required",
+      "rollback": "canonical capability unchanged; append-only journal retained",
+      "verification": "record, review artifact, and append-only journal agree"
+    },
+    {
+      "id": "writeback.dismiss_promote",
+      "cli": "ai writeback dismiss|promote",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "terminal writeback transitions need a bounded reopen/rollback API"
       },
       "risk": "reversible_mutation",
       "scope": "global|project",
       "preview": "required",
-      "apply": "id, expected prior status, target, and scope required",
-      "rollback": "journaled inverse state transition where supported",
-      "verification": "record, review artifact, and append-only journal agree"
+      "apply": "withheld",
+      "rollback": "required before exposure",
+      "verification": "queue, mirrors, and journal consistency"
     },
     {
       "id": "writeback.reopen_repair",
@@ -348,24 +358,34 @@
       "verification": "proposal targets, evidence, review artifact, and journal agree"
     },
     {
-      "id": "evolution.lifecycle",
-      "cli": "ai evolve accept|reject|supersede|verify",
+      "id": "evolution.effectiveness",
+      "cli": "ai evolve verify",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_workflow",
-        "actions": [
-          "evolve_accept",
-          "evolve_reject",
-          "evolve_supersede",
-          "evolve_verify"
-        ]
+        "actions": ["evolve_verify"]
+      },
+      "risk": "review_producing",
+      "scope": "global|project",
+      "preview": "required",
+      "apply": "id, expected prior status, evidence, and scope required",
+      "rollback": "canonical capability unchanged; append-only outcome evidence retained",
+      "verification": "proposal metadata, mirror, and journal agree"
+    },
+    {
+      "id": "evolution.decision_lifecycle",
+      "cli": "ai evolve accept|reject|supersede",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "blocked_safer_api",
+        "reason": "proposal decision transitions need stale-state preconditions and a tested inverse API"
       },
       "risk": "reversible_mutation",
       "scope": "global|project",
       "preview": "required",
-      "apply": "id, expected prior status, evidence, and scope required",
-      "rollback": "journaled status transition; no canonical write",
+      "apply": "withheld",
+      "rollback": "required before exposure",
       "verification": "proposal metadata, mirror, and journal agree"
     },
     {

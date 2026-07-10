@@ -185,6 +185,21 @@ describe("bundled fclt MCP plugin", () => {
           (tool) => tool.inputSchema?.additionalProperties === false
         )
       ).toBe(true);
+      const workflow = published.find(
+        (tool) => tool.name === "fclt_workflow"
+      ) as
+        | {
+            inputSchema?: {
+              properties?: { action?: { enum?: string[] } };
+            };
+          }
+        | undefined;
+      expect(workflow?.inputSchema?.properties?.action?.enum).not.toContain(
+        "evolve_apply"
+      );
+      expect(workflow?.inputSchema?.properties?.action?.enum).not.toContain(
+        "evolve_accept"
+      );
     } finally {
       child.kill();
     }
