@@ -1314,10 +1314,12 @@ export async function assessEvolution(args: {
     homeDir,
     rootDir: args.rootDir,
   });
-  const latestReview = await latestReconciliationReview({
-    homeDir,
-    rootDir: args.rootDir,
-  });
+  const latestReview = reconciliation.stateError
+    ? null
+    : await latestReconciliationReview({
+        homeDir,
+        rootDir: args.rootDir,
+      });
   const matchingSignals = (latestReview?.signals ?? []).filter((signal) => {
     if (!selectedTarget) {
       return true;

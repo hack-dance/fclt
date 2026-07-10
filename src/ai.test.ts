@@ -31,6 +31,7 @@ import {
   facultAiGraphPath,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
   facultMachineStateDir,
@@ -70,6 +71,32 @@ afterEach(async () => {
 });
 
 describe("ai writeback", () => {
+  it("degrades evolution assessment when reconciliation state is corrupt", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(
+      join(rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const statePath = facultAiReconciliationStatePath(tempHome, rootDir);
+    await mkdir(dirname(statePath), { recursive: true });
+    await Bun.write(statePath, "{corrupt-state");
+
+    const assessment = await assessEvolution({ homeDir: tempHome, rootDir });
+
+    expect(assessment.reconciliation).toMatchObject({
+      configured: true,
+      coverageState: "degraded",
+      signalCount: 0,
+    });
+    expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
   it("records a writeback with graph-backed asset resolution and journal entries", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

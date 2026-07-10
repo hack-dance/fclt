@@ -230,6 +230,7 @@ export interface ReconciliationState {
       until: string;
       generatedAt: string;
       artifactPath: string;
+      coverageComplete?: boolean;
       evidenceKeys: string[];
       signalIds: string[];
     }

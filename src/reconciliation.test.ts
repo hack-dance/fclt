@@ -486,6 +486,34 @@ describe("source reconciliation", () => {
     ).rejects.toThrow("Unknown or disabled");
   });
 
+  it("reports a filtered review as degraded even when checked sources pass", async () => {
+    const fixture = await makeFixture();
+    await writeQueue(fixture);
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "notes", type: "markdown", paths: ["notes/*.md"] },
+        ],
+      })
+    );
+
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-11T00:00:00Z",
+      sourceIds: ["writebacks"],
+    });
+    expect(review.coverageComplete).toBe(false);
+    expect(review.coverage[0]?.state).toBe("changed");
+    expect(await reconciliationStatus(fixture)).toMatchObject({
+      lastReviewId: review.reviewId,
+      coverageState: "degraded",
+    });
+  });
+
   it("uses automation record timestamps, exposes undated degradation, and redacts JSON secrets", async () => {
     const fixture = await makeFixture();
     const logPath = join(

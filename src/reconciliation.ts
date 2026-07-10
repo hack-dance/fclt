@@ -616,6 +616,7 @@ function updateState(args: {
     until: args.review.window.until,
     generatedAt: args.review.generatedAt,
     artifactPath: args.review.artifactPath,
+    coverageComplete: args.review.coverageComplete,
     evidenceKeys: args.review.evidence.map((item) => item.dedupeKey),
     signalIds: args.review.signals.map((signal) => signal.id),
   };
@@ -858,7 +859,7 @@ export async function reconciliationStatus(args: {
         .length,
       lastReviewId: lastReview?.[0],
       coverageState: lastReview
-        ? degraded
+        ? degraded || lastReview[1].coverageComplete !== true
           ? "degraded"
           : "complete"
         : undefined,
