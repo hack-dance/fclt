@@ -192,6 +192,15 @@ function incrementalSince(requestedSince: string, watermark?: string): string {
   return new Date(previous - 1).toISOString();
 }
 
+function boundedIncrementalSince(
+  requestedSince: string,
+  watermark: string | undefined,
+  until: string
+): string {
+  const since = incrementalSince(requestedSince, watermark);
+  return Date.parse(since) > Date.parse(until) ? until : since;
+}
+
 function classify(record: SourceRecord): SignalClassification {
   if (record.classification) {
     return record.classification;
@@ -658,7 +667,7 @@ export async function reconcileSources(args: {
   if (selectedConfig.sources.length === 0) {
     throw new Error("No enabled reconciliation sources matched the request");
   }
-  const window = createWindow({
+  const requestedWindow = createWindow({
     config: selectedConfig,
     rootDir: args.rootDir,
     homeDir: args.homeDir,
@@ -669,6 +678,30 @@ export async function reconcileSources(args: {
   const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
   return await withStateLock(statePath, async () => {
     const state = await loadState(statePath);
+    const effectiveStarts = selectedConfig.sources.map((source) => {
+      const priorState = state.sources[source.id];
+      const adapter = reconciliationAdapterFor(source.type);
+      const prior =
+        priorState?.configDigest === sourceStateDigest(source) &&
+        priorState.adapterVersion === adapter.version
+          ? priorState
+          : undefined;
+      return boundedIncrementalSince(
+        requestedWindow.since,
+        prior?.watermark,
+        requestedWindow.until
+      );
+    });
+    const window = args.incremental
+      ? createWindow({
+          config: selectedConfig,
+          rootDir: args.rootDir,
+          homeDir: args.homeDir,
+          since: effectiveStarts.sort().at(-1) ?? requestedWindow.since,
+          until: requestedWindow.until,
+          mode: "incremental",
+        })
+      : requestedWindow;
     const windowPath = join(dirname(statePath), "windows", `${window.id}.json`);
     const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
     const checkedAt = new Date().toISOString();
@@ -687,7 +720,11 @@ export async function reconcileSources(args: {
       const sourceWindow = {
         ...window,
         since: args.incremental
-          ? incrementalSince(window.since, prior?.watermark)
+          ? boundedIncrementalSince(
+              requestedWindow.since,
+              prior?.watermark,
+              requestedWindow.until
+            )
           : window.since,
       };
       const result = await adapter.scan({

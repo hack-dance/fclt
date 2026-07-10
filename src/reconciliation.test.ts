@@ -481,6 +481,66 @@ describe("source reconciliation", () => {
     expect(rerun.signals[0]?.writebackRefs).toEqual(["WB-00020"]);
   });
 
+  it("identifies incremental reviews by their effective cursor-backed window", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(queuePath, ".."), { recursive: true });
+    await Bun.write(
+      queuePath,
+      JSON.stringify({
+        id: "WB-00020",
+        ts: "2026-07-05T12:00:00Z",
+        summary: "First incremental signal",
+      })
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const first = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+      incremental: true,
+    });
+    await Bun.write(
+      queuePath,
+      [
+        JSON.stringify({
+          id: "WB-00020",
+          ts: "2026-07-05T12:00:00Z",
+          summary: "First incremental signal",
+        }),
+        JSON.stringify({
+          id: "WB-00021",
+          ts: "2026-07-06T12:00:00Z",
+          summary: "Second incremental signal",
+        }),
+      ].join("\n")
+    );
+
+    const second = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+      incremental: true,
+    });
+
+    expect(second.reviewId).not.toBe(first.reviewId);
+    expect(first.window.since).toBe("2026-07-03T00:00:00.000Z");
+    expect(second.window.since).toBe("2026-07-05T11:59:59.999Z");
+    expect(second.signals.map((signal) => signal.writebackRefs[0])).toEqual([
+      "WB-00020",
+      "WB-00021",
+    ]);
+  });
+
   it("reconciles legacy writeback queues on upgraded installs", async () => {
     const fixture = await makeFixture();
     const legacyQueue = join(
