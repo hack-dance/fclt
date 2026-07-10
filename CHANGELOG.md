@@ -1,3 +1,9 @@
+## [2.20.1](https://github.com/hack-dance/fclt/compare/v2.20.0...v2.20.1) (2026-07-10)
+
+### Bug Fixes
+
+* support Codex newline MCP framing ([344d41d](https://github.com/hack-dance/fclt/commit/344d41d961850c0300f3baba19481eb898478220))
+
 ## [2.20.0](https://github.com/hack-dance/fclt/compare/v2.19.2...v2.20.0) (2026-07-10)
 
 ### Features
