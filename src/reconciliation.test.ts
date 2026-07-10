@@ -68,6 +68,7 @@ async function writeQueue(args: {
       kind: "missing_context",
       summary: "Evolution needs outcome and effectiveness links.",
       status: "recorded",
+      evidence: [{ type: "issue", ref: "HACK-795" }],
       issueLinks: ["HACK-791"],
       disposition: "resolve-watch",
       dispositionTarget: "HACK-791",
@@ -325,7 +326,7 @@ describe("source reconciliation", () => {
       expect.arrayContaining(["WB-00020", "WB-00021", "WB-00022", "WB-00023"])
     );
     expect(first.linkedWork).toEqual(
-      expect.arrayContaining(["HACK-791", "HACK-793", "HACK-794"])
+      expect.arrayContaining(["HACK-791", "HACK-793", "HACK-794", "HACK-795"])
     );
     expect(
       first.signals.some((signal) => signal.disposition === "propose")

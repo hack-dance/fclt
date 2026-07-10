@@ -162,6 +162,7 @@ interface WritebackQueueRecord {
   summary?: string;
   kind?: string;
   assetRef?: string;
+  evidence?: Array<{ ref?: string }>;
   issueLinks?: string[];
   disposition?: string;
   dispositionTarget?: string;
@@ -297,6 +298,7 @@ const writebackAdapter: ReconciliationAdapter = {
           extraRefs: [
             entry.id,
             entry.assetRef ?? "",
+            ...(entry.evidence ?? []).map((item) => item.ref ?? ""),
             ...(entry.issueLinks ?? []),
           ],
         }),
