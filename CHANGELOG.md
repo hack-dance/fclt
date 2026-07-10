@@ -1,3 +1,9 @@
+## [2.19.1](https://github.com/hack-dance/fclt/compare/v2.19.0...v2.19.1) (2026-07-10)
+
+### Bug Fixes
+
+* repair dangling pack symlinks ([#47](https://github.com/hack-dance/fclt/issues/47)) ([486ea2b](https://github.com/hack-dance/fclt/commit/486ea2bd676cfee98487068fdc21512c1ca21e26))
+
 ## [2.19.0](https://github.com/hack-dance/fclt/compare/v2.18.0...v2.19.0) (2026-07-10)
 
 ### Features
