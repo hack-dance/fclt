@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "gitCommit": "fef37d1",
-    "packageVersion": "2.19.1",
+    "gitCommit": "eb48033",
+    "packageVersion": "2.19.2",
     "pluginVersion": "0.1.0",
     "auditedAt": "2026-07-10T18:20:00Z"
   },
