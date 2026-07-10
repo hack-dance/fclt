@@ -71,6 +71,20 @@ export function redactReconciliationText(value: string): string {
     .slice(0, MAX_BODY_CHARS);
 }
 
+function safeEvidenceSourceUri(value?: string): string | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    return redactReconciliationText(
+      `${parsed.protocol}//${parsed.host}${parsed.pathname}`
+    );
+  } catch {
+    return redactReconciliationText(value);
+  }
+}
+
 function references(value: string): {
   assetRefs: string[];
   issueRefs: string[];
@@ -683,7 +697,7 @@ const evidenceExportAdapter: ReconciliationAdapter = {
               producer: envelope.producer,
               generatedAt: envelope.generatedAt,
               kind: event.kind,
-              sourceUri: event.sourceUri ?? null,
+              sourceUri: safeEvidenceSourceUri(event.sourceUri),
             },
             extraRefs: event.refs ?? [],
           })

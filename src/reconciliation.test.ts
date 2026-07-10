@@ -272,6 +272,8 @@ describe("source reconciliation", () => {
             observedAt: "2026-07-10T16:15:45.198Z",
             title: "Add automatic source reconciliation",
             body: "Implementation target for WB-00020.",
+            sourceUri:
+              "https://user:password@example.invalid/work/793?token=source-uri-secret#fragment",
             refs: [
               "TICKET-793",
               "WB-00020",
@@ -369,6 +371,8 @@ describe("source reconciliation", () => {
     expect(JSON.stringify(first)).not.toContain(
       "lin_api_abcdefghijklmnopqrstuvwxyz"
     );
+    expect(JSON.stringify(first)).not.toContain("source-uri-secret");
+    expect(JSON.stringify(first)).not.toContain("password@example.invalid");
 
     const second = await reconcileSources({
       ...fixture,
