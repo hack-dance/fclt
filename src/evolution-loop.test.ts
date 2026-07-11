@@ -37,6 +37,7 @@ import {
   facultAiEvolutionLoopStatePath,
   facultAiProposalDir,
   facultAiReconciliationStatePath,
+  facultAiWritebackQueuePath,
   withFacultRootScope,
 } from "./paths";
 
@@ -325,6 +326,89 @@ describe("evolution loop", () => {
         )
       ).queue[family!.id].state
     ).not.toBe("resolved");
+  });
+
+  it("resolves disappeared signals only with terminal source evidence", async () => {
+    const project = await makeProject();
+    await Bun.write(
+      join(project.rootDir, "reconciliation.json"),
+      `${JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })}\n`
+    );
+    const queuePath = facultAiWritebackQueuePath(
+      project.homeDir,
+      project.rootDir
+    );
+    await mkdir(dirname(queuePath), { recursive: true });
+    const source = {
+      id: "WB-00001",
+      ts: "2026-01-02T00:00:00.000Z",
+      scope: "project",
+      projectRoot: project.projectRoot,
+      kind: "capability_gap",
+      summary: "A review capability is missing.",
+      evidence: [{ type: "session", ref: "terminal-signal" }],
+      confidence: "high",
+      source: "facult:manual",
+      suggestedDestination: "@project/instructions/REVIEW.md",
+      tags: [],
+      status: "recorded",
+      issueLinks: ["TICKET-1"],
+      disposition: "task",
+      dispositionTarget: "TICKET-1",
+    };
+    await Bun.write(queuePath, `${JSON.stringify(source)}\n`);
+    await enableEvolutionLoop({ ...project });
+
+    const discovered = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const signal = discovered.queue.find((item) => item.kind === "signal");
+    expect(signal?.state).toBe("open");
+
+    const absentWithoutProof = await runEvolutionLoop({
+      ...project,
+      until: "2026-01-03T12:00:00.000Z",
+      now: () => new Date("2026-01-03T12:00:00.000Z"),
+    });
+    expect(
+      absentWithoutProof.queue.find((item) => item.id === signal?.id)?.state
+    ).toBe("open");
+    expect(absentWithoutProof.delta.notifiable).toHaveLength(0);
+
+    await Bun.write(
+      queuePath,
+      `${JSON.stringify(source)}\n${JSON.stringify({
+        ...source,
+        updatedAt: "2026-01-04T00:00:00.000Z",
+        status: "resolved",
+      })}\n`
+    );
+    const resolved = await runEvolutionLoop({
+      ...project,
+      until: "2026-01-05",
+      now: () => new Date("2026-01-05T00:00:00.000Z"),
+    });
+    expect(resolved.queue.find((item) => item.id === signal?.id)?.state).toBe(
+      "resolved"
+    );
+    expect(resolved.delta.resolved).toContain(signal!.id);
+    expect(resolved.delta.notifiable).toContain(signal!.id);
+
+    const quiet = await runEvolutionLoop({
+      ...project,
+      until: "2026-01-06",
+      now: () => new Date("2026-01-06T00:00:00.000Z"),
+    });
+    expect(quiet.queue.find((item) => item.id === signal?.id)?.state).toBe(
+      "resolved"
+    );
+    expect(quiet.delta.notifiable).toHaveLength(0);
   });
 
   it("does not report an existing signal-family writeback as a new mutation", async () => {

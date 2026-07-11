@@ -928,6 +928,7 @@ function reconcileQueue(args: {
   prior: EvolutionLoopState;
   generatedAt: string;
   coverageComplete: boolean;
+  resolvedEvidenceKeys: string[];
 }): {
   queue: Record<string, LoopQueueItem>;
   fingerprints: Record<string, string>;
@@ -938,6 +939,7 @@ function reconcileQueue(args: {
   const newIds: string[] = [];
   const changedIds: string[] = [];
   const resolvedIds: string[] = [];
+  const resolvedEvidenceKeys = new Set(args.resolvedEvidenceKeys);
   let unchangedSuppressed = 0;
   for (const raw of args.current) {
     const prior = args.prior.queue[raw.id];
@@ -956,7 +958,11 @@ function reconcileQueue(args: {
     if (!prior) {
       newIds.push(raw.id);
     } else if (changed) {
-      changedIds.push(raw.id);
+      if (prior.state !== "resolved" && raw.state === "resolved") {
+        resolvedIds.push(raw.id);
+      } else {
+        changedIds.push(raw.id);
+      }
     } else {
       unchangedSuppressed += 1;
     }
@@ -992,7 +998,13 @@ function reconcileQueue(args: {
       }
       continue;
     }
-    if (prior.kind === "signal" || !args.coverageComplete) {
+    const signalHasResolutionProof =
+      prior.kind === "signal" &&
+      prior.evidenceRefs.some((key) => resolvedEvidenceKeys.has(key));
+    if (
+      !args.coverageComplete ||
+      (prior.kind === "signal" && !signalHasResolutionProof)
+    ) {
       queue[id] = prior;
       fingerprints[id] = args.prior.fingerprints[id] ?? queueFingerprint(prior);
       unchangedSuppressed += 1;
@@ -1006,6 +1018,8 @@ function reconcileQueue(args: {
       lastSeenAt: args.generatedAt,
       lastChangedAt:
         prior.state === "resolved" ? prior.lastChangedAt : args.generatedAt,
+      approvalRequired: false,
+      requestedExternalAction: undefined,
     };
     queue[id] = resolved;
     fingerprints[id] = queueFingerprint(resolved);
@@ -1925,6 +1939,7 @@ async function runEvolutionLoopScoped(args: {
         prior,
         generatedAt,
         coverageComplete: review.coverageComplete,
+        resolvedEvidenceKeys: review.resolvedEvidenceKeys ?? [],
       });
       const generationAfter = prior.generation + (args.dryRun ? 0 : 1);
       const runId = `LR-${sha256(

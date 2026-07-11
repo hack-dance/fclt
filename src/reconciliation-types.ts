@@ -185,6 +185,7 @@ export interface ReconciliationReview {
   decisions: ExtractionDecision[];
   evidence: ReconciledEvidence[];
   signals: CorrelatedSignal[];
+  resolvedEvidenceKeys: string[];
   unresolvedSignals: string[];
   linkedWork: string[];
   dispositionCounts: Record<WritebackDisposition, number>;

@@ -267,6 +267,7 @@ function correlationKeys(record: SourceRecord): string[] {
 function extractionDecision(record: SourceRecord): ExtractionDecision {
   const classification = classify(record);
   const included = classification !== "noise";
+  const terminalSourceState = record.provenance.terminal === true;
   return {
     id: `XD-${sha256(`${record.sourceId}:${record.recordId}:${record.dedupeKey}`).slice(0, 16)}`,
     sourceId: record.sourceId,
@@ -276,7 +277,9 @@ function extractionDecision(record: SourceRecord): ExtractionDecision {
     classification,
     reason: included
       ? `Included as ${classification} evidence`
-      : "Excluded as noise: no capability, linked-work, or outcome signal was found",
+      : terminalSourceState
+        ? "Excluded as a terminal source state that resolves prior evidence"
+        : "Excluded as noise: no capability, linked-work, or outcome signal was found",
     correlationKeys: correlationKeys(record),
   };
 }
@@ -631,6 +634,12 @@ function renderReview(review: ReconciliationReview): string {
     "## Signals and dispositions",
     "",
     ...(signals.length > 0 ? signals : ["No correlated signals.", ""]),
+    "## Resolution evidence",
+    "",
+    ...(review.resolvedEvidenceKeys.length > 0
+      ? review.resolvedEvidenceKeys.map((key) => `- ${key}`)
+      : ["No terminal source evidence was observed."]),
+    "",
     "## Excluded records",
     "",
     ...(exclusions.length > 0 ? exclusions : ["No records were excluded."]),
@@ -958,6 +967,11 @@ export async function reconcileSources(args: {
       decisions,
       evidence: correlated.evidence,
       signals: correlated.signals,
+      resolvedEvidenceKeys: unique(
+        records
+          .filter((record) => record.provenance.terminal === true)
+          .map((record) => record.dedupeKey)
+      ),
       unresolvedSignals: correlated.signals
         .filter((signal) => signal.unresolved)
         .map((signal) => signal.id),

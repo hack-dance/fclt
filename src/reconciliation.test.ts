@@ -886,8 +886,14 @@ describe("source reconciliation", () => {
       until: "2026-07-10",
     });
 
-    expect(review.coverage[0]?.state).toBe("checked");
+    expect(review.coverage[0]?.state).toBe("changed");
     expect(review.signals).toHaveLength(0);
+    expect(review.resolvedEvidenceKeys).toEqual(["writeback:project:WB-00020"]);
+    expect(review.decisions[0]).toMatchObject({
+      included: false,
+      reason:
+        "Excluded as a terminal source state that resolves prior evidence",
+    });
   });
 
   it("keeps identical global and project writeback ids distinct", async () => {
