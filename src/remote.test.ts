@@ -1459,6 +1459,79 @@ describe("templates command", () => {
     expect(memory).toContain("Recommend actions, do not silently apply");
   });
 
+  it("uses the selected project cwd for a project closed-loop template", async () => {
+    const { home, root } = await makeTempRoot();
+    const repo = join(home, "project with spaces");
+    await mkdir(join(repo, ".ai"), { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        ["init", "automation", "closed-loop-review", "--scope", "project"],
+        { homeDir: home, rootDir: root, cwd: repo }
+      );
+    });
+
+    const automationToml = await readFile(
+      join(
+        home,
+        ".codex",
+        "automations",
+        "closed-loop-review",
+        "automation.toml"
+      ),
+      "utf8"
+    );
+    expect(automationToml).toContain(`cwds = ["${repo}"]`);
+    expect(automationToml).toContain(
+      `fclt ai loop run --project --root '${join(repo, ".ai")}' --scheduled --json`
+    );
+    expect(automationToml).not.toContain(`--project --root '${root}'`);
+
+    await expect(
+      scaffoldCodexAutomationTemplate({
+        homeDir: home,
+        cwd: repo,
+        templateId: "closed-loop-review",
+        scope: "project",
+        rootDir: root,
+        name: "mismatched-project-loop",
+      })
+    ).rejects.toThrow("must match the selected project root");
+
+    const normalized = await scaffoldCodexAutomationTemplate({
+      homeDir: home,
+      cwd: repo,
+      templateId: "closed-loop-review",
+      scope: " PROJECT ",
+      rootDir: join(repo, ".ai"),
+      name: "normalized-project-loop",
+    });
+    expect(
+      await readFile(join(normalized.path, "automation.toml"), "utf8")
+    ).toContain(
+      `fclt ai loop run --project --root '${join(repo, ".ai")}' --scheduled --json`
+    );
+
+    await expect(
+      scaffoldCodexAutomationTemplate({
+        homeDir: home,
+        cwd: repo,
+        templateId: "closed-loop-review",
+        scope: " WIDE ",
+        name: "normalized-wide-loop",
+      })
+    ).rejects.toThrow("wide scope is not supported");
+
+    const wide = await withCapturedConsole(async () => {
+      await templatesCommand(
+        ["init", "automation", "closed-loop-review", "--scope", "wide"],
+        { homeDir: home, rootDir: root, cwd: repo }
+      );
+    });
+    expect(wide.errors.join("\n")).toContain("wide scope is not supported");
+    expect(process.exitCode).toBe(1);
+  });
+
   it("refuses automation scaffold and status writes through a symlinked directory", async () => {
     const { home } = await makeTempRoot();
     const automationRoot = join(home, ".codex", "automations");

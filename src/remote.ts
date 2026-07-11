@@ -1269,6 +1269,7 @@ export async function scaffoldCodexAutomationTemplate(args: {
   const requestedCwds = Array.isArray(args.cwds)
     ? args.cwds
     : normalizeCwdList(args.cwdsRaw ?? "");
+  const normalizedScope = (args.scope ?? template.scope).trim().toLowerCase();
   const cwds = pickScopeTemplateCwds({
     template,
     requestedScope: args.scope ?? null,
@@ -1276,6 +1277,11 @@ export async function scaffoldCodexAutomationTemplate(args: {
     projectRoot: args.projectRoot ?? null,
     cwd,
   });
+  if (template.id === "closed-loop-review" && normalizedScope === "wide") {
+    throw new Error(
+      "closed-loop-review supports one explicit project or global root; wide scope is not supported"
+    );
+  }
 
   const scopeStatus =
     args.status === "active" || args.status === "ACTIVE"
@@ -1286,13 +1292,32 @@ export async function scaffoldCodexAutomationTemplate(args: {
   const rrule = args.rrule?.trim() || template.defaultRRule;
   const model = template.defaultModel;
   const reasoningEffort = template.defaultReasoningEffort;
+  const usesProjectLoopRoot = normalizedScope === "project";
+  const selectedProjectLoopRoot = join(
+    args.projectRoot ?? cwds[0] ?? cwd,
+    ".ai"
+  );
+  if (
+    template.id === "closed-loop-review" &&
+    usesProjectLoopRoot &&
+    args.rootDir &&
+    resolve(args.rootDir) !== resolve(selectedProjectLoopRoot)
+  ) {
+    throw new Error(
+      `Project closed-loop root ${resolve(args.rootDir)} must match the selected project root ${resolve(selectedProjectLoopRoot)}`
+    );
+  }
+  const loopRootDir =
+    args.rootDir ??
+    (args.projectRoot
+      ? join(args.projectRoot, ".ai")
+      : usesProjectLoopRoot
+        ? selectedProjectLoopRoot
+        : facultRootDir(home));
   const templateValues = {
     ...automationTemplateValues(home),
-    loopScopeFlag: args.scope === "global" ? "--global" : "--project",
-    loopRootArg: `--root ${quoteAutomationShellArg(
-      args.rootDir ??
-        (args.projectRoot ? join(args.projectRoot, ".ai") : facultRootDir(home))
-    )}`,
+    loopScopeFlag: normalizedScope === "global" ? "--global" : "--project",
+    loopRootArg: `--root ${quoteAutomationShellArg(loopRootDir)}`,
   };
   const renderedPrompt = renderTemplate(template.prompt.trim(), templateValues);
   const renderedMemory = renderTemplate(template.memory.trim(), templateValues);
