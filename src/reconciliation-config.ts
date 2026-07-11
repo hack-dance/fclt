@@ -180,11 +180,16 @@ function parseSource(value: unknown): ReconciliationSourceConfig {
 export function defaultReconciliationConfig(args: {
   homeDir: string;
   rootDir: string;
+  scope?: "global" | "project";
 }): ReconciliationConfig {
   const sources: ReconciliationSourceConfig[] = [
     { id: "writebacks", type: "writebacks", enabled: true },
   ];
-  if (projectRootFromAiRoot(args.rootDir, args.homeDir)) {
+  const isProject =
+    args.scope === "project" ||
+    (args.scope === undefined &&
+      Boolean(projectRootFromAiRoot(args.rootDir, args.homeDir)));
+  if (isProject) {
     sources.push({
       id: "git",
       type: "git",
@@ -244,6 +249,7 @@ export async function loadReconciliationConfig(args: {
 export async function initializeReconciliationConfig(args: {
   homeDir: string;
   rootDir: string;
+  scope?: "global" | "project";
   dryRun?: boolean;
   force?: boolean;
 }): Promise<{

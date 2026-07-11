@@ -2813,6 +2813,10 @@ async function reviewCommand(argv: string[]): Promise<void> {
       const result = await initializeReconciliationConfig({
         homeDir,
         rootDir,
+        scope:
+          parsed.scope === "global" || parsed.scope === "project"
+            ? parsed.scope
+            : undefined,
         dryRun: commandArgs.includes("--dry-run"),
         force: commandArgs.includes("--force"),
       });

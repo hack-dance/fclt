@@ -89,6 +89,7 @@ export async function bootstrapFclt(
   const globalReconciliation = await initializeReconciliationConfig({
     homeDir,
     rootDir: globalRoot,
+    scope: "global",
     dryRun: opts.dryRun,
   });
   if (globalReconciliation.created) {
@@ -112,6 +113,7 @@ export async function bootstrapFclt(
     const projectReconciliation = await initializeReconciliationConfig({
       homeDir,
       rootDir: projectRoot,
+      scope: "project",
       dryRun: opts.dryRun,
     });
     if (projectReconciliation.created) {

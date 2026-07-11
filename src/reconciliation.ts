@@ -165,9 +165,8 @@ function createWindow(args: {
     throw new Error("Reconciliation --since must be before --until");
   }
   const digest = configDigest(args.config);
-  const scope = projectRootFromAiRoot(args.rootDir, args.homeDir)
-    ? "project"
-    : "global";
+  const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
+  const scope = projectRoot ? "project" : "global";
   const id = `RV-${sha256(`${scope}\n${args.rootDir}\n${args.mode}\n${since}\n${until}\n${digest}`).slice(0, 16)}`;
   return {
     id,
@@ -176,6 +175,7 @@ function createWindow(args: {
     until,
     scope,
     rootDir: args.rootDir,
+    projectRoot: projectRoot ?? undefined,
     configDigest: digest,
   };
 }
@@ -571,6 +571,11 @@ function renderReview(review: ReconciliationReview): string {
     "---",
     'artifact: "reconciliation-review"',
     `reviewId: "${review.reviewId}"`,
+    `scope: "${review.window.scope}"`,
+    `rootDir: ${JSON.stringify(review.window.rootDir)}`,
+    ...(review.window.projectRoot
+      ? [`projectRoot: ${JSON.stringify(review.window.projectRoot)}`]
+      : []),
     `since: "${review.window.since}"`,
     `until: "${review.window.until}"`,
     `coverageComplete: ${review.coverageComplete}`,
@@ -622,6 +627,10 @@ function updateState(args: {
         resultWatermark &&
         Date.parse(prior.watermark) > Date.parse(resultWatermark)
     );
+    const keepsPriorCoverage = Boolean(
+      prior?.coverageUntil &&
+        Date.parse(prior.coverageUntil) > Date.parse(args.review.window.until)
+    );
     next.sources[coverage.sourceId] = {
       watermark:
         advances && !keepsPriorWatermark
@@ -633,8 +642,15 @@ function updateState(args: {
           : prior?.cursor,
       configDigest: sourceStateDigest(source),
       adapterVersion: reconciliationAdapterFor(source.type).version,
-      lastCheckedAt: coverage.checkedAt,
-      coverageState: coverage.state,
+      lastCheckedAt: keepsPriorCoverage
+        ? (prior?.lastCheckedAt ?? coverage.checkedAt)
+        : coverage.checkedAt,
+      coverageUntil: keepsPriorCoverage
+        ? prior?.coverageUntil
+        : args.review.window.until,
+      coverageState: keepsPriorCoverage
+        ? (prior?.coverageState ?? coverage.state)
+        : coverage.state,
     };
   }
   for (const item of args.review.evidence) {

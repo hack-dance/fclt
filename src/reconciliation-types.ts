@@ -67,6 +67,7 @@ export interface ReconciliationWindow {
   until: string;
   scope: "global" | "project";
   rootDir: string;
+  projectRoot?: string;
   configDigest: string;
 }
 
@@ -197,6 +198,7 @@ export interface ReconciliationState {
       configDigest: string;
       adapterVersion: number;
       lastCheckedAt: string;
+      coverageUntil?: string;
       coverageState: SourceCoverageState;
     }
   >;

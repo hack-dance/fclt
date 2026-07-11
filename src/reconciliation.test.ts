@@ -234,6 +234,20 @@ describe("reconciliation config", () => {
     ).toThrow();
   });
 
+  it("does not seed project Git for an explicitly global custom root", async () => {
+    const fixture = await makeFixture();
+    const customGlobalRoot = join(fixture.projectRoot, "shared", ".ai");
+    await mkdir(customGlobalRoot, { recursive: true });
+    const initialized = await initializeReconciliationConfig({
+      homeDir: fixture.homeDir,
+      rootDir: customGlobalRoot,
+      scope: "global",
+    });
+    expect(initialized.config.sources.map((source) => source.type)).toEqual([
+      "writebacks",
+    ]);
+  });
+
   it("backs up an invalid config only through explicit force repair", async () => {
     const fixture = await makeFixture();
     const path = join(fixture.rootDir, "reconciliation.json");
@@ -541,11 +555,25 @@ describe("source reconciliation", () => {
 
   it("keeps the readable latest mirror on the newest reviewed window", async () => {
     const fixture = await makeFixture();
+    const logPath = join(fixture.projectRoot, "review.md");
+    await Bun.write(logPath, "# Capability review\n");
+    await utimes(
+      logPath,
+      new Date("2026-07-10T12:00:00Z"),
+      new Date("2026-07-10T12:00:00Z")
+    );
     await Bun.write(
       join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
         version: 1,
-        sources: [{ id: "writebacks", type: "writebacks" }],
+        sources: [
+          {
+            id: "review-log",
+            type: "markdown",
+            root: "project",
+            paths: ["review.md"],
+          },
+        ],
       })
     );
     const current = await reconcileSources({
@@ -566,7 +594,16 @@ describe("source reconciliation", () => {
       "utf8"
     );
     expect(latest).toContain(`reviewId: "${current.reviewId}"`);
+    expect(latest).toContain('scope: "project"');
+    expect(latest).toContain(`rootDir: ${JSON.stringify(fixture.rootDir)}`);
+    expect(latest).toContain(
+      `projectRoot: ${JSON.stringify(fixture.projectRoot)}`
+    );
     expect(latest).toContain('until: "2026-07-10T23:59:59.999Z"');
+    expect(await reconciliationStatus(fixture)).toMatchObject({
+      lastReviewId: current.reviewId,
+      coverageState: "complete",
+    });
   });
 
   it("joins an unambiguous external WB reference to its source writeback", async () => {
