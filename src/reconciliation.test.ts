@@ -7,7 +7,11 @@ import {
   facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
 } from "./paths";
-import { reconcileSources, reconciliationStatus } from "./reconciliation";
+import {
+  latestReconciliationReview,
+  reconcileSources,
+  reconciliationStatus,
+} from "./reconciliation";
 import {
   initializeReconciliationConfig,
   parseReconciliationConfig,
@@ -469,7 +473,7 @@ describe("source reconciliation", () => {
       })
     );
 
-    await reconcileSources({
+    const current = await reconcileSources({
       ...fixture,
       since: "2026-07-10T00:00:00Z",
       until: "2026-07-12T00:00:00Z",
@@ -483,6 +487,9 @@ describe("source reconciliation", () => {
     expect(historical.evidence).toHaveLength(1);
     expect(historical.evidence[0]?.title).toContain("Historical");
     expect(historical.signals[0]?.disposition).toBe("task");
+    expect((await latestReconciliationReview(fixture))?.reviewId).toBe(
+      current.reviewId
+    );
     const state = JSON.parse(
       await readFile(
         facultAiReconciliationStatePath(fixture.homeDir, fixture.rootDir),
@@ -1154,6 +1161,7 @@ describe("source reconciliation", () => {
       disposition: "apply-local",
       dispositionTarget: "@project/instructions/LOCAL.md",
     });
+    expect(review.unresolvedSignals).toContain(review.signals[0]!.id);
   });
 
   it("extracts canonical assets from Markdown links", async () => {

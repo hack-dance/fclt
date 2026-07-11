@@ -505,6 +505,7 @@ function correlate(args: {
       rationale: disposition.rationale,
       unresolved:
         disposition.disposition === "propose" ||
+        disposition.disposition === "apply-local" ||
         disposition.disposition === "task" ||
         disposition.disposition === "defer",
     };
@@ -896,7 +897,10 @@ export async function reconciliationStatus(args: {
   try {
     const state = await loadState(statePath);
     const lastReview = Object.entries(state.reviews).sort(
-      ([, left], [, right]) => right.generatedAt.localeCompare(left.generatedAt)
+      ([, left], [, right]) =>
+        right.until.localeCompare(left.until) ||
+        right.since.localeCompare(left.since) ||
+        right.generatedAt.localeCompare(left.generatedAt)
     )[0];
     const enabledSources = config.sources.filter(
       (source) => source.enabled !== false
@@ -948,8 +952,11 @@ export async function latestReconciliationReview(args: {
 }): Promise<ReconciliationReview | null> {
   const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
   const state = await loadState(statePath);
-  const latest = Object.entries(state.reviews).sort(([, left], [, right]) =>
-    right.generatedAt.localeCompare(left.generatedAt)
+  const latest = Object.entries(state.reviews).sort(
+    ([, left], [, right]) =>
+      right.until.localeCompare(left.until) ||
+      right.since.localeCompare(left.since) ||
+      right.generatedAt.localeCompare(left.generatedAt)
   )[0];
   if (!latest) {
     return null;
