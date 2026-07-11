@@ -224,10 +224,16 @@ const writebackAdapter: ReconciliationAdapter = {
     }
     const entriesById = new Map<string, WritebackQueueRecord[]>();
     const malformed: SourceRecord[] = [];
+    let unreadablePaths = 0;
     for (const path of existingPaths) {
-      for (const [index, line] of (await Bun.file(path).text())
-        .split(LINE_SPLIT_RE)
-        .entries()) {
+      let text: string;
+      try {
+        text = await readFile(path, "utf8");
+      } catch {
+        unreadablePaths += 1;
+        continue;
+      }
+      for (const [index, line] of text.split(LINE_SPLIT_RE).entries()) {
         if (!line.trim()) {
           continue;
         }
@@ -321,6 +327,13 @@ const writebackAdapter: ReconciliationAdapter = {
       ];
     });
     records.push(...malformed);
+    if (unreadablePaths > 0) {
+      return {
+        state: "unavailable",
+        records,
+        unavailableReason: `${unreadablePaths} writeback queue path(s) could not be read`,
+      };
+    }
     if (malformed.length > 0) {
       return {
         state: "unavailable",

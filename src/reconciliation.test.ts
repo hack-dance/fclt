@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, readFile, rm, utimes } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -965,6 +965,38 @@ describe("source reconciliation", () => {
         sourceIds: ["unknown"],
       })
     ).rejects.toThrow("Unknown or disabled");
+  });
+
+  it("reports an unreadable writeback queue as unavailable coverage", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(join(queuePath, ".."), { recursive: true });
+    await Bun.write(queuePath, '{"id":"WB-00001"}\n');
+    await chmod(queuePath, 0);
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.degraded).toBe(true);
+    expect(review.coverage[0]).toMatchObject({
+      sourceId: "writebacks",
+      state: "unavailable",
+      recordsScanned: 0,
+    });
+    expect(review.coverage[0]?.unavailableReason).toContain(
+      "could not be read"
+    );
   });
 
   it("reports a filtered review as degraded even when checked sources pass", async () => {
