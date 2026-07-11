@@ -4031,6 +4031,9 @@ export async function templatesCommand(
         name: name ?? undefined,
         scope: resolved.scope,
         projectRoot: resolved.projectRoot,
+        rootDir: parsedArgs.rootArg
+          ? resolve(cwd, parsedArgs.rootArg)
+          : undefined,
         cwds: resolved.cwds,
         rrule,
         status,

@@ -1532,6 +1532,44 @@ describe("templates command", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("honors an explicit root for a global closed-loop template", async () => {
+    const { home } = await makeTempRoot();
+    const customRoot = join(home, "shared capability", ".ai");
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "closed-loop-review",
+          "--scope",
+          "global",
+          "--root",
+          customRoot,
+        ],
+        { homeDir: home, cwd: home }
+      );
+    });
+
+    const automationToml = await readFile(
+      join(
+        home,
+        ".codex",
+        "automations",
+        "closed-loop-review",
+        "automation.toml"
+      ),
+      "utf8"
+    );
+    expect(automationToml).toContain(
+      `fclt ai loop run --global --root '${customRoot}' --scheduled --json`
+    );
+    expect(automationToml).not.toContain(
+      `fclt ai loop run --global --root '${join(home, ".ai")}'`
+    );
+    expect(process.exitCode).toBe(0);
+  });
+
   it("refuses automation scaffold and status writes through a symlinked directory", async () => {
     const { home } = await makeTempRoot();
     const automationRoot = join(home, ".codex", "automations");

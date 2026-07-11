@@ -492,10 +492,19 @@ async function automationStatus(args: {
   if (!(await fileExists(pathValue))) {
     return { exists: false, registered: false };
   }
-  const parsed = Bun.TOML.parse(await readFile(pathValue, "utf8")) as Record<
-    string,
-    unknown
-  >;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = Bun.TOML.parse(await readFile(pathValue, "utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch (error) {
+    return {
+      exists: true,
+      registered: false,
+      error: `Unable to inspect Codex automation ${pathValue}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   const status =
     parsed.status === "ACTIVE" || parsed.status === "PAUSED"
       ? parsed.status

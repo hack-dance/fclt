@@ -657,6 +657,25 @@ describe("evolution loop", () => {
     expect(status.health).toBe("degraded");
   });
 
+  it("reports malformed scheduler configuration as degraded health", async () => {
+    const project = await makeProject();
+    const enabled = await enableEvolutionLoop({ ...project });
+    await Bun.write(
+      join(enabled.automationPath, "automation.toml"),
+      'managed_by = "fclt-evolution-loop"\nstatus = [\n'
+    );
+
+    const status = await evolutionLoopStatus(project);
+    expect(status.scheduler).toMatchObject({
+      exists: true,
+      registered: false,
+    });
+    expect(status.scheduler.error).toContain(
+      "Unable to inspect Codex automation"
+    );
+    expect(status.health).toBe("degraded");
+  });
+
   it("transitions applied proposals from due to overdue without marking success", async () => {
     const project = await makeProject();
     await enableEvolutionLoop({
