@@ -1,3 +1,9 @@
+## [2.22.1](https://github.com/hack-dance/fclt/compare/v2.22.0...v2.22.1) (2026-07-11)
+
+### Bug Fixes
+
+* make Codex plugin startup desktop-safe ([#53](https://github.com/hack-dance/fclt/issues/53)) ([e937913](https://github.com/hack-dance/fclt/commit/e9379131bd7ca6ab3400eb40d95d1f73bee8980f))
+
 ## [2.22.0](https://github.com/hack-dance/fclt/compare/v2.21.0...v2.22.0) (2026-07-11)
 
 ### Features
