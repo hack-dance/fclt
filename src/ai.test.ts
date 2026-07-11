@@ -186,7 +186,7 @@ describe("ai writeback", () => {
     });
     await Bun.write(
       join(projectRoot, "notes", "signal.md"),
-      "# 2026-07-05 capability signal\n\n@project/instructions/TESTING.md. needs reconciliation.\n"
+      "# 2026-07-05 capability signal\n\ninstructions/TESTING.md. needs reconciliation.\n"
     );
     await Bun.write(
       join(rootDir, "reconciliation.json"),

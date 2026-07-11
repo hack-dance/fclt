@@ -966,7 +966,9 @@ describe("source reconciliation", () => {
           ],
           {
             complete: false,
-            partialReasons: ["producer pagination incomplete"],
+            partialReasons: [
+              "producer pagination incomplete token=partial-reason-secret",
+            ],
           }
         )
       )
@@ -989,6 +991,7 @@ describe("source reconciliation", () => {
     expect(review.coverage[0]?.unavailableReason).toContain(
       "pagination incomplete"
     );
+    expect(JSON.stringify(review)).not.toContain("partial-reason-secret");
     expect(review.linkedWork).toContain("TICKET-793");
   });
 

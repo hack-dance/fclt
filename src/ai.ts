@@ -26,7 +26,6 @@ const SLUG_SPLIT_RE = /[/_-]+/;
 const SKILL_MD_SUFFIX_RE = /\/SKILL\.md$/;
 const MARKDOWN_SUFFIX_RE = /\.md$/;
 const SKILL_SUFFIX_RE = /SKILL$/;
-const CANONICAL_SCOPE_PREFIX_RE = /^@(?:ai|project)\//;
 
 export type WritebackStatus =
   | "suggested"
@@ -1321,9 +1320,6 @@ export async function assessEvolution(args: {
         homeDir,
         rootDir: args.rootDir,
       });
-  const normalizedSelectedTarget = selectedTarget
-    ?.replace(CANONICAL_SCOPE_PREFIX_RE, "")
-    .toLowerCase();
   const matchingSignals = (latestReview?.signals ?? []).filter((signal) => {
     if (!selectedTarget) {
       return true;
@@ -1333,7 +1329,8 @@ export async function assessEvolution(args: {
       if (assetRef.startsWith("@")) {
         return normalizedAssetRef === selectedTarget.toLowerCase();
       }
-      return normalizedAssetRef === normalizedSelectedTarget;
+      const scopedAssetRef = `@${scopeContext.scope === "project" ? "project" : "ai"}/${normalizedAssetRef}`;
+      return scopedAssetRef === selectedTarget.toLowerCase();
     });
   });
 

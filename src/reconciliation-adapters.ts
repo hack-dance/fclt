@@ -713,7 +713,9 @@ const evidenceExportAdapter: ReconciliationAdapter = {
           state: "unavailable",
           records,
           unavailableReason:
-            envelope.coverage.partialReasons?.join("; ") ||
+            envelope.coverage.partialReasons
+              ?.map((reason) => redactReconciliationText(reason))
+              .join("; ") ||
             "Evidence export does not prove complete coverage for the requested window",
         };
       }
