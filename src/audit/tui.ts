@@ -16,6 +16,10 @@ import {
   text,
 } from "@clack/prompts";
 import { buildIndex } from "../index-builder";
+import {
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+} from "../legacy-mutation-policy";
 import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
 import { type QuarantineMode, quarantineItems } from "../quarantine";
 import { type AgentAuditReport, runAgentAudit } from "./agent";
@@ -38,6 +42,18 @@ import { updateIndexFromAuditReport } from "./update-index";
 
 type InteractiveReviewerTool = "codex" | "claude";
 const AUDIT_RULE_PREFIX_RE = /^(static|agent):/;
+
+export function parseAuditTuiArgs(argv: string[]): {
+  allowLegacyManagedMutation: boolean;
+  from: string[];
+  noConfigFrom: boolean;
+} {
+  return {
+    allowLegacyManagedMutation: legacyManagedMutationApproved({ argv }),
+    from: parseFromFlags(argv),
+    noConfigFrom: argv.includes("--no-config-from"),
+  };
+}
 
 function parseFromFlags(argv: string[]): string[] {
   const from: string[] = [];
@@ -381,7 +397,7 @@ function printHelp() {
 Usage:
   fclt audit tui
   fclt audit tui --from <path> [--from <path> ...]
-  fclt audit tui --no-config-from
+  fclt audit tui --no-config-from [${LEGACY_MANAGED_MUTATION_FLAG}]
 
 Notes:
   - This is an interactive wizard (TTY required).
@@ -396,10 +412,9 @@ export async function auditTuiCommand(argv: string[]) {
     return;
   }
 
-  const noConfigFrom = argv.includes("--no-config-from");
-  const parsedFrom = parseFromFlags(argv);
+  const parsedArgs = parseAuditTuiArgs(argv);
 
-  const cfg = noConfigFrom ? null : readFacultConfig();
+  const cfg = parsedArgs.noConfigFrom ? null : readFacultConfig();
   const cfgRoots = cfg?.scanFrom ?? [];
 
   intro("fclt audit");
@@ -489,8 +504,8 @@ export async function auditTuiCommand(argv: string[]) {
           results.scope === "custom"
             ? text({
                 message: "Roots to scan",
-                placeholder: parsedFrom.length
-                  ? parsedFrom.join(", ")
+                placeholder: parsedArgs.from.length
+                  ? parsedArgs.from.join(", ")
                   : "~, ~/dev",
               })
             : undefined,
@@ -567,14 +582,14 @@ export async function auditTuiCommand(argv: string[]) {
   const scope = setup?.scope as "defaults" | "home" | "custom" | "config";
   const includeGitHooks = setup?.includeGitHooks === true;
 
-  let includeConfigFrom = !noConfigFrom;
+  let includeConfigFrom = !parsedArgs.noConfigFrom;
   let from: string[] = [];
   if (scope === "defaults") {
     includeConfigFrom = false;
   } else if (scope === "home") {
-    from = parsedFrom.length ? parsedFrom : ["~"];
+    from = parsedArgs.from.length ? parsedArgs.from : ["~"];
   } else if (scope === "config") {
-    from = parsedFrom;
+    from = parsedArgs.from;
   } else {
     from = String(setup?.roots ?? "")
       .split(",")
@@ -990,6 +1005,7 @@ export async function auditTuiCommand(argv: string[]) {
       const fixResult = await fixInlineMcpSecrets({
         findings: selected,
         homeDir: homedir(),
+        allowLegacyManagedMutation: parsedArgs.allowLegacyManagedMutation,
       });
       if (fixResult.fixed === 0) {
         log.warn("No selected findings could be fixed automatically.");

@@ -5659,7 +5659,7 @@ Usage:
 `);
     return;
   }
-  const tool = parsed.argv[0];
+  const tool = parsed.argv.find((arg) => !arg.startsWith("-"));
   if (!tool) {
     console.error("unmanage requires a tool name");
     process.exitCode = 1;

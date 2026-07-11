@@ -191,6 +191,39 @@ describe("CLI output contracts", () => {
     expect(out).toContain("fclt ai writeback");
   });
 
+  it("unmanage accepts flags before the tool positional", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facult-cli-unmanage-"));
+
+    try {
+      const proc = Bun.spawn(
+        [
+          "bun",
+          "run",
+          join(process.cwd(), "src/index.ts"),
+          "unmanage",
+          "--dry-run",
+          "codex",
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, HOME: dir },
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      const [code, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stderr).text(),
+      ]);
+
+      expect(code).toBe(1);
+      expect(err).toContain("codex is not managed");
+      expect(err).not.toContain("--dry-run is not managed");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("adapters --json emits valid JSON", async () => {
     const proc = Bun.spawn(
       ["bun", "run", "./src/index.ts", "adapters", "--json"],
