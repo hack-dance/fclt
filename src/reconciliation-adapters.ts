@@ -50,6 +50,7 @@ const WHITESPACE_RE = /\s+/g;
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_FILES = 500;
 const MAX_BODY_CHARS = 4000;
+const URL_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -65,6 +66,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export function redactReconciliationText(value: string): string {
   return value
+    .replace(URL_USERINFO_RE, "$1<redacted>@")
     .replace(JSON_SECRET_VALUE_RE, "$1<redacted>$2")
     .replace(SECRET_VALUE_RE, "$1<redacted>")
     .replace(SECRET_TOKEN_RE, "<redacted-token>")
