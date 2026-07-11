@@ -1119,10 +1119,15 @@ describe("Codex plugin capability matrix", () => {
     ).json()) as {
       version: string;
     };
+    const pluginJson = (await Bun.file(
+      join(repoRoot, "plugins", "fclt", ".codex-plugin", "plugin.json")
+    ).json()) as {
+      version: string;
+    };
     const matrix = (await Bun.file(
       join(repoRoot, "docs", "codex-plugin-capability-matrix.json")
     ).json()) as {
-      generatedFrom: { packageVersion: string };
+      generatedFrom: { packageVersion: string; pluginVersion: string };
       capabilities: {
         id: string;
         mcp: {
@@ -1147,6 +1152,7 @@ describe("Codex plugin capability matrix", () => {
 
     expect(new Set(ids).size).toBe(ids.length);
     expect(matrix.generatedFrom.packageVersion).toBe(packageJson.version);
+    expect(matrix.generatedFrom.pluginVersion).toBe(pluginJson.version);
     expect(setup?.mcp).toMatchObject({
       disposition: "exposed",
       tool: "fclt_setup",

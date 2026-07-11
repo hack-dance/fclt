@@ -86,6 +86,11 @@ non-empty `name`, fclt preserves it and installs from that name. The generated
 entry uses Codex schema-valid policy values, including
 `installation: "AVAILABLE"` and `authentication: "ON_INSTALL"`.
 
+Setup also binds the machine-local MCP payload to absolute JavaScript and fclt
+runtime paths and carries the runtime directories into the MCP `PATH`. This is
+required because a desktop app launched from the GUI does not necessarily
+inherit the shell that contains Node, Bun, mise, or a package-manager shim.
+
 When the `codex` command is available, setup runs
 `codex plugin add fclt@<marketplace> --json`. Codex installs the plugin cache
 under `~/.codex/plugins/cache/<marketplace>/fclt/` using its own version
@@ -120,6 +125,9 @@ bun run check
 declares its tools. Neither proves a running task has refreshed its tool registry. After plugin
 installation, start a fresh Codex task and confirm `fclt_setup` and `fclt_status` are discoverable;
 `doctor --json` reports this boundary as `requires_fresh_session` instead of inferring success.
+Reopening or resuming a task that existed before installation does not refresh that task's tool
+registry. If a genuinely new desktop task reports `MCP startup failed: No such file or directory`,
+rerun `fclt setup codex-plugin` from the installed release, then create another new task.
 
 ## Recommended Agent Use
 

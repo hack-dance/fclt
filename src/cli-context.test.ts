@@ -6,6 +6,7 @@ import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 
 let tempRoot: string | null = null;
 const ORIGINAL_ROOT = process.env.FACULT_ROOT_DIR;
+const ORIGINAL_ROOT_SCOPE = process.env.FACULT_ROOT_SCOPE;
 
 function makeTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "cli-context-"));
@@ -17,6 +18,7 @@ afterEach(async () => {
   }
   tempRoot = null;
   process.env.FACULT_ROOT_DIR = ORIGINAL_ROOT;
+  process.env.FACULT_ROOT_SCOPE = ORIGINAL_ROOT_SCOPE;
 });
 
 describe("parseCliContextArgs", () => {
@@ -120,5 +122,71 @@ describe("resolveCliContextRoot", () => {
     expect(() =>
       resolveCliContextRoot({ homeDir, cwd, scope: "project" })
     ).toThrow('Run "fclt templates init project-ai" in the repo first');
+  });
+
+  it("does not treat the global home .ai root as project state", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const cwd = join(homeDir, "work", "repo");
+    await mkdir(join(homeDir, ".ai", "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow("No project-local .ai root found:");
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      join(homeDir, ".ai")
+    );
+  });
+
+  it("does not treat home .ai as project state with a custom global root", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const cwd = join(homeDir, "work", "repo");
+    const globalRoot = join(tempRoot, "global-ai");
+    await mkdir(join(homeDir, ".ai", "instructions"), { recursive: true });
+    await mkdir(join(globalRoot, "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    process.env.FACULT_ROOT_DIR = globalRoot;
+
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow("No project-local .ai root found:");
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      globalRoot
+    );
+  });
+
+  it("prefers an env-configured project .ai root over cwd discovery", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const projectRoot = join(homeDir, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const cwd = join(homeDir, "work", "other-repo");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await mkdir(join(cwd, ".ai", "instructions"), { recursive: true });
+    process.env.FACULT_ROOT_DIR = rootDir;
+    process.env.FACULT_ROOT_SCOPE = "project";
+
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "project" })).toBe(
+      rootDir
+    );
+  });
+
+  it("treats an unscoped env .ai override as global", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const globalRoot = join(tempRoot, "workspace", ".ai");
+    const cwd = join(tempRoot, "workspace", "repo");
+    await mkdir(join(globalRoot, "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    process.env.FACULT_ROOT_DIR = globalRoot;
+
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow("No project-local .ai root found:");
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      globalRoot
+    );
   });
 });

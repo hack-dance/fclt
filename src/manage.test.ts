@@ -9,7 +9,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { facultBuiltinPackRoot } from "./builtin";
 import {
   loadManagedState,
@@ -476,20 +476,42 @@ describe("managed state", () => {
     );
     expect(pluginManifest).toContain('"name": "fclt"');
 
-    const mcpConfig = await readFile(
-      join(home, "plugins", "fclt", ".mcp.json"),
-      "utf8"
-    );
-    expect(mcpConfig).toContain('"./scripts/fclt-mcp.cjs"');
-    expect(mcpConfig).toContain('"cwd": "."');
+    const mcpConfig = JSON.parse(
+      await readFile(join(home, "plugins", "fclt", ".mcp.json"), "utf8")
+    ) as {
+      mcpServers: {
+        fclt: {
+          command: string;
+          args: string[];
+          env: { FCLT_BIN?: string; PATH: string };
+          cwd: string;
+        };
+      };
+    };
+    const fcltServer = mcpConfig.mcpServers.fclt;
+    expect(fcltServer.args).toContain("./scripts/fclt-mcp.cjs");
+    expect(fcltServer.cwd).toBe(".");
+    expect(isAbsolute(fcltServer.command)).toBe(true);
+    expect(fcltServer.env.PATH).toContain(dirname(fcltServer.command));
 
     const proc = Bun.spawn(
-      [
-        "node",
-        join(home, "plugins", "fclt", "scripts", "fclt-mcp.cjs"),
-        "--self-test",
-      ],
-      { stdout: "pipe", stderr: "pipe" }
+      [fcltServer.command, ...fcltServer.args, "--self-test"],
+      {
+        cwd: join(home, "plugins", "fclt"),
+        env: {
+          HOME: home,
+          USERPROFILE: home,
+          PATH: fcltServer.env.PATH,
+          ...(fcltServer.env.FCLT_BIN
+            ? { FCLT_BIN: fcltServer.env.FCLT_BIN }
+            : {}),
+          ...(process.env.SystemRoot
+            ? { SystemRoot: process.env.SystemRoot }
+            : {}),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
     );
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -2641,8 +2663,23 @@ describe("syncManagedTools", () => {
 
     const fcltMcp = JSON.parse(
       await readFile(join(home, "plugins", "fclt", ".mcp.json"), "utf8")
-    ) as { mcpServers: { fclt?: { cwd?: string } } };
+    ) as {
+      mcpServers: {
+        fclt?: {
+          command?: string;
+          cwd?: string;
+          env?: { FCLT_BIN?: string; PATH?: string };
+        };
+      };
+    };
     expect(fcltMcp.mcpServers.fclt?.cwd).toBe(".");
+    expect(isAbsolute(fcltMcp.mcpServers.fclt?.command ?? "")).toBe(true);
+    if (fcltMcp.mcpServers.fclt?.env?.FCLT_BIN) {
+      expect(isAbsolute(fcltMcp.mcpServers.fclt.env.FCLT_BIN)).toBe(true);
+    }
+    expect(fcltMcp.mcpServers.fclt?.env?.PATH).toContain(
+      dirname(fcltMcp.mcpServers.fclt?.command ?? "")
+    );
     expect(
       await Bun.file(
         join(home, "plugins", "custom", ".codex-plugin", "plugin.json")
@@ -2673,6 +2710,12 @@ describe("syncManagedTools", () => {
         ?.authentication
     ).toBe("ON_INSTALL");
     expect((await loadManagedState(home)).tools.codex).toBeUndefined();
+
+    const repeated = await setupCodexPlugin({
+      homeDir: home,
+      installInCodex: false,
+    });
+    expect(repeated.changedPaths).toEqual([]);
   });
 
   it("installs from the preserved Codex marketplace name", async () => {

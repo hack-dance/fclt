@@ -11,6 +11,17 @@ fclt index --project
 fclt status --project
 ```
 
+If automation selects a repo-local root through the environment, declare its
+scope explicitly:
+
+```bash
+FACULT_ROOT_DIR=/path/to/repo/.ai FACULT_ROOT_SCOPE=project fclt status --project
+```
+
+An unscoped `FACULT_ROOT_DIR` is treated as global for safety. This prevents a
+custom global root that happens to be named `.ai` from becoming project state
+during an ancestor search.
+
 Typical layout:
 
 ```text
