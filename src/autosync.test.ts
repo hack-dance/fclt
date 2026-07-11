@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -20,6 +21,11 @@ import {
   runGitAutosyncOnce,
   setLaunchctlRunnerForTests,
 } from "./autosync";
+import {
+  LEGACY_MANAGED_MUTATION_ENV,
+  LEGACY_MANAGED_MUTATION_FLAG,
+} from "./legacy-mutation-policy";
+import { machineStateProjectKey } from "./paths";
 
 async function run(cmd: string[], cwd?: string) {
   if (cmd[0] !== "git") {
@@ -164,6 +170,128 @@ describe("autosync invocation", () => {
 
     expect(spec.label).toBe("com.fclt.autosync.codex-facult");
     expect(plist).toContain("<string>/Users/test/dev/facult/.ai</string>");
+  });
+
+  it("loads a project-scoped config for an approved one-shot recovery", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-autosync-project-run-"));
+    tempDirs.push(home);
+    const projectRoot = join(home, "example-project");
+    const unresolvedRootDir = join(projectRoot, ".ai");
+    const stateRoot = join(home, "machine-state");
+    await mkdir(join(unresolvedRootDir, "mcp"), { recursive: true });
+    const rootDir = await realpath(unresolvedRootDir);
+    const projectStateDir = join(
+      stateRoot,
+      "projects",
+      machineStateProjectKey(rootDir, home)
+    );
+    const serviceName = "cursor-example-project";
+    const mcpConfig = join(projectRoot, ".cursor", "mcp.json");
+
+    await writeFile(
+      join(rootDir, "mcp", "servers.json"),
+      '{"servers":{}}\n',
+      "utf8"
+    );
+    await mkdir(join(projectStateDir, "autosync", "services"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(projectStateDir, "managed.json"),
+      `${JSON.stringify({
+        version: 1,
+        tools: {
+          cursor: {
+            tool: "cursor",
+            managedAt: "2026-07-11T00:00:00.000Z",
+            mcpConfig,
+            toolHome: join(projectRoot, ".cursor"),
+            renderedTargets: {},
+          },
+        },
+      })}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(projectStateDir, "autosync", "services", `${serviceName}.json`),
+      `${JSON.stringify({
+        ...testConfig(rootDir, serviceName),
+        tool: "cursor",
+        git: {
+          ...testConfig(rootDir, serviceName).git,
+          enabled: false,
+        },
+      })}\n`,
+      "utf8"
+    );
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      FACULT_LOCAL_STATE_DIR: stateRoot,
+    };
+    delete env[LEGACY_MANAGED_MUTATION_ENV];
+    const pathsProc = Bun.spawn(
+      [
+        "bun",
+        "run",
+        join(import.meta.dir, "index.ts"),
+        "paths",
+        "--project",
+        "--json",
+      ],
+      {
+        cwd: projectRoot,
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [pathsCode, pathsOut, pathsErr] = await Promise.all([
+      pathsProc.exited,
+      new Response(pathsProc.stdout).text(),
+      new Response(pathsProc.stderr).text(),
+    ]);
+    expect(pathsErr).toBe("");
+    expect(pathsCode).toBe(0);
+    expect(
+      (JSON.parse(pathsOut) as { runtime: { machineStateDir: string } }).runtime
+        .machineStateDir
+    ).toBe(projectStateDir);
+
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "run",
+        join(import.meta.dir, "index.ts"),
+        "autosync",
+        "run",
+        "--project",
+        "--once",
+        "--service",
+        serviceName,
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
+      {
+        cwd: projectRoot,
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(
+      await Bun.file(
+        join(projectStateDir, "autosync", "state", `${serviceName}.json`)
+      ).exists()
+    ).toBe(true);
   });
 });
 

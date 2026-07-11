@@ -1216,7 +1216,9 @@ export async function autosyncCommand(argv: string[]) {
       console.log(autosyncHelp());
       return;
     }
+    const home = process.env.HOME?.trim() || homedir();
     const rootDir = resolveCliContextRoot({
+      homeDir: home,
       rootArg: parsed.rootArg,
       scope: parsed.scope,
       cwd: process.cwd(),
@@ -1233,7 +1235,7 @@ export async function autosyncCommand(argv: string[]) {
 
     if (sub === "uninstall") {
       const tool = parseAutosyncPositionals(parsed.argv, [])[0];
-      await uninstallAutosyncService({ tool, rootDir });
+      await uninstallAutosyncService({ homeDir: home, tool, rootDir });
       console.log(
         `Removed autosync service: ${autosyncServiceName(tool, rootDir)}`
       );
@@ -1242,7 +1244,7 @@ export async function autosyncCommand(argv: string[]) {
 
     if (sub === "status") {
       const tool = parseAutosyncPositionals(parsed.argv, [])[0];
-      const status = await autosyncStatus({ tool, rootDir });
+      const status = await autosyncStatus({ homeDir: home, tool, rootDir });
       console.log(`Service: ${autosyncServiceName(tool, rootDir)}`);
       console.log(`Plist: ${status.plistPath}`);
       console.log(`Installed: ${status.plistExists ? "yes" : "no"}`);
@@ -1288,11 +1290,12 @@ export async function autosyncCommand(argv: string[]) {
       const service = parseAutosyncStringFlag(parsed.argv, "--service");
       const tool = parseAutosyncPositionals(parsed.argv, ["--service"])[0];
       const serviceName = service ?? autosyncServiceName(tool, rootDir);
-      const config = await loadAutosyncConfig(serviceName);
+      const config = await loadAutosyncConfig(serviceName, home, rootDir);
       if (!config) {
         throw new Error(`Autosync service not configured: ${serviceName}`);
       }
       await runAutosyncService(config, {
+        homeDir: home,
         once: parsed.argv.includes("--once"),
         allowLegacyManagedMutation,
       });
