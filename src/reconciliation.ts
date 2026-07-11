@@ -58,7 +58,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function emptyState(): ReconciliationState {
-  return { version: 1, sources: {}, evidence: {}, decisions: {}, reviews: {} };
+  return {
+    version: 1,
+    sources: {},
+    evidence: {},
+    decisions: {},
+    families: {},
+    reviews: {},
+  };
 }
 
 function parseState(value: unknown): ReconciliationState {
@@ -70,6 +77,7 @@ function parseState(value: unknown): ReconciliationState {
       isPlainObject(value.sources) &&
       isPlainObject(value.evidence) &&
       isPlainObject(value.decisions) &&
+      (value.families === undefined || isPlainObject(value.families)) &&
       isPlainObject(value.reviews)
     )
   ) {
@@ -80,6 +88,9 @@ function parseState(value: unknown): ReconciliationState {
     sources: value.sources as ReconciliationState["sources"],
     evidence: value.evidence as ReconciliationState["evidence"],
     decisions: value.decisions as ReconciliationState["decisions"],
+    families: isPlainObject(value.families)
+      ? (value.families as NonNullable<ReconciliationState["families"]>)
+      : {},
     reviews: value.reviews as ReconciliationState["reviews"],
   };
 }
@@ -256,6 +267,7 @@ function correlationKeys(record: SourceRecord): string[] {
 function extractionDecision(record: SourceRecord): ExtractionDecision {
   const classification = classify(record);
   const included = classification !== "noise";
+  const terminalSourceState = record.provenance.terminal === true;
   return {
     id: `XD-${sha256(`${record.sourceId}:${record.recordId}:${record.dedupeKey}`).slice(0, 16)}`,
     sourceId: record.sourceId,
@@ -265,7 +277,9 @@ function extractionDecision(record: SourceRecord): ExtractionDecision {
     classification,
     reason: included
       ? `Included as ${classification} evidence`
-      : "Excluded as noise: no capability, linked-work, or outcome signal was found",
+      : terminalSourceState
+        ? "Excluded as a terminal source state that resolves prior evidence"
+        : "Excluded as noise: no capability, linked-work, or outcome signal was found",
     correlationKeys: correlationKeys(record),
   };
 }
@@ -504,11 +518,34 @@ function correlate(args: {
         .sort()
         .join("\n")
     ).slice(0, 16)}`;
+    const subjectKeys = unique(items.flatMap((item) => item.correlationKeys));
+    const matchingFamilies = Object.entries(args.state.families ?? {})
+      .filter(([, family]) =>
+        family.subjectKeys.some((key) => subjectKeys.includes(key))
+      )
+      .sort(
+        ([leftId, left], [rightId, right]) =>
+          left.firstSeenAt.localeCompare(right.firstSeenAt) ||
+          leftId.localeCompare(rightId)
+      );
+    const priorFamily = matchingFamilies[0]?.[0];
+    const familySeed =
+      subjectKeys[0] ?? items.map((item) => item.dedupeKey).sort()[0] ?? id;
+    const familyId = priorFamily ?? `SF-${sha256(familySeed).slice(0, 16)}`;
+    const familyAliases = unique([
+      ...matchingFamilies
+        .map(([matchedId]) => matchedId)
+        .filter((matchedId) => matchedId !== familyId),
+      ...matchingFamilies.flatMap(([, family]) => family.aliases ?? []),
+    ]).filter((matchedId) => matchedId !== familyId);
     for (const item of items) {
       item.disposition = disposition.disposition;
     }
     return {
       id,
+      familyId,
+      familyAliases,
+      subjectKeys,
       title: items[0]?.title ?? id,
       evidenceKeys: items.map((item) => item.dedupeKey).sort(),
       sourceIds: unique(items.flatMap((item) => item.sourceIds)),
@@ -554,6 +591,7 @@ function renderReview(review: ReconciliationReview): string {
     `### ${signal.id} — ${signal.title}`,
     "",
     `- Disposition: **${signal.disposition}**${signal.dispositionTarget ? ` → ${signal.dispositionTarget}` : ""}`,
+    `- Family: ${signal.familyId}`,
     `- Sources: ${signal.sourceIds.join(", ")}`,
     `- Classification: ${signal.classifications.join(", ")}`,
     `- Linked work: ${signal.issueRefs.join(", ") || "none"}`,
@@ -596,6 +634,12 @@ function renderReview(review: ReconciliationReview): string {
     "## Signals and dispositions",
     "",
     ...(signals.length > 0 ? signals : ["No correlated signals.", ""]),
+    "## Resolution evidence",
+    "",
+    ...(review.resolvedEvidenceKeys.length > 0
+      ? review.resolvedEvidenceKeys.map((key) => `- ${key}`)
+      : ["No terminal source evidence was observed."]),
+    "",
     "## Excluded records",
     "",
     ...(exclusions.length > 0 ? exclusions : ["No records were excluded."]),
@@ -672,6 +716,46 @@ function updateState(args: {
       reviewId: args.review.reviewId,
     };
   }
+  const families = next.families ?? {};
+  next.families = families;
+  for (const signal of args.review.signals) {
+    const mergedFamilies = [
+      families[signal.familyId],
+      ...(signal.familyAliases ?? []).map((familyId) => families[familyId]),
+    ].filter((family): family is NonNullable<typeof family> => Boolean(family));
+    const prior = families[signal.familyId];
+    families[signal.familyId] = {
+      firstSeenAt:
+        mergedFamilies
+          .map((family) => family.firstSeenAt)
+          .sort((left, right) => left.localeCompare(right))[0] ??
+        args.review.generatedAt,
+      lastSeenAt: args.review.generatedAt,
+      aliases: unique([
+        ...mergedFamilies.flatMap((family) => family.aliases ?? []),
+        ...(signal.familyAliases ?? []),
+      ]).filter((familyId) => familyId !== signal.familyId),
+      subjectKeys: unique([
+        ...mergedFamilies.flatMap((family) => family.subjectKeys),
+        ...signal.subjectKeys,
+      ]),
+      evidenceKeys: unique([
+        ...mergedFamilies.flatMap((family) => family.evidenceKeys),
+        ...signal.evidenceKeys,
+      ]),
+      reviewIds: unique([
+        ...mergedFamilies.flatMap((family) => family.reviewIds),
+        args.review.reviewId,
+      ]),
+      signalIds: unique([
+        ...mergedFamilies.flatMap((family) => family.signalIds),
+        signal.id,
+      ]),
+    };
+    for (const alias of signal.familyAliases ?? []) {
+      delete families[alias];
+    }
+  }
   next.reviews[args.review.reviewId] = {
     since: args.review.window.since,
     until: args.review.window.until,
@@ -680,6 +764,9 @@ function updateState(args: {
     coverageComplete: args.review.coverageComplete,
     evidenceKeys: args.review.evidence.map((item) => item.dedupeKey),
     signalIds: args.review.signals.map((signal) => signal.id),
+    signalFamilyIds: unique(
+      args.review.signals.map((signal) => signal.familyId)
+    ),
   };
   return next;
 }
@@ -880,6 +967,11 @@ export async function reconcileSources(args: {
       decisions,
       evidence: correlated.evidence,
       signals: correlated.signals,
+      resolvedEvidenceKeys: unique(
+        records
+          .filter((record) => record.provenance.terminal === true)
+          .map((record) => record.dedupeKey)
+      ),
       unresolvedSignals: correlated.signals
         .filter((signal) => signal.unresolved)
         .map((signal) => signal.id),

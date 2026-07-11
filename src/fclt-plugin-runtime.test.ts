@@ -116,6 +116,7 @@ async function tempEnvironment(): Promise<{
       ...process.env,
       FCLT_BIN: undefined,
       FCLT_PLUGIN_RUNTIME_DIR: root,
+      FCLT_SYSTEM_PATHS: "",
       HOME: home,
       PATH: "",
     },

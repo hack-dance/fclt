@@ -98,6 +98,12 @@ Review surfaces:
 - `fclt templates init automation evolution-review` for recurring proposal review
 - `fclt templates init automation tool-call-audit` for repeated tool-friction review
 
+An operator may explicitly enable the coordinated closed loop with `fclt ai
+loop enable --project` or `--global`. Use `fclt ai loop status --json` to check
+both scheduler registration and observed successful execution. The durable
+queue must retain unchanged and temporarily unobserved items; only the
+notification delta should suppress noise.
+
 Evolution proposal metadata, markdown drafts, patch artifacts, writeback queues,
 and journals are runtime state. `fclt` stores JSON queues, proposal records,
 draft refs, patches, and journals in machine-local `fclt` state. It mirrors
@@ -155,3 +161,11 @@ Examples:
 - do not apply high-risk global instruction, skill, plugin, or shared-tool changes without explicit review/approval
 
 Apply is for markdown canonical assets only. If the target is wrong, revise the proposal rather than forcing it through.
+
+Scheduled review does not weaken the approval boundary. It may reconcile
+read-only sources, record targeted writebacks, draft proposals, and report a
+vendor-neutral request to reopen linked implementation work. It must not
+mutate an external tracker or automatically apply canonical changes. Treat
+project auto-apply as plan-only until a hash-bound transaction, validation,
+rollback, and durable receipt exist; keep global and plugin changes
+proposal-only.

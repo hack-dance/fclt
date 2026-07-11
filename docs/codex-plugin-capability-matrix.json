@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "gitCommit": "170b0d3",
-    "packageVersion": "2.20.1",
+    "gitCommit": "e98ddff",
+    "packageVersion": "2.21.0",
     "pluginVersion": "0.1.0",
-    "auditedAt": "2026-07-10T20:00:00Z"
+    "auditedAt": "2026-07-11T04:00:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
@@ -740,6 +740,22 @@
       "apply": "not_applicable",
       "rollback": "not_applicable",
       "verification": "service configuration, process state, and last-run freshness"
+    },
+    {
+      "id": "evolution_loop.review",
+      "cli": "ai loop status|run --dry-run",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_automation",
+        "actions": ["loop_status", "loop_preview"]
+      },
+      "risk": "read_only",
+      "scope": "global|project",
+      "preview": "loop_preview reads the latest review and returns the full queue plus notification delta without mutation",
+      "apply": "withheld; enable, disable, scheduled run, and canonical apply remain CLI-only",
+      "rollback": "not_applicable",
+      "verification": "typed schema, explicit scope, queue continuity, and zero writes during preview"
     },
     {
       "id": "autosync.mutation",

@@ -5,20 +5,186 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
+import { buildDoctorReport } from "./doctor";
+import { enableEvolutionLoop } from "./evolution-loop";
 import { manageTool } from "./manage";
 import {
+  facultAiEvolutionLoopConfigPath,
+  facultAiEvolutionLoopStatePath,
   facultAiEvolutionReviewDir,
   facultAiIndexPath,
   facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
 } from "./paths";
+
+test("doctor preserves explicit custom-global scope and reports unsafe scheduler ownership", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "facult-doctor-custom-global-"));
+  const rootDir = join(homeDir, "shared", ".ai");
+  try {
+    await mkdir(rootDir, { recursive: true });
+    const enabled = await enableEvolutionLoop({
+      homeDir,
+      rootDir,
+      scope: "global",
+    });
+    const ready = await buildDoctorReport({
+      homeDir,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    expect(ready.rootDir).toBe(rootDir);
+    expect(ready.projectRoot).toBeNull();
+    expect(ready.checks.evolutionLoopConfigured).toBe(true);
+    expect(ready.loop.capabilities.scheduling.configurationState).toBe("ready");
+
+    const outside = join(homeDir, "outside-loop-automation");
+    await rename(enabled.automationPath, outside);
+    await symlink(outside, enabled.automationPath);
+    const degraded = await buildDoctorReport({
+      homeDir,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    expect(degraded.loop.capabilities.scheduling.schedulerError).toContain(
+      "unsafe Codex automation directory"
+    );
+    expect(degraded.issues.map((issue) => issue.code)).toContain(
+      "evolution-loop-scheduler-invalid"
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports scheduled loop configuration and invalid state safely", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-loop-config-"));
+  const aiRoot = join(dir, ".ai");
+  const env = { ...process.env, HOME: dir };
+  try {
+    const setup = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "setup",
+        "--global-only",
+        "--no-codex-plugin",
+        "--json",
+      ],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    expect(await setup.exited).toBe(0);
+
+    const initial = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const initialReport = JSON.parse(
+      await new Response(initial.stdout).text()
+    ) as {
+      checks: { evolutionLoopConfigured: boolean };
+      loop: {
+        capabilities: {
+          scheduling: { configurationState: string; enabled: boolean };
+        };
+      };
+    };
+    expect(await initial.exited).toBe(0);
+    expect(initialReport.checks.evolutionLoopConfigured).toBe(false);
+    expect(initialReport.loop.capabilities.scheduling.configurationState).toBe(
+      "not_configured"
+    );
+    expect(initialReport.loop.capabilities.scheduling.enabled).toBe(false);
+
+    const enable = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "ai",
+        "loop",
+        "enable",
+        "--global",
+        "--json",
+      ],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    expect(await enable.exited).toBe(0);
+    await Bun.write(
+      facultAiEvolutionLoopStatePath(dir, aiRoot),
+      "{invalid-loop-state"
+    );
+    const invalidState = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const stateReport = JSON.parse(
+      await new Response(invalidState.stdout).text()
+    ) as { health: { state: string }; issues: Array<{ code: string }> };
+    expect(await invalidState.exited).toBe(0);
+    expect(stateReport.health.state).toBe("scheduled_loop_attention");
+    expect(stateReport.issues.map((issue) => issue.code)).toContain(
+      "evolution-loop-state-invalid"
+    );
+
+    await rm(facultAiEvolutionLoopStatePath(dir, aiRoot), { force: true });
+    await Bun.write(
+      join(
+        dir,
+        ".codex",
+        "automations",
+        "fclt-evolution-global",
+        "automation.toml"
+      ),
+      "{invalid-automation"
+    );
+    const invalidScheduler = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const schedulerReport = JSON.parse(
+      await new Response(invalidScheduler.stdout).text()
+    ) as { issues: Array<{ code: string }> };
+    expect(await invalidScheduler.exited).toBe(0);
+    expect(schedulerReport.issues.map((issue) => issue.code)).toContain(
+      "evolution-loop-scheduler-invalid"
+    );
+
+    await Bun.write(
+      facultAiEvolutionLoopConfigPath(dir, aiRoot),
+      "{invalid-loop-config"
+    );
+    const invalid = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const invalidReport = JSON.parse(
+      await new Response(invalid.stdout).text()
+    ) as {
+      issues: Array<{ code: string }>;
+      loop: {
+        capabilities: { scheduling: { configurationState: string } };
+      };
+    };
+    expect(await invalid.exited).toBe(0);
+    expect(invalidReport.issues.map((issue) => issue.code)).toContain(
+      "evolution-loop-config-invalid"
+    );
+    expect(invalidReport.loop.capabilities.scheduling.configurationState).toBe(
+      "invalid"
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("doctor distinguishes invalid reconciliation config and state", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-reconciliation-"));
@@ -452,7 +618,7 @@ test("doctor --json reports read-only setup health", async () => {
       issues: Array<{ code: string }>;
       actions: Array<{ id: string; risk: string }>;
     };
-    expect(report.version).toBe(1);
+    expect(report.version).toBe(2);
     expect(report.rootDir).toBe(join(dir, ".ai"));
     expect(report.health.state).toBe("uninitialized");
     expect(report.health.ok).toBe(false);
@@ -465,115 +631,6 @@ test("doctor --json reports read-only setup health", async () => {
       })
     );
     expect(await Bun.file(join(dir, ".ai")).exists()).toBe(false);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}, 10_000);
-
-test("doctor detects Linear in canonical mcp.json", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-linear-mcp-"));
-  const aiRoot = join(dir, ".ai");
-
-  try {
-    await mkdir(join(aiRoot, "mcp"), { recursive: true });
-    await writeJson(join(aiRoot, "mcp", "mcp.json"), {
-      mcpServers: {
-        linear: {
-          command: "linear-mcp",
-        },
-      },
-    });
-    const env = {
-      ...process.env,
-      HOME: dir,
-      LINEAR_API_KEY: "",
-      LINEAR_ACCESS_TOKEN: "",
-      LINEAR_TOKEN: "",
-    };
-    const proc = Bun.spawn(
-      ["bun", "run", "./src/index.ts", "doctor", "--json", "--root", aiRoot],
-      {
-        cwd: process.cwd(),
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    );
-    const [code, out, err] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-
-    expect(code).toBe(0);
-    expect(err).toBe("");
-    const report = JSON.parse(out) as {
-      loop: {
-        integrations: {
-          linear: { state: string; message: string };
-        };
-      };
-    };
-    expect(report.loop.integrations.linear.state).toBe("configured_unverified");
-    expect(report.loop.integrations.linear.message).toContain(
-      "Linear configuration was detected"
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}, 10_000);
-
-test("doctor detects Linear in the documented MCP local overlay", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-linear-local-mcp-"));
-  const aiRoot = join(dir, ".ai");
-
-  try {
-    await mkdir(join(aiRoot, "mcp"), { recursive: true });
-    await writeJson(join(aiRoot, "mcp", "mcp.json"), {
-      mcpServers: {},
-    });
-    await writeJson(join(aiRoot, "mcp", "servers.local.json"), {
-      servers: {
-        linear: {
-          command: "linear-mcp",
-        },
-      },
-    });
-    const env = {
-      ...process.env,
-      HOME: dir,
-      LINEAR_API_KEY: "",
-      LINEAR_ACCESS_TOKEN: "",
-      LINEAR_TOKEN: "",
-    };
-    const proc = Bun.spawn(
-      ["bun", "run", "./src/index.ts", "doctor", "--json", "--root", aiRoot],
-      {
-        cwd: process.cwd(),
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    );
-    const [code, out, err] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-
-    expect(code).toBe(0);
-    expect(err).toBe("");
-    const report = JSON.parse(out) as {
-      loop: {
-        integrations: {
-          linear: { state: string; message: string };
-        };
-      };
-    };
-    expect(report.loop.integrations.linear.state).toBe("configured_unverified");
-    expect(report.loop.integrations.linear.message).toContain(
-      "Linear configuration was detected"
-    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -29,9 +29,14 @@ import {
   facultBuiltinPackRoot,
 } from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import { diagnoseEvolutionLoop } from "./evolution-loop";
 import { loadManagedState } from "./manage";
-import { extractServersObject, loadCanonicalMcpState } from "./mcp-config";
+import { extractServersObject } from "./mcp-config";
 import {
+  facultAiEvolutionLoopAuditPath,
+  facultAiEvolutionLoopConfigPath,
+  facultAiEvolutionLoopReportDir,
+  facultAiEvolutionLoopStatePath,
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
   facultAiIndexPath,
@@ -45,6 +50,7 @@ import {
   legacyExternalFacultStateDir,
   legacyFacultStateDirForRoot,
   projectRootFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 import {
   loadConfiguredProjectSyncTools,
@@ -62,6 +68,7 @@ type DoctorHealthState =
   | "uninitialized"
   | "canonical_source_attention"
   | "loop_blocked"
+  | "scheduled_loop_attention"
   | "partial_global_config"
   | "project_generated_only"
   | "project_policy_attention"
@@ -87,13 +94,6 @@ interface DoctorAction {
 }
 
 type LoopReadinessState = "ready" | "degraded" | "blocked";
-
-interface OptionalIntegrationReadiness {
-  optional: true;
-  state: "ready" | "not_configured" | "configured_unverified";
-  message: string;
-  repair?: string;
-}
 
 interface CodexReadiness {
   state: "ready" | "not_installed" | "registered_unverified" | "misconfigured";
@@ -127,15 +127,27 @@ interface LoopReadiness {
       coverageState?: "complete" | "degraded";
       lastReviewId?: string;
     };
+    scheduling: {
+      configured: boolean;
+      configurationState: "ready" | "not_configured" | "invalid";
+      configurationError?: string;
+      stateError?: string;
+      schedulerError?: string;
+      enabled: boolean;
+      health?: "disabled" | "ready" | "degraded";
+      schedulerRegistered?: boolean;
+      schedulerStatus?: "ACTIVE" | "PAUSED";
+      observationState?: "never_observed" | "healthy" | "stale";
+      lastObservedRunAt?: string;
+    };
   };
   integrations: {
     codex: CodexReadiness;
-    linear: OptionalIntegrationReadiness;
   };
 }
 
 export interface DoctorReport {
-  version: 1;
+  version: 2;
   packageVersion: string;
   cwd: string;
   homeDir: string;
@@ -156,6 +168,10 @@ export interface DoctorReport {
     reconciliationConfigPath: string;
     reconciliationStatePath: string;
     reconciliationReviewDir: string;
+    evolutionLoopConfigPath: string;
+    evolutionLoopStatePath: string;
+    evolutionLoopAuditPath: string;
+    evolutionLoopReportDir: string;
   };
   checks: {
     rootExists: boolean;
@@ -167,6 +183,8 @@ export interface DoctorReport {
     evolutionReviewDirExists: boolean;
     reconciliationConfigured: boolean;
     reconciliationSourceCount: number;
+    evolutionLoopConfigured: boolean;
+    evolutionLoopEnabled: boolean;
     canonicalGlobalDocsValid: boolean;
     canonicalGlobalDocsIssueCodes: string[];
     canonicalTemplateRefsValid: boolean;
@@ -299,11 +317,6 @@ async function configuredCodexPlugins(home: string): Promise<Set<string>> {
   }
 }
 
-async function canonicalMcpNames(rootDir: string): Promise<Set<string>> {
-  const state = await loadCanonicalMcpState(rootDir, { includeLocal: true });
-  return new Set(Object.keys(state.servers));
-}
-
 async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
   const pluginRoot = join(home, "plugins", "fclt");
   const pluginPayloadPresent = await pathExists(
@@ -354,46 +367,6 @@ async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
     freshSessionDiscovery: "requires_fresh_session",
     repair:
       "Start a fresh Codex session and confirm the `fclt_status` and `fclt_setup` tools are discoverable.",
-  };
-}
-
-async function inspectLinearReadiness(args: {
-  home: string;
-  rootDir: string;
-}): Promise<OptionalIntegrationReadiness> {
-  const [codexPlugins, mcpNames] = await Promise.all([
-    configuredCodexPlugins(args.home),
-    canonicalMcpNames(args.rootDir),
-  ]);
-  const configuredByPlugin = [...codexPlugins].some((name) =>
-    name.startsWith("linear@")
-  );
-  const configuredByMcp = [...mcpNames].some((name) =>
-    name.toLowerCase().includes("linear")
-  );
-  const configuredByEnv = [
-    "LINEAR_API_KEY",
-    "LINEAR_ACCESS_TOKEN",
-    "LINEAR_TOKEN",
-  ].some((name) => Boolean(process.env[name]?.trim()));
-
-  if (!(configuredByPlugin || configuredByMcp || configuredByEnv)) {
-    return {
-      optional: true,
-      state: "not_configured",
-      message:
-        "Linear is not configured. Core writeback/evolution remains ready; issue linking must be updated manually.",
-      repair:
-        "Install/configure a Linear connector or canonical Linear MCP only if linked issue workflows are needed.",
-    };
-  }
-  return {
-    optional: true,
-    state: "configured_unverified",
-    message:
-      "Linear configuration was detected, but doctor does not perform an authenticated mutation or API probe.",
-    repair:
-      "Run a read-only Linear issue lookup in the host agent before relying on linked issue status.",
   };
 }
 
@@ -1189,479 +1162,576 @@ export async function buildDoctorReport(opts?: {
           homeDir: home,
         })
       : facultRootDir(home);
-  const projectRoot = projectRootFromAiRoot(rootDir, home);
-  const generated = facultAiIndexPath(home, rootDir);
-  const generatedGraph = facultAiGraphPath(home, rootDir);
-  const legacy = legacyAiIndexPath(rootDir);
-  const writebackReviewDir = facultAiWritebackReviewDir(home, rootDir);
-  const evolutionReviewDir = facultAiEvolutionReviewDir(home, rootDir);
-  const reconciliationConfigPath = facultAiReconciliationConfigPath(
-    home,
-    rootDir
-  );
-  const reconciliationStatePath = facultAiReconciliationStatePath(
-    home,
-    rootDir
-  );
-  const reconciliationReviewDir = facultAiReconciliationReviewDir(
-    home,
-    rootDir
-  );
+  const rootScope =
+    opts?.scope === "global"
+      ? "global"
+      : opts?.scope === "project"
+        ? "project"
+        : projectRootFromAiRoot(rootDir, home)
+          ? "project"
+          : "global";
+  return await withFacultRootScope({ rootDir, scope: rootScope }, async () => {
+    const projectRoot = projectRootFromAiRoot(rootDir, home);
+    const generated = facultAiIndexPath(home, rootDir);
+    const generatedGraph = facultAiGraphPath(home, rootDir);
+    const legacy = legacyAiIndexPath(rootDir);
+    const writebackReviewDir = facultAiWritebackReviewDir(home, rootDir);
+    const evolutionReviewDir = facultAiEvolutionReviewDir(home, rootDir);
+    const reconciliationConfigPath = facultAiReconciliationConfigPath(
+      home,
+      rootDir
+    );
+    const reconciliationStatePath = facultAiReconciliationStatePath(
+      home,
+      rootDir
+    );
+    const reconciliationReviewDir = facultAiReconciliationReviewDir(
+      home,
+      rootDir
+    );
+    const evolutionLoopConfigPath = facultAiEvolutionLoopConfigPath(
+      home,
+      rootDir
+    );
+    const evolutionLoopStatePath = facultAiEvolutionLoopStatePath(
+      home,
+      rootDir
+    );
+    const evolutionLoopAuditPath = facultAiEvolutionLoopAuditPath(
+      home,
+      rootDir
+    );
+    const evolutionLoopReportDir = facultAiEvolutionLoopReportDir(
+      home,
+      rootDir
+    );
 
-  const [
-    rootExists,
-    canonicalSourceExists,
-    generatedOnlyProjectRoot,
-    result,
-    generatedGraphExists,
-    writebackReviewDirExists,
-    evolutionReviewDirExists,
-    canonicalGlobalDocs,
-    canonicalTemplateRefs,
-    projectSyncPlan,
-    reconciliation,
-  ] = await Promise.all([
-    pathExists(rootDir),
-    hasCanonicalSource(rootDir),
-    isGeneratedOnlyProjectRoot({ home, rootDir }),
-    ensureAiIndexPath({ homeDir: home, rootDir, repair: false }),
-    pathExists(generatedGraph),
-    pathExists(writebackReviewDir),
-    pathExists(evolutionReviewDir),
-    inspectCanonicalGlobalDocs(rootDir, { projectRoot }),
-    inspectCanonicalTemplateRefs(rootDir),
-    planProjectSyncPolicyRepair({ home, rootDir }),
-    reconciliationStatus({ homeDir: home, rootDir }),
-  ]);
-
-  const projectSyncRepairTools = Object.keys(projectSyncPlan.toolPolicies).sort(
-    (a, b) => a.localeCompare(b)
-  );
-  const stateDir = facultStateDir(home, rootDir);
-  const [
-    runtimeStateWritable,
-    reviewArtifactsWritable,
-    writebackSkill,
-    evolutionSkill,
-    codexReadiness,
-    linearReadiness,
-  ] = await Promise.all([
-    pathCanBeWritten(stateDir),
-    Promise.all([
-      pathCanBeWritten(writebackReviewDir),
-      pathCanBeWritten(evolutionReviewDir),
-      pathCanBeWritten(reconciliationReviewDir),
-    ]).then((values) => values.every(Boolean)),
-    Promise.all([
-      pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
-      projectRoot
-        ? pathExists(
-            join(facultRootDir(home), "skills", "fclt-writeback", "SKILL.md")
-          )
-        : Promise.resolve(false),
-    ]).then((values) => values.some(Boolean)),
-    Promise.all([
-      pathExists(join(rootDir, "skills", "capability-evolution", "SKILL.md")),
-      projectRoot
-        ? pathExists(
-            join(
-              facultRootDir(home),
-              "skills",
-              "capability-evolution",
-              "SKILL.md"
-            )
-          )
-        : Promise.resolve(false),
-    ]).then((values) => values.some(Boolean)),
-    inspectCodexReadiness(home),
-    inspectLinearReadiness({ home, rootDir }),
-  ]);
-  const generatedIndexReady = result.source !== "missing";
-  const assetTargeting =
-    generatedIndexReady &&
-    generatedGraphExists &&
-    writebackSkill &&
-    evolutionSkill;
-  const loopBlockers: string[] = [];
-  if (!(rootExists && canonicalSourceExists)) {
-    loopBlockers.push("canonical_root");
-  }
-  if (!runtimeStateWritable) {
-    loopBlockers.push("runtime_state_not_writable");
-  }
-  if (!reviewArtifactsWritable) {
-    loopBlockers.push("review_artifacts_not_writable");
-  }
-  if (reconciliation.configurationState === "invalid") {
-    loopBlockers.push("reconciliation_config_invalid");
-  }
-  if (reconciliation.configured && reconciliation.sourceCount === 0) {
-    loopBlockers.push("reconciliation_sources_missing");
-  }
-  if (reconciliation.stateError) {
-    loopBlockers.push("reconciliation_state_invalid");
-  }
-  if (!writebackSkill) {
-    loopBlockers.push("writeback_skill_missing");
-  }
-  if (!evolutionSkill) {
-    loopBlockers.push("evolution_skill_missing");
-  }
-  const loopState: LoopReadinessState =
-    loopBlockers.length > 0
-      ? "blocked"
-      : assetTargeting &&
-          writebackReviewDirExists &&
-          evolutionReviewDirExists &&
-          reconciliation.configured
-        ? "ready"
-        : "degraded";
-  const issues: DoctorIssue[] = [];
-  const actions: DoctorAction[] = [];
-
-  if (!rootExists) {
-    issues.push({
-      severity: "error",
-      code: "missing-root",
-      message: "Canonical .ai root does not exist.",
-      fix: "Initialize the global operating model or project .ai root.",
-    });
-    actions.push({
-      id: "init-global-operating-model",
-      label: "Initialize global operating model",
-      command: "fclt templates init operating-model --global",
-      risk: "canonical_write",
-    });
-  }
-
-  if (!canonicalSourceExists) {
-    issues.push({
-      severity: projectRoot ? "error" : "warning",
-      code: "missing-canonical-source",
-      message:
-        "No canonical capability source was found in the selected .ai root.",
-      fix: projectRoot
-        ? `Run ${projectAiInitCommand(rootDir)} or restore canonical project assets.`
-        : "Run fclt templates init operating-model --global.",
-    });
-  }
-
-  for (const issue of canonicalGlobalDocs.issues) {
-    issues.push(issue);
-  }
-  if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
-    actions.push({
-      id: projectRoot
-        ? "refresh-project-operating-model"
-        : "refresh-global-operating-model",
-      label: projectRoot
-        ? "Refresh project operating model"
-        : "Refresh global operating model",
-      command: projectRoot
-        ? projectAiInitCommand(rootDir, ["--force"])
-        : "fclt templates init operating-model --global --force",
-      risk: "canonical_write",
-    });
-  }
-
-  for (const issue of canonicalTemplateRefs.issues) {
-    issues.push({
-      severity: "warning",
-      code: issue.code,
-      message: issue.message,
-      fix: "Run fclt doctor --repair to resolve known refs into concrete paths, then review any remaining placeholders.",
-    });
-  }
-  if (!canonicalTemplateRefs.valid) {
-    actions.push({
-      id: "repair-canonical-template-refs",
-      label: "Repair unresolved canonical template refs",
-      command: "fclt doctor --repair",
-      risk: "canonical_write",
-    });
-  }
-
-  if (generatedOnlyProjectRoot) {
-    issues.push({
-      severity: "error",
-      code: "project-generated-only",
-      message:
-        "Project .ai contains generated state but no canonical project source.",
-      fix: "Initialize, restore, or detach canonical project capability before managed project sync.",
-    });
-    actions.push({
-      id: "init-project-ai",
-      label: "Initialize project AI root",
-      command: projectAiInitCommand(rootDir),
-      risk: "canonical_write",
-    });
-  }
-
-  if (result.source === "missing") {
-    issues.push({
-      severity: "warning",
-      code: "missing-generated-index",
-      message: "Generated AI index is missing.",
-      fix: "Run fclt index or fclt doctor --repair.",
-    });
-    actions.push({
-      id: "rebuild-index",
-      label: "Rebuild generated index",
-      command: "fclt index",
-      risk: "generated_state_write",
-    });
-  } else if (result.source === "legacy") {
-    issues.push({
-      severity: "warning",
-      code: "legacy-generated-index",
-      message: "Generated AI index is still in a legacy location.",
-      fix: "Run fclt doctor --repair.",
-    });
-    actions.push({
-      id: "repair-generated-state",
-      label: "Repair generated state",
-      command: "fclt doctor --repair",
-      risk: "generated_state_write",
-    });
-  }
-
-  if (!generatedGraphExists) {
-    issues.push({
-      severity: "info",
-      code: "missing-generated-graph",
-      message: "Generated capability graph is missing.",
-      fix: "Run fclt index or fclt doctor --repair.",
-    });
-  }
-
-  if (!writebackReviewDirExists) {
-    issues.push({
-      severity: "info",
-      code: "missing-writeback-review-dir",
-      message: "Global writeback review directory is not present yet.",
-      fix: "It will be created when writebacks are recorded or the operating model is initialized.",
-    });
-  }
-
-  if (!evolutionReviewDirExists) {
-    issues.push({
-      severity: "info",
-      code: "missing-evolution-review-dir",
-      message: "Global evolution review directory is not present yet.",
-      fix: "It will be created when proposals are drafted or the operating model is initialized.",
-    });
-  }
-
-  if (reconciliation.configurationState === "not_configured") {
-    issues.push({
-      severity: "warning",
-      code: "reconciliation-not-configured",
-      message:
-        "Automatic source reconciliation is not configured, so an empty writeback queue cannot prove an empty review window.",
-      fix: "Run `fclt ai review init` or `fclt setup`.",
-    });
-    actions.push({
-      id: "init-reconciliation",
-      label: "Initialize automatic source reconciliation",
-      command: "fclt ai review init",
-      risk: "canonical_write",
-    });
-  }
-
-  if (reconciliation.configurationState === "invalid") {
-    issues.push({
-      severity: "error",
-      code: "reconciliation-config-invalid",
-      message:
-        reconciliation.configurationError ??
-        "Automatic source reconciliation configuration is invalid.",
-      fix: "Review the invalid file or run `fclt ai review init --force` to back it up and replace it.",
-    });
-    actions.push({
-      id: "replace-invalid-reconciliation-config",
-      label: "Back up and replace invalid reconciliation configuration",
-      command: "fclt ai review init --force",
-      risk: "canonical_write",
-    });
-  }
-
-  if (reconciliation.stateError) {
-    issues.push({
-      severity: "error",
-      code: "reconciliation-state-invalid",
-      message: reconciliation.stateError,
-      fix: "Preserve the state file for inspection, then explicitly move or repair it before reconciling again.",
-    });
-  }
-
-  if (!(writebackSkill && evolutionSkill)) {
-    issues.push({
-      severity: "error",
-      code: "missing-loop-skills",
-      message:
-        "Required writeback/evolution skills are missing from the selected root.",
-      fix: projectRoot
-        ? "Run `fclt setup` from the project root."
-        : "Run `fclt setup --global-only`.",
-    });
-    actions.push({
-      id: "bootstrap-loop-assets",
-      label: "Install required writeback/evolution assets",
-      command: projectRoot ? "fclt setup" : "fclt setup --global-only",
-      risk: "canonical_write",
-    });
-  }
-
-  if (!(runtimeStateWritable && reviewArtifactsWritable)) {
-    issues.push({
-      severity: "error",
-      code: "loop-state-not-writable",
-      message:
-        "Writeback runtime state or review artifact paths are not writable.",
-      fix: `Restore write access to ${stateDir}, ${writebackReviewDir}, ${evolutionReviewDir}, and ${reconciliationReviewDir}, then run \`fclt setup\` again.`,
-    });
-  }
-
-  if (codexReadiness.state === "misconfigured") {
-    issues.push({
-      severity: "warning",
-      code: "codex-plugin-misconfigured",
-      message:
-        "Codex plugin payload, MCP declaration, and registration are inconsistent.",
-      fix: codexReadiness.repair,
-    });
-    actions.push({
-      id: "repair-codex-plugin",
-      label: "Repair Codex plugin installation",
-      command: "fclt setup codex-plugin",
-      risk: "tool_home_write",
-    });
-  }
-
-  issues.push({
-    severity: "info",
-    code: `linear-${linearReadiness.state.replaceAll("_", "-")}`,
-    message: linearReadiness.message,
-    fix: linearReadiness.repair,
-  });
-
-  if (projectSyncPlan.needed) {
-    issues.push({
-      severity: "warning",
-      code: "implicit-project-sync-policy",
-      message: `Project sync is still implicit for managed tools: ${projectSyncRepairTools.join(", ")}.`,
-      fix: "Run fclt doctor --repair to materialize explicit project sync policy.",
-    });
-    actions.push({
-      id: "materialize-project-sync-policy",
-      label: "Materialize project sync policy",
-      command: "fclt doctor --repair",
-      risk: "canonical_write",
-    });
-  }
-
-  let state: DoctorHealthState = "healthy";
-  if (generatedOnlyProjectRoot) {
-    state = "project_generated_only";
-  } else if (!(rootExists && canonicalSourceExists)) {
-    state = "uninitialized";
-  } else if (!(canonicalGlobalDocs.valid && canonicalTemplateRefs.valid)) {
-    state = "canonical_source_attention";
-  } else if (loopState === "blocked") {
-    state = "loop_blocked";
-  } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
-    state = "partial_global_config";
-  } else if (projectSyncPlan.needed) {
-    state = "project_policy_attention";
-  } else if (result.source === "missing") {
-    state = "stale_or_missing_generated_state";
-  } else if (result.source === "legacy") {
-    state = "legacy_state_attention";
-  }
-
-  return {
-    version: 1,
-    packageVersion: await packageVersion(),
-    cwd,
-    homeDir: home,
-    rootDir,
-    projectRoot,
-    health: {
-      state,
-      ok: state === "healthy" || state === "partial_global_config",
-    },
-    paths: {
-      configPath: facultConfigPath(home),
-      generatedIndex: generated,
-      generatedGraph,
-      stateDir: facultStateDir(home, rootDir),
-      legacyIndex: legacy,
-      writebackReviewDir,
-      evolutionReviewDir,
-      reconciliationConfigPath,
-      reconciliationStatePath,
-      reconciliationReviewDir,
-    },
-    checks: {
+    const [
       rootExists,
       canonicalSourceExists,
       generatedOnlyProjectRoot,
-      generatedIndexSource: result.source,
+      result,
       generatedGraphExists,
       writebackReviewDirExists,
       evolutionReviewDirExists,
-      reconciliationConfigured: reconciliation.configured,
-      reconciliationSourceCount: reconciliation.sourceCount,
-      canonicalGlobalDocsValid: canonicalGlobalDocs.valid,
-      canonicalGlobalDocsIssueCodes: canonicalGlobalDocs.issues.map(
-        (issue) => issue.code
-      ),
-      canonicalTemplateRefsValid: canonicalTemplateRefs.valid,
-      canonicalTemplateRefsIssueCodes: canonicalTemplateRefs.issues.map(
-        (issue) => issue.code
-      ),
-      canonicalTemplateRefsIssuePaths: canonicalTemplateRefs.issues.map(
-        (issue) => issue.relPath
-      ),
-      projectSyncRepairNeeded: projectSyncPlan.needed,
-      projectSyncRepairTools,
-    },
-    loop: {
-      state: loopState,
-      ready: loopState === "ready",
-      blockers: loopBlockers,
-      capabilities: {
-        canonicalRoot: rootExists && canonicalSourceExists,
-        generatedIndex: generatedIndexReady,
-        generatedGraph: generatedGraphExists,
-        runtimeStateWritable,
-        reviewArtifactsWritable,
-        assetTargeting,
-        writebackSkill,
-        evolutionSkill,
-        automationTemplates: [
-          "learning-review",
-          "evolution-review",
-          "tool-call-audit",
-        ],
-        reconciliation: {
-          configured: reconciliation.configured,
-          configurationState: reconciliation.configurationState,
-          configurationError: reconciliation.configurationError,
-          stateError: reconciliation.stateError,
-          sourceCount: reconciliation.sourceCount,
-          coverageState: reconciliation.coverageState,
-          lastReviewId: reconciliation.lastReviewId,
+      canonicalGlobalDocs,
+      canonicalTemplateRefs,
+      projectSyncPlan,
+      reconciliation,
+      scheduledLoop,
+    ] = await Promise.all([
+      pathExists(rootDir),
+      hasCanonicalSource(rootDir),
+      isGeneratedOnlyProjectRoot({ home, rootDir }),
+      ensureAiIndexPath({ homeDir: home, rootDir, repair: false }),
+      pathExists(generatedGraph),
+      pathExists(writebackReviewDir),
+      pathExists(evolutionReviewDir),
+      inspectCanonicalGlobalDocs(rootDir, { projectRoot }),
+      inspectCanonicalTemplateRefs(rootDir),
+      planProjectSyncPolicyRepair({ home, rootDir }),
+      reconciliationStatus({ homeDir: home, rootDir }),
+      diagnoseEvolutionLoop({ homeDir: home, rootDir, scope: rootScope }),
+    ]);
+
+    const projectSyncRepairTools = Object.keys(
+      projectSyncPlan.toolPolicies
+    ).sort((a, b) => a.localeCompare(b));
+    const scheduledLoopStatus = scheduledLoop.status;
+    const scheduledLoopConfigurationState = scheduledLoop.configurationState;
+    const scheduledLoopConfigured =
+      scheduledLoop.configurationState === "ready";
+    const scheduledLoopEnabled = Boolean(
+      scheduledLoopStatus?.config?.enabled ?? scheduledLoop.config?.enabled
+    );
+    const stateDir = facultStateDir(home, rootDir);
+    const [
+      runtimeStateWritable,
+      reviewArtifactsWritable,
+      writebackSkill,
+      evolutionSkill,
+      codexReadiness,
+    ] = await Promise.all([
+      pathCanBeWritten(stateDir),
+      Promise.all([
+        pathCanBeWritten(writebackReviewDir),
+        pathCanBeWritten(evolutionReviewDir),
+        pathCanBeWritten(reconciliationReviewDir),
+      ]).then((values) => values.every(Boolean)),
+      Promise.all([
+        pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
+        projectRoot
+          ? pathExists(
+              join(facultRootDir(home), "skills", "fclt-writeback", "SKILL.md")
+            )
+          : Promise.resolve(false),
+      ]).then((values) => values.some(Boolean)),
+      Promise.all([
+        pathExists(join(rootDir, "skills", "capability-evolution", "SKILL.md")),
+        projectRoot
+          ? pathExists(
+              join(
+                facultRootDir(home),
+                "skills",
+                "capability-evolution",
+                "SKILL.md"
+              )
+            )
+          : Promise.resolve(false),
+      ]).then((values) => values.some(Boolean)),
+      inspectCodexReadiness(home),
+    ]);
+    const generatedIndexReady = result.source !== "missing";
+    const assetTargeting =
+      generatedIndexReady &&
+      generatedGraphExists &&
+      writebackSkill &&
+      evolutionSkill;
+    const loopBlockers: string[] = [];
+    if (!(rootExists && canonicalSourceExists)) {
+      loopBlockers.push("canonical_root");
+    }
+    if (!runtimeStateWritable) {
+      loopBlockers.push("runtime_state_not_writable");
+    }
+    if (!reviewArtifactsWritable) {
+      loopBlockers.push("review_artifacts_not_writable");
+    }
+    if (reconciliation.configurationState === "invalid") {
+      loopBlockers.push("reconciliation_config_invalid");
+    }
+    if (reconciliation.configured && reconciliation.sourceCount === 0) {
+      loopBlockers.push("reconciliation_sources_missing");
+    }
+    if (reconciliation.stateError) {
+      loopBlockers.push("reconciliation_state_invalid");
+    }
+    if (!writebackSkill) {
+      loopBlockers.push("writeback_skill_missing");
+    }
+    if (!evolutionSkill) {
+      loopBlockers.push("evolution_skill_missing");
+    }
+    const loopState: LoopReadinessState =
+      loopBlockers.length > 0
+        ? "blocked"
+        : assetTargeting &&
+            writebackReviewDirExists &&
+            evolutionReviewDirExists &&
+            reconciliation.configured
+          ? "ready"
+          : "degraded";
+    const issues: DoctorIssue[] = [];
+    const actions: DoctorAction[] = [];
+
+    if (!rootExists) {
+      issues.push({
+        severity: "error",
+        code: "missing-root",
+        message: "Canonical .ai root does not exist.",
+        fix: "Initialize the global operating model or project .ai root.",
+      });
+      actions.push({
+        id: "init-global-operating-model",
+        label: "Initialize global operating model",
+        command: "fclt templates init operating-model --global",
+        risk: "canonical_write",
+      });
+    }
+
+    if (!canonicalSourceExists) {
+      issues.push({
+        severity: projectRoot ? "error" : "warning",
+        code: "missing-canonical-source",
+        message:
+          "No canonical capability source was found in the selected .ai root.",
+        fix: projectRoot
+          ? `Run ${projectAiInitCommand(rootDir)} or restore canonical project assets.`
+          : "Run fclt templates init operating-model --global.",
+      });
+    }
+
+    for (const issue of canonicalGlobalDocs.issues) {
+      issues.push(issue);
+    }
+    if (canonicalGlobalDocs.exists && !canonicalGlobalDocs.valid) {
+      actions.push({
+        id: projectRoot
+          ? "refresh-project-operating-model"
+          : "refresh-global-operating-model",
+        label: projectRoot
+          ? "Refresh project operating model"
+          : "Refresh global operating model",
+        command: projectRoot
+          ? projectAiInitCommand(rootDir, ["--force"])
+          : "fclt templates init operating-model --global --force",
+        risk: "canonical_write",
+      });
+    }
+
+    for (const issue of canonicalTemplateRefs.issues) {
+      issues.push({
+        severity: "warning",
+        code: issue.code,
+        message: issue.message,
+        fix: "Run fclt doctor --repair to resolve known refs into concrete paths, then review any remaining placeholders.",
+      });
+    }
+    if (!canonicalTemplateRefs.valid) {
+      actions.push({
+        id: "repair-canonical-template-refs",
+        label: "Repair unresolved canonical template refs",
+        command: "fclt doctor --repair",
+        risk: "canonical_write",
+      });
+    }
+
+    if (generatedOnlyProjectRoot) {
+      issues.push({
+        severity: "error",
+        code: "project-generated-only",
+        message:
+          "Project .ai contains generated state but no canonical project source.",
+        fix: "Initialize, restore, or detach canonical project capability before managed project sync.",
+      });
+      actions.push({
+        id: "init-project-ai",
+        label: "Initialize project AI root",
+        command: projectAiInitCommand(rootDir),
+        risk: "canonical_write",
+      });
+    }
+
+    if (result.source === "missing") {
+      issues.push({
+        severity: "warning",
+        code: "missing-generated-index",
+        message: "Generated AI index is missing.",
+        fix: "Run fclt index or fclt doctor --repair.",
+      });
+      actions.push({
+        id: "rebuild-index",
+        label: "Rebuild generated index",
+        command: "fclt index",
+        risk: "generated_state_write",
+      });
+    } else if (result.source === "legacy") {
+      issues.push({
+        severity: "warning",
+        code: "legacy-generated-index",
+        message: "Generated AI index is still in a legacy location.",
+        fix: "Run fclt doctor --repair.",
+      });
+      actions.push({
+        id: "repair-generated-state",
+        label: "Repair generated state",
+        command: "fclt doctor --repair",
+        risk: "generated_state_write",
+      });
+    }
+
+    if (!generatedGraphExists) {
+      issues.push({
+        severity: "info",
+        code: "missing-generated-graph",
+        message: "Generated capability graph is missing.",
+        fix: "Run fclt index or fclt doctor --repair.",
+      });
+    }
+
+    if (!writebackReviewDirExists) {
+      issues.push({
+        severity: "info",
+        code: "missing-writeback-review-dir",
+        message: "Global writeback review directory is not present yet.",
+        fix: "It will be created when writebacks are recorded or the operating model is initialized.",
+      });
+    }
+
+    if (!evolutionReviewDirExists) {
+      issues.push({
+        severity: "info",
+        code: "missing-evolution-review-dir",
+        message: "Global evolution review directory is not present yet.",
+        fix: "It will be created when proposals are drafted or the operating model is initialized.",
+      });
+    }
+
+    if (reconciliation.configurationState === "not_configured") {
+      issues.push({
+        severity: "warning",
+        code: "reconciliation-not-configured",
+        message:
+          "Automatic source reconciliation is not configured, so an empty writeback queue cannot prove an empty review window.",
+        fix: "Run `fclt ai review init` or `fclt setup`.",
+      });
+      actions.push({
+        id: "init-reconciliation",
+        label: "Initialize automatic source reconciliation",
+        command: "fclt ai review init",
+        risk: "canonical_write",
+      });
+    }
+
+    if (reconciliation.configurationState === "invalid") {
+      issues.push({
+        severity: "error",
+        code: "reconciliation-config-invalid",
+        message:
+          reconciliation.configurationError ??
+          "Automatic source reconciliation configuration is invalid.",
+        fix: "Review the invalid file or run `fclt ai review init --force` to back it up and replace it.",
+      });
+      actions.push({
+        id: "replace-invalid-reconciliation-config",
+        label: "Back up and replace invalid reconciliation configuration",
+        command: "fclt ai review init --force",
+        risk: "canonical_write",
+      });
+    }
+
+    if (reconciliation.stateError) {
+      issues.push({
+        severity: "error",
+        code: "reconciliation-state-invalid",
+        message: reconciliation.stateError,
+        fix: "Preserve the state file for inspection, then explicitly move or repair it before reconciling again.",
+      });
+    }
+
+    if (!(writebackSkill && evolutionSkill)) {
+      issues.push({
+        severity: "error",
+        code: "missing-loop-skills",
+        message:
+          "Required writeback/evolution skills are missing from the selected root.",
+        fix: projectRoot
+          ? "Run `fclt setup` from the project root."
+          : "Run `fclt setup --global-only`.",
+      });
+      actions.push({
+        id: "bootstrap-loop-assets",
+        label: "Install required writeback/evolution assets",
+        command: projectRoot ? "fclt setup" : "fclt setup --global-only",
+        risk: "canonical_write",
+      });
+    }
+
+    if (!(runtimeStateWritable && reviewArtifactsWritable)) {
+      issues.push({
+        severity: "error",
+        code: "loop-state-not-writable",
+        message:
+          "Writeback runtime state or review artifact paths are not writable.",
+        fix: `Restore write access to ${stateDir}, ${writebackReviewDir}, ${evolutionReviewDir}, and ${reconciliationReviewDir}, then run \`fclt setup\` again.`,
+      });
+    }
+
+    if (scheduledLoopConfigurationState === "invalid") {
+      issues.push({
+        severity: "error",
+        code: "evolution-loop-config-invalid",
+        message:
+          scheduledLoop.configurationError ??
+          "Scheduled evolution-loop configuration is invalid.",
+        fix: `Preserve ${evolutionLoopConfigPath} for inspection, then repair or move it before running \`fclt ai loop enable\` again.`,
+      });
+    } else if (
+      scheduledLoopEnabled &&
+      scheduledLoopStatus?.health === "degraded"
+    ) {
+      issues.push({
+        severity: "warning",
+        code: "evolution-loop-degraded",
+        message:
+          "The scheduled evolution loop is enabled but its owned scheduler, observed execution, or reconciliation readiness is degraded.",
+        fix: "Run `fclt ai loop status --json`, repair the reported boundary, then run one bounded loop review.",
+      });
+      actions.push({
+        id: "inspect-evolution-loop",
+        label: "Inspect scheduled evolution-loop health",
+        command: "fclt ai loop status --json",
+        risk: "read_only",
+      });
+    }
+    if (scheduledLoop.stateError) {
+      issues.push({
+        severity: "error",
+        code: "evolution-loop-state-invalid",
+        message: scheduledLoop.stateError,
+        fix: `Preserve ${evolutionLoopStatePath} for inspection, then explicitly repair or move it before rerunning the loop.`,
+      });
+    }
+    if (scheduledLoop.schedulerError) {
+      issues.push({
+        severity: "warning",
+        code: "evolution-loop-scheduler-invalid",
+        message: scheduledLoop.schedulerError,
+        fix: "Inspect the owned Codex automation. Core disable remains safe even when scheduler ownership has drifted.",
+      });
+    }
+
+    if (codexReadiness.state === "misconfigured") {
+      issues.push({
+        severity: "warning",
+        code: "codex-plugin-misconfigured",
+        message:
+          "Codex plugin payload, MCP declaration, and registration are inconsistent.",
+        fix: codexReadiness.repair,
+      });
+      actions.push({
+        id: "repair-codex-plugin",
+        label: "Repair Codex plugin installation",
+        command: "fclt setup codex-plugin",
+        risk: "tool_home_write",
+      });
+    }
+
+    if (projectSyncPlan.needed) {
+      issues.push({
+        severity: "warning",
+        code: "implicit-project-sync-policy",
+        message: `Project sync is still implicit for managed tools: ${projectSyncRepairTools.join(", ")}.`,
+        fix: "Run fclt doctor --repair to materialize explicit project sync policy.",
+      });
+      actions.push({
+        id: "materialize-project-sync-policy",
+        label: "Materialize project sync policy",
+        command: "fclt doctor --repair",
+        risk: "canonical_write",
+      });
+    }
+
+    let state: DoctorHealthState = "healthy";
+    if (generatedOnlyProjectRoot) {
+      state = "project_generated_only";
+    } else if (!(rootExists && canonicalSourceExists)) {
+      state = "uninitialized";
+    } else if (!(canonicalGlobalDocs.valid && canonicalTemplateRefs.valid)) {
+      state = "canonical_source_attention";
+    } else if (loopState === "blocked") {
+      state = "loop_blocked";
+    } else if (
+      scheduledLoopConfigurationState === "invalid" ||
+      scheduledLoop.stateError ||
+      scheduledLoop.schedulerError ||
+      (scheduledLoopEnabled && scheduledLoopStatus?.health === "degraded")
+    ) {
+      state = "scheduled_loop_attention";
+    } else if (!(writebackReviewDirExists && evolutionReviewDirExists)) {
+      state = "partial_global_config";
+    } else if (projectSyncPlan.needed) {
+      state = "project_policy_attention";
+    } else if (result.source === "missing") {
+      state = "stale_or_missing_generated_state";
+    } else if (result.source === "legacy") {
+      state = "legacy_state_attention";
+    }
+
+    return {
+      version: 2,
+      packageVersion: await packageVersion(),
+      cwd,
+      homeDir: home,
+      rootDir,
+      projectRoot,
+      health: {
+        state,
+        ok: state === "healthy" || state === "partial_global_config",
+      },
+      paths: {
+        configPath: facultConfigPath(home),
+        generatedIndex: generated,
+        generatedGraph,
+        stateDir: facultStateDir(home, rootDir),
+        legacyIndex: legacy,
+        writebackReviewDir,
+        evolutionReviewDir,
+        reconciliationConfigPath,
+        reconciliationStatePath,
+        reconciliationReviewDir,
+        evolutionLoopConfigPath,
+        evolutionLoopStatePath,
+        evolutionLoopAuditPath,
+        evolutionLoopReportDir,
+      },
+      checks: {
+        rootExists,
+        canonicalSourceExists,
+        generatedOnlyProjectRoot,
+        generatedIndexSource: result.source,
+        generatedGraphExists,
+        writebackReviewDirExists,
+        evolutionReviewDirExists,
+        reconciliationConfigured: reconciliation.configured,
+        reconciliationSourceCount: reconciliation.sourceCount,
+        evolutionLoopConfigured: scheduledLoopConfigured,
+        evolutionLoopEnabled: scheduledLoopEnabled,
+        canonicalGlobalDocsValid: canonicalGlobalDocs.valid,
+        canonicalGlobalDocsIssueCodes: canonicalGlobalDocs.issues.map(
+          (issue) => issue.code
+        ),
+        canonicalTemplateRefsValid: canonicalTemplateRefs.valid,
+        canonicalTemplateRefsIssueCodes: canonicalTemplateRefs.issues.map(
+          (issue) => issue.code
+        ),
+        canonicalTemplateRefsIssuePaths: canonicalTemplateRefs.issues.map(
+          (issue) => issue.relPath
+        ),
+        projectSyncRepairNeeded: projectSyncPlan.needed,
+        projectSyncRepairTools,
+      },
+      loop: {
+        state: loopState,
+        ready: loopState === "ready",
+        blockers: loopBlockers,
+        capabilities: {
+          canonicalRoot: rootExists && canonicalSourceExists,
+          generatedIndex: generatedIndexReady,
+          generatedGraph: generatedGraphExists,
+          runtimeStateWritable,
+          reviewArtifactsWritable,
+          assetTargeting,
+          writebackSkill,
+          evolutionSkill,
+          automationTemplates: [
+            "learning-review",
+            "evolution-review",
+            "tool-call-audit",
+            "closed-loop-review",
+          ],
+          reconciliation: {
+            configured: reconciliation.configured,
+            configurationState: reconciliation.configurationState,
+            configurationError: reconciliation.configurationError,
+            stateError: reconciliation.stateError,
+            sourceCount: reconciliation.sourceCount,
+            coverageState: reconciliation.coverageState,
+            lastReviewId: reconciliation.lastReviewId,
+          },
+          scheduling: {
+            configured: scheduledLoopConfigured,
+            configurationState: scheduledLoopConfigurationState,
+            configurationError: scheduledLoop.configurationError,
+            stateError: scheduledLoop.stateError,
+            schedulerError: scheduledLoop.schedulerError,
+            enabled: scheduledLoopEnabled,
+            health: scheduledLoopStatus?.health,
+            schedulerRegistered: scheduledLoopStatus?.scheduler.registered,
+            schedulerStatus: scheduledLoopStatus?.scheduler.status,
+            observationState: scheduledLoopStatus?.schedulerObservation.state,
+            lastObservedRunAt:
+              scheduledLoopStatus?.schedulerObservation.lastObservedRunAt,
+          },
+        },
+        integrations: {
+          codex: codexReadiness,
         },
       },
-      integrations: {
-        codex: codexReadiness,
-        linear: linearReadiness,
-      },
-    },
-    issues,
-    actions,
-  };
+      issues,
+      actions,
+    };
+  });
 }
 
 export async function doctorCommand(argv: string[]) {

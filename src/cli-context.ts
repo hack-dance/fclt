@@ -31,8 +31,12 @@ function expandHomePath(pathValue: string, home: string): string {
   return pathValue;
 }
 
-function resolveRootArgument(pathValue: string, homeDir: string): string {
-  return resolve(expandHomePath(pathValue, homeDir));
+function resolveRootArgument(
+  pathValue: string,
+  homeDir: string,
+  cwd: string
+): string {
+  return resolve(cwd, expandHomePath(pathValue, homeDir));
 }
 
 function parseStringFlagValue(
@@ -150,8 +154,12 @@ export function parseCliContextArgs(
   };
 }
 
-function coerceCanonicalRoot(pathValue: string, homeDir: string): string {
-  const resolved = resolveRootArgument(pathValue, homeDir);
+function coerceCanonicalRoot(
+  pathValue: string,
+  homeDir: string,
+  cwd: string
+): string {
+  const resolved = resolveRootArgument(pathValue, homeDir, cwd);
   const nearestProjectAi = findNearestProjectAiRoot(resolved);
   if (nearestProjectAi) {
     const projectRoot = projectRootFromAiRoot(nearestProjectAi, homeDir);
@@ -176,7 +184,7 @@ export function resolveCliContextRoot(args?: {
   const scope = args?.scope ?? "merged";
 
   if (args?.rootArg) {
-    const rootDir = coerceCanonicalRoot(args.rootArg, homeDir);
+    const rootDir = coerceCanonicalRoot(args.rootArg, homeDir, cwd);
     if (scope === "project" && !projectRootFromAiRoot(rootDir, homeDir)) {
       throw new Error(missingProjectAiRootMessage(rootDir));
     }

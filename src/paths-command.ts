@@ -8,6 +8,10 @@ import { renderCode, renderKeyValue, renderPage } from "./cli-ui";
 import { loadManagedState } from "./manage";
 import {
   facultAiDraftDir,
+  facultAiEvolutionLoopAuditPath,
+  facultAiEvolutionLoopConfigPath,
+  facultAiEvolutionLoopReportDir,
+  facultAiEvolutionLoopStatePath,
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
   facultAiIndexPath,
@@ -66,6 +70,10 @@ export interface FacultPaths {
     proposalDir: string;
     draftDir: string;
     reconciliationStatePath: string;
+    evolutionLoopConfigPath: string;
+    evolutionLoopStatePath: string;
+    evolutionLoopAuditPath: string;
+    evolutionLoopReportDir: string;
   };
   review: {
     writebackDir: string;
@@ -138,6 +146,22 @@ export async function buildPaths(opts?: {
         homeDir,
         contextRoot
       ),
+      evolutionLoopConfigPath: facultAiEvolutionLoopConfigPath(
+        homeDir,
+        contextRoot
+      ),
+      evolutionLoopStatePath: facultAiEvolutionLoopStatePath(
+        homeDir,
+        contextRoot
+      ),
+      evolutionLoopAuditPath: facultAiEvolutionLoopAuditPath(
+        homeDir,
+        contextRoot
+      ),
+      evolutionLoopReportDir: facultAiEvolutionLoopReportDir(
+        homeDir,
+        contextRoot
+      ),
     },
     review: {
       writebackDir: facultAiWritebackReviewDir(homeDir, contextRoot),
@@ -199,6 +223,10 @@ function printPaths(paths: FacultPaths) {
             ["proposal dir", paths.runtime.proposalDir],
             ["draft dir", paths.runtime.draftDir],
             ["reconciliation state", paths.runtime.reconciliationStatePath],
+            ["evolution loop config", paths.runtime.evolutionLoopConfigPath],
+            ["evolution loop state", paths.runtime.evolutionLoopStatePath],
+            ["evolution loop audit", paths.runtime.evolutionLoopAuditPath],
+            ["evolution loop reports", paths.runtime.evolutionLoopReportDir],
           ]),
         },
         {

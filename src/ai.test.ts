@@ -1317,11 +1317,20 @@ describe("ai writeback", () => {
     expect(assessment.recommendation).toBe("review_existing_proposal");
     expect(assessment.activeProposalIds).toEqual([proposal!.id]);
 
+    await expect(
+      verifyProposalEffectiveness(proposal!.id, {
+        homeDir: tempHome,
+        rootDir,
+        effectiveness: "improved",
+        evidence: proposalEvidence("effectiveness-proof"),
+      })
+    ).rejects.toThrow("Verification window");
     const verified = await verifyProposalEffectiveness(proposal!.id, {
       homeDir: tempHome,
       rootDir,
       effectiveness: "improved",
       evidence: proposalEvidence("effectiveness-proof"),
+      allowEarly: true,
     });
     expect(verified.effectiveness?.effectiveness).toBe("improved");
     expect(
@@ -1561,5 +1570,176 @@ describe("ai writeback", () => {
     expect(globalText).toContain(
       "Promote this project testing guidance globally."
     );
+  });
+
+  it("repairs source writeback status when an identical verification is retried", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    const targetPath = join(rootDir, "instructions", "VERIFY.md");
+    await mkdir(dirname(targetPath), { recursive: true });
+    await Bun.write(targetPath, "# Verify\n");
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-03-18T00:00:00.000Z",
+      nodes: {
+        "instruction:global:global:VERIFY": {
+          id: "instruction:global:global:VERIFY",
+          kind: "instruction",
+          name: "VERIFY",
+          sourceKind: "global",
+          scope: "global",
+          canonicalRef: "@ai/instructions/VERIFY.md",
+          path: targetPath,
+        },
+      },
+      edges: [],
+    });
+    const writeback = await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "weak_verification",
+      summary: "Verification needs a durable outcome check.",
+      asset: "instruction:VERIFY",
+      evidence: proposalEvidence("verification-repair"),
+    });
+    const [proposal] = await proposeEvolution({
+      homeDir: tempHome,
+      rootDir,
+    });
+    await draftProposal(proposal!.id, { homeDir: tempHome, rootDir });
+    await acceptProposal(proposal!.id, { homeDir: tempHome, rootDir });
+    await applyProposal(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      verificationDelayHours: 1,
+      now: () => new Date("2026-03-18T00:00:00.000Z"),
+    });
+    const regression = {
+      effectiveness: "regressed" as const,
+      evidence: [{ type: "test", ref: "regression-proof" }],
+      now: () => new Date("2026-03-18T02:00:00.000Z"),
+    };
+    await Promise.all([
+      verifyProposalEffectiveness(proposal!.id, {
+        homeDir: tempHome,
+        rootDir,
+        ...regression,
+      }),
+      verifyProposalEffectiveness(proposal!.id, {
+        homeDir: tempHome,
+        rootDir,
+        ...regression,
+      }),
+    ]);
+    const verification = {
+      effectiveness: "improved" as const,
+      evidence: [{ type: "test", ref: "outcome-proof" }],
+      now: () => new Date("2026-03-18T03:00:00.000Z"),
+    };
+    await expect(
+      verifyProposalEffectiveness(proposal!.id, {
+        homeDir: tempHome,
+        rootDir,
+        ...verification,
+        onBeforeAuditAppend: () => {
+          throw new Error("injected verification audit failure");
+        },
+      })
+    ).rejects.toThrow("injected verification audit failure");
+    expect(
+      (
+        await showProposal(proposal!.id, {
+          homeDir: tempHome,
+          rootDir,
+        })
+      )?.effectivenessHistory
+    ).toHaveLength(2);
+
+    const first = await verifyProposalEffectiveness(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      ...verification,
+    });
+    await promoteWriteback(writeback.id, { homeDir: tempHome, rootDir });
+
+    const repaired = await verifyProposalEffectiveness(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      ...verification,
+    });
+    expect(repaired.effectivenessHistory).toHaveLength(2);
+    expect(
+      (await showWriteback(writeback.id, { homeDir: tempHome, rootDir }))
+        ?.status
+    ).toBe("resolved");
+    const verifiedEvents = (
+      await readFile(facultAiJournalPath(tempHome, rootDir), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.kind === "proposal_verified");
+    expect(verifiedEvents).toHaveLength(2);
+    expect(first.effectiveness?.effectiveness).toBe("improved");
+
+    const historicalRetry = await verifyProposalEffectiveness(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      ...regression,
+      now: () => new Date("2026-03-18T04:00:00.000Z"),
+    });
+    expect(historicalRetry.effectiveness?.effectiveness).toBe("regressed");
+    expect(historicalRetry.effectivenessHistory).toHaveLength(3);
+    expect(historicalRetry.verification?.status).toBe("reopened");
+    expect(
+      (await showWriteback(writeback.id, { homeDir: tempHome, rootDir }))
+        ?.status
+    ).toBe("recorded");
+
+    let markAuditBlocked!: () => void;
+    const auditBlocked = new Promise<void>((resolveBlocked) => {
+      markAuditBlocked = resolveBlocked;
+    });
+    let releaseAudit!: () => void;
+    const holdAudit = new Promise<void>((resolveAudit) => {
+      releaseAudit = resolveAudit;
+    });
+    const concurrentRegression = verifyProposalEffectiveness(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      effectiveness: "regressed",
+      evidence: [{ type: "test", ref: "concurrent-regression" }],
+      now: () => new Date("2026-03-18T05:00:00.000Z"),
+      onBeforeAuditAppend: async () => {
+        markAuditBlocked();
+        await holdAudit;
+      },
+    });
+    await auditBlocked;
+    const concurrentImprovement = verifyProposalEffectiveness(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+      effectiveness: "improved",
+      evidence: [{ type: "test", ref: "concurrent-improvement" }],
+      now: () => new Date("2026-03-18T06:00:00.000Z"),
+    });
+    releaseAudit();
+    await Promise.all([concurrentRegression, concurrentImprovement]);
+    const concurrentResult = await showProposal(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+    });
+    expect(concurrentResult?.effectivenessHistory).toHaveLength(5);
+    expect(concurrentResult?.effectiveness?.effectiveness).toBe("improved");
+    const concurrentEvents = (
+      await readFile(facultAiJournalPath(tempHome, rootDir), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.kind === "proposal_verified");
+    expect(concurrentEvents).toHaveLength(5);
+    expect(new Set(concurrentEvents.map((event) => event.id)).size).toBe(5);
   });
 });

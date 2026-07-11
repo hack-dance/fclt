@@ -326,6 +326,60 @@ describe("bundled fclt MCP plugin", () => {
           id: 32,
           method: "tools/call",
           params: {
+            name: "fclt_automation",
+            arguments: {
+              action: "loop_status",
+              scope: "project",
+            },
+          },
+        })
+      );
+      const loopStatusResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(loopStatusResponse)).toMatchObject({
+        operation: { preview: false, risk: "read_only" },
+        result: {
+          stdout: {
+            cwd: await realpath(workspace),
+            argv: ["ai", "loop", "--project", "status", "--json"],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 33,
+          method: "tools/call",
+          params: {
+            name: "fclt_automation",
+            arguments: {
+              action: "loop_preview",
+              scope: "project",
+            },
+          },
+        })
+      );
+      const loopPreviewResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(loopPreviewResponse)).toMatchObject({
+        operation: { preview: true, risk: "read_only" },
+        result: {
+          stdout: {
+            cwd: await realpath(workspace),
+            argv: ["ai", "loop", "--project", "run", "--dry-run", "--json"],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 32,
+          method: "tools/call",
+          params: {
             name: "fclt_registry",
             arguments: {
               action: "reconcile",
@@ -531,6 +585,18 @@ describe("bundled fclt MCP plugin", () => {
       expect(
         registry?.inputSchema?.properties?.sourceIds?.items?.pattern
       ).toBeDefined();
+      const automation = published.find(
+        (tool) => tool.name === "fclt_automation"
+      ) as
+        | {
+            inputSchema?: {
+              properties?: { action?: { enum?: string[] } };
+            };
+          }
+        | undefined;
+      expect(automation?.inputSchema?.properties?.action?.enum).toEqual(
+        expect.arrayContaining(["loop_status", "loop_preview"])
+      );
     } finally {
       child.kill();
     }
@@ -1075,6 +1141,9 @@ describe("Codex plugin capability matrix", () => {
     const reconciliation = matrix.capabilities.find(
       (capability) => capability.id === "reconciliation.review"
     );
+    const evolutionLoop = matrix.capabilities.find(
+      (capability) => capability.id === "evolution_loop.review"
+    );
 
     expect(new Set(ids).size).toBe(ids.length);
     expect(matrix.generatedFrom.packageVersion).toBe(packageJson.version);
@@ -1087,6 +1156,11 @@ describe("Codex plugin capability matrix", () => {
       disposition: "exposed",
       tool: "fclt_registry",
       actions: ["reconcile_status", "reconcile"],
+    });
+    expect(evolutionLoop?.mcp).toMatchObject({
+      disposition: "exposed",
+      tool: "fclt_automation",
+      actions: ["loop_status", "loop_preview"],
     });
   });
 });

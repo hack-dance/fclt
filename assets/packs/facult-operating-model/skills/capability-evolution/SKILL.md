@@ -54,6 +54,21 @@ fclt ai writeback disposition WB-00001 --type task --target TEAM-123
 fclt ai evolve verify EV-00001 --effectiveness improved --evidence test:post-apply
 ```
 
+For an explicitly enabled scheduled loop, use:
+
+```bash
+fclt ai loop enable --project
+fclt ai loop status --project --json
+fclt ai loop run --project --json
+fclt ai loop disable --project
+```
+
+Treat the durable full queue as the source of truth and the notification delta
+as a noise-control view. Scheduler registration alone is not proof of a run;
+check observed execution health. The loop may prepare writebacks and proposals,
+but canonical apply remains plan-only and external task mutation remains a
+separate approved integration.
+
 The writeback queue alone cannot prove an empty window. Run configured source
 reconciliation first and preserve its coverage, exclusions, correlations,
 linked work, and dispositions. If any source is stale or unavailable, report a
@@ -64,7 +79,7 @@ Applying is not completion. Preserve baseline friction, expected behavior, the p
 implementation tickets, verification evidence, and an effectiveness grade. A recurrence after
 apply is `unchanged` or `regressed` evidence for the same evolution, not a new singleton.
 
-For background review loops, use:
+For manually scaffolded background review templates, use:
 
 ```bash
 fclt templates init automation learning-review

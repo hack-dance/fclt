@@ -1,5 +1,13 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rm,
+} from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ensureAiGraphPath } from "./ai-state";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
@@ -138,11 +146,25 @@ export interface ProposalApplyResult {
 }
 
 export interface ProposalEffectivenessRecord {
+  auditId?: string;
   effectiveness: EvolutionEffectiveness;
   verifiedAt: string;
   verifiedBy: string;
   evidence: WritebackEvidence[];
   note?: string;
+}
+
+export interface ProposalVerificationSchedule {
+  scheduledAt: string;
+  opensAt: string;
+  dueAt: string;
+  overdueAt: string;
+  delayHours: number;
+  graceHours: number;
+  status: "pending" | "completed" | "reopened";
+  baseline: string[];
+  criteria: string[];
+  attempts: ProposalEffectivenessRecord[];
 }
 
 export interface ProposalDraftHistoryEntry {
@@ -173,7 +195,9 @@ export interface AiProposalRecord {
   draftHistory?: ProposalDraftHistoryEntry[];
   review?: ProposalReviewRecord;
   applyResult?: ProposalApplyResult;
+  verification?: ProposalVerificationSchedule;
   effectiveness?: ProposalEffectivenessRecord;
+  effectivenessHistory?: ProposalEffectivenessRecord[];
 }
 
 export interface AiWritebackGroup {
@@ -520,10 +544,23 @@ async function writeProposalReviewArtifact(args: {
     ...markdownList(args.proposal.draftRefs),
     "",
     "## Effectiveness",
+    `- verification due: ${args.proposal.verification?.dueAt ?? "unscheduled"}`,
+    `- verification status: ${args.proposal.verification?.status ?? "unscheduled"}`,
     `- grade: ${args.proposal.effectiveness?.effectiveness ?? "unverified"}`,
     `- verified at: ${args.proposal.effectiveness?.verifiedAt ?? "unverified"}`,
     `- note: ${args.proposal.effectiveness?.note ?? "none"}`,
     ...renderEvidenceList(args.proposal.effectiveness?.evidence ?? []),
+    ...(args.proposal.effectivenessHistory &&
+    args.proposal.effectivenessHistory.length > 1
+      ? [
+          "",
+          "### Verification history",
+          ...args.proposal.effectivenessHistory.map(
+            (entry) =>
+              `- ${entry.verifiedAt}: ${entry.effectiveness}${entry.note ? ` — ${entry.note}` : ""}`
+          ),
+        ]
+      : []),
     "",
     ...(args.draftBody
       ? [
@@ -637,6 +674,108 @@ async function appendEvent(
     ),
   };
   await appendJsonLine(pathValue, next);
+}
+
+function proposalVerificationAuditId(
+  proposalId: string,
+  record: ProposalEffectivenessRecord,
+  occurrence = 0
+): string {
+  const identity = JSON.stringify({
+    proposalId,
+    occurrence,
+    effectiveness: record.effectiveness,
+    verifiedAt: record.verifiedAt,
+    evidence: [...record.evidence].sort(
+      (left, right) =>
+        left.type.localeCompare(right.type) || left.ref.localeCompare(right.ref)
+    ),
+    note: record.note ?? "",
+  });
+  return `EVT-VERIFY-${createHash("sha256").update(identity).digest("hex").slice(0, 20)}-R`;
+}
+
+async function ensureProposalVerificationEvent(args: {
+  homeDir: string;
+  rootDir: string;
+  proposal: AiProposalRecord;
+  record: ProposalEffectivenessRecord;
+  onBeforeAppend?: () => void | Promise<void>;
+}): Promise<void> {
+  const auditId =
+    args.record.auditId ??
+    proposalVerificationAuditId(args.proposal.id, args.record);
+  const journalPath = facultAiJournalPath(args.homeDir, args.rootDir);
+  const existing = await readJsonLinesFromPaths<AiJournalEvent>(
+    aiJournalReadPaths(args.homeDir, args.rootDir)
+  );
+  if (existing.some((event) => event.id === auditId)) {
+    return;
+  }
+  await args.onBeforeAppend?.();
+  await appendJsonLine(journalPath, {
+    id: auditId,
+    ts: args.record.verifiedAt,
+    kind: "proposal_verified",
+    source: "facult:evolution",
+    scope: args.proposal.scope,
+    projectSlug: args.proposal.projectSlug,
+    projectRoot: args.proposal.projectRoot,
+    summary: `${args.proposal.id} effectiveness -> ${args.record.effectiveness}`,
+    refs: [args.proposal.id, ...args.proposal.targets],
+    evidence: args.record.evidence,
+    tags: [],
+  } satisfies AiJournalEvent);
+}
+
+async function withProposalVerificationLock<T>(args: {
+  homeDir: string;
+  rootDir: string;
+  proposalId: string;
+  operation: () => Promise<T>;
+}): Promise<T> {
+  const journalPath = facultAiJournalPath(args.homeDir, args.rootDir);
+  const lockDir = join(dirname(journalPath), "verification-locks");
+  const lockId = createHash("sha256")
+    .update(args.proposalId)
+    .digest("hex")
+    .slice(0, 20);
+  const lockPath = join(lockDir, `proposal-${lockId}.lock`);
+  await mkdir(lockDir, { recursive: true });
+  let lock: Awaited<ReturnType<typeof open>> | undefined;
+  for (let attempt = 0; attempt < 200 && !lock; attempt += 1) {
+    try {
+      lock = await open(lockPath, "wx");
+    } catch (error) {
+      if (
+        !(error instanceof Error && "code" in error) ||
+        (error as NodeJS.ErrnoException).code !== "EEXIST"
+      ) {
+        throw error;
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    }
+  }
+  if (!lock) {
+    throw new Error(
+      `Timed out waiting for proposal verification lock ${lockPath}. Inspect its owner before explicitly removing an abandoned lock.`
+    );
+  }
+  const token = createHash("sha256")
+    .update(`${process.pid}:${Date.now()}:${Math.random()}`)
+    .digest("hex");
+  await lock.writeFile(
+    `${JSON.stringify({ pid: process.pid, token, proposalId: args.proposalId })}\n`
+  );
+  try {
+    return await args.operation();
+  } finally {
+    await lock.close();
+    const owner = await readFile(lockPath, "utf8").catch(() => "");
+    if (owner.includes(`"token":"${token}"`)) {
+      await rm(lockPath, { force: true });
+    }
+  }
 }
 
 function mapGraphNodeKind(kind: GraphNodeKind): string {
@@ -868,6 +1007,28 @@ export function linkWritebackIssue(
   }));
 }
 
+export async function linkWritebackEvidence(
+  id: string,
+  evidence: WritebackEvidence,
+  args: { homeDir?: string; rootDir: string }
+): Promise<AiWritebackRecord> {
+  const current = await showWriteback(id, args);
+  if (!current) {
+    throw new Error(`Writeback not found: ${id}`);
+  }
+  if (
+    current.evidence.some(
+      (entry) => entry.type === evidence.type && entry.ref === evidence.ref
+    )
+  ) {
+    return current;
+  }
+  return await updateWriteback(id, args, (record) => ({
+    ...record,
+    evidence: [...record.evidence, evidence],
+  }));
+}
+
 export function setWritebackDisposition(
   id: string,
   disposition: WritebackDisposition,
@@ -1082,6 +1243,7 @@ export async function proposeEvolution(args: {
   homeDir?: string;
   rootDir: string;
   asset?: string;
+  writebackIds?: string[];
 }): Promise<AiProposalRecord[]> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
   const writebacks = await listWritebacks({
@@ -1100,8 +1262,14 @@ export async function proposeEvolution(args: {
         asset: args.asset,
       })
     : null;
+  const selectedWritebacks = args.writebackIds?.length
+    ? new Set(args.writebackIds)
+    : null;
 
   const candidates = writebacks.filter((entry) => {
+    if (selectedWritebacks && !selectedWritebacks.has(entry.id)) {
+      return false;
+    }
     if (
       entry.status === "dismissed" ||
       entry.status === "resolved" ||
@@ -1282,7 +1450,8 @@ export async function assessEvolution(args: {
     .filter(
       (proposal) =>
         ACTIVE_PROPOSAL_STATUSES.includes(proposal.status) ||
-        (proposal.status === "applied" && !proposal.effectiveness)
+        (proposal.status === "applied" &&
+          proposal.effectiveness?.effectiveness !== "improved")
     )
     .filter((proposal) => {
       if (!selectedTarget) {
@@ -1648,6 +1817,57 @@ async function updateProposal(
   const next = mutate(current);
   await saveProposal(next, args);
   return next;
+}
+
+export async function linkProposalWriteback(
+  id: string,
+  writebackId: string,
+  args: { homeDir?: string; rootDir: string }
+): Promise<AiProposalRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const [proposal, writeback] = await Promise.all([
+    showProposal(id, { homeDir, rootDir: args.rootDir }),
+    showWriteback(writebackId, { homeDir, rootDir: args.rootDir }),
+  ]);
+  if (!proposal) {
+    throw new Error(`Proposal not found: ${id}`);
+  }
+  if (!writeback) {
+    throw new Error(`Writeback not found: ${writebackId}`);
+  }
+  if (proposal.sourceWritebacks.includes(writebackId)) {
+    return proposal;
+  }
+  const linked = await updateProposal(
+    id,
+    { homeDir, rootDir: args.rootDir },
+    (current) => ({
+      ...current,
+      sourceWritebacks: uniqueStrings([
+        ...current.sourceWritebacks,
+        writebackId,
+      ]),
+    })
+  );
+  const writebacks = (
+    await Promise.all(
+      linked.sourceWritebacks.map((sourceId) =>
+        showWriteback(sourceId, { homeDir, rootDir: args.rootDir })
+      )
+    )
+  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  const draftPath = linked.draftRefs.find((ref) => ref.endsWith(".md"));
+  const draftBody = draftPath
+    ? await readFile(draftPath, "utf8").catch(() => undefined)
+    : undefined;
+  await writeProposalReviewArtifact({
+    homeDir,
+    rootDir: args.rootDir,
+    proposal: linked,
+    writebacks,
+    draftBody,
+  });
+  return linked;
 }
 
 function draftRefForProposal(
@@ -2072,7 +2292,13 @@ export function supersedeProposal(
 
 export async function applyProposal(
   id: string,
-  args: { homeDir?: string; rootDir: string }
+  args: {
+    homeDir?: string;
+    rootDir: string;
+    verificationDelayHours?: number;
+    verificationGraceHours?: number;
+    now?: () => Date;
+  }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
@@ -2097,6 +2323,30 @@ export async function applyProposal(
     );
   }
 
+  const verificationDelayHours = args.verificationDelayHours ?? 168;
+  if (!Number.isFinite(verificationDelayHours) || verificationDelayHours <= 0) {
+    throw new Error("verificationDelayHours must be a positive number");
+  }
+  const appliedAtDate = args.now?.() ?? new Date();
+  const appliedAt = appliedAtDate.toISOString();
+  const verificationGraceHours = args.verificationGraceHours ?? 24;
+  if (!Number.isFinite(verificationGraceHours) || verificationGraceHours < 0) {
+    throw new Error("verificationGraceHours must be a non-negative number");
+  }
+  const verificationDueAt = new Date(
+    appliedAtDate.getTime() + verificationDelayHours * 60 * 60 * 1000
+  ).toISOString();
+  const verificationOverdueAt = new Date(
+    Date.parse(verificationDueAt) + verificationGraceHours * 60 * 60 * 1000
+  ).toISOString();
+  const sourceWritebacks = (
+    await Promise.all(
+      current.sourceWritebacks.map((writebackId) =>
+        showWriteback(writebackId, { homeDir, rootDir: args.rootDir })
+      )
+    )
+  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
     rootDir: args.rootDir,
@@ -2119,22 +2369,14 @@ export async function applyProposal(
     : `${draftText.trimEnd()}\n`;
   await Bun.write(targetNode.path!, nextText);
 
-  for (const writebackId of current.sourceWritebacks) {
-    const writeback = await showWriteback(writebackId, {
-      homeDir,
-      rootDir: args.rootDir,
-    });
-    if (!writeback) {
-      continue;
-    }
-    await updateWritebackStatus(writebackId, "promoted", {
+  for (const writeback of sourceWritebacks) {
+    await updateWritebackStatus(writeback.id, "promoted", {
       homeDir,
       rootDir: args.rootDir,
     });
   }
 
   const actor = proposalActor();
-  const appliedAt = nowIso();
   const next = await updateProposal(
     id,
     { homeDir, rootDir: args.rootDir },
@@ -2155,6 +2397,22 @@ export async function applyProposal(
         draftRefs: proposal.draftRefs,
         message: `Applied ${proposal.id} to ${targetNode.path}`,
       },
+      verification: {
+        scheduledAt: appliedAt,
+        opensAt: verificationDueAt,
+        dueAt: verificationDueAt,
+        overdueAt: verificationOverdueAt,
+        delayHours: verificationDelayHours,
+        graceHours: verificationGraceHours,
+        status: "pending",
+        baseline: sourceWritebacks.map((entry) => entry.summary),
+        criteria: uniqueStrings(
+          sourceWritebacks.flatMap((entry) =>
+            entry.expectedOutcome ? [entry.expectedOutcome] : []
+          )
+        ),
+        attempts: [],
+      },
     })
   );
 
@@ -2174,15 +2432,20 @@ export async function applyProposal(
   return next;
 }
 
-export async function verifyProposalEffectiveness(
+interface VerifyProposalEffectivenessArgs {
+  homeDir?: string;
+  rootDir: string;
+  effectiveness: EvolutionEffectiveness;
+  evidence: WritebackEvidence[];
+  note?: string;
+  allowEarly?: boolean;
+  now?: () => Date;
+  onBeforeAuditAppend?: () => void | Promise<void>;
+}
+
+async function verifyProposalEffectivenessUnlocked(
   id: string,
-  args: {
-    homeDir?: string;
-    rootDir: string;
-    effectiveness: EvolutionEffectiveness;
-    evidence: WritebackEvidence[];
-    note?: string;
-  }
+  args: VerifyProposalEffectivenessArgs
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
@@ -2196,21 +2459,19 @@ export async function verifyProposalEffectiveness(
     throw new Error("evolve verify requires at least one --evidence");
   }
 
-  const verifiedAt = nowIso();
-  const verifiedBy = proposalActor();
-  const next = await updateProposal(
-    id,
-    { homeDir, rootDir: args.rootDir },
-    (proposal) => ({
-      ...proposal,
-      effectiveness: {
-        effectiveness: args.effectiveness,
-        verifiedAt,
-        verifiedBy,
-        evidence: args.evidence,
-        note: args.note?.trim() || undefined,
-      },
-    })
+  const verifiedAtDate = args.now?.() ?? new Date();
+  if (
+    current.verification?.opensAt &&
+    verifiedAtDate.getTime() < Date.parse(current.verification.opensAt) &&
+    !args.allowEarly
+  ) {
+    throw new Error(
+      `Verification window for ${id} opens at ${current.verification.opensAt}. Use --allow-early only with explicit outcome evidence.`
+    );
+  }
+  const normalizedEvidence = [...args.evidence].sort(
+    (left, right) =>
+      left.type.localeCompare(right.type) || left.ref.localeCompare(right.ref)
   );
   const sourceStatus: WritebackStatus =
     args.effectiveness === "improved"
@@ -2218,13 +2479,115 @@ export async function verifyProposalEffectiveness(
       : args.effectiveness === "inconclusive"
         ? "promoted"
         : "recorded";
-  for (const writebackId of current.sourceWritebacks) {
-    await updateWritebackStatus(writebackId, sourceStatus, {
+  const reconcileSourceStatuses = async () => {
+    for (const writebackId of current.sourceWritebacks) {
+      const writeback = await showWriteback(writebackId, {
+        homeDir,
+        rootDir: args.rootDir,
+      });
+      if (writeback?.status !== sourceStatus) {
+        await updateWritebackStatus(writebackId, sourceStatus, {
+          homeDir,
+          rootDir: args.rootDir,
+        });
+      }
+    }
+  };
+  const verificationHistory =
+    current.effectivenessHistory ??
+    (current.effectiveness ? [current.effectiveness] : []);
+  const matchesVerification = (entry: ProposalEffectivenessRecord) =>
+    entry.effectiveness === args.effectiveness &&
+    (entry.note ?? "") === (args.note?.trim() ?? "") &&
+    JSON.stringify(
+      [...entry.evidence].sort(
+        (left, right) =>
+          left.type.localeCompare(right.type) ||
+          left.ref.localeCompare(right.ref)
+      )
+    ) === JSON.stringify(normalizedEvidence);
+  const latestDuplicate = verificationHistory.at(-1);
+  if (latestDuplicate && matchesVerification(latestDuplicate)) {
+    await reconcileSourceStatuses();
+    await ensureProposalVerificationEvent({
       homeDir,
       rootDir: args.rootDir,
+      proposal: current,
+      record: latestDuplicate,
+      onBeforeAppend: args.onBeforeAuditAppend,
     });
+    return current;
   }
+  const verifiedAt = verifiedAtDate.toISOString();
+  const verifiedBy = proposalActor();
+  const effectivenessRecord: ProposalEffectivenessRecord = {
+    auditId: proposalVerificationAuditId(
+      id,
+      {
+        effectiveness: args.effectiveness,
+        verifiedAt,
+        verifiedBy,
+        evidence: normalizedEvidence,
+        note: args.note?.trim() || undefined,
+      },
+      verificationHistory.length + 1
+    ),
+    effectiveness: args.effectiveness,
+    verifiedAt,
+    verifiedBy,
+    evidence: normalizedEvidence,
+    note: args.note?.trim() || undefined,
+  };
+  const next = await updateProposal(
+    id,
+    { homeDir, rootDir: args.rootDir },
+    (proposal) => ({
+      ...proposal,
+      effectiveness: effectivenessRecord,
+      effectivenessHistory: [
+        ...(proposal.effectivenessHistory ??
+          (proposal.effectiveness ? [proposal.effectiveness] : [])),
+        effectivenessRecord,
+      ],
+      verification: proposal.verification
+        ? {
+            ...proposal.verification,
+            status:
+              args.effectiveness === "improved"
+                ? "completed"
+                : args.effectiveness === "inconclusive"
+                  ? "pending"
+                  : "reopened",
+            attempts: [
+              ...(proposal.verification.attempts ?? []),
+              effectivenessRecord,
+            ],
+          }
+        : proposal.verification,
+    })
+  );
+  await reconcileSourceStatuses();
+  await ensureProposalVerificationEvent({
+    homeDir,
+    rootDir: args.rootDir,
+    proposal: next,
+    record: effectivenessRecord,
+    onBeforeAppend: args.onBeforeAuditAppend,
+  });
   return next;
+}
+
+export async function verifyProposalEffectiveness(
+  id: string,
+  args: VerifyProposalEffectivenessArgs
+): Promise<AiProposalRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  return await withProposalVerificationLock({
+    homeDir,
+    rootDir: args.rootDir,
+    proposalId: id,
+    operation: async () => await verifyProposalEffectivenessUnlocked(id, args),
+  });
 }
 
 export async function promoteProposal(
@@ -2315,6 +2678,23 @@ Usage:
   fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
   fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
   fclt ai review <init|status|reconcile> [args...]
+  fclt ai loop <enable|disable|status|report|run> [args...]
+`;
+}
+
+function loopHelp(): string {
+  return `fclt ai loop
+
+Usage:
+  fclt ai loop enable [--rrule <RRULE>] [--source <configured-id>] [--dry-run] [--json]
+  fclt ai loop disable [--dry-run] [--json]
+  fclt ai loop status [--json]
+  fclt ai loop report [--json]
+  fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
+
+The loop keeps a full machine-local review queue and emits a delta for
+notifications. Scheduler enablement is explicit. Canonical auto-apply remains
+plan-only until a hash-bound transaction and rollback receipt are available.
 `;
 }
 
@@ -2362,7 +2742,7 @@ Usage:
   fclt ai evolve reject <id> --reason <text>
   fclt ai evolve supersede <id> --by <proposal-id>
   fclt ai evolve apply <id>
-  fclt ai evolve verify <id> --effectiveness <improved|unchanged|regressed|inconclusive> --evidence <type:ref> [--note <text>]
+  fclt ai evolve verify <id> --effectiveness <improved|unchanged|regressed|inconclusive> --evidence <type:ref> [--note <text>] [--allow-early]
   fclt ai evolve promote <id> --to global
 `;
 }
@@ -2416,6 +2796,149 @@ function parseRepeatedFlag(argv: string[], flag: string): string[] {
     }
   }
   return values;
+}
+
+async function loopCommand(argv: string[]) {
+  const parsed = parseCliContextArgs(argv);
+  const [sub, ...commandArgs] = parsed.argv;
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    console.log(loopHelp());
+    return;
+  }
+  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
+    console.log(loopHelp());
+    return;
+  }
+  const rootDir = resolveCliContextRoot({
+    rootArg: parsed.rootArg,
+    scope: parsed.scope,
+    cwd: process.cwd(),
+  });
+  const homeDir = process.env.HOME ?? "";
+  const loopScope =
+    parsed.scope === "global" || parsed.scope === "project"
+      ? parsed.scope
+      : projectRootFromAiRoot(rootDir, homeDir)
+        ? "project"
+        : "global";
+  const json = commandArgs.includes("--json");
+  const {
+    disableEvolutionLoop,
+    enableEvolutionLoop,
+    evolutionLoopStatus,
+    latestEvolutionLoopReport,
+    runEvolutionLoop,
+  } = await import("./evolution-loop");
+  try {
+    if (sub === "enable") {
+      const result = await enableEvolutionLoop({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+        rrule: parseStringFlag(commandArgs, "--rrule"),
+        sourceIds: parseRepeatedFlag(commandArgs, "--source"),
+        dryRun: commandArgs.includes("--dry-run"),
+      });
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : `${result.dryRun ? "Would enable" : "Enabled"} evolution loop at ${result.automationPath}`
+      );
+      return;
+    }
+    if (sub === "disable") {
+      const result = await disableEvolutionLoop({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+        dryRun: commandArgs.includes("--dry-run"),
+      });
+      if (!(result.dryRun || result.scheduler?.paused || !result.config)) {
+        process.exitCode = 1;
+      }
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : result.config
+            ? result.scheduler?.paused
+              ? `${result.dryRun ? "Would pause" : "Paused"} evolution loop`
+              : `Disabled evolution loop configuration, but the scheduler was not paused: ${result.scheduler?.error ?? "unknown scheduler error"}`
+            : "Evolution loop is not configured"
+      );
+      return;
+    }
+    if (sub === "status") {
+      const result = await evolutionLoopStatus({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+      });
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : [
+              `loop: ${result.health}`,
+              `configured: ${result.configured}`,
+              `queue: ${Object.keys(result.state.queue).length}`,
+              `last run: ${result.state.lastRunAt ?? "never"}`,
+            ].join("\n")
+      );
+      return;
+    }
+    if (sub === "report") {
+      const result = await latestEvolutionLoopReport({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+      });
+      if (!result) {
+        throw new Error("No evolution loop report has been recorded");
+      }
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : [
+              `loop report: ${result.runId}`,
+              `status: ${result.status}`,
+              `queue: ${result.queue.length}`,
+              `notifiable: ${result.delta.notifiable.length}`,
+              `artifact: ${result.artifactPath}`,
+            ].join("\n")
+      );
+      return;
+    }
+    if (sub === "run") {
+      const result = await runEvolutionLoop({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+        since: parseStringFlag(commandArgs, "--since"),
+        until: parseStringFlag(commandArgs, "--until"),
+        sourceIds: parseRepeatedFlag(commandArgs, "--source"),
+        dryRun: commandArgs.includes("--dry-run"),
+        trigger: commandArgs.includes("--scheduled") ? "scheduled" : "manual",
+      });
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : [
+              `loop run: ${result.runId}`,
+              `status: ${result.status}`,
+              `queue: ${result.queue.length}`,
+              `notifiable: ${result.delta.notifiable.length}`,
+              `artifact: ${result.artifactPath}`,
+            ].join("\n")
+      );
+      if (result.status === "failed") {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    throw new Error(`Unknown loop command: ${sub}`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }
 
 function parseEvidence(argv: string[]): WritebackEvidence[] {
@@ -2702,6 +3225,7 @@ async function evolveCommand(argv: string[]) {
         effectiveness,
         evidence: parseEvidence(commandArgs),
         note: parseStringFlag(commandArgs, "--note"),
+        allowEarly: commandArgs.includes("--allow-early"),
       });
       console.log(`Verified ${row.id} as ${effectiveness}`);
       console.log(JSON.stringify(row, null, 2));
@@ -2889,6 +3413,10 @@ export async function aiCommand(argv: string[]) {
   }
   if (sub === "review" || sub === "reconcile") {
     await reviewCommand(sub === "reconcile" ? ["reconcile", ...rest] : rest);
+    return;
+  }
+  if (sub === "loop") {
+    await loopCommand(rest);
     return;
   }
 

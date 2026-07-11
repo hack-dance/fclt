@@ -290,11 +290,9 @@ const writebackAdapter: ReconciliationAdapter = {
       if (!(entry?.id && observedAt && inWindow(observedAt, context))) {
         return [];
       }
-      if (
-        ["resolved", "dismissed", "superseded"].includes(entry.status ?? "")
-      ) {
-        return [];
-      }
+      const terminal = ["resolved", "dismissed", "superseded"].includes(
+        entry.status ?? ""
+      );
       return [
         record({
           context,
@@ -308,10 +306,11 @@ const writebackAdapter: ReconciliationAdapter = {
             disposition: entry.disposition,
             dispositionTarget: entry.dispositionTarget,
           }),
-          classification: "capability-source",
+          classification: terminal ? "noise" : "capability-source",
           provenance: {
             path: existingPaths,
             writebackId: entry.id,
+            terminal,
             disposition: entry.disposition ?? null,
             dispositionTarget: entry.dispositionTarget ?? null,
             status: entry.status ?? null,

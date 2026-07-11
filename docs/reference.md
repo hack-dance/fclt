@@ -20,9 +20,10 @@ Use `fclt setup` once after installation to bootstrap global capability, the cur
 when present, review state, indexes, and optional Codex integration. It is idempotent and preserves
 local edits and WB/EV history. The remaining commands let you inspect tool state without claiming
 ownership of rendered files.
-`doctor --json` is read-only and reports setup health, loop readiness, optional integration
-degradation, and recommended actions. `paths --json` reports canonical, generated, runtime, and
-review paths for agents and integrations.
+`doctor --json` is read-only and reports schema version 2 setup health, loop readiness, optional
+integration degradation, and recommended actions. Version 2 removes vendor-specific integration
+fields; external work systems participate through configured evidence exports. `paths --json`
+reports canonical, generated, runtime, and review paths for agents and integrations.
 
 Use `fclt doctor --repair` as the one-command self-heal path for local state.
 It repairs legacy generated state, stale Codex authoring paths, explicit project
@@ -107,6 +108,11 @@ fclt ai evolve promote EV-00003 --to global --project
 fclt ai review init [--dry-run] [--force] [--json]
 fclt ai review status [--json]
 fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incremental] [--json]
+
+fclt ai loop enable [--rrule <rrule>] [--source <id>] [--dry-run] [--json]
+fclt ai loop disable [--dry-run] [--json]
+fclt ai loop status [--json]
+fclt ai loop run [--since <date>] [--until <date>] [--source <id>] [--dry-run] [--scheduled] [--json]
 ```
 
 Use these to turn repeated work friction into reviewed capability changes.
@@ -122,6 +128,15 @@ correlated signals, linked work, exclusions, and mandatory dispositions.
 Bounded windows always rescan their complete requested range. Use
 `--incremental` only when advancing from the stored per-source watermarks is
 intended. A source-filtered run cannot prove an empty review.
+
+`loop enable` is an explicit opt-in that installs an fclt-owned Codex
+automation. The loop persists the full current queue, emits a delta for
+notifications, retries bounded reconciliation failures, reports scheduler
+observation separately from registration, and tracks proposal verification as
+pending, due, overdue, improved, unchanged, or regressed. `loop disable`
+pauses only the owned automation and preserves history. `loop run --dry-run`
+previews the latest completed reconciliation without writing state. Canonical
+apply and external tracker mutation are not performed by the loop.
 
 ## Sources, Audit, And Updates
 

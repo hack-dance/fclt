@@ -179,6 +179,19 @@ function pathCandidates(env = process.env, platform = process.platform) {
   return values;
 }
 
+function systemPathCandidates(env = process.env, platform = process.platform) {
+  if (Object.hasOwn(env, "FCLT_SYSTEM_PATHS")) {
+    return (env.FCLT_SYSTEM_PATHS || "").split(path.delimiter).filter(Boolean);
+  }
+  if (platform === "darwin") {
+    return ["/opt/homebrew/bin/fclt", "/usr/local/bin/fclt"];
+  }
+  if (platform === "win32") {
+    return [];
+  }
+  return ["/usr/local/bin/fclt", "/usr/bin/fclt"];
+}
+
 function candidateSource(candidate) {
   const normalized = candidate.split("\\").join("/");
   if (normalized.includes("/plugin-runtime/versions/")) {
@@ -282,11 +295,7 @@ async function runtimeCandidates(options = {}) {
 
   for (const executable of [
     path.join(home, ".ai", ".facult", "bin", commandNames(platform)[0]),
-    ...(platform === "darwin"
-      ? ["/opt/homebrew/bin/fclt", "/usr/local/bin/fclt"]
-      : platform === "win32"
-        ? []
-        : ["/usr/local/bin/fclt", "/usr/bin/fclt"]),
+    ...systemPathCandidates(env, platform),
   ]) {
     candidates.push({ executable, source: candidateSource(executable) });
   }

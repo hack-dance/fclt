@@ -36,7 +36,7 @@ The plugin exposes:
 - `fclt_registry`: source search/verification, strict-trust install/update preview,
   and bounded reconciliation status/review through a closed scope/window/source-id schema
 - `fclt_audit`: structured, redacted, non-interactive security audit
-- `fclt_automation`: read-only autosync service status
+- `fclt_automation`: read-only autosync status plus scheduled evolution-loop status and preview
 - `fclt_status`
 - `fclt_doctor`
 - `fclt_paths`
@@ -51,6 +51,13 @@ not expose arbitrary argv or shell passthrough. Canonical apply, live adoption,
 trust-policy mutation, destructive migration, and background-service mutation
 remain deliberately withheld until their CLI APIs provide transaction-safe
 preview, precondition, verification, and rollback contracts.
+
+The evolution-loop actions exposed through `fclt_automation` are
+`loop_status` and `loop_preview`. Both require an explicit scope;
+`loop_preview` uses the latest completed reconciliation review and does not
+write state. Enabling, disabling, or manually running the scheduler remains a
+CLI-only operation. The router accepts no raw argv, credentials, endpoints, or
+external mutation fields.
 
 ## Install In Codex
 

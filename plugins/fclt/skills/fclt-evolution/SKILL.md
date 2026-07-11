@@ -22,6 +22,12 @@ fclt ai writeback summarize --by domain
 fclt ai evolve list
 ```
 
+For an enabled scheduled loop, inspect its durable queue and observed scheduler
+health with `fclt ai loop status --json`. Use `fclt ai loop run --dry-run
+--json` for a read-only preview of the latest completed reconciliation. The
+full queue is authoritative; the notification delta intentionally suppresses
+unchanged items.
+
 2. Assess proposal readiness before mutating state:
 
 ```bash
@@ -83,7 +89,7 @@ evolution, not as an unrelated singleton.
 - Keep project-specific behavior project-scoped until reuse is proven.
 - Ask for approval before applying global instructions, global skills, plugin behavior, or other broad shared surfaces.
 - Reject or park proposals that are stale, duplicated, vague, or unsupported.
-- Use Linear or another task system for executable implementation work that needs owner, priority, or state.
+- Use the operator's task system for executable implementation work that needs owner, priority, or state.
 - A no-op answer must still be useful: include the evidence grade, missing signal, next writeback target, and exact approval boundary.
 - State the problem, source evidence, reason for the selected target, risk,
   expected outcome, verification plan, assumptions, and undo path before any
@@ -93,6 +99,9 @@ evolution, not as an unrelated singleton.
 - Canonical apply and cross-scope promotion are unavailable through the plugin
   until a transaction-safe API can return tested rollback data. Do not bypass
   that boundary with shell or arbitrary CLI arguments.
+- The plugin exposes only closed-schema loop status and preview actions.
+  Scheduler enable/disable/run and external tracker mutation remain outside the
+  MCP surface.
 
 ## Output
 
