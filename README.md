@@ -22,11 +22,16 @@
   </a>
 </div>
 
-`fclt` is a CLI for managing AI capability across tools and projects.
+`fclt` is a feedback loop for AI capability.
 
-It gives instructions, snippets, skills, agents, MCP definitions, automations, and tool config a shared home. It can inspect what already exists, consolidate duplicates, render selected capability into tools like Codex and Claude, and preserve real-work friction as writeback that can later become reviewed improvements.
+It captures what agents learn during real work, reconciles that signal across configured sources,
+turns repeated evidence into reviewable changes, and verifies whether those changes improved the
+work that produced them. Instructions, snippets, skills, agents, MCP definitions, automations, and
+tool config are the capability units the loop can inspect and improve.
 
-Use it when AI setup has become scattered across dotfiles, tool homes, repos, prompts, skills, and one-off notes.
+Use it when useful agent learning disappears into chat history, capability is scattered across
+tools and repos, or the same weak instruction, missing context, and shallow verification failure
+keeps returning.
 
 <p align="center">
   <img alt="fclt capability loop: setup, capability, agents, work units, writebacks, evolution, approval, and better future agents" src="./docs/assets/fclt-capability-loop.png">
@@ -35,6 +40,17 @@ Use it when AI setup has become scattered across dotfiles, tool homes, repos, pr
 Most usage should be agent-led after setup. Humans install, inspect, audit, and approve broad changes. Agents use `fclt` to find the right capability, preserve friction as writeback, and turn repeated signal into reviewed improvements.
 
 The basic operating unit is the work unit: a piece of agent work with a goal, context, constraints, evidence, an output artifact, verification, and a writeback target when the work teaches something reusable. That frame applies to normal coding, research, docs, setup, operations, and debugging work, not only to skill updates.
+
+The core loop is:
+
+```text
+work -> collect signal -> prove source coverage -> correlate and decide
+     -> change the smallest capability unit -> verify the outcome -> repeat
+```
+
+Signal can come from explicit writebacks, canonical Git changes, structured evidence exports,
+automation logs, and configured Markdown. External trackers are optional evidence sources, never
+a required backend or a default mutation target.
 
 ## What it does
 
@@ -45,9 +61,11 @@ The basic operating unit is the work unit: a piece of agent work with a goal, co
 - inspect skills, instructions, MCP servers, agents, automations, and rendered outputs
 - compose guidance from smaller units with refs and snippets
 - give agents a reusable work-unit frame for normal work
-- optionally render approved capability into Codex, Claude, Cursor, and similar tools
 - record writebacks when an agent finds missing context, weak verification, stale guidance, or tool friction
-- turn repeated writeback into reviewable evolution proposals
+- reconcile configured evidence so a review cannot report “nothing pending” without checking its window
+- correlate repeated signal and assign an explicit disposition
+- turn repeated evidence into reviewable evolution proposals and verify their outcomes
+- optionally render approved capability into Codex, Claude, Cursor, and similar tools
 - audit local and remote capability before it spreads
 
 The default posture is read-first. Managed rendering is available, but it is not required for inventory, review, writeback, or evolution. The goal is a background feedback loop, not another CLI users must babysit.
@@ -153,7 +171,28 @@ fclt setup
 fclt doctor --json
 ```
 
-### 2. Inspect existing AI state
+### 2. Capture or reconcile real-work signal
+
+Agents can record one durable observation directly:
+
+```bash
+fclt ai writeback add \
+  --kind missing_context \
+  --summary "The runbook did not identify the production verification path" \
+  --asset instruction:VERIFICATION
+```
+
+Or review a bounded window across every configured source:
+
+```bash
+fclt ai review status --json
+fclt ai review reconcile --since 2026-07-01 --until 2026-07-08 --json
+```
+
+The result records coverage, correlations, exclusions, linked work, and one disposition for every
+included signal. Empty is valid only when configured coverage proves the window was checked.
+
+### 3. Inspect existing AI state
 
 Start read-only:
 
@@ -175,7 +214,7 @@ fclt inventory --json --tool codex
 
 `inventory` is the stable JSON surface for agents and automation. It redacts MCP secrets by default while preserving safe metadata such as env references and whether inline secrets were detected.
 
-### 3. Advanced: create a canonical store manually
+### 4. Advanced: create a canonical store manually
 
 Install the built-in operating-model pack into the global root:
 
@@ -210,7 +249,7 @@ fclt templates init skill project-review
 fclt templates init agent review-operator
 ```
 
-### 4. Consolidate existing skills or config
+### 5. Consolidate existing skills or config
 
 Bring existing tool-native assets into a canonical root deliberately:
 
@@ -221,7 +260,7 @@ fclt index
 
 `keep-current` is deterministic and non-interactive. Use other conflict modes only when you have reviewed the sources.
 
-### 5. Optional: manage a tool
+### 6. Optional: manage a tool
 
 Managed mode writes rendered files into a tool home. Use it only when `fclt` should own that rendered surface.
 
@@ -500,6 +539,14 @@ The fclt mark represents composable capability moving through a continuous impro
 ### Does fclt run an MCP server?
 
 The core product is still CLI-first. `fclt setup codex-plugin` installs the first-party Codex plugin without putting all of Codex under managed mode. The plugin includes a small stdio MCP wrapper that delegates to the installed `fclt` binary for status, doctor, paths, setup, writeback, and evolution workflows. See [Codex plugin](./docs/codex-plugin.md).
+
+### Why do fclt tools not appear in an existing Codex task?
+
+Codex captures a task's tool registry when that task starts. Installing the plugin, restarting the
+app, and then resuming the same task does not rewrite that task's registry. Run `fclt setup
+codex-plugin`, confirm `codex plugin list` reports `fclt` as enabled, and create a genuinely new
+task. Registration and MCP self-test are useful checks, but only a new task calling `fclt_status`
+proves desktop discovery.
 
 ### Does fclt have to manage Codex or Claude files?
 

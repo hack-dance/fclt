@@ -1,7 +1,7 @@
 {
   "name": "facult",
   "version": "2.22.0",
-  "description": "Manage canonical AI capabilities, sync surfaces, and evolution state.",
+  "description": "Capture agent-work signal, reconcile evidence, and evolve AI capability.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -17,6 +17,9 @@
     "agents",
     "mcp",
     "skills",
+    "writeback",
+    "evolution",
+    "feedback-loop",
     "bun"
   ],
   "engines": {

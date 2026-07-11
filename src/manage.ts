@@ -12,7 +12,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { getAdapter } from "./adapters";
 import { renderCanonicalText } from "./agents";
 import { ensureAiIndexPath } from "./ai-state";
@@ -729,6 +729,147 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+interface FcltCodexPluginRuntimeBinding {
+  command: string;
+  fcltBin: string | null;
+  path: string;
+}
+
+function codexBundledNodeCandidates(): string[] {
+  if (process.platform === "darwin") {
+    return [
+      "/Applications/Codex.app/Contents/Resources/cua_node/bin/node",
+      "/opt/homebrew/bin/node",
+      "/usr/local/bin/node",
+      "/usr/bin/node",
+    ];
+  }
+  if (process.platform === "win32") {
+    return [
+      ...(process.env.ProgramFiles
+        ? [join(process.env.ProgramFiles, "nodejs", "node.exe")]
+        : []),
+      ...(process.env.LOCALAPPDATA
+        ? [join(process.env.LOCALAPPDATA, "Programs", "nodejs", "node.exe")]
+        : []),
+    ];
+  }
+  return ["/usr/local/bin/node", "/usr/bin/node"];
+}
+
+function codexPluginSystemPathEntries(): string[] {
+  if (process.platform === "win32") {
+    return process.env.SystemRoot
+      ? [join(process.env.SystemRoot, "System32"), process.env.SystemRoot]
+      : [];
+  }
+  return process.platform === "darwin"
+    ? [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+      ]
+    : ["/usr/local/bin", "/usr/bin", "/bin"];
+}
+
+async function miseShimCandidate(name: string): Promise<string | null> {
+  if (process.platform === "win32") {
+    return null;
+  }
+  const home = process.env.HOME?.trim() || homedir();
+  const candidate = join(home, ".local", "share", "mise", "shims", name);
+  return (await fileExists(candidate)) ? candidate : null;
+}
+
+async function firstExistingAbsolute(
+  candidates: Array<string | null | undefined>
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (candidate && isAbsolute(candidate) && (await fileExists(candidate))) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function resolveFcltCodexPluginRuntimeBinding(): Promise<FcltCodexPluginRuntimeBinding> {
+  const explicitRuntime = process.env.FCLT_PLUGIN_JS_RUNTIME?.trim();
+  if (explicitRuntime && !isAbsolute(explicitRuntime)) {
+    throw new Error("FCLT_PLUGIN_JS_RUNTIME must be an absolute path.");
+  }
+  if (explicitRuntime && !(await fileExists(explicitRuntime))) {
+    throw new Error("FCLT_PLUGIN_JS_RUNTIME does not exist.");
+  }
+  const command = await firstExistingAbsolute(
+    explicitRuntime
+      ? [explicitRuntime]
+      : [
+          ...codexBundledNodeCandidates(),
+          await miseShimCandidate("node"),
+          Bun.which("node"),
+          Bun.which("bun"),
+        ]
+  );
+  if (!command) {
+    throw new Error(
+      "Cannot prepare the fclt Codex plugin because no absolute Node.js or Bun runtime was found."
+    );
+  }
+
+  const explicitFclt = process.env.FCLT_BIN?.trim();
+  const fcltBin = await firstExistingAbsolute([
+    explicitFclt,
+    await miseShimCandidate("fclt"),
+    await miseShimCandidate("facult"),
+    Bun.which("fclt"),
+    Bun.which("facult"),
+  ]);
+  const supportCommands = ["bun", "codex", "git", "mise"]
+    .map((name) => Bun.which(name))
+    .filter((candidate): candidate is string => Boolean(candidate));
+  const pathEntries = [
+    dirname(command),
+    ...(fcltBin ? [dirname(fcltBin)] : []),
+    ...supportCommands.map((candidate) => dirname(candidate)),
+    ...codexPluginSystemPathEntries(),
+  ].filter((entry) => entry && isAbsolute(entry));
+
+  return {
+    command,
+    fcltBin,
+    path: [...new Set(pathEntries)].join(delimiter),
+  };
+}
+
+function bindFcltCodexPluginRuntime(
+  raw: string,
+  binding: FcltCodexPluginRuntimeBinding
+): string {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!(isPlainObject(parsed) && isPlainObject(parsed.mcpServers))) {
+    throw new Error("The bundled fclt MCP configuration is invalid.");
+  }
+  const server = parsed.mcpServers.fclt;
+  if (!isPlainObject(server)) {
+    throw new Error("The bundled fclt MCP server definition is missing.");
+  }
+  const env = isPlainObject(server.env)
+    ? Object.fromEntries(
+        Object.entries(server.env).filter(([key]) => key !== "FCLT_BIN")
+      )
+    : {};
+  server.command = binding.command;
+  server.env = {
+    ...env,
+    ...(binding.fcltBin ? { FCLT_BIN: binding.fcltBin } : {}),
+    PATH: binding.path,
+  };
+  return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
 async function readTextIfExists(p: string): Promise<string | null> {
   if (!(await fileExists(p))) {
     return null;
@@ -1029,14 +1170,32 @@ async function loadCanonicalCodexPlugins(
 
   async function loadEntry(
     name: string,
-    sourceDir: string
+    sourceDir: string,
+    bindRuntime = false
   ): Promise<CanonicalPluginEntry | null> {
     if (!(await fileExists(join(sourceDir, ".codex-plugin", "plugin.json")))) {
       return null;
     }
     const files = new Map<string, Uint8Array>();
+    const runtimeBinding = bindRuntime
+      ? await resolveFcltCodexPluginRuntimeBinding()
+      : null;
     for (const relPath of await listRelativeFilesWithDotfiles(sourceDir)) {
-      files.set(relPath, await Bun.file(join(sourceDir, relPath)).bytes());
+      const sourcePath = join(sourceDir, relPath);
+      if (relPath === ".mcp.json" && runtimeBinding) {
+        files.set(
+          relPath,
+          Buffer.from(
+            bindFcltCodexPluginRuntime(
+              await Bun.file(sourcePath).text(),
+              runtimeBinding
+            ),
+            "utf8"
+          )
+        );
+        continue;
+      }
+      files.set(relPath, await Bun.file(sourcePath).bytes());
     }
     return { name, sourceDir, files };
   }
@@ -1058,7 +1217,8 @@ async function loadCanonicalCodexPlugins(
   ) {
     const plugin = await loadEntry(
       FCLT_CODEX_PLUGIN_NAME,
-      facultBuiltinCodexPluginRoot()
+      facultBuiltinCodexPluginRoot(),
+      true
     );
     if (plugin) {
       out.push(plugin);
@@ -1135,7 +1295,10 @@ async function loadCanonicalCodexMarketplaceText(
   };
 }
 
-async function hashDirectoryTree(root: string): Promise<string | null> {
+async function hashDirectoryTree(
+  root: string,
+  overrides: ReadonlyMap<string, Uint8Array> = new Map()
+): Promise<string | null> {
   try {
     const st = await lstat(root);
     if (!st.isDirectory()) {
@@ -1149,7 +1312,9 @@ async function hashDirectoryTree(root: string): Promise<string | null> {
   for (const relPath of files) {
     hash.update(relPath);
     hash.update("\0");
-    hash.update(await Bun.file(join(root, relPath)).bytes());
+    hash.update(
+      overrides.get(relPath) ?? (await Bun.file(join(root, relPath)).bytes())
+    );
     hash.update("\0");
   }
   return hash.digest("hex");
@@ -4729,7 +4894,15 @@ export async function setupCodexPlugin(
   const marketplacePath = codexPluginMarketplacePath(home);
   const sourceDir = facultBuiltinCodexPluginRoot();
   const changedPaths: string[] = [];
-  const sourceHash = await hashDirectoryTree(sourceDir);
+  const runtimeBinding = await resolveFcltCodexPluginRuntimeBinding();
+  const mcpConfigText = bindFcltCodexPluginRuntime(
+    await Bun.file(join(sourceDir, ".mcp.json")).text(),
+    runtimeBinding
+  );
+  const sourceHash = await hashDirectoryTree(
+    sourceDir,
+    new Map([[".mcp.json", Buffer.from(mcpConfigText, "utf8")]])
+  );
   const pluginTargetDir = join(pluginDir, FCLT_CODEX_PLUGIN_NAME);
   const targetHash = await hashDirectoryTree(pluginTargetDir);
 
@@ -4768,6 +4941,7 @@ export async function setupCodexPlugin(
     await rm(pluginTargetDir, { recursive: true, force: true });
     await ensureDir(pluginDir);
     await cp(sourceDir, pluginTargetDir, { recursive: true });
+    await Bun.write(join(pluginTargetDir, ".mcp.json"), mcpConfigText);
     await ensureDir(dirname(marketplacePath));
     await Bun.write(marketplacePath, marketplaceText);
 

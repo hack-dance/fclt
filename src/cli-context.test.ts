@@ -121,4 +121,19 @@ describe("resolveCliContextRoot", () => {
       resolveCliContextRoot({ homeDir, cwd, scope: "project" })
     ).toThrow('Run "fclt templates init project-ai" in the repo first');
   });
+
+  it("does not treat the global home .ai root as project state", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const cwd = join(homeDir, "work", "repo");
+    await mkdir(join(homeDir, ".ai", "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow("No project-local .ai root found:");
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      join(homeDir, ".ai")
+    );
+  });
 });

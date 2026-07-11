@@ -1,7 +1,7 @@
 {
   "name": "fclt",
-  "version": "0.1.0",
-  "description": "Codex workflows and MCP tools for fclt setup, writeback, evolution, and capability review.",
+  "version": "0.1.1",
+  "description": "Codex workflows and MCP tools for evidence reconciliation, writeback, evolution, and outcome review.",
   "author": {
     "name": "Hack Dance",
     "url": "https://hack.dance"
@@ -20,15 +20,15 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "fclt",
-    "shortDescription": "Capability loops for Codex",
-    "longDescription": "Install and operate fclt from Codex: initialize AI capability roots, inspect setup health, record writebacks, review evolution proposals, and keep skills, snippets, instructions, automations, and MCP surfaces improving over time.",
+    "shortDescription": "Feedback loops for AI work",
+    "longDescription": "Capture signal from real agent work, reconcile configured evidence, turn repeated findings into reviewed capability changes, and verify whether those changes improved the work that produced them.",
     "developerName": "Hack Dance",
     "category": "Productivity",
     "capabilities": ["Read", "Write", "MCP"],
     "defaultPrompt": [
       "Use fclt to check this repo's AI capability setup.",
-      "Record useful fclt writeback from this work.",
-      "Review fclt evolution proposals and next actions."
+      "Reconcile the configured evidence window and explain its coverage.",
+      "Record useful writeback from this work and review any repeated signal."
     ],
     "brandColor": "#166534",
     "composerIcon": "./assets/fclt-mark.png",

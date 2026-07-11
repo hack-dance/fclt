@@ -1,6 +1,9 @@
 # Concepts
 
-`fclt` keeps AI capability in a canonical store, lets you inspect it, and optionally renders approved pieces into tool-native files.
+`fclt` keeps a durable feedback loop around AI work. It collects reusable signal, reconciles what
+was actually checked, evolves the smallest relevant capability unit, and preserves outcome
+evidence. A canonical store and optional tool rendering support that loop; they are not the loop's
+only purpose.
 
 The important distinction is ownership. A file can be source, generated state, machine runtime state, a rendered output, or a review artifact. Treating those as separate layers prevents sync surprises.
 
@@ -123,12 +126,13 @@ For concrete composition patterns, see [Composable Capability](./composable-capa
 
 The durable loop is:
 
-1. Inspect live tool and project state.
-2. Record strong writebacks when real work exposes reusable friction or missing capability.
-3. Group repeated writebacks.
-4. Draft the smallest valid proposal.
+1. Do a bounded work unit and preserve strong reusable signal.
+2. Reconcile every configured source for the review window and expose unavailable coverage.
+3. Correlate repeated observations across assets, runs, and linked work.
+4. Assign a disposition and draft the smallest valid proposal only when evidence justifies it.
 5. Review and apply accepted changes to canonical source.
-6. Re-index and sync only the surfaces that should receive the change.
+6. Verify the producing loop after the change; resolve, watch, or reopen the same signal family.
+7. Re-index and sync only the tool surfaces that should receive an accepted capability change.
 
 ## Next
 

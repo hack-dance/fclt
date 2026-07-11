@@ -17,45 +17,61 @@ This roadmap tracks remaining product direction for `fclt`.
 - `sync --adopt-live` for explicit promotion of live tool edits.
 - Managed sync local-edit protection for rendered docs, config, MCP, and skills.
 - Initial first-party Codex plugin with setup/writeback/evolution/capability-review skills and a CLI-backed MCP wrapper.
+- Automatic, incremental reconciliation across explicit writebacks, canonical Git changes,
+  vendor-neutral evidence exports, automation logs, and configured Markdown.
+- Deterministic coverage, correlation, disposition, provenance, dedupe, and review artifacts for
+  bounded source windows.
+- An opt-in scheduled evolution loop with durable queues, delta notifications, scheduler health,
+  retries, and outcome-verification state.
+- Typed Codex reconciliation and loop-preview tools that keep external mutation and unsafe argv
+  outside the MCP surface.
+- Desktop-safe plugin runtime binding that does not depend on a GUI app inheriting the user's shell
+  `PATH`.
 
 ## Current Priorities
 
-1. Add agent-first setup APIs.
-   - Add `setup plan --json` and safe apply primitives for confirmation-gated setup.
-   - Add command/risk metadata so agents can distinguish read-only, dry-run, generated-state writes, mutating actions, and high-risk global changes.
+1. Finish transaction-safe capability apply.
+   - Bind every apply to an expected source hash and validated target patch.
+   - Write an atomic rollback receipt before enabling any canonical auto-apply path.
+   - Keep global instructions, shared skills, and plugins proposal-only.
 
-2. Make status more explanatory.
+2. Make loop status and review artifacts more explanatory.
    - Show policy summaries.
    - Surface top recommended next action.
-   - Connect sync ledger history to rendered targets.
+   - Explain degraded source coverage and stale verification windows without reading runtime files.
 
-3. Add a structured sync plan.
+3. Improve source-adapter configuration and diagnostics.
+   - Add safe init/doctor helpers for narrow Git, Markdown, automation, and evidence-export sources.
+   - Keep vendor integrations export-based and optional rather than adding credentials to core.
+   - Make renamed-source and unavailable-source recovery easier to understand.
+
+4. Add a structured sync plan.
    - Group writes, updates, removals, skips, conflicts, and repairs.
    - Expose the same plan as JSON.
    - Explain source refs and policy reasons.
 
-4. Improve project onboarding.
+5. Improve project onboarding.
    - Add a primary `fclt init project` flow.
    - Explain default-deny project sync during setup.
    - Offer safe adoption, detach, and restore choices.
 
-5. Make policy inspectable.
+6. Make policy inspectable.
    - Add `policy show`.
    - Add `policy explain`.
    - Hide TOML details behind user-facing commands where possible.
 
-6. Make templates, plugins, automations, and rendered targets first-class inventory objects.
+7. Make templates, plugins, automations, sources, reviews, and rendered targets first-class inventory objects.
    - List and show them consistently.
    - Add graph visibility.
    - Include them in status and sync plans.
 
-7. Expand the first-party Codex plugin and MCP surface.
+8. Expand the first-party Codex plugin and MCP surface.
    - Add richer setup planning tools beyond the initial CLI wrapper.
    - Keep the CLI and canonical `.ai` roots as the source of truth.
    - Gate high-risk global changes behind explicit review.
    - Add more focused agent-facing skills for automation setup, capability search, and upgrade flows.
 
-8. Tighten selector consistency.
+9. Tighten selector consistency.
    - Use one selector grammar across `list`, `show`, `graph`, `enable`, `disable`, `trust`, `audit`, writeback, and evolution.
    - Return useful ambiguity errors with candidates.
 

@@ -1,8 +1,14 @@
 # Writeback and Evolution
 
-Writeback preserves useful signal from real work. Evolution turns repeated signal into reviewable changes.
+This is the core fclt loop. Writeback preserves useful signal from real work. Reconciliation proves
+which configured sources were checked. Evolution turns repeated evidence into reviewable changes,
+and outcome verification decides whether those changes worked.
 
 Use this when normal work exposes the same problem more than once: shallow tests, missing context, stale guidance, a slow tool path, or a missing skill. Ignore it for one-off preferences and vague complaints.
+
+It is not a ticket generator. Implementation tickets can remain linked evidence, targets, and
+outcome proof without becoming one capability proposal per ticket. External work systems are
+optional inputs; the loop remains useful with local writebacks, Git, logs, and Markdown alone.
 
 For a new CLI or Codex-plugin install, initialize the whole loop first:
 

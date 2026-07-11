@@ -717,11 +717,15 @@ export function facultRootDir(home: string = defaultHomeDir()): string {
   return preferred;
 }
 
-export function findNearestProjectAiRoot(start: string): string | null {
+export function findNearestProjectAiRoot(
+  start: string,
+  home: string = defaultHomeDir()
+): string | null {
+  const globalRoot = resolve(facultRootDir(home));
   let current = resolve(start);
   while (true) {
     const candidate = join(current, ".ai");
-    if (isProjectAiRoot(candidate)) {
+    if (resolve(candidate) !== globalRoot && isProjectAiRoot(candidate)) {
       return candidate;
     }
     const parent = dirname(current);
@@ -744,7 +748,7 @@ export function facultContextRootDir(args?: {
   }
 
   const cwd = args?.cwd?.trim() || process.cwd();
-  const projectRoot = findNearestProjectAiRoot(cwd);
+  const projectRoot = findNearestProjectAiRoot(cwd, home);
   if (projectRoot) {
     return projectRoot;
   }
