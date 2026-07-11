@@ -328,22 +328,28 @@ export function projectRootFromAiRoot(
   rootDir: string,
   home: string = defaultHomeDir()
 ): string | null {
-  const resolved = resolve(rootDir);
+  const pathApi =
+    looksLikeWindowsAbsolutePath(rootDir) || looksLikeWindowsAbsolutePath(home)
+      ? win32
+      : { basename, dirname, join, resolve };
+  const resolved = pathApi.resolve(rootDir);
   const scoped = facultRootScope.getStore();
-  if (scoped && resolve(scoped.rootDir) === resolved) {
+  if (scoped && pathApi.resolve(scoped.rootDir) === resolved) {
     return scoped.scope === "global"
       ? null
-      : resolved.endsWith("/.ai")
-        ? dirname(resolved)
+      : pathApi.basename(resolved) === ".ai"
+        ? pathApi.dirname(resolved)
         : null;
   }
-  if (resolved === resolve(join(home, ".ai"))) {
+  if (resolved === pathApi.resolve(pathApi.join(home, ".ai"))) {
     return null;
   }
-  if (resolved === resolve(legacyPreferredRoot(home))) {
+  if (resolved === pathApi.resolve(pathApi.join(home, "agents", ".facult"))) {
     return null;
   }
-  return resolved.endsWith("/.ai") ? dirname(resolved) : null;
+  return pathApi.basename(resolved) === ".ai"
+    ? pathApi.dirname(resolved)
+    : null;
 }
 
 const facultRootScope = new AsyncLocalStorage<{

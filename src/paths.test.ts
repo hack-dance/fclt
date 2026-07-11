@@ -14,6 +14,7 @@ import {
   facultRuntimeCacheDir,
   legacyFacultAiStateDirs,
   pathIsInsideOrEqual,
+  projectRootFromAiRoot,
 } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
@@ -260,5 +261,16 @@ describe("paths", () => {
         "D:\\a\\fclt\\fclt\\assets\\packs\\facult-operating-model"
       )
     ).toBe(false);
+  });
+
+  it("classifies Windows-shaped global and project AI roots", () => {
+    const home = "C:\\Users\\facult";
+    expect(projectRootFromAiRoot("C:\\work\\repo\\.ai", home)).toBe(
+      "C:\\work\\repo"
+    );
+    expect(projectRootFromAiRoot("C:\\Users\\facult\\.ai", home)).toBeNull();
+    expect(
+      projectRootFromAiRoot("C:\\Users\\facult\\agents\\.facult", home)
+    ).toBeNull();
   });
 });
