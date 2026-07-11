@@ -18,6 +18,7 @@ import {
 } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_ROOT_SCOPE = process.env.FACULT_ROOT_SCOPE;
 let tempHome: string | null = null;
 
 async function makeTempHome(): Promise<string> {
@@ -50,6 +51,7 @@ afterEach(async () => {
   tempHome = null;
   process.env.HOME = ORIGINAL_HOME;
   process.env.FACULT_ROOT_DIR = undefined;
+  process.env.FACULT_ROOT_SCOPE = ORIGINAL_ROOT_SCOPE;
 });
 
 describe("paths", () => {
@@ -149,6 +151,7 @@ describe("paths", () => {
     const rootDir = join(projectRoot, ".ai");
     await mkdir(rootDir, { recursive: true });
     process.env.FACULT_ROOT_DIR = rootDir;
+    process.env.FACULT_ROOT_SCOPE = "project";
 
     expect(facultRootDir(tempHome)).toBe(rootDir);
     expect(facultMachineStateDir(tempHome, rootDir)).toContain(

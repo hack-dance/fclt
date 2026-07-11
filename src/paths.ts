@@ -341,6 +341,20 @@ export function projectRootFromAiRoot(
         ? pathApi.dirname(resolved)
         : null;
   }
+  const envRoot = process.env.FACULT_ROOT_DIR?.trim();
+  if (envRoot) {
+    const expandedEnvRoot = expandHomePath(envRoot, home);
+    if (pathApi.resolve(expandedEnvRoot) === resolved) {
+      if (process.env.FACULT_ROOT_SCOPE?.trim() !== "project") {
+        return null;
+      }
+      return pathApi.basename(resolved) === ".ai"
+        ? pathApi.dirname(resolved)
+        : null;
+    }
+  } else if (pathApi.resolve(facultRootDir(home)) === resolved) {
+    return null;
+  }
   if (resolved === pathApi.resolve(pathApi.join(home, ".ai"))) {
     return null;
   }
