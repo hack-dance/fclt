@@ -157,14 +157,14 @@ describe("resolveCliContextRoot", () => {
     );
   });
 
-  it("keeps an env-configured repo .ai root project-scoped", async () => {
+  it("prefers an env-configured project .ai root over cwd discovery", async () => {
     tempRoot = await makeTempDir();
     const homeDir = join(tempRoot, "home");
     const projectRoot = join(homeDir, "work", "repo");
     const rootDir = join(projectRoot, ".ai");
-    const cwd = join(projectRoot, "src");
+    const cwd = join(homeDir, "work", "other-repo");
     await mkdir(join(rootDir, "instructions"), { recursive: true });
-    await mkdir(cwd, { recursive: true });
+    await mkdir(join(cwd, ".ai", "instructions"), { recursive: true });
     process.env.FACULT_ROOT_DIR = rootDir;
     process.env.FACULT_ROOT_SCOPE = "project";
 

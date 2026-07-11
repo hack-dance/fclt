@@ -196,6 +196,16 @@ export function resolveCliContextRoot(args?: {
   }
 
   if (scope === "project") {
+    const configuredRoot = process.env.FACULT_ROOT_DIR?.trim()
+      ? facultRootDir(homeDir)
+      : null;
+    if (
+      configuredRoot &&
+      process.env.FACULT_ROOT_SCOPE?.trim() === "project" &&
+      projectRootFromAiRoot(configuredRoot, homeDir)
+    ) {
+      return configuredRoot;
+    }
     const projectRoot = findNearestProjectAiRoot(cwd, homeDir);
     if (!projectRoot) {
       throw new Error(missingProjectAiRootMessage(cwd));
