@@ -539,6 +539,82 @@ describe("source reconciliation", () => {
     expect(rerun.signals[0]?.writebackRefs).toEqual(["WB-00020"]);
   });
 
+  it("keeps the readable latest mirror on the newest reviewed window", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const current = await reconcileSources({
+      ...fixture,
+      since: "2026-07-09",
+      until: "2026-07-10",
+    });
+    await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-04",
+    });
+    const latest = await readFile(
+      join(
+        facultAiReconciliationReviewDir(fixture.homeDir, fixture.rootDir),
+        "latest.md"
+      ),
+      "utf8"
+    );
+    expect(latest).toContain(`reviewId: "${current.reviewId}"`);
+    expect(latest).toContain('until: "2026-07-10T23:59:59.999Z"');
+  });
+
+  it("joins an unambiguous external WB reference to its source writeback", async () => {
+    const fixture = await makeFixture();
+    await writeQueue(fixture);
+    await Bun.write(
+      join(fixture.projectRoot, "evidence.json"),
+      `${JSON.stringify(
+        evidenceExport([
+          {
+            id: "external-comment",
+            kind: "comment",
+            observedAt: "2026-07-10T17:00:00Z",
+            body: "Outcome proof recorded for WB-00020.",
+            refs: ["WB-00020"],
+          },
+        ])
+      )}\n`
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "external", type: "evidence-export", path: "evidence.json" },
+        ],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    const signal = review.signals.find(
+      (item) =>
+        item.writebackRefs.includes("WB-00020") &&
+        item.sourceIds.includes("external")
+    );
+    expect(signal?.sourceIds).toEqual(
+      expect.arrayContaining(["writebacks", "external"])
+    );
+    expect(
+      review.signals.filter((item) => item.writebackRefs.includes("WB-00020"))
+    ).toHaveLength(1);
+    expect(signal?.disposition).toBe("task");
+  });
+
   it("identifies incremental reviews by their effective cursor-backed window", async () => {
     const fixture = await makeFixture();
     const queuePath = facultAiWritebackQueuePath(

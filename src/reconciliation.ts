@@ -450,6 +450,27 @@ function correlate(args: {
     }
   );
 
+  const writebackSourcesByRef = new Map<string, ReconciledEvidence[]>();
+  for (const item of evidence) {
+    if (!item.dedupeKey.startsWith("writeback:")) {
+      continue;
+    }
+    for (const ref of item.writebackRefs) {
+      const sources = writebackSourcesByRef.get(ref) ?? [];
+      sources.push(item);
+      writebackSourcesByRef.set(ref, sources);
+    }
+  }
+  for (const [ref, sources] of writebackSourcesByRef) {
+    if (sources.length === 1) {
+      const source = sources[0]!;
+      source.correlationKeys = unique([
+        ...source.correlationKeys,
+        `writeback:${ref}`,
+      ]);
+    }
+  }
+
   const set = new DisjointSet(evidence.length);
   const keyOwner = new Map<string, number>();
   for (const [index, item] of evidence.entries()) {
@@ -653,6 +674,15 @@ function updateState(args: {
   return next;
 }
 
+function latestReviewId(state: ReconciliationState): string | undefined {
+  return Object.entries(state.reviews).sort(
+    ([, left], [, right]) =>
+      right.until.localeCompare(left.until) ||
+      right.since.localeCompare(left.since) ||
+      right.generatedAt.localeCompare(left.generatedAt)
+  )[0]?.[0];
+}
+
 export async function reconcileSources(args: {
   homeDir: string;
   rootDir: string;
@@ -842,7 +872,6 @@ export async function reconcileSources(args: {
     await mkdir(reviewDir, { recursive: true });
     const markdown = `${renderReview(review)}\n`;
     await atomicWrite(artifactPath, markdown);
-    await atomicWrite(join(reviewDir, "latest.md"), markdown);
     await atomicWrite(windowPath, `${JSON.stringify(review, null, 2)}\n`);
     const nextState = updateState({
       state,
@@ -850,6 +879,9 @@ export async function reconcileSources(args: {
       adapterResults,
       config: selectedConfig,
     });
+    if (latestReviewId(nextState) === review.reviewId) {
+      await atomicWrite(join(reviewDir, "latest.md"), markdown);
+    }
     await atomicWrite(statePath, `${JSON.stringify(nextState, null, 2)}\n`);
     return review;
   });
@@ -953,16 +985,11 @@ export async function latestReconciliationReview(args: {
 }): Promise<ReconciliationReview | null> {
   const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
   const state = await loadState(statePath);
-  const latest = Object.entries(state.reviews).sort(
-    ([, left], [, right]) =>
-      right.until.localeCompare(left.until) ||
-      right.since.localeCompare(left.since) ||
-      right.generatedAt.localeCompare(left.generatedAt)
-  )[0];
-  if (!latest) {
+  const latestId = latestReviewId(state);
+  if (!latestId) {
     return null;
   }
-  const windowPath = join(dirname(statePath), "windows", `${latest[0]}.json`);
+  const windowPath = join(dirname(statePath), "windows", `${latestId}.json`);
   try {
     return JSON.parse(
       await readFile(windowPath, "utf8")
