@@ -1,3 +1,9 @@
+## [2.21.0](https://github.com/hack-dance/fclt/compare/v2.20.1...v2.21.0) (2026-07-11)
+
+### Features
+
+* add automatic source reconciliation ([#50](https://github.com/hack-dance/fclt/issues/50)) ([1a88eb0](https://github.com/hack-dance/fclt/commit/1a88eb0bad97f22c08f99f9c731c9ed041332d0e))
+
 ## [2.20.1](https://github.com/hack-dance/fclt/compare/v2.20.0...v2.20.1) (2026-07-10)
 
 ### Bug Fixes
