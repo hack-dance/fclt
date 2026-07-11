@@ -286,10 +286,24 @@ fclt ai writeback add \
 Review accumulated signal:
 
 ```bash
+fclt ai review reconcile --since 2026-07-03 --until 2026-07-10 --json
 fclt ai writeback list
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by kind
 ```
+
+`fclt setup` creates a safe `reconciliation.json` beside the selected canonical
+root. Global setup checks explicit writebacks automatically; project setup also
+checks Git history for canonical assets. Linear, automation logs, and Markdown
+sources are opt-in. Every review records source coverage, cursors, extraction
+decisions, correlations, exclusions, linked work, and a disposition. An empty
+review is valid only when every configured source was checked.
+Configure Markdown sources as narrow append-only or date-headed evidence
+streams rather than broad workspace globs; undated sections use file
+modification time and may otherwise make old material look current.
+Bounded reviews rescan the full requested window; `--incremental` explicitly
+opts into advancing from stored watermarks. Use `fclt ai review init --force`
+to back up and replace an invalid reconciliation config.
 
 Draft a proposal only when the evidence repeats, a capability is clearly missing, or a canonical asset is stale:
 
@@ -431,6 +445,7 @@ Writeback and evolution:
 fclt ai writeback add --kind <kind> --summary <text> --asset <selector>
 fclt ai writeback list|show|group|summarize
 fclt ai evolve assess|propose|list|show|draft|review|accept|reject|apply|promote
+fclt ai review init|status|reconcile
 ```
 
 Sources, audit, and updates:

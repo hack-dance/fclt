@@ -31,10 +31,12 @@ import {
   facultAiGraphPath,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
   facultMachineStateDir,
 } from "./paths";
+import { reconcileSources } from "./reconciliation";
 
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
@@ -51,12 +53,7 @@ async function makeTempHome(): Promise<string> {
 }
 
 async function writeGraph(home: string, rootDir: string, graph: unknown) {
-  const graphPath = join(
-    rootDir.startsWith(join(home, ".ai"))
-      ? join(home, ".ai", ".facult", "ai")
-      : join(rootDir, ".facult", "ai"),
-    "graph.json"
-  );
+  const graphPath = facultAiGraphPath(home, rootDir);
   await mkdir(dirname(graphPath), { recursive: true });
   await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
 }
@@ -70,6 +67,184 @@ afterEach(async () => {
 });
 
 describe("ai writeback", () => {
+  it("degrades evolution assessment when reconciliation state is corrupt", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(
+      join(rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const statePath = facultAiReconciliationStatePath(tempHome, rootDir);
+    await mkdir(dirname(statePath), { recursive: true });
+    await Bun.write(statePath, "{corrupt-state");
+
+    const assessment = await assessEvolution({ homeDir: tempHome, rootDir });
+
+    expect(assessment.reconciliation).toMatchObject({
+      configured: true,
+      coverageState: "degraded",
+      signalCount: 0,
+    });
+    expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
+  it("does not read stale state when reconciliation is not configured", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    const statePath = facultAiReconciliationStatePath(tempHome, rootDir);
+    await mkdir(dirname(statePath), { recursive: true });
+    await Bun.write(statePath, "{corrupt-state");
+
+    const assessment = await assessEvolution({ homeDir: tempHome, rootDir });
+
+    expect(assessment.recommendation).toBe("reconcile_sources");
+    expect(assessment.reconciliation).toMatchObject({
+      configured: false,
+      signalCount: 0,
+    });
+    expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
+  it("requires reconciliation after enabled source configuration changes", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    const queuePath = facultAiWritebackQueuePath(tempHome, rootDir);
+    await mkdir(dirname(queuePath), { recursive: true });
+    await Bun.write(
+      queuePath,
+      JSON.stringify({
+        id: "WB-00001",
+        ts: "2026-07-05T12:00:00Z",
+        kind: "capability_gap",
+        summary: "Reconciled capability signal",
+        evidence: [{ type: "session", ref: "reconciled" }],
+      })
+    );
+    const configPath = join(rootDir, "reconciliation.json");
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    await reconcileSources({
+      homeDir: tempHome,
+      rootDir,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    await Bun.write(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        sources: [
+          { id: "writebacks", type: "writebacks" },
+          { id: "notes", type: "markdown", paths: ["notes/*.md"] },
+        ],
+      })
+    );
+
+    const assessment = await assessEvolution({ homeDir: tempHome, rootDir });
+
+    expect(assessment.recommendation).toBe("reconcile_sources");
+    expect(assessment.reconciliation.coverageState).toBe("degraded");
+    expect(assessment.reconciliation.signalCount).toBe(1);
+  });
+
+  it("matches reconciled path refs to canonical selected assets", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const projectRoot = join(tempHome, "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const targetPath = join(rootDir, "instructions", "TESTING.md");
+    const globalTargetPath = join(
+      tempHome,
+      ".ai",
+      "instructions",
+      "TESTING.md"
+    );
+    await mkdir(join(projectRoot, "notes"), { recursive: true });
+    await mkdir(dirname(targetPath), { recursive: true });
+    await mkdir(dirname(globalTargetPath), { recursive: true });
+    await Bun.write(targetPath, "# Testing\n");
+    await Bun.write(globalTargetPath, "# Global testing\n");
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-07-10T00:00:00.000Z",
+      nodes: {
+        "instruction:global:global:TESTING": {
+          id: "instruction:global:global:TESTING",
+          kind: "instruction",
+          name: "TESTING",
+          sourceKind: "global",
+          scope: "global",
+          canonicalRef: "@ai/instructions/TESTING.md",
+          path: globalTargetPath,
+        },
+        "instruction:project:project:TESTING": {
+          id: "instruction:project:project:TESTING",
+          kind: "instruction",
+          name: "TESTING",
+          sourceKind: "project",
+          scope: "project",
+          canonicalRef: "@project/instructions/TESTING.md",
+          path: targetPath,
+        },
+      },
+      edges: [],
+    });
+    await Bun.write(
+      join(projectRoot, "notes", "signal.md"),
+      "# 2026-07-05 capability signal\n\ninstructions/TESTING.md. needs reconciliation.\n"
+    );
+    await Bun.write(
+      join(rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "notes", type: "markdown", paths: ["notes/*.md"] }],
+      })
+    );
+    await reconcileSources({
+      homeDir: tempHome,
+      rootDir,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "capability_gap",
+      summary: "Repeated project testing guidance gap.",
+      asset: "@project/instructions/TESTING.md",
+      evidence: proposalEvidence("testing-gap"),
+    });
+
+    const assessment = await assessEvolution({
+      homeDir: tempHome,
+      rootDir,
+      asset: "instruction:TESTING",
+    });
+
+    expect(assessment.recommendation).toBe("review_reconciled_signals");
+    expect(assessment.reconciliation.matchingSignalIds).toHaveLength(1);
+    const globalAssessment = await assessEvolution({
+      homeDir: tempHome,
+      rootDir,
+      asset: "@ai/instructions/TESTING.md",
+    });
+    expect(globalAssessment.reconciliation.matchingSignalIds).toHaveLength(0);
+  });
+
   it("records a writeback with graph-backed asset resolution and journal entries", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
@@ -742,21 +917,21 @@ describe("ai writeback", () => {
       summary: "Outcome tracking is missing.",
       evidence: proposalEvidence("closed-loop"),
     });
-    await linkWritebackIssue(writeback.id, "HACK-791", {
+    await linkWritebackIssue(writeback.id, "TICKET-791", {
       homeDir: tempHome,
       rootDir,
     });
     const updated = await setWritebackDisposition(writeback.id, "task", {
       homeDir: tempHome,
       rootDir,
-      target: "HACK-791",
+      target: "TICKET-791",
       nextTrigger: "Implementation ships.",
       expectedOutcome: "Applied proposals receive effectiveness grades.",
     });
 
-    expect(updated.issueLinks).toEqual(["HACK-791"]);
+    expect(updated.issueLinks).toEqual(["TICKET-791"]);
     expect(updated.disposition).toBe("task");
-    expect(updated.dispositionTarget).toBe("HACK-791");
+    expect(updated.dispositionTarget).toBe("TICKET-791");
     expect(updated.nextTrigger).toBe("Implementation ships.");
   });
 

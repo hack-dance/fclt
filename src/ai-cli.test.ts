@@ -53,6 +53,70 @@ afterEach(async () => {
 });
 
 describe("ai CLI", () => {
+  it("initializes and runs a structured source review through the ai namespace", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    await mkdir(rootDir, { recursive: true });
+    process.chdir(tempHome);
+
+    const initOut = await captureConsole(async () => {
+      await aiCommand(["review", "init", "--json"]);
+    });
+    expect(initOut.errors).toEqual([]);
+    expect(JSON.parse(initOut.logs.join("\n"))).toMatchObject({
+      created: true,
+    });
+
+    const reviewOut = await captureConsole(async () => {
+      await aiCommand([
+        "review",
+        "reconcile",
+        "--since",
+        "2026-07-03T00:00:00Z",
+        "--until",
+        "2026-07-10T00:00:00Z",
+        "--json",
+      ]);
+    });
+    expect(reviewOut.errors).toEqual([]);
+    expect(JSON.parse(reviewOut.logs.join("\n"))).toMatchObject({
+      version: 1,
+      coverageComplete: true,
+      degraded: false,
+      signals: [],
+    });
+  });
+
+  it("refuses to infer an empty evolution review before configured sources are reconciled", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(
+      join(rootDir, "reconciliation.json"),
+      `${JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })}\n`
+    );
+    process.chdir(tempHome);
+
+    const assessOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "assess", "--json"]);
+    });
+    expect(assessOut.errors).toEqual([]);
+    expect(JSON.parse(assessOut.logs.join("\n"))).toMatchObject({
+      recommendation: "reconcile_sources",
+      reconciliation: {
+        configured: true,
+        signalCount: 0,
+      },
+    });
+  });
+
   it("records and lists writebacks through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
@@ -80,7 +144,7 @@ describe("ai CLI", () => {
     expect(addOut.errors).toEqual([]);
     expect(addOut.logs.join("\n")).toContain("WB-00001");
 
-    await aiCommand(["writeback", "link", "WB-00001", "--issue", "HACK-791"]);
+    await aiCommand(["writeback", "link", "WB-00001", "--issue", "TICKET-791"]);
     await aiCommand([
       "writeback",
       "disposition",
@@ -88,7 +152,7 @@ describe("ai CLI", () => {
       "--type",
       "task",
       "--target",
-      "HACK-791",
+      "TICKET-791",
       "--expected-outcome",
       "The closed loop is measurable.",
     ]);

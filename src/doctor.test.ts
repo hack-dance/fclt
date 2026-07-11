@@ -15,9 +15,76 @@ import { manageTool } from "./manage";
 import {
   facultAiEvolutionReviewDir,
   facultAiIndexPath,
+  facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
 } from "./paths";
+
+test("doctor distinguishes invalid reconciliation config and state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-reconciliation-"));
+  const aiRoot = join(dir, ".ai");
+  const env = { ...process.env, HOME: dir };
+  try {
+    const setup = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "setup",
+        "--global-only",
+        "--no-codex-plugin",
+        "--json",
+      ],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    expect(await setup.exited).toBe(0);
+
+    await Bun.write(join(aiRoot, "reconciliation.json"), "{invalid-config");
+    const invalidConfig = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const configReport = JSON.parse(
+      await new Response(invalidConfig.stdout).text()
+    ) as {
+      issues: Array<{ code: string }>;
+      actions: Array<{ command: string }>;
+    };
+    await invalidConfig.exited;
+    expect(configReport.issues.map((issue) => issue.code)).toContain(
+      "reconciliation-config-invalid"
+    );
+    expect(configReport.actions.map((action) => action.command)).toContain(
+      "fclt ai review init --force"
+    );
+
+    await Bun.write(
+      join(aiRoot, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    await Bun.write(
+      facultAiReconciliationStatePath(dir, aiRoot),
+      "{invalid-state"
+    );
+    const invalidState = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--json"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const stateReport = JSON.parse(
+      await new Response(invalidState.stdout).text()
+    ) as { issues: Array<{ code: string }>; loop: { blockers: string[] } };
+    await invalidState.exited;
+    expect(stateReport.issues.map((issue) => issue.code)).toContain(
+      "reconciliation-state-invalid"
+    );
+    expect(stateReport.loop.blockers).toContain("reconciliation_state_invalid");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 const BROKEN_CUSTOM_REF = ["$", "{refs.private_custom}"].join("");
 const BROKEN_LEARNING_REF = ["$", "{refs.learning_writeback}"].join("");
@@ -650,6 +717,47 @@ test("project doctor accepts loop skills inherited from the global root", async 
     expect(report.loop.blockers).not.toContain("evolution_skill_missing");
     expect(report.loop.capabilities.writebackSkill).toBe(true);
     expect(report.loop.capabilities.evolutionSkill).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor blocks loop readiness when reconciliation has no enabled sources", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-no-sources-"));
+  const repo = join(dir, "work", "repo");
+  const cliEntry = join(import.meta.dir, "index.ts");
+
+  try {
+    await mkdir(repo, { recursive: true });
+    await runFixtureGit({
+      argv: ["init", repo],
+      repoDir: repo,
+      homeDir: join(dir, ".git-home"),
+    });
+    const env = { ...process.env, HOME: dir };
+    const setup = Bun.spawn(
+      ["bun", "run", cliEntry, "setup", "--no-codex-plugin", "--json"],
+      { cwd: repo, env, stdout: "pipe", stderr: "pipe" }
+    );
+    expect(await setup.exited).toBe(0);
+    await Bun.write(
+      join(repo, ".ai", "reconciliation.json"),
+      JSON.stringify({ version: 1, sources: [] })
+    );
+    const proc = Bun.spawn(
+      ["bun", "run", cliEntry, "doctor", "--project", "--json"],
+      { cwd: repo, env, stdout: "pipe", stderr: "pipe" }
+    );
+    const [code, out] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+    ]);
+    expect(code).toBe(0);
+    const report = JSON.parse(out) as {
+      loop: { state: string; blockers: string[] };
+    };
+    expect(report.loop.state).toBe("blocked");
+    expect(report.loop.blockers).toContain("reconciliation_sources_missing");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

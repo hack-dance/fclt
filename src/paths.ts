@@ -458,8 +458,26 @@ export function facultAiDraftDir(
   return join(facultAiRuntimeScopeDir(home, rootDir), "evolution", "drafts");
 }
 
+export function facultAiReconciliationStatePath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "reconciliation",
+    "state.json"
+  );
+}
+
+export function facultAiReconciliationConfigPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(rootDir ?? facultRootDir(home), "reconciliation.json");
+}
+
 export function facultAiReviewScopeDir(
-  artifactDir: "writebacks" | "evolution",
+  artifactDir: "writebacks" | "evolution" | "reconciliation",
   home: string = defaultHomeDir(),
   rootDir?: string
 ): string {
@@ -473,6 +491,13 @@ export function facultAiReviewScopeDir(
         machineStateProjectKey(resolvedRoot, home)
       )
     : join(preferredGlobalAiRoot(home), artifactDir, "global");
+}
+
+export function facultAiReconciliationReviewDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return facultAiReviewScopeDir("reconciliation", home, rootDir);
 }
 
 export function facultAiWritebackReviewDir(

@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 import { refreshAiReviewArtifacts } from "./ai";
 import { buildDoctorReport, type DoctorReport } from "./doctor";
 import { type SetupCodexPluginResult, setupCodexPlugin } from "./manage";
-import { facultRootDir } from "./paths";
+import { facultAiReconciliationConfigPath, facultRootDir } from "./paths";
+import { initializeReconciliationConfig } from "./reconciliation-config";
 import {
   findGitRootFromPath,
   scaffoldBuiltinOperatingModelPack,
@@ -57,6 +58,23 @@ function reportRepairs(
   }));
 }
 
+async function initializeReconciliationForSetup(args: {
+  homeDir: string;
+  rootDir: string;
+  scope: "global" | "project";
+  dryRun?: boolean;
+}): Promise<Awaited<ReturnType<typeof initializeReconciliationConfig>> | null> {
+  try {
+    return await initializeReconciliationConfig(args);
+  } catch (error) {
+    const path = facultAiReconciliationConfigPath(args.homeDir, args.rootDir);
+    if (await Bun.file(path).exists()) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 export async function bootstrapFclt(
   opts: BootstrapOptions = {}
 ): Promise<BootstrapResult> {
@@ -85,6 +103,18 @@ export async function bootstrapFclt(
   changedPaths.push(...globalInstall.changedPaths);
   skippedPaths.push(...(globalInstall.skippedPaths ?? []));
 
+  const globalReconciliation = await initializeReconciliationForSetup({
+    homeDir,
+    rootDir: globalRoot,
+    scope: "global",
+    dryRun: opts.dryRun,
+  });
+  if (globalReconciliation?.created) {
+    changedPaths.push(globalReconciliation.path);
+  } else if (!globalReconciliation) {
+    skippedPaths.push(facultAiReconciliationConfigPath(homeDir, globalRoot));
+  }
+
   if (!opts.dryRun) {
     await refreshAiReviewArtifacts({ homeDir, rootDir: globalRoot });
   }
@@ -99,6 +129,17 @@ export async function bootstrapFclt(
     });
     changedPaths.push(...projectInstall.changedPaths);
     skippedPaths.push(...(projectInstall.skippedPaths ?? []));
+    const projectReconciliation = await initializeReconciliationForSetup({
+      homeDir,
+      rootDir: projectRoot,
+      scope: "project",
+      dryRun: opts.dryRun,
+    });
+    if (projectReconciliation?.created) {
+      changedPaths.push(projectReconciliation.path);
+    } else if (!projectReconciliation) {
+      skippedPaths.push(facultAiReconciliationConfigPath(homeDir, projectRoot));
+    }
     if (!opts.dryRun) {
       await refreshAiReviewArtifacts({ homeDir, rootDir: projectRoot });
     }

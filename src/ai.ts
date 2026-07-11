@@ -190,6 +190,8 @@ export interface AiWritebackGroup {
 
 export type EvolutionAssessmentRecommendation =
   | "no_mutation"
+  | "reconcile_sources"
+  | "review_reconciled_signals"
   | "record_more_writeback"
   | "propose"
   | "review_existing_proposal";
@@ -210,6 +212,13 @@ export interface EvolutionAssessment {
   evidenceCount: number;
   activeProposalIds: string[];
   repeatedSignal: boolean;
+  reconciliation: {
+    configured: boolean;
+    coverageState?: "complete" | "degraded";
+    lastReviewId?: string;
+    signalCount: number;
+    matchingSignalIds: string[];
+  };
   approvalRequired: boolean;
   suggestedCommands: {
     readOnly: string[];
@@ -1298,6 +1307,33 @@ export async function assessEvolution(args: {
   );
   const canPropose = selectedWritebacks.length > 0;
   const shouldPropose = repeatedSignal || hasStrongSingleSignal;
+  const { latestReconciliationReview, reconciliationStatus } = await import(
+    "./reconciliation"
+  );
+  const reconciliation = await reconciliationStatus({
+    homeDir,
+    rootDir: args.rootDir,
+  });
+  const latestReview =
+    reconciliation.stateError || reconciliation.configurationState !== "ready"
+      ? null
+      : await latestReconciliationReview({
+          homeDir,
+          rootDir: args.rootDir,
+        });
+  const matchingSignals = (latestReview?.signals ?? []).filter((signal) => {
+    if (!selectedTarget) {
+      return true;
+    }
+    return signal.assetRefs.some((assetRef) => {
+      const normalizedAssetRef = assetRef.toLowerCase();
+      if (assetRef.startsWith("@")) {
+        return normalizedAssetRef === selectedTarget.toLowerCase();
+      }
+      const scopedAssetRef = `@${scopeContext.scope === "project" ? "project" : "ai"}/${normalizedAssetRef}`;
+      return scopedAssetRef === selectedTarget.toLowerCase();
+    });
+  });
 
   let recommendation: EvolutionAssessmentRecommendation = "no_mutation";
   let confidence: ConfidenceLevel = "high";
@@ -1308,6 +1344,13 @@ export async function assessEvolution(args: {
     recommendation = "review_existing_proposal";
     confidence = "high";
     rationale = `Existing active proposal${activeProposalIds.length === 1 ? "" : "s"} already cover ${selectedTarget}. Review or revise before creating another proposal.`;
+  } else if (
+    matchingSignals.length > 0 &&
+    reconciliation.coverageState === "complete"
+  ) {
+    recommendation = "review_reconciled_signals";
+    confidence = "high";
+    rationale = `Reconciliation review ${latestReview?.reviewId} contains ${matchingSignals.length} correlated signal${matchingSignals.length === 1 ? "" : "s"}. Review their dispositions and linked work before concluding that nothing is pending.`;
   } else if (shouldPropose) {
     recommendation = "propose";
     confidence = repeatedSignal ? "high" : "medium";
@@ -1318,11 +1361,28 @@ export async function assessEvolution(args: {
     recommendation = "record_more_writeback";
     confidence = "medium";
     rationale = `${selectedTarget} has only ${selectedWritebacks.length} evidenced writeback. Prefer recording another concrete recurrence or narrowing the target before proposing evolution.`;
+  } else if (
+    !(
+      reconciliation.configured &&
+      reconciliation.coverageState === "complete" &&
+      latestReview &&
+      latestReview.coverageComplete
+    )
+  ) {
+    recommendation = "reconcile_sources";
+    confidence = "high";
+    rationale = reconciliation.configured
+      ? latestReview
+        ? `Reconciliation review ${latestReview.reviewId} has degraded source coverage. Do not report an empty review.`
+        : "Configured sources have not been reconciled yet. The writeback queue alone cannot prove an empty review window."
+      : "Automatic source reconciliation is not configured. The writeback queue alone cannot prove an empty review window.";
   }
 
   const assetArg = commandAssetArg(args.asset, selectedTarget);
   const readOnly = [
     "fclt status --json",
+    "fclt ai review status --json",
+    "fclt ai review reconcile --since <window-start> --until <window-end> --json",
     "fclt ai writeback group --by asset --json",
     `fclt ai evolve assess${assetArg} --json`,
     ...(activeProposalIds.length > 0
@@ -1332,16 +1392,29 @@ export async function assessEvolution(args: {
   const mutating =
     recommendation === "propose"
       ? [`fclt ai evolve propose${assetArg} --json`]
-      : canPropose
-        ? [
-            "fclt ai writeback add --kind <kind> --summary <summary> --asset <target> --evidence <type:ref>",
-            `fclt ai evolve propose${assetArg} --json`,
-          ]
-        : [
-            "fclt ai writeback add --kind <kind> --summary <summary> --asset <target> --evidence <type:ref>",
-          ];
+      : recommendation === "reconcile_sources" ||
+          recommendation === "review_reconciled_signals"
+        ? []
+        : canPropose
+          ? [
+              "fclt ai writeback add --kind <kind> --summary <summary> --asset <target> --evidence <type:ref>",
+              `fclt ai evolve propose${assetArg} --json`,
+            ]
+          : [
+              "fclt ai writeback add --kind <kind> --summary <summary> --asset <target> --evidence <type:ref>",
+            ];
 
   const qualityChecklist = [
+    {
+      item: "configured source coverage",
+      pass: Boolean(
+        reconciliation.coverageState === "complete" &&
+          latestReview?.coverageComplete
+      ),
+      note: latestReview
+        ? `${latestReview.reviewId} coverage is ${reconciliation.coverageState === "complete" && latestReview.coverageComplete ? "complete" : "degraded"} with ${latestReview.signals.length} correlated signal(s).`
+        : "No completed reconciliation review is available for this scope.",
+    },
     {
       item: "targetable asset",
       pass: Boolean(selectedTarget),
@@ -1382,7 +1455,11 @@ export async function assessEvolution(args: {
             ? "Review or revise the existing proposal instead of creating a duplicate."
             : recommendation === "record_more_writeback"
               ? "Record another concrete recurrence before proposing."
-              : "Do not mutate capability state yet.",
+              : recommendation === "reconcile_sources"
+                ? "Run a bounded read-only source reconciliation before concluding the review is empty."
+                : recommendation === "review_reconciled_signals"
+                  ? "Review correlated dispositions and linked work; do not create one proposal per ticket."
+                  : "Do not mutate capability state yet.",
     },
   ];
 
@@ -1393,7 +1470,11 @@ export async function assessEvolution(args: {
         ? `Review ${activeProposalIds.join(", ")} and decide whether to revise, accept, reject, or leave it. Do not create a duplicate proposal.`
         : recommendation === "record_more_writeback"
           ? "Do not propose yet. Inspect the target if useful, explain what recurrence would change the decision, and record a new writeback only if there is fresh concrete evidence."
-          : "Do not mutate fclt state. Ask for a target asset or gather concrete writeback evidence first.";
+          : recommendation === "reconcile_sources"
+            ? "Run a bounded source reconciliation for the intended window. Treat unavailable or stale coverage as degraded, not empty."
+            : recommendation === "review_reconciled_signals"
+              ? `Review ${matchingSignals.map((signal) => signal.id).join(", ")} and preserve each disposition, exclusion reason, and linked implementation target before proposing any capability change.`
+              : "Do not mutate fclt state. The completed reconciliation window and writeback queue contain no targetable signal.";
 
   return {
     scope: scopeContext.scope,
@@ -1411,6 +1492,13 @@ export async function assessEvolution(args: {
     evidenceCount,
     activeProposalIds,
     repeatedSignal,
+    reconciliation: {
+      configured: reconciliation.configured,
+      coverageState: reconciliation.coverageState,
+      lastReviewId: reconciliation.lastReviewId,
+      signalCount: latestReview?.signals.length ?? 0,
+      matchingSignalIds: matchingSignals.map((signal) => signal.id),
+    },
     approvalRequired:
       recommendation === "propose" ||
       recommendation === "review_existing_proposal",
@@ -2226,6 +2314,21 @@ function aiHelp(): string {
 Usage:
   fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
   fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
+  fclt ai review <init|status|reconcile> [args...]
+`;
+}
+
+function reviewHelp(): string {
+  return `fclt ai review
+
+Usage:
+  fclt ai review init [--dry-run] [--force] [--json]
+  fclt ai review status [--json]
+  fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incremental] [--config <path>] [--json]
+
+Reconciliation reads configured sources and writes machine-local cursors plus a
+human-readable review artifact. It never mutates external sources or applies a
+proposal.
 `;
 }
 
@@ -2684,6 +2787,90 @@ async function evolveCommand(argv: string[]) {
   }
 }
 
+async function reviewCommand(argv: string[]): Promise<void> {
+  const parsed = parseCliContextArgs(argv);
+  const [sub, ...commandArgs] = parsed.argv;
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    console.log(reviewHelp());
+    return;
+  }
+  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
+    console.log(reviewHelp());
+    return;
+  }
+  const rootDir = resolveCliContextRoot({
+    rootArg: parsed.rootArg,
+    scope: parsed.scope,
+    cwd: process.cwd(),
+  });
+  const homeDir = process.env.HOME ?? "";
+  const json = commandArgs.includes("--json");
+  try {
+    if (sub === "init") {
+      const { initializeReconciliationConfig } = await import(
+        "./reconciliation-config"
+      );
+      const result = await initializeReconciliationConfig({
+        homeDir,
+        rootDir,
+        scope:
+          parsed.scope === "global" || parsed.scope === "project"
+            ? parsed.scope
+            : undefined,
+        dryRun: commandArgs.includes("--dry-run"),
+        force: commandArgs.includes("--force"),
+      });
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : `${result.created ? "Initialized" : "Using"} reconciliation config ${result.path}`
+      );
+      return;
+    }
+    if (sub === "status") {
+      const { reconciliationStatus } = await import("./reconciliation");
+      const result = await reconciliationStatus({ homeDir, rootDir });
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : `reconciliation: ${result.configured ? (result.coverageState ?? "not-run") : "not-configured"}\nconfig: ${result.configPath}\nstate: ${result.statePath}`
+      );
+      return;
+    }
+    if (sub === "reconcile") {
+      const since = parseStringFlag(commandArgs, "--since");
+      if (!since) {
+        throw new Error("review reconcile requires --since");
+      }
+      const { reconcileSources } = await import("./reconciliation");
+      const result = await reconcileSources({
+        homeDir,
+        rootDir,
+        since,
+        until: parseStringFlag(commandArgs, "--until"),
+        configPath: parseStringFlag(commandArgs, "--config"),
+        sourceIds: parseRepeatedFlag(commandArgs, "--source"),
+        incremental: commandArgs.includes("--incremental"),
+      });
+      console.log(
+        json
+          ? JSON.stringify(result, null, 2)
+          : [
+              `review: ${result.reviewId}`,
+              `coverage: ${result.coverageComplete ? "complete" : "degraded"}`,
+              `signals: ${result.signals.length}`,
+              `artifact: ${result.artifactPath}`,
+            ].join("\n")
+      );
+      return;
+    }
+    throw new Error(`Unknown review command: ${sub}`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
 export async function aiCommand(argv: string[]) {
   const [sub, ...rest] = argv;
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -2698,6 +2885,10 @@ export async function aiCommand(argv: string[]) {
 
   if (sub === "evolve") {
     await evolveCommand(rest);
+    return;
+  }
+  if (sub === "review" || sub === "reconcile") {
+    await reviewCommand(sub === "reconcile" ? ["reconcile", ...rest] : rest);
     return;
   }
 

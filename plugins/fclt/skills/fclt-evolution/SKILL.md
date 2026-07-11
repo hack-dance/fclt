@@ -16,6 +16,7 @@ Do not use it for a single weak preference or speculative idea.
 1. Review signal:
 
 ```bash
+fclt ai review reconcile --since <window-start> --until <window-end> --json
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by domain
 fclt ai evolve list
@@ -29,6 +30,8 @@ fclt ai evolve assess --asset <selector> --json
 
 Use the assessment recommendation as the decision checkpoint:
 
+- `reconcile_sources`: run the bounded read-only source review; writebacks alone cannot prove the window is empty.
+- `review_reconciled_signals`: review correlated dispositions and linked work without creating one proposal per ticket.
 - `no_mutation`: do not change capability state; ask for a target or evidence.
 - `record_more_writeback`: explain what recurrence would justify evolution and record a new writeback only if there is fresh concrete evidence.
 - `propose`: ask before running the proposal command, then create the smallest target-specific proposal.

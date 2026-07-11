@@ -71,6 +71,39 @@ describe("zero-config setup", () => {
     expect(await Bun.file(join(repo, ".ai")).exists()).toBe(false);
   });
 
+  it("preserves an invalid reconciliation config and reports repair", async () => {
+    const home = await tempHome("fclt-setup-invalid-reconciliation-");
+    const root = join(home, ".ai");
+    const configPath = join(root, "reconciliation.json");
+    await mkdir(root, { recursive: true });
+    await Bun.write(configPath, "{invalid\n");
+
+    const result = await runCli({
+      home,
+      cwd: home,
+      argv: ["setup", "--global-only", "--json", "--no-codex-plugin"],
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    const parsed = JSON.parse(result.stdout) as {
+      health: string;
+      skippedPaths: string[];
+      repairActions: Array<{ command: string }>;
+      readiness: { global: { loop: { blockers: string[] } } };
+    };
+    expect(parsed.health).toBe("blocked");
+    expect(parsed.skippedPaths).toContain(configPath);
+    expect(parsed.readiness.global.loop.blockers).toContain(
+      "reconciliation_config_invalid"
+    );
+    expect(parsed.repairActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ command: "fclt ai review init --force" }),
+      ])
+    );
+    expect(await Bun.file(configPath).text()).toBe("{invalid\n");
+  });
+
   it("bootstraps an isolated CLI-only home and project idempotently", async () => {
     const home = await tempHome("fclt-setup-cli-");
     const repo = await initRepo(home);
@@ -100,6 +133,22 @@ describe("zero-config setup", () => {
     expect(result.readiness.project.loop.state).toBe("ready");
     expect(result.readiness.global.loop.capabilities.writebackSkill).toBe(true);
     expect(result.readiness.global.loop.capabilities.evolutionSkill).toBe(true);
+    expect(
+      result.readiness.global.loop.capabilities.reconciliation
+    ).toMatchObject({ configured: true, sourceCount: 1 });
+    expect(
+      result.readiness.project.loop.capabilities.reconciliation
+    ).toMatchObject({ configured: true, sourceCount: 2 });
+    expect(
+      JSON.parse(
+        await Bun.file(join(home, ".ai", "reconciliation.json")).text()
+      ).sources
+    ).toHaveLength(1);
+    expect(
+      JSON.parse(
+        await Bun.file(join(repo, ".ai", "reconciliation.json")).text()
+      ).sources
+    ).toHaveLength(2);
 
     const add = await runCli({
       home,
