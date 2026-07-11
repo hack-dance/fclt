@@ -789,7 +789,13 @@ export async function reconcileSources(args: {
           : result.watermark;
       }
       adapterResults.set(source.id, result);
-      records.push(...result.records);
+      const reviewRecords = args.incremental
+        ? result.records.filter(
+            (record) =>
+              !state.evidence[record.dedupeKey]?.sourceIds.includes(source.id)
+          )
+        : result.records;
+      records.push(...reviewRecords);
       coverage.push({
         sourceId: source.id,
         sourceType: source.type,

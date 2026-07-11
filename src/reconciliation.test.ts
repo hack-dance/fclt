@@ -687,6 +687,45 @@ describe("source reconciliation", () => {
     expect(
       second.signals.some((signal) => signal.title.includes("2026-07-04"))
     ).toBe(true);
+
+    await Bun.write(
+      queuePath,
+      [
+        JSON.stringify({
+          id: "WB-00020",
+          ts: "2026-07-05T12:00:00Z",
+          summary: "First incremental signal",
+        }),
+        JSON.stringify({
+          id: "WB-00021",
+          ts: "2026-07-06T12:00:00Z",
+          summary: "Second incremental signal",
+        }),
+        JSON.stringify({
+          id: "WB-00022",
+          ts: "2026-07-06T12:00:00Z",
+          summary: "New signal sharing the watermark timestamp",
+        }),
+      ].join("\n")
+    );
+    const tied = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+      incremental: true,
+    });
+    expect(tied.signals).toHaveLength(1);
+    expect(tied.signals[0]?.writebackRefs).toEqual(["WB-00022"]);
+
+    const quiet = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+      incremental: true,
+    });
+    expect(quiet.coverageComplete).toBe(true);
+    expect(quiet.signals).toHaveLength(0);
+    expect(quiet.emptyReason).toContain("every configured source was checked");
   });
 
   it("reconciles legacy writeback queues on upgraded installs", async () => {

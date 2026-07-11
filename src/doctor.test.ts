@@ -722,6 +722,47 @@ test("project doctor accepts loop skills inherited from the global root", async 
   }
 }, 10_000);
 
+test("doctor blocks loop readiness when reconciliation has no enabled sources", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-no-sources-"));
+  const repo = join(dir, "work", "repo");
+  const cliEntry = join(import.meta.dir, "index.ts");
+
+  try {
+    await mkdir(repo, { recursive: true });
+    await runFixtureGit({
+      argv: ["init", repo],
+      repoDir: repo,
+      homeDir: join(dir, ".git-home"),
+    });
+    const env = { ...process.env, HOME: dir };
+    const setup = Bun.spawn(
+      ["bun", "run", cliEntry, "setup", "--no-codex-plugin", "--json"],
+      { cwd: repo, env, stdout: "pipe", stderr: "pipe" }
+    );
+    expect(await setup.exited).toBe(0);
+    await Bun.write(
+      join(repo, ".ai", "reconciliation.json"),
+      JSON.stringify({ version: 1, sources: [] })
+    );
+    const proc = Bun.spawn(
+      ["bun", "run", cliEntry, "doctor", "--project", "--json"],
+      { cwd: repo, env, stdout: "pipe", stderr: "pipe" }
+    );
+    const [code, out] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+    ]);
+    expect(code).toBe(0);
+    const report = JSON.parse(out) as {
+      loop: { state: string; blockers: string[] };
+    };
+    expect(report.loop.state).toBe("blocked");
+    expect(report.loop.blockers).toContain("reconciliation_sources_missing");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
 test("doctor --json flags invalid canonical global guidance", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-global-docs-"));
   const aiRoot = join(dir, ".ai");

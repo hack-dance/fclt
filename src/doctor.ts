@@ -1295,6 +1295,9 @@ export async function buildDoctorReport(opts?: {
   if (reconciliation.configurationState === "invalid") {
     loopBlockers.push("reconciliation_config_invalid");
   }
+  if (reconciliation.configured && reconciliation.sourceCount === 0) {
+    loopBlockers.push("reconciliation_sources_missing");
+  }
   if (reconciliation.stateError) {
     loopBlockers.push("reconciliation_state_invalid");
   }
