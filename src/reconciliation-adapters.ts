@@ -850,10 +850,10 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
         };
       }
       try {
-        const paths: string[] = [];
+        const paths = new Set<string>();
         let truncated = false;
         for (const pattern of config.paths) {
-          if (paths.length >= MAX_FILES) {
+          if (truncated) {
             break;
           }
           validateGlob(pattern);
@@ -863,14 +863,17 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
             onlyFiles: true,
             dot: true,
           })) {
-            paths.push(path);
-            if (paths.length >= MAX_FILES) {
+            if (paths.has(path)) {
+              continue;
+            }
+            if (paths.size >= MAX_FILES) {
               truncated = true;
               break;
             }
+            paths.add(path);
           }
         }
-        if (paths.length === 0) {
+        if (paths.size === 0) {
           return {
             state: "unavailable",
             records: [],
@@ -883,7 +886,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
         let skippedFiles = 0;
         let latestMtime = 0;
         let latestObserved = 0;
-        for (const path of unique(paths)) {
+        for (const path of [...paths].sort((a, b) => a.localeCompare(b))) {
           const rootReal = await realpath(root).catch(() => resolve(root));
           const absolutePath = await realpath(resolve(root, path));
           const rel = relative(rootReal, absolutePath);
@@ -955,7 +958,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
           }
         }
         const staleReason =
-          paths.length > 0 &&
+          paths.size > 0 &&
           Math.max(latestMtime, latestObserved) <
             Date.parse(context.window.since)
             ? "Configured files exist but none changed in the review window"

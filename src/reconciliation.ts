@@ -746,7 +746,7 @@ export async function reconcileSources(args: {
           : undefined;
       return boundedIncrementalSince(
         requestedWindow.since,
-        prior?.watermark,
+        prior?.watermark ?? prior?.coverageUntil,
         requestedWindow.until
       );
     });
@@ -780,7 +780,7 @@ export async function reconcileSources(args: {
         since: args.incremental
           ? boundedIncrementalSince(
               requestedWindow.since,
-              prior?.watermark,
+              prior?.watermark ?? prior?.coverageUntil,
               requestedWindow.until
             )
           : window.since,

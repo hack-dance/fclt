@@ -787,6 +787,31 @@ describe("source reconciliation", () => {
     expect(updated.signals[0]?.disposition).toBe("task");
   });
 
+  it("advances an empty incremental source from its covered-until boundary", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const first = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-05",
+      incremental: true,
+    });
+    expect(first.signals).toHaveLength(0);
+    const next = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+      incremental: true,
+    });
+    expect(next.window.since).toBe("2026-07-05T23:59:59.998Z");
+  });
+
   it("reconciles legacy writeback queues on upgraded installs", async () => {
     const fixture = await makeFixture();
     const legacyQueue = join(
@@ -1605,6 +1630,39 @@ describe("source reconciliation", () => {
       staleReason: "File scan truncated at the 500-file safety cap",
     });
     expect(review.coverageComplete).toBe(false);
+  });
+
+  it("deduplicates overlapping glob matches before the file cap", async () => {
+    const fixture = await makeFixture();
+    const logDir = join(fixture.projectRoot, "logs");
+    await mkdir(logDir, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 300 }, (_, index) =>
+        Bun.write(join(logDir, `entry-${index}.md`), "No signal.\n")
+      )
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          {
+            id: "logs",
+            type: "markdown",
+            paths: ["logs/*.md", "logs/entry-*.md"],
+          },
+        ],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-12",
+    });
+    expect(review.coverage[0]).toMatchObject({
+      state: "changed",
+      recordsScanned: 300,
+    });
   });
 
   it("deduplicates a renamed capability patch across branches and overlapping windows", async () => {
