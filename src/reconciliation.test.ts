@@ -69,6 +69,7 @@ async function writeQueue(args: {
       kind: "missing_context",
       summary: "Evolution needs outcome and effectiveness links.",
       status: "recorded",
+      suggestedDestination: "@project/instructions/OUTCOMES.md",
       evidence: [{ type: "issue", ref: "TICKET-795" }],
       issueLinks: ["TICKET-791"],
       disposition: "resolve-watch",
@@ -98,7 +99,7 @@ function evidenceExport(
   return {
     version: 1,
     producer: "fixture-issue-exporter",
-    generatedAt: "2026-07-10T18:00:00Z",
+    generatedAt: "2026-07-11T01:00:00Z",
     coverage: {
       since: "2026-07-03T00:00:00Z",
       until: "2026-07-11T00:00:00Z",
@@ -354,6 +355,9 @@ describe("source reconciliation", () => {
     expect(
       first.signals.some((signal) => signal.disposition === "propose")
     ).toBe(false);
+    expect(first.signals.flatMap((signal) => signal.assetRefs)).toContain(
+      "@project/instructions/OUTCOMES.md"
+    );
     expect(
       first.signals.some(
         (signal) =>
@@ -1027,6 +1031,20 @@ describe("source reconciliation", () => {
     });
     expect(narrower.coverage[0]?.state).toBe("unavailable");
     expect(narrower.emptyReason).toContain("not a proven empty review");
+
+    await Bun.write(
+      exportPath,
+      JSON.stringify({
+        ...evidenceExport([]),
+        generatedAt: "2026-07-05T00:00:00Z",
+      })
+    );
+    const stale = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(stale.coverage[0]?.state).toBe("unavailable");
   });
 
   it("keeps non-terminal exported status changes as implementation evidence", async () => {
@@ -1307,7 +1325,7 @@ describe("source reconciliation", () => {
     const review = await reconcileSources({
       ...fixture,
       since: "2026-07-03",
-      until: "2026-07-10",
+      until: "2026-07-12",
     });
     expect(review.coverage[0]?.recordsScanned).toBe(500);
     expect(review.coverage[0]).toMatchObject({

@@ -78,7 +78,7 @@ the requested review window:
 {
   "version": 1,
   "producer": "example-tracker-exporter",
-  "generatedAt": "2026-07-10T18:00:00Z",
+  "generatedAt": "2026-07-11T00:05:00Z",
   "coverage": {
     "since": "2026-07-03T00:00:00Z",
     "until": "2026-07-10T23:59:59Z",

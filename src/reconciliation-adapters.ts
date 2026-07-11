@@ -174,6 +174,7 @@ interface WritebackQueueRecord {
   summary?: string;
   kind?: string;
   assetRef?: string;
+  suggestedDestination?: string;
   evidence?: Array<{ ref?: string }>;
   issueLinks?: string[];
   disposition?: string;
@@ -310,6 +311,7 @@ const writebackAdapter: ReconciliationAdapter = {
           extraRefs: [
             entry.id,
             entry.assetRef ?? "",
+            entry.suggestedDestination ?? "",
             ...(entry.evidence ?? []).map((item) => item.ref ?? ""),
             ...(entry.issueLinks ?? []),
           ],
@@ -682,6 +684,8 @@ const evidenceExportAdapter: ReconciliationAdapter = {
         Date.parse(envelope.coverage.since) <=
           Date.parse(context.window.since) &&
         Date.parse(envelope.coverage.until) >= Date.parse(context.window.until);
+      const generatedAfterWindow =
+        Date.parse(envelope.generatedAt) >= Date.parse(context.window.until);
       const records = envelope.events
         .filter((event) => inWindow(event.observedAt, context))
         .map((event) =>
@@ -702,7 +706,9 @@ const evidenceExportAdapter: ReconciliationAdapter = {
             extraRefs: event.refs ?? [],
           })
         );
-      if (!(envelope.coverage.complete && coversWindow)) {
+      if (
+        !(envelope.coverage.complete && coversWindow && generatedAfterWindow)
+      ) {
         return {
           state: "unavailable",
           records,
