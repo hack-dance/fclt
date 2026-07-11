@@ -21,6 +21,7 @@ import {
   listProposals,
   listWritebacks,
   proposeEvolution,
+  rejectProposal,
   showProposal,
   verifyProposalEffectiveness,
 } from "./ai";
@@ -456,6 +457,14 @@ describe("evolution loop", () => {
   it("does not combine a degraded scheduled run with later manual coverage", async () => {
     const project = await makeProject();
     await enableEvolutionLoop({ ...project });
+    const firstScheduled = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-02",
+      trigger: "scheduled",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    expect(firstScheduled.status).toBe("complete");
     await Bun.write(
       join(project.rootDir, "reconciliation.json"),
       `${JSON.stringify({
@@ -505,8 +514,13 @@ describe("evolution loop", () => {
       ...project,
       now: () => new Date("2026-01-05T00:00:00.000Z"),
     });
-    expect(status.schedulerObservation.state).toBe("never_observed");
-    expect(status.schedulerObservation.lastSuccessfulRunAt).toBeUndefined();
+    expect(status.schedulerObservation.state).toBe("healthy");
+    expect(status.schedulerObservation.lastObservedRunAt).toBe(
+      "2026-01-04T00:00:00.000Z"
+    );
+    expect(status.schedulerObservation.lastSuccessfulRunAt).toBe(
+      "2026-01-03T00:00:00.000Z"
+    );
     expect(status.health).toBe("degraded");
   });
 
@@ -1455,6 +1469,21 @@ describe("evolution loop", () => {
       "EXAMPLE-201",
       "EXAMPLE-202",
     ]);
+
+    await rejectProposal(proposals[0]!.id, {
+      ...project,
+      reason: "Closed after operator review.",
+    });
+    const closed = await runEvolutionLoop({
+      ...project,
+      until: "2026-01-06",
+      now: () => new Date("2026-01-06T00:00:00.000Z"),
+    });
+    const closedItem = closed.queue.find(
+      (item) => item.kind === "proposal" && item.proposalId === proposals[0]!.id
+    );
+    expect(closedItem?.state).toBe("resolved");
+    expect(closedItem?.requestedExternalAction).toBeUndefined();
   });
 
   it("covers signal, proposal, explicit apply, regression reopen, and verified improvement end to end", async () => {

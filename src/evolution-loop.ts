@@ -747,6 +747,13 @@ function proposalQueueState(
   verification: NonNullable<LoopQueueItem["verification"]>
 ): LoopQueueState {
   if (
+    proposal.status === "rejected" ||
+    proposal.status === "superseded" ||
+    proposal.status === "failed"
+  ) {
+    return "resolved";
+  }
+  if (
     verification.state === "regressed" ||
     verification.state === "unchanged" ||
     proposal.verification?.status === "reopened"
@@ -770,13 +777,6 @@ function proposalQueueState(
   }
   if (proposal.status === "applied" && verification.state === "unscheduled") {
     return "verification_pending";
-  }
-  if (
-    proposal.status === "rejected" ||
-    proposal.status === "superseded" ||
-    proposal.status === "failed"
-  ) {
-    return "resolved";
   }
   return proposal.reviewRequired && proposal.status !== "accepted"
     ? "approval_needed"
@@ -1532,7 +1532,7 @@ async function evolutionLoopStatusScoped(args: {
       })
     : { exists: false, registered: false };
   const reconciliation = await reconciliationStatus(args);
-  const lastObservedRunAt = state.lastSuccessfulScheduledRunAt;
+  const lastObservedRunAt = state.lastScheduledRunAt;
   const lastSuccessfulRunAt = state.lastSuccessfulScheduledRunAt;
   const staleAfterHours = config ? schedulerStaleAfterHours(config) : undefined;
   const schedulerObservation = {
@@ -1548,6 +1548,7 @@ async function evolutionLoopStatusScoped(args: {
   };
   const successfulScheduledRunIsRecent = Boolean(
     lastSuccessfulRunAt &&
+      lastSuccessfulRunAt === lastObservedRunAt &&
       (args.now?.() ?? new Date()).getTime() -
         Date.parse(lastSuccessfulRunAt) <=
         (staleAfterHours ?? 48) * 60 * 60 * 1000
