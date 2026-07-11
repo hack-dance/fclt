@@ -1074,6 +1074,13 @@ describe("source reconciliation", () => {
             body: "Backlog -> In Progress",
             refs: ["TICKET-900"],
           },
+          {
+            id: "history-2",
+            kind: "status-change",
+            observedAt: "2026-07-05T13:00:00Z",
+            body: "Backlog -> In Progress",
+            refs: ["TICKET-901"],
+          },
         ])
       )
     );
@@ -1100,6 +1107,10 @@ describe("source reconciliation", () => {
     expect(
       review.signals.every((signal) => signal.disposition === "task")
     ).toBe(true);
+    expect(review.signals).toHaveLength(2);
+    expect(review.signals.map((signal) => signal.issueRefs)).toEqual(
+      expect.arrayContaining([["TICKET-900"], ["TICKET-901"]])
+    );
   });
 
   it("treats a terminal exported event as outcome proof", async () => {

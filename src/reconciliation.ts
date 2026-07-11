@@ -255,7 +255,8 @@ function correlationKeys(record: SourceRecord): string[] {
     typeof record.provenance.path === "string"
       ? [`file-path:${record.sourceType}:${record.provenance.path}`]
       : [];
-  return unique([...boundedReferenceKeys, ...filePathKey, semanticKey(record)]);
+  const semanticKeys = referenceCount === 0 ? [semanticKey(record)] : [];
+  return unique([...boundedReferenceKeys, ...filePathKey, ...semanticKeys]);
 }
 
 function extractionDecision(record: SourceRecord): ExtractionDecision {
