@@ -59,7 +59,7 @@ credentials:
       "id": "runbooks",
       "type": "markdown",
       "root": "project",
-      "paths": ["notes/**/*.md", "research/**/*.md"]
+      "paths": ["notes/capability-review-log.md", "research/agent-findings.md"]
     },
     {
       "id": "automation-memory",
@@ -103,6 +103,15 @@ file and performs no network or credential access. A separate plugin or
 user-owned exporter can produce that file from any external system.
 Missing exports, missing logs, stale sources, and adapter failures produce
 degraded coverage instead of a false empty result.
+
+Configure file sources narrowly around append-only logs, dated runbooks, or
+research streams that represent review evidence. Date section headings as
+`## YYYY-MM-DD ...` so one file can prove which observations belong to the
+requested window. For an undated Markdown file, fclt must use the file's
+modification time for every section; broad patterns such as `notes/**/*.md`
+can therefore surface old material whenever any matched document is edited.
+Symlinks that leave the configured root and files above the safety limit
+degrade coverage rather than being silently skipped.
 
 Machine-local state stores per-source watermarks/cursors, dedupe history,
 extraction decisions, and deterministic review-window JSON. Human-readable

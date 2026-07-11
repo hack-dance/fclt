@@ -249,14 +249,8 @@ function correlationKeys(record: SourceRecord): string[] {
             : record.writebackRefs.map((entry) => `writeback:${entry}`)),
         ]
       : [];
-  const filePathKey =
-    referenceCount === 0 &&
-    (record.sourceType === "markdown" || record.sourceType === "automation") &&
-    typeof record.provenance.path === "string"
-      ? [`file-path:${record.sourceType}:${record.provenance.path}`]
-      : [];
   const semanticKeys = referenceCount === 0 ? [semanticKey(record)] : [];
-  return unique([...boundedReferenceKeys, ...filePathKey, ...semanticKeys]);
+  return unique([...boundedReferenceKeys, ...semanticKeys]);
 }
 
 function extractionDecision(record: SourceRecord): ExtractionDecision {

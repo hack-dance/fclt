@@ -298,6 +298,9 @@ checks Git history for canonical assets. Linear, automation logs, and Markdown
 sources are opt-in. Every review records source coverage, cursors, extraction
 decisions, correlations, exclusions, linked work, and a disposition. An empty
 review is valid only when every configured source was checked.
+Configure Markdown sources as narrow append-only or date-headed evidence
+streams rather than broad workspace globs; undated sections use file
+modification time and may otherwise make old material look current.
 Bounded reviews rescan the full requested window; `--incremental` explicitly
 opts into advancing from stored watermarks. Use `fclt ai review init --force`
 to back up and replace an invalid reconciliation config.

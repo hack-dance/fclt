@@ -1282,6 +1282,46 @@ describe("source reconciliation", () => {
     ]);
   });
 
+  it("does not correlate unrelated Markdown sections by file path", async () => {
+    const fixture = await makeFixture();
+    const logPath = join(fixture.projectRoot, "notes", "review-log.md");
+    await mkdir(join(logPath, ".."), { recursive: true });
+    await Bun.write(
+      logPath,
+      [
+        "## 2026-07-08 Verification gap",
+        "Capability verification needs a packaged runtime check.",
+        "",
+        "## 2026-07-09 Runbook gap",
+        "The deployment runbook needs an explicit rollback step.",
+      ].join("\n")
+    );
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [
+          {
+            id: "review-log",
+            type: "markdown",
+            root: "project",
+            paths: ["notes/review-log.md"],
+          },
+        ],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03",
+      until: "2026-07-10",
+    });
+    expect(review.signals).toHaveLength(2);
+    expect(review.signals.map((signal) => signal.title).sort()).toEqual([
+      "2026-07-08 Verification gap",
+      "2026-07-09 Runbook gap",
+    ]);
+  });
+
   it("preserves invalid state and reports it separately from configuration", async () => {
     const fixture = await makeFixture();
     await Bun.write(
