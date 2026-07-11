@@ -180,6 +180,59 @@ describe("evolution loop", () => {
     expect(status.config?.sourceIds).toEqual(["review-notes"]);
   });
 
+  it("requires a scheduled run from the current config generation", async () => {
+    const project = await makeProject();
+    await enableEvolutionLoop({
+      ...project,
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      trigger: "scheduled",
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+    expect(
+      (
+        await evolutionLoopStatus({
+          ...project,
+          now: () => new Date("2026-01-03T02:00:00.000Z"),
+        })
+      ).health
+    ).toBe("ready");
+
+    const updated = await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["review-notes"],
+      now: () => new Date("2026-01-03T03:00:00.000Z"),
+    });
+    const staleConfigStatus = await evolutionLoopStatus({
+      ...project,
+      now: () => new Date("2026-01-03T04:00:00.000Z"),
+    });
+    expect(updated.config.generation).toBe(2);
+    expect(staleConfigStatus.schedulerObservation.state).toBe("healthy");
+    expect(staleConfigStatus.health).toBe("degraded");
+    expect(
+      staleConfigStatus.state.lastSuccessfulScheduledConfigGeneration
+    ).toBe(1);
+
+    await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      trigger: "scheduled",
+      now: () => new Date("2026-01-03T05:00:00.000Z"),
+    });
+    const refreshed = await evolutionLoopStatus({
+      ...project,
+      now: () => new Date("2026-01-03T06:00:00.000Z"),
+    });
+    expect(refreshed.health).toBe("ready");
+    expect(refreshed.state.lastSuccessfulScheduledConfigGeneration).toBe(2);
+  });
+
   it("rejects unsupported or out-of-range scheduler recurrence rules", async () => {
     const project = await makeProject();
     await expect(

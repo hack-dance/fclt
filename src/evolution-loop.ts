@@ -133,6 +133,7 @@ interface EvolutionLoopState {
   lastRunAt?: string;
   lastScheduledRunAt?: string;
   lastSuccessfulScheduledRunAt?: string;
+  lastSuccessfulScheduledConfigGeneration?: number;
   lastRunStatus?: "complete" | "degraded" | "failed";
   lastCoverageComplete?: boolean;
   lastSuccessfulCoverageUntil?: string;
@@ -1581,6 +1582,7 @@ async function evolutionLoopStatusScoped(args: {
   const successfulScheduledRunIsRecent = Boolean(
     lastSuccessfulRunAt &&
       lastSuccessfulRunAt === lastObservedRunAt &&
+      state.lastSuccessfulScheduledConfigGeneration === config?.generation &&
       (args.now?.() ?? new Date()).getTime() -
         Date.parse(lastSuccessfulRunAt) <=
         (staleAfterHours ?? 48) * 60 * 60 * 1000
@@ -2013,6 +2015,10 @@ async function runEvolutionLoopScoped(args: {
             report.trigger === "scheduled" && review.coverageComplete
               ? generatedAt
               : prior.lastSuccessfulScheduledRunAt,
+          lastSuccessfulScheduledConfigGeneration:
+            report.trigger === "scheduled" && review.coverageComplete
+              ? config.generation
+              : prior.lastSuccessfulScheduledConfigGeneration,
           lastRunStatus: review.coverageComplete ? "complete" : "degraded",
           lastCoverageComplete: review.coverageComplete,
           lastSuccessfulCoverageUntil: review.coverageComplete
@@ -2076,6 +2082,8 @@ async function runEvolutionLoopScoped(args: {
                 lastCoverageComplete: false,
                 lastSuccessfulScheduledRunAt:
                   prior.lastSuccessfulScheduledRunAt,
+                lastSuccessfulScheduledConfigGeneration:
+                  prior.lastSuccessfulScheduledConfigGeneration,
                 lastFailure: {
                   at: generatedAt,
                   message,
