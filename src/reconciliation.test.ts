@@ -901,6 +901,7 @@ describe("source reconciliation", () => {
         JSON.stringify({
           ts: "2026-07-05T00:00:00Z",
           message: "Reconciliation verified TICKET-793",
+          asset: "@project/instructions/TESTING.md",
           token: "super-secret-json-token",
           OPENAI_API_KEY: "prefixed-secret-value",
           output: "accidentally logged sk-proj-abcdefghijklmnopqrstuv",
@@ -953,6 +954,9 @@ describe("source reconciliation", () => {
       "sk-proj-abcdefghijklmnopqrstuv"
     );
     expect(JSON.stringify(review)).not.toContain("TICKET-700");
+    expect(review.signals.flatMap((signal) => signal.assetRefs)).toContain(
+      "@project/instructions/TESTING.md"
+    );
   });
 
   it("marks incomplete evidence exports unavailable", async () => {

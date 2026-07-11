@@ -93,6 +93,25 @@ describe("ai writeback", () => {
     expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
   });
 
+  it("does not read stale state when reconciliation is not configured", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    const statePath = facultAiReconciliationStatePath(tempHome, rootDir);
+    await mkdir(dirname(statePath), { recursive: true });
+    await Bun.write(statePath, "{corrupt-state");
+
+    const assessment = await assessEvolution({ homeDir: tempHome, rootDir });
+
+    expect(assessment.recommendation).toBe("reconcile_sources");
+    expect(assessment.reconciliation).toMatchObject({
+      configured: false,
+      signalCount: 0,
+    });
+    expect(await Bun.file(statePath).text()).toBe("{corrupt-state");
+  });
+
   it("requires reconciliation after enabled source configuration changes", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
