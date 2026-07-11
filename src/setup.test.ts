@@ -331,5 +331,10 @@ printf '{"ok":true}\n'
     expect(
       await Bun.file(result.codexPlugin?.marketplacePath ?? "").exists()
     ).toBe(true);
+    expect(
+      await Bun.file(
+        join(repo, ".agents", "plugins", "marketplace.json")
+      ).exists()
+    ).toBe(false);
   }, 20_000);
 });
