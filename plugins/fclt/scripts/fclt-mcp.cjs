@@ -234,11 +234,14 @@ const tools = [
   {
     name: "fclt_automation",
     description:
-      "Inspect fclt autosync service state. Service mutation remains withheld to preserve scheduled-loop scope.",
+      "Inspect autosync state or read and preview the fclt evolution loop. Schedule and canonical mutation remain CLI-only.",
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["autosync_status"] },
+        action: {
+          type: "string",
+          enum: ["autosync_status", "loop_status", "loop_preview"],
+        },
         scope: { type: "string", enum: ["global", "project"] },
         cwd: { type: "string" },
         tool: { type: "string" },
@@ -896,12 +899,31 @@ function commandForTool(name, args = {}) {
         "--json",
       ];
     case "fclt_automation":
-      return [
-        "autosync",
-        "status",
-        ...(args.tool ? [args.tool] : []),
-        ...scopeArgs(args.scope),
-      ];
+      if (args.action === "autosync_status") {
+        return [
+          "autosync",
+          "status",
+          ...(args.tool ? [args.tool] : []),
+          ...scopeArgs(args.scope),
+        ];
+      }
+      if (args.tool) {
+        throw new Error(`${args.action} does not accept tool`);
+      }
+      if (args.action === "loop_status") {
+        return ["ai", "loop", ...scopeArgs(args.scope), "status", "--json"];
+      }
+      if (args.action === "loop_preview") {
+        return [
+          "ai",
+          "loop",
+          ...scopeArgs(args.scope),
+          "run",
+          "--dry-run",
+          "--json",
+        ];
+      }
+      throw new Error(`Unsupported automation action: ${args.action}`);
     case "fclt_status":
       return ["status", ...scopeArgs(args.scope), "--json"];
     case "fclt_doctor":

@@ -33,6 +33,22 @@ fclt templates init automation tool-call-audit \
   --status PAUSED
 ```
 
+Closed-loop review is managed through the higher-level loop command so fclt
+can coordinate scheduler ownership, reconciliation state, retries, queue
+history, and audit records:
+
+```bash
+fclt ai loop enable --project
+fclt ai loop status --project --json
+fclt ai loop run --project --json
+fclt ai loop disable --project
+```
+
+`enable` is opt-in and installs an owned Codex automation. `disable` pauses
+only that owned automation and preserves the queue and audit trail. A scheduler
+registration is not treated as proof that the loop ran: status distinguishes
+`never_observed`, `healthy`, and `stale` execution.
+
 ## Scopes
 
 - `project`: one repo. Use this for repo-specific writeback, verification, and tool friction.
@@ -59,6 +75,12 @@ When Codex is managed by `fclt`, canonical automation sources can live under:
 
 Project-scoped automation sources are default-deny for managed sync. Add their names to `[project_sync.codex].automations` before project managed sync can render them into the shared live Codex automation store.
 
+The closed-loop controller also writes machine-local JSON state, reports, and
+an append-only audit log. Human-readable review artifacts remain under the
+global review root, including project metadata for project runs. The full queue
+is the source of truth; notifications contain only new, changed, or resolved
+items so repeated schedules do not spam unchanged findings.
+
 ## Suggested Cadence
 
 - daily or per-project `learning-review` for durable signal
@@ -66,3 +88,7 @@ Project-scoped automation sources are default-deny for managed sync. Add their n
 - targeted `tool-call-audit` when tool failures, missing skills, or shallow-success patterns repeat
 
 High-risk global changes should still move through proposal review before apply.
+The closed-loop automation never mutates external trackers. It may emit a
+vendor-neutral `reopen` request in its report, which a separately approved
+integration can act on. Automatic canonical apply is currently withheld and
+reported as a plan-only action.

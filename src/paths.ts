@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -328,6 +329,17 @@ export function projectRootFromAiRoot(
   home: string = defaultHomeDir()
 ): string | null {
   const resolved = resolve(rootDir);
+  const scoped = facultRootScope.getStore();
+  if (scoped && resolve(scoped.rootDir) === resolved) {
+    return scoped.scope === "global" && resolved === resolve(scoped.rootDir)
+      ? null
+      : resolved.endsWith("/.ai")
+        ? dirname(resolved)
+        : null;
+  }
+  if (resolved === resolve(facultRootDir(home))) {
+    return null;
+  }
   if (resolved === resolve(join(home, ".ai"))) {
     return null;
   }
@@ -335,6 +347,18 @@ export function projectRootFromAiRoot(
     return null;
   }
   return resolved.endsWith("/.ai") ? dirname(resolved) : null;
+}
+
+const facultRootScope = new AsyncLocalStorage<{
+  rootDir: string;
+  scope: "global" | "project";
+}>();
+
+export function withFacultRootScope<T>(
+  context: { rootDir: string; scope: "global" | "project" },
+  operation: () => T
+): T {
+  return facultRootScope.run(context, operation);
 }
 
 export function projectSlugFromAiRoot(
@@ -466,6 +490,54 @@ export function facultAiReconciliationStatePath(
     facultAiRuntimeScopeDir(home, rootDir),
     "reconciliation",
     "state.json"
+  );
+}
+
+export function facultAiEvolutionLoopConfigPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "evolution",
+    "loop",
+    "config.json"
+  );
+}
+
+export function facultAiEvolutionLoopStatePath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "evolution",
+    "loop",
+    "state.json"
+  );
+}
+
+export function facultAiEvolutionLoopAuditPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "evolution",
+    "loop",
+    "audit.jsonl"
+  );
+}
+
+export function facultAiEvolutionLoopReportDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "evolution",
+    "loop",
+    "reports"
   );
 }
 

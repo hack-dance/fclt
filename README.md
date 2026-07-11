@@ -106,10 +106,24 @@ fclt doctor --json
 fclt doctor --repair
 ```
 
+To run the review loop on a schedule, opt in explicitly:
+
+```bash
+fclt ai loop enable --project
+fclt ai loop status --project --json
+```
+
+The loop keeps a durable full queue while suppressing unchanged notification
+noise. It reconciles read-only sources and prepares review artifacts; automatic
+canonical apply remains plan-only until a transaction-safe apply contract is
+available. Disable it without deleting history with `fclt ai loop disable
+--project`.
+
 `doctor --json` is read-only and includes `loop` readiness for canonical roots, writable runtime
-and review state, asset targeting, required skills, Codex registration/discovery, and optional
-Linear integration. Missing Linear authentication is reported explicitly but does not block the
-core loop. Codex registration is reported separately from fresh-session tool discovery.
+and review state, asset targeting, required skills, reconciliation, scheduled-loop health, and
+Codex registration/discovery. External trackers are not required by the core loop; configure a
+local evidence export only when tracker events should participate in reconciliation. Codex
+registration is reported separately from fresh-session tool discovery.
 
 `doctor --repair` is the self-heal path for legacy
 state, broken rendered global guidance, missing review artifacts, and stale
@@ -294,8 +308,8 @@ fclt ai writeback summarize --by kind
 
 `fclt setup` creates a safe `reconciliation.json` beside the selected canonical
 root. Global setup checks explicit writebacks automatically; project setup also
-checks Git history for canonical assets. Linear, automation logs, and Markdown
-sources are opt-in. Every review records source coverage, cursors, extraction
+checks Git history for canonical assets. Vendor-neutral evidence exports,
+automation logs, and Markdown sources are opt-in. Every review records source coverage, cursors, extraction
 decisions, correlations, exclusions, linked work, and a disposition. An empty
 review is valid only when every configured source was checked.
 Configure Markdown sources as narrow append-only or date-headed evidence

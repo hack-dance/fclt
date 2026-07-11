@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import {
   basename,
@@ -73,6 +82,8 @@ const LEADING_SLASH_RE = /^\/+/;
 const INSTRUCTION_TITLE_SPLIT_RE = /[-_.\s]+/;
 const PROMPT_PATH_SPLIT_RE = /[,\n]/;
 const GIT_WORKTREE_LINE_RE = /\r?\n/;
+const AUTOMATION_STATUS_LINE_RE = /^status\s*=\s*"(?:ACTIVE|PAUSED)"\s*$/m;
+const AUTOMATION_UPDATED_AT_LINE_RE = /^updated_at\s*=\s*\d+\s*$/m;
 
 type BuiltinAutomationTemplateScope = "global" | "project" | "wide";
 
@@ -549,6 +560,40 @@ Output:
 Keep the result concise, continuity-aware, and operational. If nothing is ready to move, say what you reviewed and why no proposal should advance this run.`,
   },
   {
+    id: "closed-loop-review",
+    title: "Closed-Loop Evolution Review",
+    description:
+      "Runs incremental source reconciliation, maintains the full review queue, and emits only decision-relevant deltas.",
+    defaultRRule: "RRULE:FREQ=DAILY;BYHOUR=19;BYMINUTE=0",
+    defaultStatus: "PAUSED",
+    defaultModel: "gpt-5.4",
+    defaultReasoningEffort: "high",
+    scope: "project",
+    memory: `# Closed-Loop Evolution Review
+
+- Treat \`fclt ai loop run --json\` as the source of truth for the current queue and run delta.
+- Preserve the full queue in the report. Suppress unchanged carry-forward only in notifications.
+- Surface only new or changed decisions, degraded coverage, approval needs, overdue verification, recurrence, or regression.
+- Never mark an applied proposal successful before effectiveness evidence is recorded.
+- Never mutate an external tracker. Linked work is evidence and a target for an authorized operator.
+- Project-local automatic apply remains plan-only until the CLI returns a hash-bound transaction and rollback receipt.
+- Global instructions, skills, plugins, and shared capability remain proposal-only.
+`,
+    prompt: `Goal: run the configured fclt closed-loop evolution review for this cwd and report only decision-relevant changes.
+
+Run \`fclt ai loop run {{loopScopeFlag}} {{loopRootArg}} --scheduled --json\` exactly once from the configured cwd. The rendered command uses the native shell contract: PowerShell on Windows and POSIX shell syntax elsewhere.
+
+Use the returned full queue for current truth, but keep the user-facing notification delta-only:
+- report new or changed decisions,
+- report degraded or unavailable source coverage,
+- report approval needs,
+- report verification that is due or overdue,
+- report recurrence, unchanged outcomes, or regressions,
+- report any mutation applied under the explicit project-local policy.
+
+Do not repeat unchanged queue items. Do not create one proposal per linked ticket. Do not mutate external systems. If the run fails, report the recorded attempts and exact recovery action from the JSON result.`,
+  },
+  {
     id: "tool-call-audit",
     title: "Tool Call Audit",
     description:
@@ -669,8 +714,24 @@ function quoteTomlString(value: string): string {
   return JSON.stringify(value);
 }
 
+export function quoteAutomationShellArg(
+  value: string,
+  platform: NodeJS.Platform = process.platform
+): string {
+  return platform === "win32"
+    ? `'${value.replaceAll("'", "''")}'`
+    : `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 function quoteTomlStringArray(values: string[]): string {
   return `[${values.map(quoteTomlString).join(", ")}]`;
+}
+
+async function atomicWriteFile(pathValue: string, body: string): Promise<void> {
+  await mkdir(dirname(pathValue), { recursive: true });
+  const temporaryPath = `${pathValue}.${process.pid}.${Date.now()}.tmp`;
+  await Bun.write(temporaryPath, body);
+  await rename(temporaryPath, pathValue);
 }
 
 function normalizeCwdList(raw: string | null | undefined): string[] {
@@ -1175,7 +1236,7 @@ function pickScopeTemplateCwds(opts: {
   return [];
 }
 
-async function scaffoldCodexAutomationTemplate(args: {
+export async function scaffoldCodexAutomationTemplate(args: {
   homeDir?: string;
   cwd?: string;
   templateId: string;
@@ -1184,6 +1245,7 @@ async function scaffoldCodexAutomationTemplate(args: {
   name?: string;
   scope?: string | null;
   projectRoot?: string | null;
+  rootDir?: string | null;
   cwds?: string[] | null;
   cwdsRaw?: string | null;
   rrule?: string | null;
@@ -1224,7 +1286,14 @@ async function scaffoldCodexAutomationTemplate(args: {
   const rrule = args.rrule?.trim() || template.defaultRRule;
   const model = template.defaultModel;
   const reasoningEffort = template.defaultReasoningEffort;
-  const templateValues = automationTemplateValues(home);
+  const templateValues = {
+    ...automationTemplateValues(home),
+    loopScopeFlag: args.scope === "global" ? "--global" : "--project",
+    loopRootArg: `--root ${quoteAutomationShellArg(
+      args.rootDir ??
+        (args.projectRoot ? join(args.projectRoot, ".ai") : facultRootDir(home))
+    )}`,
+  };
   const renderedPrompt = renderTemplate(template.prompt.trim(), templateValues);
   const renderedMemory = renderTemplate(template.memory.trim(), templateValues);
 
@@ -1232,11 +1301,12 @@ async function scaffoldCodexAutomationTemplate(args: {
   const automationPath = join(home, ".codex", "automations", safeName);
   const automationTomlPath = join(automationPath, "automation.toml");
   const memoryPath = join(automationPath, "memory.md");
+  await assertSafeAutomationTarget({ home, safeName });
 
   const automationToml = `version = 1
 id = ${quoteTomlString(safeName)}
 name = ${quoteTomlString(template.title)}
-prompt = ${quoteTomlString(renderedPrompt)}
+${template.id === "closed-loop-review" ? 'managed_by = "fclt-evolution-loop"\n' : ""}prompt = ${quoteTomlString(renderedPrompt)}
 status = ${quoteTomlString(scopeStatus)}
 rrule = ${quoteTomlString(rrule)}
 model = ${quoteTomlString(model)}
@@ -1253,8 +1323,7 @@ updated_at = ${timestamp}
   if (!automationTomlExists || args.force) {
     changedPaths.push(automationTomlPath);
     if (!args.dryRun) {
-      await mkdir(automationPath, { recursive: true });
-      await Bun.write(automationTomlPath, `${automationToml}\n`);
+      await atomicWriteFile(automationTomlPath, `${automationToml}\n`);
     }
   }
 
@@ -1262,8 +1331,7 @@ updated_at = ${timestamp}
   if (!memoryExists || args.force) {
     changedPaths.push(memoryPath);
     if (!args.dryRun) {
-      await mkdir(automationPath, { recursive: true });
-      await Bun.write(memoryPath, memory);
+      await atomicWriteFile(memoryPath, memory);
     }
   }
 
@@ -1273,6 +1341,118 @@ updated_at = ${timestamp}
     dryRun: Boolean(args.dryRun),
     changedPaths: uniqueSorted(changedPaths),
   };
+}
+
+export async function setCodexAutomationStatus(args: {
+  homeDir?: string;
+  name: string;
+  status: "ACTIVE" | "PAUSED";
+  dryRun?: boolean;
+}): Promise<{
+  path: string;
+  status: "ACTIVE" | "PAUSED";
+  changed: boolean;
+  dryRun: boolean;
+}> {
+  const home = args.homeDir ?? homedir();
+  const safeName = sanitizeAutomationName(args.name);
+  await assertSafeAutomationTarget({ home, safeName });
+  const pathValue = join(
+    home,
+    ".codex",
+    "automations",
+    safeName,
+    "automation.toml"
+  );
+  if (!(await fileExists(pathValue))) {
+    throw new Error(`Codex automation not found: ${safeName}`);
+  }
+  const current = await readFile(pathValue, "utf8");
+  const parsed = Bun.TOML.parse(current) as Record<string, unknown>;
+  if (parsed.id !== safeName) {
+    throw new Error(`Codex automation id mismatch at ${pathValue}`);
+  }
+  if (parsed.managed_by !== "fclt-evolution-loop") {
+    throw new Error(
+      `Refusing to change an automation not owned by the fclt evolution loop: ${pathValue}`
+    );
+  }
+  const currentStatus = parsed.status;
+  if (currentStatus !== "ACTIVE" && currentStatus !== "PAUSED") {
+    throw new Error(`Codex automation has an invalid status at ${pathValue}`);
+  }
+  const changed = currentStatus !== args.status;
+  if (changed && !args.dryRun) {
+    if (
+      !(
+        AUTOMATION_STATUS_LINE_RE.test(current) &&
+        AUTOMATION_UPDATED_AT_LINE_RE.test(current)
+      )
+    ) {
+      throw new Error(
+        `Codex automation status or updated_at line is missing at ${pathValue}`
+      );
+    }
+    const timestamp = String(Date.now());
+    const next = current
+      .replace(AUTOMATION_STATUS_LINE_RE, `status = "${args.status}"`)
+      .replace(AUTOMATION_UPDATED_AT_LINE_RE, `updated_at = ${timestamp}`);
+    const temporaryPath = `${pathValue}.${process.pid}.${timestamp}.tmp`;
+    await Bun.write(temporaryPath, next);
+    await rename(temporaryPath, pathValue);
+  }
+  return {
+    path: pathValue,
+    status: args.status,
+    changed,
+    dryRun: Boolean(args.dryRun),
+  };
+}
+
+async function assertSafeAutomationTarget(args: {
+  home: string;
+  safeName: string;
+}): Promise<void> {
+  const root = join(args.home, ".codex", "automations");
+  const rootInfo = await lstat(root).catch(() => null);
+  if (!rootInfo) {
+    return;
+  }
+  if (!rootInfo.isDirectory()) {
+    throw new Error(`Codex automation root is not a directory: ${root}`);
+  }
+  const rootReal = await realpath(root);
+  const target = join(root, args.safeName);
+  const targetInfo = await lstat(target).catch(() => null);
+  if (!targetInfo) {
+    return;
+  }
+  if (targetInfo.isSymbolicLink() || !targetInfo.isDirectory()) {
+    throw new Error(`Refusing unsafe Codex automation directory: ${target}`);
+  }
+  const targetReal = await realpath(target);
+  const targetRelative = relative(rootReal, targetReal);
+  if (targetRelative.startsWith("..") || isAbsolute(targetRelative)) {
+    throw new Error(`Codex automation path escapes its root: ${target}`);
+  }
+  for (const leaf of ["automation.toml", "memory.md"]) {
+    const leafPath = join(target, leaf);
+    const leafInfo = await lstat(leafPath).catch(() => null);
+    if (leafInfo?.isSymbolicLink()) {
+      throw new Error(`Refusing symlinked Codex automation file: ${leafPath}`);
+    }
+  }
+}
+
+export async function assertSafeCodexAutomationTarget(args: {
+  homeDir?: string;
+  name: string;
+}): Promise<void> {
+  const home = args.homeDir ?? homedir();
+  await assertSafeAutomationTarget({
+    home,
+    safeName: sanitizeAutomationName(args.name),
+  });
 }
 
 async function pathExists(pathValue: string): Promise<boolean> {

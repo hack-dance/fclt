@@ -166,6 +166,80 @@ async function main(): Promise<void> {
     });
     assertSuccess(assessment, "package evolution assessment");
 
+    const loopEnable = await run({
+      command: [...fcltCommand, "ai", "loop", "enable", "--project", "--json"],
+      cwd: sampleRepo,
+      env,
+    });
+    assertSuccess(loopEnable, "package evolution loop enable");
+    const loopRun = await run({
+      command: [
+        ...fcltCommand,
+        "ai",
+        "loop",
+        "run",
+        "--project",
+        "--scheduled",
+        "--since",
+        "2000-01-01",
+        "--json",
+      ],
+      cwd: sampleRepo,
+      env,
+    });
+    assertSuccess(loopRun, "package evolution loop run");
+    const loopRunResult = JSON.parse(loopRun.stdout) as {
+      status?: string;
+      queue?: unknown[];
+    };
+    if (loopRunResult.status !== "complete") {
+      throw new Error(
+        `Expected complete loop run, received ${loopRunResult.status}`
+      );
+    }
+    const loopPreview = await run({
+      command: [
+        ...fcltCommand,
+        "ai",
+        "loop",
+        "run",
+        "--project",
+        "--dry-run",
+        "--json",
+      ],
+      cwd: sampleRepo,
+      env,
+    });
+    assertSuccess(loopPreview, "package evolution loop preview");
+    const loopPreviewResult = JSON.parse(loopPreview.stdout) as {
+      status?: string;
+    };
+    if (loopPreviewResult.status !== "preview") {
+      throw new Error(
+        `Expected loop preview, received ${loopPreviewResult.status}`
+      );
+    }
+    const loopStatus = await run({
+      command: [...fcltCommand, "ai", "loop", "status", "--project", "--json"],
+      cwd: sampleRepo,
+      env,
+    });
+    assertSuccess(loopStatus, "package evolution loop status");
+    const loopStatusResult = JSON.parse(loopStatus.stdout) as {
+      health?: string;
+    };
+    if (loopStatusResult.health !== "ready") {
+      throw new Error(
+        `Expected ready loop status, received ${loopStatusResult.health}`
+      );
+    }
+    const loopDisable = await run({
+      command: [...fcltCommand, "ai", "loop", "disable", "--project", "--json"],
+      cwd: sampleRepo,
+      env,
+    });
+    assertSuccess(loopDisable, "package evolution loop disable");
+
     const pluginSetup = await run({
       command: [
         ...fcltCommand,
@@ -204,6 +278,12 @@ async function main(): Promise<void> {
           setup: setupResult.health,
           writeback: writeback.stdout.trim(),
           assessment: JSON.parse(assessment.stdout).recommendation,
+          evolutionLoop: {
+            run: loopRunResult.status,
+            preview: loopPreviewResult.status,
+            status: loopStatusResult.health,
+            queueItems: loopRunResult.queue?.length ?? 0,
+          },
           pluginTools: tools.tools,
           freshSessionDiscovery:
             "not proven by package smoke; requires a newly started Codex session",

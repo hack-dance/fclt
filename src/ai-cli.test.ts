@@ -117,6 +117,117 @@ describe("ai CLI", () => {
     });
   });
 
+  it("enables, reports, and disables the scheduled loop through the ai namespace", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    await mkdir(rootDir, { recursive: true });
+    await Bun.write(
+      join(rootDir, "reconciliation.json"),
+      `${JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })}\n`
+    );
+    process.chdir(tempHome);
+
+    const enabledOut = await captureConsole(async () => {
+      await aiCommand(["loop", "enable", "--global", "--json"]);
+    });
+    expect(enabledOut.errors).toEqual([]);
+    expect(JSON.parse(enabledOut.logs.join("\n"))).toMatchObject({
+      config: { enabled: true, scope: "global" },
+      dryRun: false,
+    });
+
+    const statusOut = await captureConsole(async () => {
+      await aiCommand(["loop", "status", "--global", "--json"]);
+    });
+    expect(statusOut.errors).toEqual([]);
+    expect(JSON.parse(statusOut.logs.join("\n"))).toMatchObject({
+      configured: true,
+      health: "degraded",
+      scheduler: { registered: true, status: "ACTIVE" },
+      schedulerObservation: { state: "never_observed" },
+    });
+
+    const runOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "run",
+        "--global",
+        "--scheduled",
+        "--since",
+        "2026-01-01",
+        "--json",
+      ]);
+    });
+    expect(runOut.errors).toEqual([]);
+    expect(JSON.parse(runOut.logs.join("\n"))).toMatchObject({
+      status: "complete",
+      trigger: "scheduled",
+    });
+    const reportOut = await captureConsole(async () => {
+      await aiCommand(["loop", "report", "--global", "--json"]);
+    });
+    expect(reportOut.errors).toEqual([]);
+    expect(JSON.parse(reportOut.logs.join("\n"))).toMatchObject({
+      status: "complete",
+      trigger: "scheduled",
+    });
+
+    const disabledOut = await captureConsole(async () => {
+      await aiCommand(["loop", "disable", "--global", "--json"]);
+    });
+    expect(disabledOut.errors).toEqual([]);
+    expect(JSON.parse(disabledOut.logs.join("\n"))).toMatchObject({
+      config: { enabled: false },
+      changed: true,
+    });
+  });
+
+  it("keeps an explicit global CLI scope for a custom global root", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, "shared", ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    await mkdir(rootDir, { recursive: true });
+    process.chdir(tempHome);
+
+    const enabledOut = await captureConsole(async () => {
+      await aiCommand(["loop", "enable", "--global", "--json"]);
+    });
+    expect(enabledOut.errors).toEqual([]);
+    const enabled = JSON.parse(enabledOut.logs.join("\n"));
+    expect(enabled).toMatchObject({
+      config: {
+        enabled: true,
+        scope: "global",
+        automationName: "fclt-evolution-global",
+      },
+    });
+    expect(
+      await Bun.file(join(enabled.automationPath, "automation.toml")).text()
+    ).toContain(
+      `fclt ai loop run --global --root '${rootDir}' --scheduled --json`
+    );
+    const automationPath = join(enabled.automationPath, "automation.toml");
+    await Bun.write(
+      automationPath,
+      (await Bun.file(automationPath).text()).replace(
+        'managed_by = "fclt-evolution-loop"\n',
+        ""
+      )
+    );
+    const disabledOut = await captureConsole(async () => {
+      await aiCommand(["loop", "disable", "--global"]);
+    });
+    expect(disabledOut.logs.join("\n")).toContain("scheduler was not paused");
+    expect(disabledOut.logs.join("\n")).not.toContain("Paused evolution loop");
+    expect(process.exitCode).toBe(1);
+  });
+
   it("records and lists writebacks through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
@@ -846,6 +957,7 @@ describe("ai CLI", () => {
         "improved",
         "--evidence",
         "test:cli-post-apply",
+        "--allow-early",
       ]);
     });
     expect(verifyOut.errors).toEqual([]);

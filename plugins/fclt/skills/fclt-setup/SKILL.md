@@ -83,7 +83,7 @@ fclt templates init operating-model --global --update
 - First install should seed from existing agent guidance when available.
 - Treat `doctor --json` issues as setup facts, not user-facing blame.
 - Treat Codex plugin registration as weaker evidence than fresh-session tool discovery.
-- Treat Linear as optional: report it as degraded when absent or unverified without blocking the core loop.
+- Treat external trackers as separate integrations. Core readiness depends only on configured local evidence coverage, not a vendor plugin or token.
 - Prefer temp-root smoke tests for install/update behavior.
 - Do not enable managed rendering unless the user wants fclt to write tool homes.
 - Preview before mutation and state the exact global/project/plugin target.

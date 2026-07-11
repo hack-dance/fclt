@@ -15,6 +15,29 @@ The doctor report's `loop` object is the readiness contract. Optional external
 integrations never count as successful source coverage unless their exported
 evidence is explicitly configured and checked.
 
+## Scheduled closed loop
+
+Scheduling is explicit opt-in:
+
+```bash
+fclt ai loop enable --project
+fclt ai loop status --project --json
+fclt ai loop run --project --json
+```
+
+The controller owns only the Codex automation it creates. It keeps a
+machine-local full queue and append-only audit log, while its notification
+delta includes only new, changed, and resolved items. A registered scheduler
+does not prove execution; status reports whether a successful loop run has
+never been observed, is healthy, or is stale. Disable scheduling without
+deleting history with `fclt ai loop disable --project`.
+
+The loop can turn complete, correlated source evidence into targeted
+writebacks and reviewable proposals. It does not apply canonical changes or
+mutate external trackers. Project auto-apply is reported as plan-only until
+fclt has hash-bound preconditions, validation, atomic rollback, and a durable
+receipt. Global and plugin changes always remain proposal-only.
+
 ## Automatic source reconciliation
 
 Manual writeback remains useful, but it is no longer the only source of review
@@ -209,6 +232,12 @@ Applying a proposal moves its source writebacks into an awaiting-verification st
 then records one of `improved`, `unchanged`, `regressed`, or `inconclusive`. Improved evidence
 resolves the writebacks; unchanged or regressed evidence returns them to the pending queue;
 inconclusive evidence keeps them under watch.
+
+Apply also records a verification window, baseline, expected criteria, due
+date, grace period, and attempt history. The scheduled loop marks verification
+as pending, due, or overdue. Unchanged or regressed evidence reopens the same
+proposal family and can request that linked implementation work be reopened;
+it does not create a duplicate proposal or directly update the task system.
 
 Proposal creation does not promote source writebacks. Rejecting a proposal restores any legacy
 promoted source writebacks to pending. Draft revisions for append-style proposals are included in

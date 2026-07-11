@@ -157,6 +157,9 @@ export interface ReconciledEvidence {
 
 export interface CorrelatedSignal {
   id: string;
+  familyId: string;
+  familyAliases?: string[];
+  subjectKeys: string[];
   title: string;
   evidenceKeys: string[];
   sourceIds: string[];
@@ -222,6 +225,18 @@ export interface ReconciliationState {
       reviewId: string;
     }
   >;
+  families?: Record<
+    string,
+    {
+      firstSeenAt: string;
+      lastSeenAt: string;
+      aliases?: string[];
+      subjectKeys: string[];
+      evidenceKeys: string[];
+      reviewIds: string[];
+      signalIds: string[];
+    }
+  >;
   reviews: Record<
     string,
     {
@@ -232,6 +247,7 @@ export interface ReconciliationState {
       coverageComplete?: boolean;
       evidenceKeys: string[];
       signalIds: string[];
+      signalFamilyIds?: string[];
     }
   >;
 }

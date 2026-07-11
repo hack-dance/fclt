@@ -16,8 +16,11 @@ import { facultAiIndexPath } from "./paths";
 import {
   checkRemoteUpdates,
   installRemoteItem,
+  quoteAutomationShellArg,
   scaffoldBuiltinOperatingModelPack,
+  scaffoldCodexAutomationTemplate,
   searchRemoteItems,
+  setCodexAutomationStatus,
   sourcesCommand,
   templatesCommand,
   verifySourceCommand,
@@ -30,6 +33,15 @@ const MULTIPLE_SIGNATURE_KEYS_RE = /multiple configured keys/i;
 const REQUIRES_REVIEW_RE = /requires review/i;
 const REVOKED_SIGNATURE_KEY_RE = /is revoked/i;
 const SIGNATURE_CHECK_FAILED_RE = /signature check failed/i;
+
+it("quotes automation roots for POSIX shells and Windows PowerShell", () => {
+  expect(
+    quoteAutomationShellArg("/tmp/shared $() `tick` 'quote", "darwin")
+  ).toBe("'/tmp/shared $() `tick` '\"'\"'quote'");
+  expect(
+    quoteAutomationShellArg("C:\\Shared Folder\\team's .ai", "win32")
+  ).toBe("'C:\\Shared Folder\\team''s .ai'");
+});
 
 let tempDir: string | null = null;
 const originalCwd = process.cwd();
@@ -1445,6 +1457,45 @@ describe("templates command", () => {
     expect(memory).toContain("keep proposal review moving");
     expect(memory).toContain("$capability-evolution");
     expect(memory).toContain("Recommend actions, do not silently apply");
+  });
+
+  it("refuses automation scaffold and status writes through a symlinked directory", async () => {
+    const { home } = await makeTempRoot();
+    const automationRoot = join(home, ".codex", "automations");
+    const outside = join(home, "outside-automation");
+    await mkdir(automationRoot, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await Bun.write(
+      join(outside, "automation.toml"),
+      [
+        "version = 1",
+        'id = "unsafe-loop"',
+        'managed_by = "fclt-evolution-loop"',
+        'status = "ACTIVE"',
+        "updated_at = 1",
+        "",
+      ].join("\n")
+    );
+    await symlink(outside, join(automationRoot, "unsafe-loop"));
+
+    await expect(
+      scaffoldCodexAutomationTemplate({
+        homeDir: home,
+        cwd: home,
+        templateId: "evolution-review",
+        name: "unsafe-loop",
+      })
+    ).rejects.toThrow("unsafe Codex automation directory");
+    await expect(
+      setCodexAutomationStatus({
+        homeDir: home,
+        name: "unsafe-loop",
+        status: "PAUSED",
+      })
+    ).rejects.toThrow("unsafe Codex automation directory");
+    expect(await readFile(join(outside, "automation.toml"), "utf8")).toContain(
+      'status = "ACTIVE"'
+    );
   });
 
   it("scaffolds the builtin project-ai pack into a repo-local .ai", async () => {
