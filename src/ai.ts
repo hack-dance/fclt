@@ -678,11 +678,14 @@ async function appendEvent(
 
 function proposalVerificationAuditId(
   proposalId: string,
-  record: ProposalEffectivenessRecord
+  record: ProposalEffectivenessRecord,
+  occurrence = 0
 ): string {
   const identity = JSON.stringify({
     proposalId,
+    occurrence,
     effectiveness: record.effectiveness,
+    verifiedAt: record.verifiedAt,
     evidence: [...record.evidence].sort(
       (left, right) =>
         left.type.localeCompare(right.type) || left.ref.localeCompare(right.ref)
@@ -2515,27 +2518,20 @@ async function verifyProposalEffectivenessUnlocked(
     });
     return current;
   }
-  const historicalDuplicate = verificationHistory.find(matchesVerification);
-  if (historicalDuplicate) {
-    await ensureProposalVerificationEvent({
-      homeDir,
-      rootDir: args.rootDir,
-      proposal: current,
-      record: historicalDuplicate,
-      onBeforeAppend: args.onBeforeAuditAppend,
-    });
-    return current;
-  }
   const verifiedAt = verifiedAtDate.toISOString();
   const verifiedBy = proposalActor();
   const effectivenessRecord: ProposalEffectivenessRecord = {
-    auditId: proposalVerificationAuditId(id, {
-      effectiveness: args.effectiveness,
-      verifiedAt,
-      verifiedBy,
-      evidence: normalizedEvidence,
-      note: args.note?.trim() || undefined,
-    }),
+    auditId: proposalVerificationAuditId(
+      id,
+      {
+        effectiveness: args.effectiveness,
+        verifiedAt,
+        verifiedBy,
+        evidence: normalizedEvidence,
+        note: args.note?.trim() || undefined,
+      },
+      verificationHistory.length + 1
+    ),
     effectiveness: args.effectiveness,
     verifiedAt,
     verifiedBy,

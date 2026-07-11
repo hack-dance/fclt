@@ -1689,12 +1689,13 @@ describe("ai writeback", () => {
       ...regression,
       now: () => new Date("2026-03-18T04:00:00.000Z"),
     });
-    expect(historicalRetry.effectiveness?.effectiveness).toBe("improved");
-    expect(historicalRetry.effectivenessHistory).toHaveLength(2);
+    expect(historicalRetry.effectiveness?.effectiveness).toBe("regressed");
+    expect(historicalRetry.effectivenessHistory).toHaveLength(3);
+    expect(historicalRetry.verification?.status).toBe("reopened");
     expect(
       (await showWriteback(writeback.id, { homeDir: tempHome, rootDir }))
         ?.status
-    ).toBe("resolved");
+    ).toBe("recorded");
 
     let markAuditBlocked!: () => void;
     const auditBlocked = new Promise<void>((resolveBlocked) => {
@@ -1729,7 +1730,7 @@ describe("ai writeback", () => {
       homeDir: tempHome,
       rootDir,
     });
-    expect(concurrentResult?.effectivenessHistory).toHaveLength(4);
+    expect(concurrentResult?.effectivenessHistory).toHaveLength(5);
     expect(concurrentResult?.effectiveness?.effectiveness).toBe("improved");
     const concurrentEvents = (
       await readFile(facultAiJournalPath(tempHome, rootDir), "utf8")
@@ -1738,7 +1739,7 @@ describe("ai writeback", () => {
       .split("\n")
       .map((line) => JSON.parse(line))
       .filter((event) => event.kind === "proposal_verified");
-    expect(concurrentEvents).toHaveLength(4);
-    expect(new Set(concurrentEvents.map((event) => event.id)).size).toBe(4);
+    expect(concurrentEvents).toHaveLength(5);
+    expect(new Set(concurrentEvents.map((event) => event.id)).size).toBe(5);
   });
 });

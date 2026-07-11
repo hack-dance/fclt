@@ -1678,5 +1678,22 @@ describe("evolution loop", () => {
     const artifact = await readFile(improved.artifactPath, "utf8");
     expect(artifact).toContain(`| proposal:${proposal!.id} |`);
     expect(artifact).toContain("| resolved |");
+
+    await verifyProposalEffectiveness(proposal!.id, {
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      effectiveness: "regressed",
+      evidence: [{ type: "test", ref: "golden-regression" }],
+    });
+    const renewedRegression = await runEvolutionLoop({
+      ...project,
+      until: "2026-01-07T00:00:00.000Z",
+      now: () => new Date("2026-01-07T00:00:00.000Z"),
+    });
+    const renewedRegressionItem = renewedRegression.queue.find(
+      (item) => item.proposalId === proposal!.id
+    );
+    expect(renewedRegressionItem?.state).toBe("regressed");
+    expect(renewedRegressionItem?.requestedExternalAction).toBe("reopen");
   });
 });
