@@ -1570,6 +1570,72 @@ describe("templates command", () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it("resolves CLI-style roots for global closed-loop templates", async () => {
+    const { home } = await makeTempRoot();
+    const cwd = join(home, "workspace");
+    await mkdir(cwd, { recursive: true });
+
+    await withMutedConsole(async () => {
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "closed-loop-review",
+          "--scope",
+          "global",
+          "--root",
+          "~/shared/.ai",
+          "--name",
+          "home-relative-loop",
+        ],
+        { homeDir: home, cwd }
+      );
+      await templatesCommand(
+        [
+          "init",
+          "automation",
+          "closed-loop-review",
+          "--scope",
+          "global",
+          "--root",
+          "local/.ai",
+          "--name",
+          "cwd-relative-loop",
+        ],
+        { homeDir: home, cwd }
+      );
+    });
+
+    const homeRelative = await readFile(
+      join(
+        home,
+        ".codex",
+        "automations",
+        "home-relative-loop",
+        "automation.toml"
+      ),
+      "utf8"
+    );
+    expect(homeRelative).toContain(
+      `fclt ai loop run --global --root '${join(home, "shared", ".ai")}' --scheduled --json`
+    );
+
+    const cwdRelative = await readFile(
+      join(
+        home,
+        ".codex",
+        "automations",
+        "cwd-relative-loop",
+        "automation.toml"
+      ),
+      "utf8"
+    );
+    expect(cwdRelative).toContain(
+      `fclt ai loop run --global --root '${join(cwd, "local", ".ai")}' --scheduled --json`
+    );
+    expect(process.exitCode).toBe(0);
+  });
+
   it("refuses automation scaffold and status writes through a symlinked directory", async () => {
     const { home } = await makeTempRoot();
     const automationRoot = join(home, ".codex", "automations");

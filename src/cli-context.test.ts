@@ -42,6 +42,27 @@ describe("parseCliContextArgs", () => {
 });
 
 describe("resolveCliContextRoot", () => {
+  it("resolves explicit home-relative and cwd-relative root arguments", () => {
+    const homeDir = "/tmp/home";
+    const cwd = "/tmp/home/work/repo";
+    expect(
+      resolveCliContextRoot({
+        homeDir,
+        cwd,
+        rootArg: "~/shared/.ai",
+        scope: "global",
+      })
+    ).toBe("/tmp/home/shared/.ai");
+    expect(
+      resolveCliContextRoot({
+        homeDir,
+        cwd,
+        rootArg: "local/.ai",
+        scope: "global",
+      })
+    ).toBe("/tmp/home/work/repo/local/.ai");
+  });
+
   it("prefers the nearest project .ai root for merged scope", async () => {
     tempRoot = await makeTempDir();
     const homeDir = join(tempRoot, "home");

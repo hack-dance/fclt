@@ -4032,7 +4032,12 @@ export async function templatesCommand(
         scope: resolved.scope,
         projectRoot: resolved.projectRoot,
         rootDir: parsedArgs.rootArg
-          ? resolve(cwd, parsedArgs.rootArg)
+          ? resolveCliContextRoot({
+              rootArg: parsedArgs.rootArg,
+              scope: resolved.scope === "project" ? "project" : "global",
+              homeDir: home,
+              cwd,
+            })
           : undefined,
         cwds: resolved.cwds,
         rrule,
