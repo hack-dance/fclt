@@ -490,6 +490,14 @@ async function automationStatus(args: {
     "automation.toml"
   );
   if (!(await fileExists(pathValue))) {
+    const automationDir = dirname(pathValue);
+    if (await fileExists(automationDir)) {
+      return {
+        exists: true,
+        registered: false,
+        error: `Codex automation directory is incomplete: ${automationDir}`,
+      };
+    }
     return { exists: false, registered: false };
   }
   let parsed: Record<string, unknown>;
@@ -580,7 +588,8 @@ async function enableEvolutionLoopScoped(args: {
   });
   if (existingAutomation.exists && !existingAutomation.registered) {
     throw new Error(
-      `Refusing to replace an automation not owned by the fclt evolution loop: ${name}`
+      existingAutomation.error ??
+        `Refusing to replace an automation not owned by the fclt evolution loop: ${name}`
     );
   }
   const scaffold = await scaffoldCodexAutomationTemplate({

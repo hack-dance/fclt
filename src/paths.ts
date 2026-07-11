@@ -331,14 +331,11 @@ export function projectRootFromAiRoot(
   const resolved = resolve(rootDir);
   const scoped = facultRootScope.getStore();
   if (scoped && resolve(scoped.rootDir) === resolved) {
-    return scoped.scope === "global" && resolved === resolve(scoped.rootDir)
+    return scoped.scope === "global"
       ? null
       : resolved.endsWith("/.ai")
         ? dirname(resolved)
         : null;
-  }
-  if (resolved === resolve(facultRootDir(home))) {
-    return null;
   }
   if (resolved === resolve(join(home, ".ai"))) {
     return null;

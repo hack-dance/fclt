@@ -716,6 +716,30 @@ describe("evolution loop", () => {
     expect((await evolutionLoopStatus(project)).health).toBe("disabled");
   });
 
+  it("refuses to replace a partial scheduler directory", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-loop-partial-"));
+    temporaryRoots.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const automationDir = join(
+      homeDir,
+      ".codex",
+      "automations",
+      "fclt-evolution-global"
+    );
+    const memoryPath = join(automationDir, "memory.md");
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(automationDir, { recursive: true });
+    await Bun.write(memoryPath, "stale unowned memory\n");
+
+    await expect(
+      enableEvolutionLoop({ homeDir, rootDir, scope: "global" })
+    ).rejects.toThrow("automation directory is incomplete");
+    expect(
+      await Bun.file(join(automationDir, "automation.toml")).exists()
+    ).toBe(false);
+    expect(await readFile(memoryPath, "utf8")).toBe("stale unowned memory\n");
+  });
+
   it("does not trust a scheduler reached through a symlinked directory", async () => {
     const project = await makeProject();
     const enabled = await enableEvolutionLoop({ ...project });

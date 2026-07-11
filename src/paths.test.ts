@@ -140,6 +140,24 @@ describe("paths", () => {
     );
   });
 
+  it("keeps an env-configured project root project-scoped", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    process.env.FACULT_ROOT_DIR = rootDir;
+
+    expect(facultRootDir(tempHome)).toBe(rootDir);
+    expect(facultMachineStateDir(tempHome, rootDir)).toContain(
+      join(expectedLocalStateRoot(tempHome), "projects")
+    );
+    expect(facultAiWritebackQueuePath(tempHome, rootDir)).toContain(
+      join("ai", "project", "writeback", "queue.jsonl")
+    );
+  });
+
   it("prefers the nearest project .ai for CLI context resolution", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
