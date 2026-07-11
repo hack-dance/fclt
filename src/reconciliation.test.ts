@@ -667,7 +667,7 @@ describe("source reconciliation", () => {
         JSON.stringify({
           id: "WB-00020",
           ts: "2026-07-04T12:00:00Z",
-          updatedAt: "2026-07-06T12:00:00Z",
+          updatedAt: "2026-07-04T12:00:00.999Z",
           summary: "Capability signal",
           status: "resolved",
         }),

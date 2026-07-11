@@ -273,10 +273,10 @@ const writebackAdapter: ReconciliationAdapter = {
             Date.parse(timestamp) <= Date.parse(context.window.until)
           );
         })
-        .sort((left, right) =>
-          (right.updatedAt ?? right.ts ?? "").localeCompare(
-            left.updatedAt ?? left.ts ?? ""
-          )
+        .sort(
+          (left, right) =>
+            Date.parse(right.updatedAt ?? right.ts ?? "") -
+            Date.parse(left.updatedAt ?? left.ts ?? "")
         )[0];
       const observedAt = entry?.updatedAt ?? entry?.ts;
       if (!(entry?.id && observedAt && inWindow(observedAt, context))) {
