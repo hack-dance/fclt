@@ -721,11 +721,14 @@ export function findNearestProjectAiRoot(
   start: string,
   home: string = defaultHomeDir()
 ): string | null {
-  const globalRoot = resolve(facultRootDir(home));
+  const globalRoots = new Set([
+    resolve(facultRootDir(home)),
+    resolve(join(home, ".ai")),
+  ]);
   let current = resolve(start);
   while (true) {
     const candidate = join(current, ".ai");
-    if (resolve(candidate) !== globalRoot && isProjectAiRoot(candidate)) {
+    if (!globalRoots.has(resolve(candidate)) && isProjectAiRoot(candidate)) {
       return candidate;
     }
     const parent = dirname(current);

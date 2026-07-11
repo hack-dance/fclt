@@ -136,4 +136,22 @@ describe("resolveCliContextRoot", () => {
       join(homeDir, ".ai")
     );
   });
+
+  it("does not treat home .ai as project state with a custom global root", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const cwd = join(homeDir, "work", "repo");
+    const globalRoot = join(tempRoot, "global-ai");
+    await mkdir(join(homeDir, ".ai", "instructions"), { recursive: true });
+    await mkdir(join(globalRoot, "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    process.env.FACULT_ROOT_DIR = globalRoot;
+
+    expect(() =>
+      resolveCliContextRoot({ homeDir, cwd, scope: "project" })
+    ).toThrow("No project-local .ai root found:");
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      globalRoot
+    );
+  });
 });
