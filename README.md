@@ -179,6 +179,7 @@ Agents can record one durable observation directly:
 fclt ai writeback add \
   --kind missing_context \
   --summary "The runbook did not identify the production verification path" \
+  --evidence run:production-verification \
   --asset instruction:VERIFICATION
 ```
 
