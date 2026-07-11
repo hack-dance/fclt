@@ -1,3 +1,9 @@
+## [2.22.0](https://github.com/hack-dance/fclt/compare/v2.21.0...v2.22.0) (2026-07-11)
+
+### Features
+
+* add scheduled evolution review loop ([#52](https://github.com/hack-dance/fclt/issues/52)) ([3010372](https://github.com/hack-dance/fclt/commit/3010372f29b5ed5d3b15164dfa5fbc60e8035ee0))
+
 ## [2.21.0](https://github.com/hack-dance/fclt/compare/v2.20.1...v2.21.0) (2026-07-11)
 
 ### Features
