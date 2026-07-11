@@ -808,7 +808,11 @@ export async function reconcileSources(args: {
       const reviewRecords = args.incremental
         ? result.records.filter(
             (record) =>
-              !state.evidence[record.dedupeKey]?.sourceIds.includes(source.id)
+              !(
+                prior?.watermark &&
+                Date.parse(record.observedAt) <= Date.parse(prior.watermark) &&
+                state.evidence[record.dedupeKey]?.sourceIds.includes(source.id)
+              )
           )
         : result.records;
       records.push(...reviewRecords);
