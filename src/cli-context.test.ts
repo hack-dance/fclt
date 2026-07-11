@@ -154,4 +154,19 @@ describe("resolveCliContextRoot", () => {
       globalRoot
     );
   });
+
+  it("keeps an env-configured repo .ai root project-scoped", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const projectRoot = join(homeDir, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    const cwd = join(projectRoot, "src");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    process.env.FACULT_ROOT_DIR = rootDir;
+
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "project" })).toBe(
+      rootDir
+    );
+  });
 });
