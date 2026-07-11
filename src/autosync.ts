@@ -3,6 +3,11 @@ import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  assertLegacyManagedMutationAllowed,
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+} from "./legacy-mutation-policy";
 import { syncManagedTools } from "./manage";
 import {
   facultMachineStateDir,
@@ -78,6 +83,8 @@ interface CommandResult {
 interface RunnerOptions {
   homeDir?: string;
   once?: boolean;
+  allowLegacyManagedMutation?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 
 interface GitSyncOutcome {
@@ -736,12 +743,14 @@ export async function runGitAutosyncOnce(args: {
 
 async function runLocalAutosync(
   config: AutosyncServiceConfig,
-  homeDir: string
+  homeDir: string,
+  allowLegacyManagedMutation?: boolean
 ): Promise<void> {
   await syncManagedTools({
     homeDir,
     rootDir: config.rootDir,
     tool: config.tool,
+    allowLegacyManagedMutation,
   });
 }
 
@@ -757,6 +766,14 @@ export async function runAutosyncService(
   config: AutosyncServiceConfig,
   opts: RunnerOptions = {}
 ): Promise<void> {
+  const allowLegacyManagedMutation = legacyManagedMutationApproved({
+    explicit: opts.allowLegacyManagedMutation,
+    env: opts.env,
+  });
+  assertLegacyManagedMutationAllowed({
+    action: "fclt autosync run",
+    approved: allowLegacyManagedMutation,
+  });
   const home = opts.homeDir ?? homedir();
   const label = autosyncLabel(config.name);
   let dirty = false;
@@ -795,7 +812,7 @@ export async function runAutosyncService(
 
   const syncLocal = async () => {
     await queue(async () => {
-      await runLocalAutosync(config, home);
+      await runLocalAutosync(config, home, allowLegacyManagedMutation);
       dirty = false;
       await persistState({
         dirty,
@@ -818,7 +835,7 @@ export async function runAutosyncService(
         lastError: outcome.message,
       });
       if (outcome.changed && !outcome.blocked) {
-        await runLocalAutosync(config, home);
+        await runLocalAutosync(config, home, allowLegacyManagedMutation);
         dirty = false;
         await persistState({
           dirty,
@@ -892,25 +909,6 @@ export async function runAutosyncService(
   });
 }
 
-function parseAutosyncIntFlag(
-  argv: string[],
-  flag: string
-): number | undefined {
-  const exact = argv.indexOf(flag);
-  if (exact >= 0) {
-    const raw = argv[exact + 1];
-    if (!raw) {
-      throw new Error(`${flag} requires a value.`);
-    }
-    return Number.parseInt(raw, 10);
-  }
-  const inline = argv.find((arg) => arg.startsWith(`${flag}=`));
-  if (!inline) {
-    return undefined;
-  }
-  return Number.parseInt(inline.slice(flag.length + 1), 10);
-}
-
 function parseAutosyncStringFlag(
   argv: string[],
   flag: string
@@ -956,24 +954,21 @@ function parseAutosyncPositionals(
 }
 
 function autosyncHelp(): string {
-  return `fclt autosync — background autosync for managed tools
+  return `fclt autosync — inspect or remove legacy managed-tool autosync
 
 Usage:
-  fclt autosync install [tool] [--git-remote <name>] [--git-branch <name>] [--git-interval-minutes <n>] [--git-disable]
   fclt autosync uninstall [tool]
   fclt autosync status [tool]
-  fclt autosync restart [tool]
-  fclt autosync run [tool] [--service <name>] [--once]
+  fclt autosync run [tool] [--service <name>] --once ${LEGACY_MANAGED_MUTATION_FLAG}
 
 Options:
-  --git-remote <name>           Git remote for canonical repo sync (default: origin)
-  --git-branch <name>           Git branch for canonical repo sync (default: main)
-  --git-interval-minutes <n>    Remote git sync interval in minutes (default: 60)
-  --git-disable                 Disable remote git sync for this service
   --root <path>                 Select a canonical .ai root explicitly
   --global                      Force the global canonical root
   --project                     Force the nearest repo-local .ai root
   --once                        Run one local+remote sync cycle and exit
+  ${LEGACY_MANAGED_MUTATION_FLAG}  Explicitly opt into deprecated broad mutation
+
+Background install, restart, and continuous run are disabled while broad managed mutation is contained.
 `;
 }
 
@@ -985,7 +980,15 @@ export async function installAutosyncService(args: {
   gitBranch?: string;
   gitIntervalMinutes?: number;
   gitEnabled?: boolean;
+  allowLegacyManagedMutation?: boolean;
 }): Promise<AutosyncServiceConfig> {
+  const allowLegacyManagedMutation = legacyManagedMutationApproved({
+    explicit: args.allowLegacyManagedMutation,
+  });
+  assertLegacyManagedMutationAllowed({
+    action: "fclt autosync install",
+    approved: allowLegacyManagedMutation,
+  });
   const home = args.homeDir ?? homedir();
   const rootDir =
     args.rootDir ??
@@ -1052,10 +1055,10 @@ export async function uninstallAutosyncService(args: {
   await rm(autosyncConfigPath(home, serviceName, rootDir), { force: true });
 }
 
-export async function repairAutosyncServices(
-  homeDir: string = homedir(),
+async function autosyncServiceConfigFiles(
+  homeDir: string,
   rootDir?: string
-): Promise<boolean> {
+): Promise<string[]> {
   const activeRoot = rootDir ?? facultRootDir(homeDir);
   const serviceDirs = [
     autosyncServicesDir(homeDir, activeRoot),
@@ -1074,12 +1077,38 @@ export async function repairAutosyncServices(
       files.push(entry);
     }
   }
+  return files.filter((entry) => entry.endsWith(".json"));
+}
+
+export async function assertAutosyncRepairAllowed(
+  homeDir: string = homedir(),
+  rootDir?: string,
+  allowLegacyManagedMutation?: boolean
+): Promise<void> {
+  const configFiles = await autosyncServiceConfigFiles(homeDir, rootDir);
+  if (configFiles.length > 0) {
+    assertLegacyManagedMutationAllowed({
+      action: "fclt doctor --repair autosync",
+      approved: allowLegacyManagedMutation,
+    });
+  }
+}
+
+export async function repairAutosyncServices(
+  homeDir: string = homedir(),
+  rootDir?: string,
+  opts: { allowLegacyManagedMutation?: boolean } = {}
+): Promise<boolean> {
+  const activeRoot = rootDir ?? facultRootDir(homeDir);
+  const configFiles = await autosyncServiceConfigFiles(homeDir, activeRoot);
+  await assertAutosyncRepairAllowed(
+    homeDir,
+    activeRoot,
+    opts.allowLegacyManagedMutation
+  );
   let changed = false;
 
-  for (const entry of files) {
-    if (!entry.endsWith(".json")) {
-      continue;
-    }
+  for (const entry of configFiles) {
     const serviceName = basename(entry, ".json");
     const config = await loadAutosyncConfig(serviceName, homeDir, activeRoot);
     if (!config) {
@@ -1170,19 +1199,6 @@ export async function autosyncStatus(args: {
   };
 }
 
-export async function restartAutosyncService(args: {
-  tool?: string;
-  rootDir?: string;
-}): Promise<void> {
-  const home = homedir();
-  const rootDir =
-    args.rootDir ??
-    resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
-  const serviceName = autosyncServiceName(args.tool, rootDir, home);
-  const label = autosyncLabel(serviceName);
-  await runLaunchctl(["kickstart", "-k", `${launchdDomain()}/${label}`]);
-}
-
 export async function autosyncCommand(argv: string[]) {
   const [sub, ...rest] = argv;
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -1205,31 +1221,14 @@ export async function autosyncCommand(argv: string[]) {
       scope: parsed.scope,
       cwd: process.cwd(),
     });
+    const allowLegacyManagedMutation = legacyManagedMutationApproved({
+      argv: parsed.argv,
+    });
 
     if (sub === "install") {
-      const tool = parseAutosyncPositionals(parsed.argv, [
-        "--git-remote",
-        "--git-branch",
-        "--git-interval-minutes",
-      ])[0];
-      const gitRemote = parseAutosyncStringFlag(parsed.argv, "--git-remote");
-      const gitBranch = parseAutosyncStringFlag(parsed.argv, "--git-branch");
-      const gitIntervalMinutes = parseAutosyncIntFlag(
-        parsed.argv,
-        "--git-interval-minutes"
+      throw new Error(
+        "Background autosync installation is disabled while broad managed mutation is contained. Use autosync status or uninstall; a reviewed one-time migration may use autosync run --once with explicit approval."
       );
-      const gitEnabled = !parsed.argv.includes("--git-disable");
-      const config = await installAutosyncService({
-        tool,
-        rootDir,
-        gitRemote,
-        gitBranch,
-        gitIntervalMinutes,
-        gitEnabled,
-      });
-      console.log(`Installed autosync service: ${config.name}`);
-      console.log(`Label: ${autosyncLabel(config.name)}`);
-      return;
     }
 
     if (sub === "uninstall") {
@@ -1275,15 +1274,17 @@ export async function autosyncCommand(argv: string[]) {
     }
 
     if (sub === "restart") {
-      const tool = parseAutosyncPositionals(parsed.argv, [])[0];
-      await restartAutosyncService({ tool, rootDir });
-      console.log(
-        `Restarted autosync service: ${autosyncServiceName(tool, rootDir)}`
+      throw new Error(
+        "Background autosync restart is disabled while broad managed mutation is contained. Use autosync status or uninstall."
       );
-      return;
     }
 
     if (sub === "run") {
+      if (!parsed.argv.includes("--once")) {
+        throw new Error(
+          "Continuous autosync run is disabled while broad managed mutation is contained. A reviewed legacy migration must use --once with explicit approval."
+        );
+      }
       const service = parseAutosyncStringFlag(parsed.argv, "--service");
       const tool = parseAutosyncPositionals(parsed.argv, ["--service"])[0];
       const serviceName = service ?? autosyncServiceName(tool, rootDir);
@@ -1293,6 +1294,7 @@ export async function autosyncCommand(argv: string[]) {
       }
       await runAutosyncService(config, {
         once: parsed.argv.includes("--once"),
+        allowLegacyManagedMutation,
       });
       return;
     }

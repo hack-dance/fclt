@@ -265,7 +265,7 @@ function buildReviewerPrompt(args: {
     "- `fclt show mcp:<name>` to inspect the canonical MCP entry.",
     "- `fclt audit fix <item>` to move inline MCP secrets into the local canonical overlay.",
     "- `fclt audit safe ...` to suppress a reviewed false positive.",
-    "- `fclt manage <tool>` or `fclt sync [tool]` when a managed tool config needs to be re-rendered.",
+    "- `fclt manage <tool> --dry-run` or `fclt sync [tool] --dry-run` to inspect deprecated managed rendering without changing tool state.",
     "",
     "Selected findings:",
     ...itemBlocks,

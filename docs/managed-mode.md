@@ -1,6 +1,8 @@
-# Managed mode
+# Legacy managed mode
 
-Managed mode is optional. Use it when you want `fclt` to write rendered files into a tool home. Do not use it just to inspect or normalize existing tool-native state.
+Broad managed mode is deprecated and contained by default. Its whole-tool ownership and backup
+restore model is not transaction-safe enough for new installations. Inventory, status, and dry-run
+planning remain available while exact per-asset deployment replaces it.
 
 If you only want the first-party fclt Codex plugin, use the narrow setup path instead:
 
@@ -19,22 +21,27 @@ fclt list skills
 fclt consolidate --auto keep-current --from ~/.codex/skills --from ~/.agents/skills
 ```
 
-Use managed mode only after that:
+Inspect a legacy plan without applying it:
 
 ```bash
 fclt manage codex --dry-run
-fclt manage codex --adopt-existing
 fclt sync codex --dry-run
-fclt sync codex
+fclt unmanage codex --dry-run
 ```
+
+An existing installation can use `--allow-legacy-managed-mutation` (or
+`FCLT_ALLOW_LEGACY_MANAGED_MUTATION=1`) only for an explicitly reviewed migration. The escape hatch
+does not make broad management transactional or safe for routine use.
 
 ## Adoption Commands
 
-`manage --adopt-existing` is for entering managed mode. It imports existing tool-native content into the canonical store before `fclt` starts writing that tool surface.
+`manage --adopt-existing` is a legacy import-and-own path. It is blocked unless the containment
+escape hatch is present.
 
 `sync --adopt-live` is for intentional later promotion. It imports live tool edits into canonical state before rendering.
 
-Ordinary `fclt sync` does not adopt live tool edits. This lets Codex, Claude, Cursor, or another tool keep local edits without `fclt` silently claiming ownership.
+Dry-run sync does not adopt live edits. Legacy apply and `--adopt-live` require the containment
+escape hatch and should be reserved for migration work.
 
 ## Conflict Behavior
 
@@ -47,7 +54,7 @@ When live content differs from canonical content:
 
 This is deliberate. Managed mode should be predictable and reversible.
 
-## Project managed mode
+## Legacy project managed mode
 
 Project sync is default-deny. A project `.ai` root can exist without rendering anything into repo-local tool outputs.
 
@@ -68,7 +75,7 @@ tool_config = true
 
 If a repo-local `.ai` contains only generated state and no canonical assets, `fclt status --project` reports a generated-only warning and `fclt sync --project` skips. Initialize or restore canonical source before syncing managed project output.
 
-## When not to use managed mode
+## Do not use managed mutation when
 
 Do not use managed mode when:
 
@@ -77,8 +84,10 @@ Do not use managed mode when:
 - a repo has no clear project sync policy
 - the canonical source is missing
 - you are debugging and need read-only evidence first
+- you are considering background autosync, backup restoration, managed MCP/plugin rendering, or forced remote updates
 
-Use `fclt inventory`, `scan`, `list`, `show`, `graph`, `status`, and `audit` instead.
+Use `fclt inventory`, `scan`, `list`, `show`, `graph`, `status`, `audit`, and managed dry-runs
+instead. Use native installers for plugins and MCP servers where available.
 
 ## Next
 

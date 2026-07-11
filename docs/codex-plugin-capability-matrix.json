@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "packageVersion": "2.22.0",
+    "packageVersion": "2.22.1",
     "pluginVersion": "0.1.1",
     "auditedAt": "2026-07-11T17:22:00Z"
   },

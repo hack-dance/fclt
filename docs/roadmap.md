@@ -27,6 +27,8 @@ This roadmap tracks remaining product direction for `fclt`.
   outside the MCP surface.
 - Desktop-safe plugin runtime binding that does not depend on a GUI app inheriting the user's shell
   `PATH`.
+- Default containment for deprecated whole-tool managed mutation, while preserving inventory and
+  dry-run planning for legacy installations.
 
 ## Current Priorities
 

@@ -40,6 +40,12 @@ import {
   type SkillEntry,
 } from "./index-builder";
 import {
+  assertLegacyManagedMutationAllowed,
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+  legacyManagedMutationNotice,
+} from "./legacy-mutation-policy";
+import {
   extractServersObject,
   loadCanonicalMcpState,
   stringifyCanonicalMcpServers,
@@ -137,6 +143,7 @@ export interface ManageOptions {
   adoptExisting?: boolean;
   existingConflictMode?: "keep-canonical" | "keep-existing";
   builtinConflictMode?: "warn" | "overwrite";
+  allowLegacyManagedMutation?: boolean;
 }
 
 export interface SyncOptions {
@@ -146,6 +153,7 @@ export interface SyncOptions {
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
   adoptLive?: boolean;
+  allowLegacyManagedMutation?: boolean;
 }
 
 export interface SetupCodexPluginOptions {
@@ -2945,6 +2953,11 @@ async function writeToolMcpConfig({
 }
 
 export async function manageTool(tool: string, opts: ManageOptions = {}) {
+  assertLegacyManagedMutationAllowed({
+    action: `fclt manage ${tool}`,
+    approved: opts.allowLegacyManagedMutation,
+    dryRun: opts.dryRun,
+  });
   const home = opts.homeDir ?? homedir();
   const rootDir = opts.rootDir ?? facultRootDir(home);
   const state = await loadManagedState(home, rootDir);
@@ -3587,12 +3600,21 @@ async function removeSymlinks(skillsDir: string) {
 }
 
 export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
+  assertLegacyManagedMutationAllowed({
+    action: `fclt unmanage ${tool}`,
+    approved: opts.allowLegacyManagedMutation,
+    dryRun: opts.dryRun,
+  });
   const home = opts.homeDir ?? homedir();
   const rootDir = opts.rootDir ?? facultRootDir(home);
   const state = await loadManagedState(home, rootDir);
   const entry = state.tools[tool];
   if (!entry) {
     throw new Error(`${tool} is not managed`);
+  }
+
+  if (opts.dryRun) {
+    return;
   }
 
   if (entry.skillsDir) {
@@ -5483,6 +5505,12 @@ export async function syncManagedTools(opts: SyncOptions = {}) {
     throw new Error("No managed tools to sync.");
   }
 
+  assertLegacyManagedMutationAllowed({
+    action: opts.tool ? `fclt sync ${opts.tool}` : "fclt sync",
+    approved: opts.allowLegacyManagedMutation,
+    dryRun: opts.dryRun,
+  });
+
   if (!opts.dryRun) {
     let changed = false;
     for (const tool of tools) {
@@ -5534,11 +5562,14 @@ export async function manageCommand(argv: string[]) {
     console.log(`fclt manage — enter managed mode for a tool (backup + symlinks + MCP generation)
 
 Usage:
-  fclt manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
+  fclt manage <tool> [--dry-run] [--adopt-existing] [--existing-conflicts keep-canonical|keep-existing] [--builtin-conflicts overwrite] [${LEGACY_MANAGED_MUTATION_FLAG}] [--root PATH|--global|--project]
 `);
     return;
   }
   const dryRun = args.includes("--dry-run");
+  const allowLegacyManagedMutation = legacyManagedMutationApproved({
+    argv: args,
+  });
   const adoptExisting = args.includes("--adopt-existing");
   const conflictIndex = args.indexOf("--existing-conflicts");
   const builtinConflictIndex = args.indexOf("--builtin-conflicts");
@@ -5600,9 +5631,11 @@ Usage:
       adoptExisting,
       existingConflictMode,
       builtinConflictMode,
+      allowLegacyManagedMutation,
     });
     if (dryRun) {
       console.log(`${tool}: preflight complete`);
+      console.log(legacyManagedMutationNotice(`fclt manage ${tool}`));
     } else {
       console.log(`${tool} is now managed`);
     }
@@ -5622,7 +5655,7 @@ export async function unmanageCommand(argv: string[]) {
     console.log(`fclt unmanage — exit managed mode for a tool (restore backups)
 
 Usage:
-  fclt unmanage <tool> [--root PATH|--global|--project]
+  fclt unmanage <tool> [--dry-run] [${LEGACY_MANAGED_MUTATION_FLAG}] [--root PATH|--global|--project]
 `);
     return;
   }
@@ -5633,14 +5666,24 @@ Usage:
     return;
   }
   try {
+    const dryRun = parsed.argv.includes("--dry-run");
     await unmanageTool(tool, {
       rootDir: resolveCliContextRoot({
         rootArg: parsed.rootArg,
         scope: parsed.scope,
         cwd: process.cwd(),
       }),
+      dryRun,
+      allowLegacyManagedMutation: legacyManagedMutationApproved({
+        argv: parsed.argv,
+      }),
     });
-    console.log(`${tool} is no longer managed`);
+    if (dryRun) {
+      console.log(`${tool}: unmanage preview complete; live state preserved`);
+      console.log(legacyManagedMutationNotice(`fclt unmanage ${tool}`));
+    } else {
+      console.log(`${tool} is no longer managed`);
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -5773,7 +5816,7 @@ export async function syncCommand(argv: string[]) {
     console.log(`fclt sync — sync managed tools with canonical state
 
 Usage:
-  fclt sync [tool] [--dry-run] [--adopt-live] [--builtin-conflicts overwrite] [--root PATH|--global|--project]
+  fclt sync [tool] [--dry-run] [--adopt-live] [--builtin-conflicts overwrite] [${LEGACY_MANAGED_MUTATION_FLAG}] [--root PATH|--global|--project]
 
 Options:
   --dry-run   Show what would change
@@ -5804,12 +5847,18 @@ Options:
       dryRun,
       adoptLive,
       builtinConflictMode,
+      allowLegacyManagedMutation: legacyManagedMutationApproved({
+        argv: parsed.argv,
+      }),
       rootDir: resolveCliContextRoot({
         rootArg: parsed.rootArg,
         scope: parsed.scope,
         cwd: process.cwd(),
       }),
     });
+    if (dryRun) {
+      console.log(legacyManagedMutationNotice("fclt sync"));
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;

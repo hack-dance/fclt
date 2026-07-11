@@ -261,25 +261,27 @@ fclt index
 
 `keep-current` is deterministic and non-interactive. Use other conflict modes only when you have reviewed the sources.
 
-### 6. Optional: manage a tool
+### 6. Legacy managed-mode inspection
 
-Managed mode writes rendered files into a tool home. Use it only when `fclt` should own that rendered surface.
+Broad managed mode is deprecated and contained by default because it can own or restore unrelated
+tool-home surfaces without a transaction receipt. Keep using inventory and previews while the
+per-asset deployment replacement is built.
 
 ```bash
 fclt setup codex-plugin
 fclt manage codex --dry-run
-fclt manage codex --adopt-existing
 fclt sync codex --dry-run
-fclt sync codex
+fclt unmanage codex --dry-run
 ```
 
-Ordinary `fclt sync` does not import live tool edits into canonical state. If a live tool file was edited intentionally and should be promoted, run:
+The narrow `setup codex-plugin` path remains supported and does not enter managed mode. Existing
+legacy installations may use `--allow-legacy-managed-mutation` only for an explicitly reviewed
+migration. Do not use the escape hatch for ordinary sync, background autosync, or stale-backup
+restoration. A legacy autosync service may be run once with explicit approval; install, restart, and
+continuous run remain disabled.
 
-```bash
-fclt sync --adopt-live
-```
-
-Project-managed sync is default-deny. Repo-local tool outputs only receive assets that the project explicitly allows.
+Project-managed sync remains default-deny. Repo-local tool outputs only receive assets that the
+project explicitly allows.
 
 ## Core model
 
@@ -481,16 +483,14 @@ fclt consolidate --auto keep-current --from <path>
 fclt index [--force]
 ```
 
-Managed mode:
+Legacy managed-mode inspection:
 
 ```bash
 fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
-fclt manage <tool> [--dry-run] [--adopt-existing]
-fclt sync [tool] [--dry-run] [--adopt-live]
-fclt enable <selector> --for codex,claude
-fclt disable <selector> --for codex,claude
+fclt manage <tool> --dry-run
+fclt sync [tool] --dry-run
 fclt managed
-fclt unmanage <tool>
+fclt unmanage <tool> --dry-run
 ```
 
 Writeback and evolution:

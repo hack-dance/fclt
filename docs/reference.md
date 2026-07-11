@@ -67,22 +67,21 @@ fclt index [--force]
 
 Use these to create or normalize canonical capability in `~/.ai` or `<repo>/.ai`.
 
-## Managed mode
+## Legacy managed mode
 
 ```bash
 fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
-fclt manage <tool> [--dry-run] [--adopt-existing]
-fclt sync [tool] [--dry-run] [--adopt-live]
-fclt enable <selector> --for codex,claude
-fclt disable <selector> --for codex,claude
+fclt manage <tool> --dry-run
+fclt sync [tool] --dry-run
 fclt managed
-fclt unmanage <tool>
+fclt unmanage <tool> --dry-run
 ```
 
 `setup codex-plugin` is the narrow path for exposing the bundled fclt Codex
 plugin without entering managed mode. It writes only `~/plugins/fclt`, the
 local marketplace entry, and the Codex plugin install/cache when Codex is
-available. Managed mode writes rendered output into tool homes. Read
+available. Broad managed mutation is deprecated and contained by default; the explicit
+`--allow-legacy-managed-mutation` escape hatch exists only for reviewed migrations. Read
 [Managed mode](./managed-mode.md) before using it on an existing setup.
 
 ## Writeback and evolution

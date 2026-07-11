@@ -14,6 +14,10 @@ import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
 import { buildDoctorReport } from "./doctor";
 import { enableEvolutionLoop } from "./evolution-loop";
+import {
+  LEGACY_MANAGED_MUTATION_ENV,
+  LEGACY_MANAGED_MUTATION_FLAG,
+} from "./legacy-mutation-policy";
 import { manageTool } from "./manage";
 import {
   facultAiEvolutionLoopConfigPath,
@@ -328,7 +332,7 @@ test("doctor --repair updates legacy root config to ~/.ai when present", async (
       rootDir: join(dir, "agents", ".facult"),
     });
 
-    const env = { ...process.env, HOME: dir };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir };
     const proc = Bun.spawn(
       ["bun", "run", "./src/index.ts", "doctor", "--repair"],
       {
@@ -353,6 +357,79 @@ test("doctor --repair updates legacy root config to ~/.ai when present", async (
       await readFile(join(dir, ".ai", ".facult", "config.json"), "utf8")
     ) as { rootDir: string };
     expect(config.rootDir).toBe(aiRoot);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("doctor preflights legacy autosync before any repair writes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-doctor-autosync-guard-"));
+  const aiRoot = join(dir, ".ai");
+  const repairedConfig = join(aiRoot, ".facult", "config.json");
+
+  try {
+    await mkdir(aiRoot, { recursive: true });
+    await writeJson(join(dir, ".facult", "config.json"), {
+      rootDir: join(dir, "agents", ".facult"),
+    });
+    await writeJson(
+      join(aiRoot, ".facult", "autosync", "services", "all.json"),
+      {
+        version: 1,
+        name: "all",
+        rootDir: aiRoot,
+        debounceMs: 10,
+        git: {
+          enabled: false,
+          remote: "origin",
+          branch: "main",
+          intervalMinutes: 60,
+          autoCommit: false,
+          commitPrefix: "test",
+          source: "test",
+        },
+      }
+    );
+
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir };
+    env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
+    const blocked = Bun.spawn(
+      ["bun", "run", "./src/index.ts", "doctor", "--repair"],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const [blockedCode, blockedError] = await Promise.all([
+      blocked.exited,
+      new Response(blocked.stderr).text(),
+    ]);
+
+    expect(blockedCode).toBe(1);
+    expect(blockedError).toContain(
+      "fclt doctor --repair autosync is a deprecated"
+    );
+    expect(await Bun.file(repairedConfig).exists()).toBe(false);
+
+    await rm(join(aiRoot, ".facult", "autosync"), {
+      recursive: true,
+      force: true,
+    });
+    const approved = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "doctor",
+        "--repair",
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const [approvedCode, approvedError] = await Promise.all([
+      approved.exited,
+      new Response(approved.stderr).text(),
+    ]);
+    expect(approvedCode).toBe(0);
+    expect(approvedError).toBe("");
+    expect(await Bun.file(repairedConfig).exists()).toBe(true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -139,10 +139,7 @@ function printHelp() {
                 "Scaffold skills, MCP, agents, snippets, and automations",
               ],
               ["search/install/update", "Work with remote capability indices"],
-              [
-                "manage/sync",
-                "Enter managed mode and render tool-native output",
-              ],
+              ["manage/sync", "Preview deprecated broad managed-mode output"],
               [
                 "setup",
                 "Install narrow agent integrations without full managed mode",

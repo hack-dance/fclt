@@ -10,12 +10,19 @@ const defaultBinary =
 const binaryPath = resolve(repoRoot, process.argv[2] ?? defaultBinary);
 const tempHome = await mkdtemp(join(tmpdir(), "fclt-binary-verify-"));
 const tempProcessTmp = join(tempHome, "tmp");
+const legacyManagedMutationFlag = "--allow-legacy-managed-mutation";
 
-async function run(args: string[]): Promise<string> {
+async function execute(args: string[]): Promise<{
+  code: number;
+  stderr: string;
+  stdout: string;
+}> {
+  const env = { ...process.env };
+  env.FCLT_ALLOW_LEGACY_MANAGED_MUTATION = undefined;
   const proc = Bun.spawn([binaryPath, ...args], {
     cwd: tempHome,
     env: {
-      ...process.env,
+      ...env,
       HOME: tempHome,
       USERPROFILE: tempHome,
       APPDATA: join(tempHome, "AppData", "Roaming"),
@@ -33,12 +40,25 @@ async function run(args: string[]): Promise<string> {
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
+  return { code, stderr, stdout };
+}
+
+async function run(args: string[]): Promise<string> {
+  const { code, stderr, stdout } = await execute(args);
   if (code !== 0) {
     throw new Error(
       `${binaryPath} ${args.join(" ")} failed with ${code}\n${stderr || stdout}`
     );
   }
   return stdout;
+}
+
+async function runBlocked(args: string[]): Promise<string> {
+  const { code, stderr, stdout } = await execute(args);
+  if (code === 0) {
+    throw new Error(`${binaryPath} ${args.join(" ")} unexpectedly succeeded`);
+  }
+  return stderr || stdout;
 }
 
 await run(["--help"]);
@@ -80,10 +100,18 @@ if (
   );
 }
 
-await run(["manage", "codex", "--global"]);
-await run(["sync", "codex", "--global"]);
-
+const blockedManage = await runBlocked(["manage", "codex", "--global"]);
+if (!blockedManage.includes("deprecated broad managed-mode mutation")) {
+  throw new Error(`Expected managed-mode containment, got ${blockedManage}`);
+}
 const codexAgentsPath = join(tempHome, ".codex", "AGENTS.md");
+if (await Bun.file(codexAgentsPath).exists()) {
+  throw new Error(`Blocked manage unexpectedly wrote ${codexAgentsPath}`);
+}
+
+await run(["manage", "codex", "--global", legacyManagedMutationFlag]);
+await run(["sync", "codex", "--global", legacyManagedMutationFlag]);
+
 const capabilityEvolutionSkillPath = join(
   tempHome,
   ".agents",

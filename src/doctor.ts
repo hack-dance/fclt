@@ -23,13 +23,20 @@ import {
   ensureAiIndexPath,
   legacyAiIndexPath,
 } from "./ai-state";
-import { repairAutosyncServices } from "./autosync";
+import {
+  assertAutosyncRepairAllowed,
+  repairAutosyncServices,
+} from "./autosync";
 import {
   facultBuiltinAgentsGlobalSourcePath,
   facultBuiltinPackRoot,
 } from "./builtin";
 import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
 import { diagnoseEvolutionLoop } from "./evolution-loop";
+import {
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+} from "./legacy-mutation-policy";
 import { loadManagedState } from "./manage";
 import { extractServersObject } from "./mcp-config";
 import {
@@ -1137,11 +1144,12 @@ function printHelp() {
   console.log(`fclt doctor — inspect and repair local fclt state
 
 Usage:
-  fclt doctor [--json] [--repair] [--root <path> | --global | --project]
+  fclt doctor [--json] [--repair] [${LEGACY_MANAGED_MUTATION_FLAG}] [--root <path> | --global | --project]
 
 Options:
   --json     Print read-only setup health, issues, and recommended actions
   --repair   Reconcile legacy Facult state, canonical root config, AI index/graph, and autosync service config when needed
+  ${LEGACY_MANAGED_MUTATION_FLAG}  Approve legacy autosync repair before any repair writes
 `);
 }
 
@@ -1742,12 +1750,17 @@ export async function doctorCommand(argv: string[]) {
 
   const json = argv.includes("--json");
   const repair = argv.includes("--repair");
+  const allowLegacyManagedMutation = legacyManagedMutationApproved({ argv });
   const home = process.env.HOME?.trim() || homedir();
+  const contextArgv = argv.filter(
+    (arg) =>
+      arg !== "--json" &&
+      arg !== "--repair" &&
+      arg !== LEGACY_MANAGED_MUTATION_FLAG
+  );
 
   try {
-    const parsed = parseCliContextArgs(
-      argv.filter((arg) => arg !== "--json" && arg !== "--repair")
-    );
+    const parsed = parseCliContextArgs(contextArgv);
     if (json) {
       if (repair) {
         console.error(
@@ -1766,7 +1779,7 @@ export async function doctorCommand(argv: string[]) {
       return;
     }
 
-    const textParsed = parseCliContextArgs(argv);
+    const textParsed = parseCliContextArgs(contextArgv);
     const rootDir =
       textParsed.rootArg || textParsed.scope === "project"
         ? resolveCliContextRoot({
@@ -1798,13 +1811,20 @@ export async function doctorCommand(argv: string[]) {
     let projectSyncRepairTools: string[] = [];
     let projectSyncRepairPath: string | undefined;
     if (repair) {
+      await assertAutosyncRepairAllowed(
+        home,
+        rootDir,
+        allowLegacyManagedMutation
+      );
       rootConfigRepaired = await repairLegacyRootConfig(home);
     }
     if (repair) {
       const stateRepair = await repairLegacyState({ home, rootDir });
       stateRepaired = stateRepair.changed;
       stateConflicts = stateRepair.conflicts;
-      autosyncRepaired = await repairAutosyncServices(home, rootDir);
+      autosyncRepaired = await repairAutosyncServices(home, rootDir, {
+        allowLegacyManagedMutation,
+      });
       const authoringRepair = await repairLegacyCodexAuthoringLayout({
         home,
         rootDir,
