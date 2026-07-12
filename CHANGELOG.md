@@ -1,3 +1,11 @@
+## [2.22.3](https://github.com/hack-dance/fclt/compare/v2.22.2...v2.22.3) (2026-07-12)
+
+### Bug Fixes
+
+* block cleanup without an owned launch plist ([5ddec8e](https://github.com/hack-dance/fclt/commit/5ddec8e0c3c258f3977d2b6081dc69c4b4950907))
+* diagnose and contain legacy autosync upgrades ([18d4329](https://github.com/hack-dance/fclt/commit/18d4329440c6e2e28b8d11fd9eb5d9641e2d4a4e))
+* scope launchd recovery gate to autosync state ([711e751](https://github.com/hack-dance/fclt/commit/711e751b2afe402703f814b90cab18d9537fcf52))
+
 ## [2.22.2](https://github.com/hack-dance/fclt/compare/v2.22.1...v2.22.2) (2026-07-12)
 
 ### Bug Fixes
