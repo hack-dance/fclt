@@ -907,17 +907,16 @@ async function inspectLegacyRecovery(args: {
   // An unavailable launchd probe is only recovery-blocking when durable state
   // indicates that a service could belong to this root. Fresh installs have no
   // such state and must remain usable in launchd-less verification contexts.
-  const hasDiskRecoverySignal =
-    managedRecords.length > 0 ||
-    autosync.configured.length > 0 ||
-    autosync.ownedPlists.length > 0;
+  const hasAutosyncDiskRecoverySignal =
+    autosync.configured.length > 0 || autosync.ownedPlists.length > 0;
 
   const blocked =
     managedUnavailable ||
     managedInvalid ||
     autosync.coverage.configs === "unavailable" ||
     autosync.coverage.launchAgents === "unavailable" ||
-    (hasDiskRecoverySignal && autosync.coverage.launchd === "unavailable") ||
+    (hasAutosyncDiskRecoverySignal &&
+      autosync.coverage.launchd === "unavailable") ||
     autosync.orphanedLabels.length > 0 ||
     autosync.configured.some((record) => record.state !== "valid") ||
     autosync.reasonCodes.some((code) =>

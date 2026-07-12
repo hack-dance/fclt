@@ -68,6 +68,52 @@ test("doctor keeps fresh homes clear when launchd inspection is unavailable", as
   }
 });
 
+test("doctor contains managed-only homes when launchd inspection is unavailable", async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), "facult-doctor-managed-only-launchd-")
+  );
+  const rootDir = join(home, ".ai");
+  const managedPath = join(
+    facultMachineStateDir(home, rootDir),
+    "managed.json"
+  );
+
+  try {
+    await mkdir(rootDir, { recursive: true });
+    await writeJson(managedPath, {
+      version: 1,
+      tools: { codex: {} },
+    });
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(() =>
+      Promise.resolve({ exitCode: 1, stdout: "", stderr: "unavailable" })
+    );
+
+    const report = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+
+    expect(report.legacyRecovery.state).toBe("contained");
+    expect(report.legacyRecovery.coverage.launchd).toBe("unavailable");
+    expect(report.legacyRecovery.reasonCodes).toContain(
+      "managed_state_present"
+    );
+    expect(report.legacyRecovery.recovery).toMatchObject({
+      boundary: "none",
+      actions: [],
+    });
+    expect(report.issues.map((issue) => issue.code)).not.toContain(
+      "legacy-recovery-manual-review-required"
+    );
+  } finally {
+    setLaunchctlRunnerForTests(null);
+    setLaunchctlSupportedForTests(null);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("doctor blocks configured autosync when launchd inspection is unavailable", async () => {
   const home = await mkdtemp(
     join(tmpdir(), "facult-doctor-configured-launchd-")
