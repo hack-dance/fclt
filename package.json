@@ -68,7 +68,7 @@
     "type-check": "tsc --noEmit",
     "test": "./scripts/test-safe.sh",
     "test:ci": "./scripts/test-safe.sh --ci",
-    "pack:dry-run": "npm pack --dry-run",
+    "pack:dry-run": "bun run scripts/pack-dry-run.ts",
     "release:dry-run": "bunx semantic-release --dry-run --no-ci",
     "release": "bunx semantic-release",
     "prepare": "husky"

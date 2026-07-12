@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -10,12 +10,21 @@ const defaultBinary =
 const binaryPath = resolve(repoRoot, process.argv[2] ?? defaultBinary);
 const tempHome = await mkdtemp(join(tmpdir(), "fclt-binary-verify-"));
 const tempProcessTmp = join(tempHome, "tmp");
+const legacyManagedMutationFlag = "--allow-legacy-managed-mutation";
 
-async function run(args: string[]): Promise<string> {
+async function execute(args: string[]): Promise<{
+  code: number;
+  stderr: string;
+  stdout: string;
+}> {
+  const env = { ...process.env };
+  env.FACULT_ROOT_DIR = undefined;
+  env.FACULT_ROOT_SCOPE = undefined;
+  env.FCLT_ALLOW_LEGACY_MANAGED_MUTATION = undefined;
   const proc = Bun.spawn([binaryPath, ...args], {
     cwd: tempHome,
     env: {
-      ...process.env,
+      ...env,
       HOME: tempHome,
       USERPROFILE: tempHome,
       APPDATA: join(tempHome, "AppData", "Roaming"),
@@ -33,12 +42,25 @@ async function run(args: string[]): Promise<string> {
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
+  return { code, stderr, stdout };
+}
+
+async function run(args: string[]): Promise<string> {
+  const { code, stderr, stdout } = await execute(args);
   if (code !== 0) {
     throw new Error(
       `${binaryPath} ${args.join(" ")} failed with ${code}\n${stderr || stdout}`
     );
   }
   return stdout;
+}
+
+async function runBlocked(args: string[]): Promise<string> {
+  const { code, stderr, stdout } = await execute(args);
+  if (code === 0) {
+    throw new Error(`${binaryPath} ${args.join(" ")} unexpectedly succeeded`);
+  }
+  return stderr || stdout;
 }
 
 await run(["--help"]);
@@ -80,10 +102,82 @@ if (
   );
 }
 
-await run(["manage", "codex", "--global"]);
-await run(["sync", "codex", "--global"]);
+const customGlobalRoot = join(tempHome, "shared", ".ai");
+await mkdir(join(customGlobalRoot, "skills", "compiled-preview"), {
+  recursive: true,
+});
+await Bun.write(
+  join(customGlobalRoot, "skills", "compiled-preview", "SKILL.md"),
+  "# Compiled Preview\n"
+);
+await mkdir(join(tempHome, ".ai", "skills", "default-only"), {
+  recursive: true,
+});
+await Bun.write(
+  join(tempHome, ".ai", "skills", "default-only", "SKILL.md"),
+  "# Default Only\n"
+);
+await mkdir(join(customGlobalRoot, "mcp"), { recursive: true });
+await Bun.write(
+  join(customGlobalRoot, "mcp", "servers.json"),
+  `${JSON.stringify({ servers: {} }, null, 2)}\n`
+);
+const customStatus = JSON.parse(
+  await run(["status", "--json", "--global", "--root", customGlobalRoot])
+) as { machineStateDir?: string; projectRoot?: string | null };
+if (
+  customStatus.projectRoot !== null ||
+  customStatus.machineStateDir !==
+    join(tempHome, ".local", "state", "fclt", "global")
+) {
+  throw new Error(
+    `Expected custom root to remain global, got ${JSON.stringify(customStatus)}`
+  );
+}
+await run([
+  "manage",
+  "cursor",
+  "--dry-run",
+  "--global",
+  "--root",
+  customGlobalRoot,
+]);
+const forbiddenPreviewWrites = [
+  join(tempHome, ".cursor"),
+  join(tempHome, "shared", ".cursor"),
+  join(customGlobalRoot, ".facult", "ai", "index.json"),
+  join(customGlobalRoot, ".facult", "ai", "graph.json"),
+];
+for (const pathValue of forbiddenPreviewWrites) {
+  if (await Bun.file(pathValue).exists()) {
+    throw new Error(`Managed dry-run unexpectedly wrote ${pathValue}`);
+  }
+}
+await run(["index", "--global", "--root", customGlobalRoot]);
+const customIndex = JSON.parse(
+  await Bun.file(join(customGlobalRoot, ".facult", "ai", "index.json")).text()
+) as { skills?: Record<string, { sourceKind?: string }> };
+if (
+  customIndex.skills?.["compiled-preview"]?.sourceKind !== "global" ||
+  customIndex.skills?.["default-only"]
+) {
+  throw new Error(
+    `Expected isolated custom-global index, got ${JSON.stringify(customIndex.skills)}`
+  );
+}
 
+const blockedManage = await runBlocked(["manage", "codex", "--global"]);
+if (!blockedManage.includes("deprecated broad managed-mode mutation")) {
+  throw new Error(`Expected managed-mode containment, got ${blockedManage}`);
+}
 const codexAgentsPath = join(tempHome, ".codex", "AGENTS.md");
+if (await Bun.file(codexAgentsPath).exists()) {
+  throw new Error(`Blocked manage unexpectedly wrote ${codexAgentsPath}`);
+}
+
+await run(["manage", "codex", "--global", legacyManagedMutationFlag]);
+await run(["sync", "codex", "--global", legacyManagedMutationFlag]);
+
 const capabilityEvolutionSkillPath = join(
   tempHome,
   ".agents",

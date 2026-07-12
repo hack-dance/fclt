@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  LEGACY_MANAGED_MUTATION_ENV,
+  LEGACY_MANAGED_MUTATION_FLAG,
+} from "../legacy-mutation-policy";
 import { manageTool } from "../manage";
 import { facultStateDir } from "../paths";
 import { runAuditFix } from "./fix";
@@ -9,6 +13,7 @@ import { runStaticAudit } from "./static";
 import type { StaticAuditReport } from "./types";
 
 const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_LEGACY_MUTATION_ENV = process.env[LEGACY_MANAGED_MUTATION_ENV];
 let tempHome: string | null = null;
 
 async function makeTempHome(): Promise<string> {
@@ -34,6 +39,7 @@ afterEach(async () => {
   }
   tempHome = null;
   process.env.HOME = ORIGINAL_HOME;
+  process.env[LEGACY_MANAGED_MUTATION_ENV] = ORIGINAL_LEGACY_MUTATION_ENV;
 });
 
 describe("audit fix", () => {
@@ -75,8 +81,17 @@ describe("audit fix", () => {
       )
     ).toBe(true);
 
+    process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
+    await expect(
+      runAuditFix({
+        argv: ["mcp:github"],
+        cwd: tempHome,
+        homeDir: tempHome,
+      })
+    ).rejects.toThrow("fclt audit fix managed-output sync is a deprecated");
+
     const result = await runAuditFix({
-      argv: ["mcp:github"],
+      argv: ["mcp:github", LEGACY_MANAGED_MUTATION_FLAG],
       cwd: tempHome,
       homeDir: tempHome,
     });

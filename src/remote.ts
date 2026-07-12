@@ -24,7 +24,11 @@ import {
   builtinOperatingModelInstallRelPath,
   facultBuiltinPackRoot,
 } from "./builtin";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import {
   renderBullets,
   renderCatalog,
@@ -35,9 +39,15 @@ import {
 } from "./cli-ui";
 import { buildIndex } from "./index-builder";
 import {
+  assertLegacyManagedMutationAllowed,
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+} from "./legacy-mutation-policy";
+import {
   facultRootDir,
   projectRootFromAiRoot,
   readFacultConfig,
+  withFacultRootScope,
 } from "./paths";
 import {
   assertManifestIntegrity,
@@ -2833,6 +2843,7 @@ export async function installRemoteItem(args: {
   as?: string;
   dryRun?: boolean;
   force?: boolean;
+  allowLegacyManagedMutation?: boolean;
   strictSourceTrust?: boolean;
   homeDir?: string;
   rootDir?: string;
@@ -2841,6 +2852,13 @@ export async function installRemoteItem(args: {
   fetchJson?: (url: string) => Promise<unknown>;
   fetchText?: (url: string) => Promise<string>;
 }): Promise<InstallResult> {
+  if (args.force) {
+    assertLegacyManagedMutationAllowed({
+      action: "fclt install --force",
+      approved: args.allowLegacyManagedMutation,
+      dryRun: args.dryRun,
+    });
+  }
   const parsedRef = parseRef(args.ref);
   if (!parsedRef) {
     throw new Error(`Invalid ref "${args.ref}". Use <index>:<item>.`);
@@ -2894,6 +2912,7 @@ export async function installRemoteItem(args: {
 export async function checkRemoteUpdates(args?: {
   apply?: boolean;
   force?: boolean;
+  allowLegacyManagedMutation?: boolean;
   strictSourceTrust?: boolean;
   homeDir?: string;
   rootDir?: string;
@@ -2902,6 +2921,13 @@ export async function checkRemoteUpdates(args?: {
   fetchJson?: (url: string) => Promise<unknown>;
   fetchText?: (url: string) => Promise<string>;
 }): Promise<UpdateReport> {
+  if (args?.apply) {
+    assertLegacyManagedMutationAllowed({
+      action: "fclt update --apply",
+      approved: args.allowLegacyManagedMutation,
+      safeAlternative: "fclt update without --apply",
+    });
+  }
   const home = args?.homeDir ?? homedir();
   const root = args?.rootDir ?? facultRootDir(home);
   const cwd = args?.cwd ?? process.cwd();
@@ -3010,6 +3036,7 @@ export async function checkRemoteUpdates(args?: {
           as: entry.installedAs,
           dryRun: false,
           force: args.force ?? true,
+          allowLegacyManagedMutation: true,
           strictSourceTrust,
           homeDir: home,
           rootDir: root,
@@ -3195,7 +3222,7 @@ function printInstallHelp() {
           title: "Usage",
           lines: renderBullets([
             renderCode(
-              "fclt install <index:item> [--as <name>] [--dry-run] [--force] [--strict-source-trust] [--json]"
+              `fclt install <index:item> [--as <name>] [--dry-run] [--force] [${LEGACY_MANAGED_MUTATION_FLAG}] [--strict-source-trust] [--json]`
             ),
           ]),
         },
@@ -3225,7 +3252,7 @@ function printUpdateHelp() {
           title: "Usage",
           lines: renderBullets([
             renderCode(
-              "fclt update [--apply] [--strict-source-trust] [--json]"
+              `fclt update [--apply] [${LEGACY_MANAGED_MUTATION_FLAG}] [--strict-source-trust] [--json]`
             ),
           ]),
         },
@@ -3545,6 +3572,7 @@ export async function installCommand(
       dryRun,
       force,
       strictSourceTrust,
+      allowLegacyManagedMutation: legacyManagedMutationApproved({ argv }),
       homeDir: ctx.homeDir,
       rootDir: ctx.rootDir,
       cwd: ctx.cwd,
@@ -3603,12 +3631,14 @@ export async function updateCommand(
     return;
   }
   const apply = argv.includes("--apply");
+  const allowLegacyManagedMutation = legacyManagedMutationApproved({ argv });
   const strictSourceTrust =
     argv.includes("--strict-source-trust") || Boolean(ctx.strictSourceTrust);
   const json = argv.includes("--json");
   try {
     const report = await checkRemoteUpdates({
       apply,
+      allowLegacyManagedMutation,
       strictSourceTrust,
       homeDir: ctx.homeDir,
       rootDir: ctx.rootDir,
@@ -3889,13 +3919,21 @@ export async function templatesCommand(
               homeDir: ctx.homeDir,
               cwd,
             });
-      const result = await scaffoldBuiltinOperatingModelPack({
+      const homeDir = ctx.homeDir ?? process.env.HOME?.trim() ?? homedir();
+      const scope = resolveCliContextScope({
+        homeDir,
         rootDir,
-        homeDir: ctx.homeDir,
-        dryRun,
-        force,
-        update,
+        scope: context.scope,
       });
+      const result = await withFacultRootScope({ rootDir, scope }, async () =>
+        scaffoldBuiltinOperatingModelPack({
+          rootDir,
+          homeDir,
+          dryRun,
+          force,
+          update,
+        })
+      );
       if (json) {
         console.log(JSON.stringify(result, null, 2));
         return;
@@ -4085,6 +4123,7 @@ export async function templatesCommand(
       as,
       dryRun,
       force,
+      allowLegacyManagedMutation: legacyManagedMutationApproved({ argv: args }),
       homeDir: ctx.homeDir,
       rootDir: parsedArgs.rootArg ?? ctx.rootDir,
       cwd: ctx.cwd,

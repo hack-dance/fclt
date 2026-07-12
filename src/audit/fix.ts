@@ -1,6 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import {
+  assertLegacyManagedMutationAllowed,
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+} from "../legacy-mutation-policy";
 import { loadManagedState, syncManagedTools } from "../manage";
 import {
   extractServersObject,
@@ -90,6 +95,9 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
     }
     if (arg === "--yes" || arg === "-y") {
       args.yes = true;
+      continue;
+    }
+    if (arg === LEGACY_MANAGED_MUTATION_FLAG) {
       continue;
     }
 
@@ -481,6 +489,7 @@ export async function fixInlineMcpSecrets(args: {
   findings: FindingSelection[];
   homeDir?: string;
   rootDir?: string;
+  allowLegacyManagedMutation?: boolean;
 }): Promise<{
   fixed: number;
   fixedSelections: FindingSelection[];
@@ -604,6 +613,13 @@ export async function fixInlineMcpSecrets(args: {
     };
   }
 
+  if (Object.keys(managedState.tools).length > 0) {
+    assertLegacyManagedMutationAllowed({
+      action: "fclt audit fix managed-output sync",
+      approved: args.allowLegacyManagedMutation,
+    });
+  }
+
   await mkdir(dirname(canonical.trackedPath), { recursive: true });
   await Bun.write(
     canonical.trackedPath,
@@ -615,7 +631,11 @@ export async function fixInlineMcpSecrets(args: {
   );
 
   if (Object.keys(managedState.tools).length > 0) {
-    await syncManagedTools({ homeDir, rootDir });
+    await syncManagedTools({
+      homeDir,
+      rootDir,
+      allowLegacyManagedMutation: true,
+    });
   }
 
   const riskyManagedOutputs = (
@@ -761,6 +781,9 @@ export async function runAuditFix(args: {
     findings: selections,
     homeDir,
     rootDir,
+    allowLegacyManagedMutation: legacyManagedMutationApproved({
+      argv: args.argv,
+    }),
   });
 
   const nextStaticReport =
@@ -807,8 +830,8 @@ function printHelp() {
 
 Usage:
   fclt audit fix <item>
-  fclt audit fix --item <item> [--path <path>] [--source <static|agent|combined>]
-  fclt audit fix --all [--source <static|agent|combined>] [--yes]
+  fclt audit fix --item <item> [--path <path>] [--source <static|agent|combined>] [${LEGACY_MANAGED_MUTATION_FLAG}]
+  fclt audit fix --all [--source <static|agent|combined>] [--yes] [${LEGACY_MANAGED_MUTATION_FLAG}]
   fclt audit fix --dry-run ...
 
 Notes:

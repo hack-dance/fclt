@@ -10,7 +10,11 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ensureAiGraphPath } from "./ai-state";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import type { AssetScope, GraphNodeKind } from "./graph";
 import { loadGraph, resolveGraphNode } from "./graph-query";
 import {
@@ -21,10 +25,10 @@ import {
   facultAiStateDir,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
-  facultRootDir,
   legacyFacultAiStateDirs,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 
 const NEWLINE_RE = /\r?\n/;
@@ -602,7 +606,13 @@ function canonicalRefToPath(args: {
   rootDir: string;
 }): string | null {
   if (args.ref.startsWith("@ai/")) {
-    return join(facultRootDir(args.homeDir), args.ref.slice("@ai/".length));
+    const globalRoot = projectRootFromAiRoot(args.rootDir, args.homeDir)
+      ? resolveCliContextRoot({
+          homeDir: args.homeDir,
+          scope: "global",
+        })
+      : args.rootDir;
+    return join(globalRoot, args.ref.slice("@ai/".length));
   }
   if (args.ref.startsWith("@project/")) {
     const relPath = args.ref.slice("@project/".length);
@@ -2619,7 +2629,9 @@ export async function promoteProposal(
     )
   ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
   const targetRoot =
-    args.to === "global" ? facultRootDir(homeDir) : args.rootDir;
+    args.to === "global"
+      ? resolveCliContextRoot({ homeDir, scope: "global" })
+      : args.rootDir;
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
   const promoted: AiProposalRecord = {
     ...current,
@@ -3395,10 +3407,33 @@ async function reviewCommand(argv: string[]): Promise<void> {
   }
 }
 
-export async function aiCommand(argv: string[]) {
+export async function aiCommand(
+  argv: string[],
+  rootScopeActive = false
+): Promise<void> {
   const [sub, ...rest] = argv;
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(aiHelp());
+    return;
+  }
+
+  if (!rootScopeActive) {
+    const parsed = parseCliContextArgs(rest);
+    const homeDir = process.env.HOME ?? "";
+    const rootDir = resolveCliContextRoot({
+      homeDir,
+      rootArg: parsed.rootArg,
+      scope: parsed.scope,
+      cwd: process.cwd(),
+    });
+    const scope = resolveCliContextScope({
+      homeDir,
+      rootDir,
+      scope: parsed.scope,
+    });
+    await withFacultRootScope({ rootDir, scope }, async () =>
+      aiCommand(argv, true)
+    );
     return;
   }
 

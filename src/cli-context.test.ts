@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 
 let tempRoot: string | null = null;
 const ORIGINAL_ROOT = process.env.FACULT_ROOT_DIR;
@@ -40,6 +44,22 @@ describe("parseCliContextArgs", () => {
     expect(() =>
       parseCliContextArgs(["--global", "--scope", "project"])
     ).toThrow("Conflicting scope flags");
+  });
+});
+
+describe("resolveCliContextScope", () => {
+  it("preserves explicit scope for custom .ai roots", () => {
+    const homeDir = "/tmp/home";
+    const rootDir = "/tmp/shared/.ai";
+    expect(resolveCliContextScope({ homeDir, rootDir, scope: "global" })).toBe(
+      "global"
+    );
+    expect(resolveCliContextScope({ homeDir, rootDir, scope: "project" })).toBe(
+      "project"
+    );
+    expect(resolveCliContextScope({ homeDir, rootDir, scope: "merged" })).toBe(
+      "project"
+    );
   });
 });
 
@@ -170,6 +190,9 @@ describe("resolveCliContextRoot", () => {
 
     expect(resolveCliContextRoot({ homeDir, cwd, scope: "project" })).toBe(
       rootDir
+    );
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "global" })).toBe(
+      join(homeDir, ".ai")
     );
   });
 

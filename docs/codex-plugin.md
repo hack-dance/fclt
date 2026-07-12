@@ -106,11 +106,12 @@ fclt setup codex-plugin --dry-run --json
 fclt setup codex-plugin --no-codex-install
 ```
 
-Use managed sync only when you intentionally want `fclt` to render broader Codex tool files:
+Broad managed sync is deprecated and contained by default. Preview it only when inspecting a
+legacy installation:
 
 ```bash
-fclt manage codex --global
-fclt sync codex --global
+fclt manage codex --global --dry-run
+fclt sync codex --global --dry-run
 ```
 
 For local plugin development, run the lightweight checks that ship with the repository:

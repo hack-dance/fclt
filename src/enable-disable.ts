@@ -2,6 +2,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureAiIndexPath } from "./ai-state";
 import type { FacultIndex } from "./index-builder";
+import {
+  assertLegacyManagedMutationAllowed,
+  LEGACY_MANAGED_MUTATION_FLAG,
+  legacyManagedMutationApproved,
+} from "./legacy-mutation-policy";
 import { loadManagedState, syncManagedTools } from "./manage";
 import { facultAiIndexPath, facultRootDir } from "./paths";
 
@@ -187,12 +192,14 @@ export async function applyEnableDisable({
   tools,
   homeDir,
   rootDir,
+  allowLegacyManagedMutation,
 }: {
   names: string[];
   mode: CommandMode;
   tools?: string[];
   homeDir?: string;
   rootDir?: string;
+  allowLegacyManagedMutation?: boolean;
 }) {
   const home = homeDir ?? homedir();
   const root = rootDir ?? facultRootDir(home);
@@ -206,6 +213,14 @@ export async function applyEnableDisable({
   }
 
   const allTools = managedTools.length ? managedTools : targetTools;
+  const toolsToSync = targetTools.filter((tool) => managedState.tools[tool]);
+  if (toolsToSync.length) {
+    assertLegacyManagedMutationAllowed({
+      action: `fclt ${mode}`,
+      approved: allowLegacyManagedMutation,
+      safeAlternative: "fclt inventory and fclt managed",
+    });
+  }
 
   const index = ensureIndexStructure(await loadIndex(home));
   const missing: string[] = [];
@@ -258,7 +273,6 @@ export async function applyEnableDisable({
     mode,
   });
 
-  const toolsToSync = targetTools.filter((tool) => managedState.tools[tool]);
   if (toolsToSync.length) {
     for (const tool of toolsToSync) {
       await syncManagedTools({
@@ -266,6 +280,7 @@ export async function applyEnableDisable({
         rootDir: root,
         tool,
         dryRun: false,
+        allowLegacyManagedMutation,
       });
     }
   }
@@ -296,6 +311,9 @@ function parseEnableDisableArgs(argv: string[]): {
       tools = parseToolList(arg.slice("--for=".length));
       continue;
     }
+    if (arg === LEGACY_MANAGED_MUTATION_FLAG) {
+      continue;
+    }
     if (arg.startsWith("-")) {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -314,7 +332,7 @@ export async function enableCommand(argv: string[]) {
     console.log(`fclt enable — enable skills or MCP servers for tools
 
 Usage:
-  fclt enable <name> [moreNames...] [--for <tool1,tool2,...>]
+  fclt enable <name> [moreNames...] [--for <tool1,tool2,...>] [${LEGACY_MANAGED_MUTATION_FLAG}]
   fclt enable mcp:<name> [--for <tools>]
 
 Options:
@@ -324,7 +342,12 @@ Options:
   }
   try {
     const { names, tools } = parseEnableDisableArgs(argv);
-    await applyEnableDisable({ names, tools, mode: "enable" });
+    await applyEnableDisable({
+      names,
+      tools,
+      mode: "enable",
+      allowLegacyManagedMutation: legacyManagedMutationApproved({ argv }),
+    });
     console.log(`Enabled ${names.join(", ")}`);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -337,7 +360,7 @@ export async function disableCommand(argv: string[]) {
     console.log(`fclt disable — disable skills or MCP servers for tools
 
 Usage:
-  fclt disable <name> [moreNames...] [--for <tool1,tool2,...>]
+  fclt disable <name> [moreNames...] [--for <tool1,tool2,...>] [${LEGACY_MANAGED_MUTATION_FLAG}]
   fclt disable mcp:<name> [--for <tools>]
 
 Options:
@@ -347,7 +370,12 @@ Options:
   }
   try {
     const { names, tools } = parseEnableDisableArgs(argv);
-    await applyEnableDisable({ names, tools, mode: "disable" });
+    await applyEnableDisable({
+      names,
+      tools,
+      mode: "disable",
+      allowLegacyManagedMutation: legacyManagedMutationApproved({ argv }),
+    });
     console.log(`Disabled ${names.join(", ")}`);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

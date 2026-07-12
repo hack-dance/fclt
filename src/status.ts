@@ -1,6 +1,10 @@
 import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import { loadManagedState } from "./manage";
 import {
   facultAiEvolutionReviewDir,
@@ -10,8 +14,8 @@ import {
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
   facultMachineStateDir,
-  facultRootDir,
   projectRootFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 import { parseJsonLenient } from "./util/json";
 
@@ -157,15 +161,45 @@ export async function packageVersion(): Promise<string> {
   return "unknown";
 }
 
-export async function buildStatus(opts?: {
+interface StatusOptions {
   cwd?: string;
   homeDir?: string;
   rootArg?: string;
   scope?: "merged" | "global" | "project";
-}): Promise<FacultStatus> {
+}
+
+export async function buildStatus(opts?: StatusOptions): Promise<FacultStatus> {
   const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
   const cwd = opts?.cwd ?? process.cwd();
-  const globalRoot = facultRootDir(homeDir);
+  const contextRoot = resolveCliContextRoot({
+    homeDir,
+    cwd,
+    rootArg: opts?.rootArg,
+    scope: opts?.scope,
+  });
+  const scope = resolveCliContextScope({
+    homeDir,
+    rootDir: contextRoot,
+    scope: opts?.scope,
+  });
+  return await withFacultRootScope({ rootDir: contextRoot, scope }, async () =>
+    buildStatusInScope({
+      ...opts,
+      cwd,
+      homeDir,
+      rootArg: contextRoot,
+    })
+  );
+}
+
+async function buildStatusInScope(opts?: StatusOptions): Promise<FacultStatus> {
+  const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
+  const cwd = opts?.cwd ?? process.cwd();
+  const globalRoot = resolveCliContextRoot({
+    homeDir,
+    cwd,
+    scope: "global",
+  });
   const contextRoot = resolveCliContextRoot({
     homeDir,
     cwd,

@@ -118,7 +118,7 @@ Common canonical asset types:
 - automations: scheduled review or maintenance prompts
 - plugins: local tool plugin bundles and marketplaces
 
-Not every asset must be rendered into every tool. Use inventory and policy first, then managed sync only where `fclt` should own the rendered output.
+Not every asset must be rendered into every tool. Use inventory and policy first. Broad managed apply is deprecated and contained; only use managed dry-runs to inspect legacy rendering plans while transaction-safe per-asset deployment is built.
 
 For concrete composition patterns, see [Composable Capability](./composable-capability.md).
 

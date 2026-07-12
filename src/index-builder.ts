@@ -1,8 +1,13 @@
 import { mkdir, readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getAdapter } from "./adapters";
 import { facultBuiltinPackRoot } from "./builtin";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import {
   type AssetScope,
   type AssetSourceKind,
@@ -19,6 +24,7 @@ import {
   facultRootDir,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 import { lastModified } from "./util/skills";
 
@@ -1563,19 +1569,26 @@ function registerManagedRenderedTargets(args: {
   }
 }
 
-export async function buildIndex(opts?: {
+interface BuildIndexOptions {
   force?: boolean;
   /** Override the default canonical root dir (useful for tests). */
   rootDir?: string;
   /** Override home directory for generated state placement (useful for tests). */
   homeDir?: string;
-}): Promise<{
+}
+
+interface BuildIndexResult {
   index: FacultIndex;
   outputPath: string;
   graph: FacultGraph;
   graphPath: string;
-}> {
+}
+
+async function buildIndexInternal(
+  opts?: BuildIndexOptions & { persist?: boolean }
+): Promise<BuildIndexResult> {
   const force = Boolean(opts?.force);
+  const persist = opts?.persist !== false;
   const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
   const rootDir =
     opts?.rootDir ?? (homeDir ? facultRootDir(homeDir) : facultRootDir());
@@ -1613,7 +1626,7 @@ export async function buildIndex(opts?: {
     }
   }
 
-  if (force) {
+  if (force && persist) {
     try {
       await Bun.write(outputPath, "");
     } catch {
@@ -1621,7 +1634,9 @@ export async function buildIndex(opts?: {
     }
   }
 
-  const globalRoot = facultRootDir(homeDir);
+  const globalRoot = projectRoot
+    ? resolveCliContextRoot({ homeDir, scope: "global" })
+    : rootDir;
   const sources: IndexedSource[] = [];
   const builtinRoot = facultBuiltinPackRoot();
   try {
@@ -1808,11 +1823,29 @@ export async function buildIndex(opts?: {
     );
   }
 
-  await mkdir(dirname(outputPath), { recursive: true });
-  await Bun.write(outputPath, `${JSON.stringify(index, null, 2)}\n`);
-  await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
+  if (persist) {
+    await mkdir(dirname(outputPath), { recursive: true });
+    await Bun.write(outputPath, `${JSON.stringify(index, null, 2)}\n`);
+    await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
+  }
 
   return { index, outputPath, graph, graphPath };
+}
+
+export async function buildIndex(
+  opts?: BuildIndexOptions
+): Promise<BuildIndexResult> {
+  return await buildIndexInternal({ ...opts, persist: true });
+}
+
+export async function buildIndexSnapshot(
+  opts?: BuildIndexOptions
+): Promise<Pick<BuildIndexResult, "graph" | "index">> {
+  const { graph, index } = await buildIndexInternal({
+    ...opts,
+    persist: false,
+  });
+  return { graph, index };
 }
 
 export async function indexCommand(argv: string[]) {
@@ -1833,13 +1866,21 @@ Options:
     return;
   }
   const force = parsed.argv.includes("--force");
-  const { outputPath } = await buildIndex({
-    force,
-    rootDir: resolveCliContextRoot({
-      rootArg: parsed.rootArg,
-      scope: parsed.scope,
-      cwd: process.cwd(),
-    }),
+  const homeDir = process.env.HOME?.trim() || homedir();
+  const rootDir = resolveCliContextRoot({
+    homeDir,
+    rootArg: parsed.rootArg,
+    scope: parsed.scope,
+    cwd: process.cwd(),
   });
+  const scope = resolveCliContextScope({
+    homeDir,
+    rootDir,
+    scope: parsed.scope,
+  });
+  const { outputPath } = await withFacultRootScope(
+    { rootDir, scope },
+    async () => buildIndex({ force, homeDir, rootDir })
+  );
   console.log(`Index written to ${outputPath}`);
 }

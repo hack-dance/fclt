@@ -83,14 +83,19 @@ cd /path/to/repo
 fclt templates init project-ai
 ```
 
-Managed mode is only the rendering layer. The pack becomes live tool guidance when you manage a tool and sync:
+Legacy managed mode is a deprecated rendering layer. Inspect its plan without changing tool state:
 
 ```bash
-fclt manage codex
-fclt sync codex
+fclt manage codex --dry-run
+fclt sync codex --dry-run
 ```
 
-Global managed tools receive the built-in writeback/evolution guidance by default. Project-local `.ai` roots do not render the built-in operating model into repo-local tool outputs unless project sync policy explicitly allows it. Installing the pack and rendering it into a tool are separate decisions.
+Broad managed mutation is contained by default while transaction-safe per-asset deployment is built.
+Use narrow native setup such as `fclt setup codex-plugin` when available. Existing global managed
+tools receive the built-in writeback/evolution guidance only when an explicitly reviewed legacy
+sync is approved. Project-local `.ai` roots do not render the built-in operating model into
+repo-local tool outputs unless project sync policy explicitly allows it. Installing the pack and
+rendering it into a tool are separate decisions.
 
 Disable built-in default sync for a canonical root:
 

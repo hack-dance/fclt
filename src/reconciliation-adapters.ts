@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { resolveCliContextRoot } from "./cli-context";
 import {
   facultAiStateDir,
   facultAiWritebackQueuePath,
-  facultRootDir,
   legacyFacultAiStateDirs,
   projectRootFromAiRoot,
 } from "./paths";
@@ -191,7 +191,12 @@ const writebackAdapter: ReconciliationAdapter = {
     const config = context.config as WritebackSourceConfig;
     const sourceRoot =
       config.scope === "global"
-        ? facultRootDir(context.homeDir)
+        ? context.projectRoot
+          ? resolveCliContextRoot({
+              homeDir: context.homeDir,
+              scope: "global",
+            })
+          : context.rootDir
         : context.rootDir;
     const scope = projectRootFromAiRoot(sourceRoot, context.homeDir)
       ? "project"

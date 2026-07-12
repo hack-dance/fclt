@@ -3,7 +3,11 @@ import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIndex, parseSkillMarkdown } from "./index-builder";
+import {
+  buildIndex,
+  buildIndexSnapshot,
+  parseSkillMarkdown,
+} from "./index-builder";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
@@ -78,6 +82,62 @@ describe("parseSkillMarkdown", () => {
 });
 
 describe("buildIndex", () => {
+  it("computes a read-only snapshot without creating generated state", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = facultRootDir(tempHome);
+    await mkdir(join(rootDir, "skills", "snapshot-skill"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "skills", "snapshot-skill", "SKILL.md"),
+      "# Snapshot Skill\n"
+    );
+    const indexPath = facultAiIndexPath(tempHome, rootDir);
+    const graphPath = facultAiGraphPath(tempHome, rootDir);
+
+    const snapshot = await buildIndexSnapshot({
+      homeDir: tempHome,
+      rootDir,
+    });
+
+    expect(snapshot.index.skills["snapshot-skill"]).toBeTruthy();
+    expect(await Bun.file(indexPath).exists()).toBe(false);
+    expect(await Bun.file(graphPath).exists()).toBe(false);
+    expect(
+      await Bun.file(
+        facultGeneratedStateDir({ home: tempHome, rootDir })
+      ).exists()
+    ).toBe(false);
+  });
+
+  it("does not blank existing generated files for a forced read-only snapshot", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = facultRootDir(tempHome);
+    const indexPath = facultAiIndexPath(tempHome, rootDir);
+    const graphPath = facultAiGraphPath(tempHome, rootDir);
+    await mkdir(dirname(indexPath), { recursive: true });
+    await Bun.write(indexPath, "index sentinel\n");
+    await Bun.write(graphPath, "graph sentinel\n");
+
+    await buildIndexSnapshot({
+      homeDir: tempHome,
+      rootDir,
+    });
+    expect(await Bun.file(indexPath).text()).toBe("index sentinel\n");
+    expect(await Bun.file(graphPath).text()).toBe("graph sentinel\n");
+
+    await buildIndexSnapshot({
+      force: true,
+      homeDir: tempHome,
+      rootDir,
+    });
+
+    expect(await Bun.file(indexPath).text()).toBe("index sentinel\n");
+    expect(await Bun.file(graphPath).text()).toBe("graph sentinel\n");
+  });
+
   it("indexes skills, mcp servers, agents, snippets, and instructions under the canonical root", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
