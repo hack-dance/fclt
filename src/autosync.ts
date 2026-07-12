@@ -2366,6 +2366,10 @@ export async function inspectAutosyncRecovery(
   if (loaded.unprovenLabels.length > 0) {
     reasonCodes.add("autosync_loaded_ownership_unproven");
   }
+  const ownedPlistLabels = new Set(ownedPlists.map((plist) => plist.label));
+  if (loaded.ownedLabels.some((label) => !ownedPlistLabels.has(label))) {
+    reasonCodes.add("autosync_loaded_ownership_unproven");
+  }
 
   const configuredLabels = new Set(
     configs.records.flatMap((entry) => autosyncLabelCandidates(entry.service))

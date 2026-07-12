@@ -169,6 +169,82 @@ test("doctor blocks configured autosync when launchd inspection is unavailable",
   }
 });
 
+test("doctor blocks loaded autosync without a matching owned plist", async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), "facult-doctor-loaded-without-plist-")
+  );
+  const rootDir = join(home, ".ai");
+  const configPath = join(
+    facultMachineStateDir(home, rootDir),
+    "autosync",
+    "services",
+    "all.json"
+  );
+
+  try {
+    await mkdir(rootDir, { recursive: true });
+    await writeJson(configPath, {
+      version: 1,
+      name: "all",
+      rootDir,
+      debounceMs: 100,
+      git: {
+        enabled: false,
+        remote: "origin",
+        branch: "main",
+        intervalMinutes: 60,
+        autoCommit: false,
+        commitPrefix: "test",
+        source: "local",
+      },
+    });
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests((args) => {
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: "-\t0\tcom.fclt.autosync\n",
+          stderr: "",
+        });
+      }
+      if (args[0] === "print") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: `working directory = ${rootDir}\n`,
+          stderr: "",
+        });
+      }
+      return Promise.resolve({
+        exitCode: 64,
+        stdout: "",
+        stderr: "unexpected",
+      });
+    });
+
+    const report = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+
+    expect(report.legacyRecovery.state).toBe("blocked");
+    expect(report.legacyRecovery.reasonCodes).toContain(
+      "autosync_loaded_ownership_unproven"
+    );
+    expect(report.legacyRecovery.recovery).toMatchObject({
+      boundary: "manual_review",
+      actions: [],
+    });
+    expect(
+      report.actions.some((action) => action.id.startsWith("cleanup-autosync"))
+    ).toBe(false);
+  } finally {
+    setLaunchctlRunnerForTests(null);
+    setLaunchctlSupportedForTests(null);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("doctor reports legacy recovery coverage without mutating owned state", async () => {
   const home = await mkdtemp(join(tmpdir(), "facult-doctor-recovery-"));
   const rootDir = join(home, ".ai");
