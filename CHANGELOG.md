@@ -1,3 +1,9 @@
+## [2.22.2](https://github.com/hack-dance/fclt/compare/v2.22.1...v2.22.2) (2026-07-12)
+
+### Bug Fixes
+
+* contain unsafe broad managed mutation ([#54](https://github.com/hack-dance/fclt/issues/54)) ([d93e443](https://github.com/hack-dance/fclt/commit/d93e4435725a24347790994061c79b2c0ae3bd03))
+
 ## [2.22.1](https://github.com/hack-dance/fclt/compare/v2.22.0...v2.22.1) (2026-07-11)
 
 ### Bug Fixes
