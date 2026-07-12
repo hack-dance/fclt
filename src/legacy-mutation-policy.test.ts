@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type AutosyncServiceConfig,
+  buildLaunchAgentPlist,
+  buildLaunchAgentSpec,
   installAutosyncService,
   repairAutosyncServices,
   runAutosyncService,
@@ -235,14 +237,27 @@ describe("legacy managed mutation containment", () => {
       },
     });
     await mkdir(dirname(legacyPlist), { recursive: true });
-    await Bun.write(legacyPlist, "legacy\n");
+    await Bun.write(
+      legacyPlist,
+      buildLaunchAgentPlist(
+        buildLaunchAgentSpec({
+          homeDir: home,
+          rootDir,
+          serviceName: "all",
+          invocation: [join(home, "bin", "fclt")],
+        })
+      ).replace(
+        "<string>com.fclt.autosync</string>",
+        "<string>com.facult.autosync</string>"
+      )
+    );
 
     await expect(
       repairAutosyncServices(home, rootDir, {
         allowLegacyManagedMutation: false,
       })
     ).rejects.toThrow("fclt doctor --repair autosync is a deprecated");
-    expect(await readFile(legacyPlist, "utf8")).toBe("legacy\n");
+    expect(await Bun.file(legacyPlist).exists()).toBe(true);
     expect(await Bun.file(serviceConfig).exists()).toBe(true);
   });
 

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "all",
+  "rootDir": "__ROOT_DIR__",
+  "debounceMs": 1500,
+  "git": {
+    "enabled": false,
+    "remote": "origin",
+    "branch": "main",
+    "intervalMinutes": 60,
+    "autoCommit": true,
+    "commitPrefix": "chore(facult-autosync)",
+    "source": "upgrade-fixture"
+  }
+}

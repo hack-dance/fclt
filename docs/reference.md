@@ -21,8 +21,10 @@ when present, review state, indexes, and optional Codex integration. It is idemp
 local edits and WB/EV history. The remaining commands let you inspect tool state without claiming
 ownership of rendered files.
 `doctor --json` is read-only and reports schema version 2 setup health, loop readiness, optional
-integration degradation, and recommended actions. Version 2 removes vendor-specific integration
-fields; external work systems participate through configured evidence exports. `paths --json`
+integration degradation, legacy managed/autosync recovery coverage, and recommended actions.
+`legacyRecovery.state` is `clear`, `contained`, `cleanup_required`, or `blocked`; cleanup is offered
+only when config, launch-agent, and launchd ownership are proven for the selected root. Version 2
+removes vendor-specific integration fields; external work systems participate through configured evidence exports. `paths --json`
 reports canonical, generated, runtime, and review paths for agents and integrations.
 
 Use `fclt doctor --repair` as the one-command self-heal path for local state.
@@ -71,6 +73,8 @@ Use these to create or normalize canonical capability in `~/.ai` or `<repo>/.ai`
 
 ```bash
 fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
+fclt autosync status [tool]
+fclt autosync cleanup --service <name> --expected-plan <id> --global|--project --root <path> --allow-legacy-managed-mutation --json
 fclt manage <tool> --dry-run
 fclt sync [tool] --dry-run
 fclt managed
@@ -83,6 +87,12 @@ local marketplace entry, and the Codex plugin install/cache when Codex is
 available. Broad managed mutation is deprecated and contained by default; the explicit
 `--allow-legacy-managed-mutation` escape hatch exists only for reviewed migrations. Read
 [Managed mode](./managed-mode.md) before using it on an existing setup.
+
+`autosync cleanup` is a runtime-only recovery transaction emitted by `doctor --json`. It requires
+the exact service, root, scope, plan id, and command-line approval from that report. It unloads and
+removes only a structurally validated root-owned launch agent, preserves canonical capability,
+live tool state, managed records, backups, and autosync config, and writes an idempotency receipt.
+The ambient legacy-approval environment variable does not authorize this command.
 
 ## Writeback and evolution
 
@@ -155,7 +165,10 @@ fclt self-update
 
 `self-update` detects release-script, npm/Bun, and mise-managed npm installs.
 For mise installs it updates the global `npm:facult` pin and verifies the
-resolved `fclt` version through mise.
+resolved `fclt` version through mise. After a successful non-dry update, the exact verified new
+executable runs read-only `doctor --global --json` plus `doctor --project --json` when the current
+Git repository has a `.ai` root. It prints any contained recovery action and never applies cleanup
+automatically.
 
 Use `--strict-source-trust` when installing or updating remote capability from catalogs.
 

@@ -8,12 +8,14 @@ import {
   readFile,
   readlink,
   rm,
+  symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { facultBuiltinPackRoot } from "./builtin";
 import { LEGACY_MANAGED_MUTATION_FLAG } from "./legacy-mutation-policy";
 import {
+  inspectManagedStateRecords,
   loadManagedState,
   managedStatePath,
   managedStatePathForRoot,
@@ -24,7 +26,7 @@ import {
   syncManagedTools,
   unmanageTool,
 } from "./manage";
-import { facultMachineStateDir } from "./paths";
+import { facultMachineStateDir, legacyFacultStateDirForRoot } from "./paths";
 
 const DOLLAR = "$";
 
@@ -96,6 +98,86 @@ describe("managed state", () => {
     const state = await loadManagedState(home);
     expect(state.version).toBe(1);
     expect(state.tools).toEqual({});
+  });
+
+  it("omits absent managed-state candidates from read-only inspection", async () => {
+    const homeDir = await createTempDir();
+    const rootDir = join(homeDir, ".ai");
+
+    expect(await inspectManagedStateRecords({ homeDir, rootDir })).toEqual([]);
+  });
+
+  it("reports invalid current and valid legacy records without fallback masking", async () => {
+    const homeDir = await createTempDir();
+    const rootDir = join(homeDir, ".ai");
+    const currentPath = managedStatePathForRoot(homeDir, rootDir);
+    const legacyPath = join(
+      legacyFacultStateDirForRoot(rootDir, homeDir),
+      "managed.json"
+    );
+    await mkdir(dirname(currentPath), { recursive: true });
+    await Bun.write(currentPath, "{invalid\n");
+    await writeJson(legacyPath, {
+      version: 1,
+      tools: {
+        zeta: { tool: "zeta", privateValue: "must-not-be-reported" },
+        alpha: { tool: "alpha", managedAt: "2026-07-12T00:00:00.000Z" },
+      },
+    });
+
+    const inspections = await inspectManagedStateRecords({ homeDir, rootDir });
+
+    expect(inspections).toEqual([
+      {
+        path: currentPath,
+        location: "machine",
+        state: "invalid",
+        tools: [],
+      },
+      {
+        path: legacyPath,
+        location: "legacy",
+        state: "valid",
+        tools: ["alpha", "zeta"],
+      },
+    ]);
+    expect(JSON.stringify(inspections)).not.toContain("must-not-be-reported");
+  });
+
+  it("rejects symlink and non-file managed-state candidates without reading them", async () => {
+    const homeDir = await createTempDir();
+    const rootDir = join(homeDir, ".ai");
+    const currentPath = managedStatePathForRoot(homeDir, rootDir);
+    const legacyPath = join(
+      legacyFacultStateDirForRoot(rootDir, homeDir),
+      "managed.json"
+    );
+    const symlinkTarget = join(homeDir, "outside-managed.json");
+    await writeJson(symlinkTarget, {
+      version: 1,
+      tools: { "must-not-be-read": { tool: "must-not-be-read" } },
+    });
+    await mkdir(dirname(currentPath), { recursive: true });
+    await symlink(symlinkTarget, currentPath);
+    await mkdir(legacyPath, { recursive: true });
+
+    const inspections = await inspectManagedStateRecords({ homeDir, rootDir });
+
+    expect(inspections).toEqual([
+      {
+        path: currentPath,
+        location: "machine",
+        state: "unavailable",
+        tools: [],
+      },
+      {
+        path: legacyPath,
+        location: "legacy",
+        state: "unavailable",
+        tools: [],
+      },
+    ]);
+    expect(JSON.stringify(inspections)).not.toContain("must-not-be-read");
   });
 
   it("writes managed.json after managing", async () => {

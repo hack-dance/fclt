@@ -1,12 +1,22 @@
 import { describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runFixtureGit } from "../test/git-fixture";
 import {
+  assessSelfUpdateDoctorPostflight,
   buildCommandLookupFallback,
   buildPackageManagerUpdateCommand,
+  buildSelfUpdateDoctorCommand,
   detectInstallMethod,
+  formatSelfUpdateCommand,
+  formatSelfUpdateLegacyRecovery,
   looksLikeMiseNpmFacultExecutableForVersion,
   looksLikeMiseShim,
   normalizeVersionTag,
   parseSelfUpdateArgs,
+  parseSelfUpdateLegacyRecovery,
+  runSelfUpdateDoctorPostflight,
   stripTagPrefix,
 } from "./self-update";
 
@@ -140,5 +150,201 @@ describe("mise version helpers", () => {
         "2.17.4"
       )
     ).toBe(false);
+  });
+});
+
+describe("self-update doctor postflight", () => {
+  it("treats an older report without legacy recovery metadata as clear and unsupported", () => {
+    expect(parseSelfUpdateLegacyRecovery('{"health":{"ok":true}}')).toEqual({
+      state: "clear",
+      supported: false,
+    });
+  });
+
+  it("extracts every closed-schema cleanup action from legacy recovery", () => {
+    const recovery = parseSelfUpdateLegacyRecovery(
+      JSON.stringify({
+        health: { ok: false, privateDetail: "ignored" },
+        legacyRecovery: {
+          state: "cleanup_required",
+          recovery: {
+            actions: [
+              {
+                id: "cleanup-autosync",
+                service: "codex",
+                planId: "aaaaaaaaaaaaaaaaaaaaaaaa",
+                argv: [
+                  "fclt",
+                  "autosync",
+                  "cleanup",
+                  "--service",
+                  "codex",
+                  "--expected-plan",
+                  "aaaaaaaaaaaaaaaaaaaaaaaa",
+                  "--global",
+                  "--root",
+                  "/tmp/global/.ai",
+                  "--allow-legacy-managed-mutation",
+                  "--json",
+                ],
+              },
+              {
+                id: "cleanup-autosync",
+                service: "cursor",
+                planId: "bbbbbbbbbbbbbbbbbbbbbbbb",
+                argv: [
+                  "fclt",
+                  "autosync",
+                  "cleanup",
+                  "--service",
+                  "cursor",
+                  "--expected-plan",
+                  "bbbbbbbbbbbbbbbbbbbbbbbb",
+                  "--project",
+                  "--root",
+                  "/tmp/project/.ai",
+                  "--allow-legacy-managed-mutation",
+                  "--json",
+                ],
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    expect(recovery).toEqual({
+      state: "cleanup_required",
+      supported: true,
+      cleanupActions: expect.arrayContaining([
+        expect.objectContaining({ service: "codex" }),
+        expect.objectContaining({ service: "cursor" }),
+      ]),
+    });
+  });
+
+  it("distinguishes doctor invocation failure from invalid JSON", () => {
+    expect(
+      assessSelfUpdateDoctorPostflight({ stdout: "not json", exitCode: 9 })
+    ).toEqual({ kind: "invocation_warning", exitCode: 9 });
+    expect(
+      assessSelfUpdateDoctorPostflight({ stdout: "not json", exitCode: 0 })
+    ).toEqual({ kind: "parse_warning" });
+  });
+
+  it("prints the approval-gated cleanup argv with shell quoting", () => {
+    expect(
+      formatSelfUpdateLegacyRecovery({
+        executablePath: "/opt/fclt current/bin/fclt",
+        recovery: {
+          state: "cleanup_required",
+          supported: true,
+          cleanupActions: [
+            {
+              id: "cleanup-autosync",
+              service: "codex",
+              planId: "aaaaaaaaaaaaaaaaaaaaaaaa",
+              argv: [
+                "fclt",
+                "autosync",
+                "cleanup",
+                "--service",
+                "codex",
+                "--expected-plan",
+                "aaaaaaaaaaaaaaaaaaaaaaaa",
+                "--global",
+                "--root",
+                "/tmp/user's root",
+                "--allow-legacy-managed-mutation",
+                "--json",
+              ],
+            },
+          ],
+        },
+      })
+    ).toEqual([
+      "Self-update compatibility: legacy autosync cleanup requires explicit approval.",
+      "Approval-gated cleanup: '/opt/fclt current/bin/fclt' 'autosync' 'cleanup' '--service' 'codex' '--expected-plan' 'aaaaaaaaaaaaaaaaaaaaaaaa' '--global' '--root' '/tmp/user'\\''s root' '--allow-legacy-managed-mutation' '--json'",
+    ]);
+  });
+
+  it("uses the exact verified executable for blocked manual inspection", () => {
+    expect(buildSelfUpdateDoctorCommand("/opt/fclt current/bin/fclt")).toEqual([
+      "/opt/fclt current/bin/fclt",
+      "doctor",
+      "--global",
+      "--json",
+    ]);
+    expect(
+      buildSelfUpdateDoctorCommand("/opt/fclt current/bin/fclt", "project")
+    ).toEqual(["/opt/fclt current/bin/fclt", "doctor", "--project", "--json"]);
+    expect(
+      formatSelfUpdateLegacyRecovery({
+        executablePath: "/opt/fclt current/bin/fclt",
+        recovery: { state: "blocked", supported: true },
+      })
+    ).toEqual([
+      "Self-update compatibility: legacy recovery is blocked and needs manual review.",
+      "Inspect: '/opt/fclt current/bin/fclt' 'doctor' '--global' '--json'",
+    ]);
+    expect(formatSelfUpdateCommand(["fclt", "doctor", "--global"])).toBe(
+      "'fclt' 'doctor' '--global'"
+    );
+    expect(
+      formatSelfUpdateLegacyRecovery({
+        executablePath: "/opt/fclt current/bin/fclt",
+        scope: "project",
+        recovery: { state: "blocked", supported: true },
+      })[1]
+    ).toContain("'--project'");
+  });
+
+  it("runs global and detected-project postflight through the exact executable", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "facult-self-update-postflight-")
+    );
+    const project = join(root, "repo");
+    const executable = join(root, "verified", "fclt");
+    const calls: Array<{
+      executablePath: string;
+      scope: "global" | "project";
+      cwd: string;
+    }> = [];
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    try {
+      await runFixtureGit({
+        argv: ["init", "--quiet", project],
+        repoDir: project,
+        homeDir: join(root, "git-home"),
+      });
+      await mkdir(join(project, ".ai"), { recursive: true });
+      await runSelfUpdateDoctorPostflight(executable, {
+        cwd: project,
+        projectRoot: project,
+        invoke: (executablePath, scope, cwd) => {
+          calls.push({ executablePath, scope, cwd });
+          return Promise.resolve({
+            exitCode: 0,
+            stdout: JSON.stringify({
+              legacyRecovery: {
+                state: scope === "global" ? "clear" : "contained",
+                recovery: { actions: [] },
+              },
+            }),
+          });
+        },
+        log: (line) => logs.push(line),
+        warn: (line) => warnings.push(line),
+      });
+      expect(calls).toEqual([
+        { executablePath: executable, scope: "global", cwd: project },
+        { executablePath: executable, scope: "project", cwd: project },
+      ]);
+      expect(logs).toContain("Self-update project compatibility:");
+      expect(warnings).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

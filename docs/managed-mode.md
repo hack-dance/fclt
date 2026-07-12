@@ -33,6 +33,31 @@ An existing installation can use `--allow-legacy-managed-mutation` (or
 `FCLT_ALLOW_LEGACY_MANAGED_MUTATION=1`) only for an explicitly reviewed migration. The escape hatch
 does not make broad management transactional or safe for routine use.
 
+## Upgrade recovery
+
+Upgrades diagnose old managed records and background autosync state without changing them:
+
+```bash
+fclt doctor --global --json
+```
+
+The `legacyRecovery` object reports source coverage plus one of `clear`, `contained`,
+`cleanup_required`, or `blocked`. A retained managed record or inactive autosync config is
+`contained`; it is useful ownership evidence and is not deleted. Incomplete, malformed, foreign,
+or orphaned state is `blocked` and produces no cleanup command.
+
+Released managed-state and autosync schemas did not persist the broad-mutation approval flag.
+Recovery therefore does not guess at or delete approval-like keys; tool-native settings such as
+`approval_policy` remain authored configuration outside this cleanup boundary.
+
+When an exact root-owned background service remains, doctor emits a closed cleanup argv containing
+the selected service, root, scope, and snapshot-derived plan id. Run that exact command only after
+reviewing it. Cleanup is CLI-only, requires the explicit command-line approval flag, revalidates
+ownership under a machine-local autosync lifecycle boundary shared across roots, unloads first when
+launchd is applicable, and otherwise removes only a freshly verified inert owned plist. It preserves
+config and tool state and leaves a retry/idempotency receipt. It does not accept ambient environment
+approval and it is not exposed as an MCP mutation.
+
 ## Adoption Commands
 
 `manage --adopt-existing` is a legacy import-and-own path. It is blocked unless the containment

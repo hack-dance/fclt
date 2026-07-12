@@ -1,4 +1,4 @@
-import { mkdir, rename } from "node:fs/promises";
+import { lstat, mkdir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
@@ -6,6 +6,7 @@ import {
   legacyExternalFacultStateDir,
   preferredGlobalFacultStateDir,
 } from "./paths";
+import { findGitRootFromPath } from "./remote";
 
 const REPO_OWNER = "hack-dance";
 const REPO_NAME = "fclt";
@@ -41,6 +42,213 @@ interface DetectInstallMethodContext {
   envInstallMethod?: string;
   executablePath?: string;
   homeDir?: string;
+}
+
+type LegacyRecoveryState =
+  | "clear"
+  | "contained"
+  | "cleanup_required"
+  | "blocked";
+
+interface LegacyRecoveryAction {
+  id: "cleanup-autosync";
+  service: string;
+  planId: string;
+  argv: string[];
+}
+
+export interface SelfUpdateLegacyRecovery {
+  state: LegacyRecoveryState;
+  supported: boolean;
+  cleanupActions?: LegacyRecoveryAction[];
+}
+
+export type SelfUpdateDoctorPostflightAssessment =
+  | {
+      kind: "recovery";
+      recovery: SelfUpdateLegacyRecovery;
+    }
+  | {
+      kind: "invocation_warning";
+      exitCode: number;
+    }
+  | {
+      kind: "parse_warning";
+    };
+
+const LEGACY_RECOVERY_STATES = new Set<LegacyRecoveryState>([
+  "clear",
+  "contained",
+  "cleanup_required",
+  "blocked",
+]);
+const LEGACY_RECOVERY_PLAN_ID_RE = /^[a-f0-9]{24}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseCleanupAction(value: unknown): LegacyRecoveryAction | undefined {
+  if (!isRecord(value) || value.id !== "cleanup-autosync") {
+    return undefined;
+  }
+  if (
+    typeof value.service !== "string" ||
+    value.service.length === 0 ||
+    typeof value.planId !== "string" ||
+    !LEGACY_RECOVERY_PLAN_ID_RE.test(value.planId)
+  ) {
+    return undefined;
+  }
+  if (
+    !Array.isArray(value.argv) ||
+    value.argv.length !== 12 ||
+    !value.argv.every((arg) => typeof arg === "string" && arg.length > 0)
+  ) {
+    return undefined;
+  }
+  const argv = value.argv as string[];
+  if (
+    !["fclt", "facult"].includes(argv[0] ?? "") ||
+    argv[1] !== "autosync" ||
+    argv[2] !== "cleanup" ||
+    argv[3] !== "--service" ||
+    argv[4] !== value.service ||
+    argv[5] !== "--expected-plan" ||
+    argv[6] !== value.planId ||
+    !["--global", "--project"].includes(argv[7] ?? "") ||
+    argv[8] !== "--root" ||
+    argv[10] !== "--allow-legacy-managed-mutation" ||
+    argv[11] !== "--json"
+  ) {
+    return undefined;
+  }
+  return {
+    id: "cleanup-autosync",
+    service: value.service,
+    planId: value.planId,
+    argv,
+  };
+}
+
+export function parseSelfUpdateLegacyRecovery(
+  stdout: string
+): SelfUpdateLegacyRecovery {
+  const parsed: unknown = JSON.parse(stdout);
+  if (!isRecord(parsed)) {
+    throw new Error("Doctor report must be a JSON object.");
+  }
+  const rawRecovery = parsed.legacyRecovery;
+  if (rawRecovery === undefined) {
+    return { state: "clear", supported: false };
+  }
+  if (!isRecord(rawRecovery)) {
+    throw new Error("Doctor legacyRecovery must be a JSON object.");
+  }
+  const state = rawRecovery.state;
+  if (
+    typeof state !== "string" ||
+    !LEGACY_RECOVERY_STATES.has(state as LegacyRecoveryState)
+  ) {
+    throw new Error("Doctor legacyRecovery state is not supported.");
+  }
+
+  const actions = isRecord(rawRecovery.recovery)
+    ? rawRecovery.recovery.actions
+    : undefined;
+  const cleanupActions = Array.isArray(actions)
+    ? actions.map(parseCleanupAction)
+    : [];
+  if (cleanupActions.some((action) => action === undefined)) {
+    throw new Error("Doctor cleanup action does not match the closed schema.");
+  }
+  return {
+    state: state as LegacyRecoveryState,
+    supported: true,
+    ...(cleanupActions.length > 0
+      ? { cleanupActions: cleanupActions as LegacyRecoveryAction[] }
+      : {}),
+  };
+}
+
+export function assessSelfUpdateDoctorPostflight(args: {
+  stdout: string;
+  exitCode: number;
+}): SelfUpdateDoctorPostflightAssessment {
+  if (args.exitCode !== 0) {
+    return { kind: "invocation_warning", exitCode: args.exitCode };
+  }
+  try {
+    return {
+      kind: "recovery",
+      recovery: parseSelfUpdateLegacyRecovery(args.stdout),
+    };
+  } catch {
+    return { kind: "parse_warning" };
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function formatSelfUpdateCommand(argv: string[]): string {
+  return argv.map(shellQuote).join(" ");
+}
+
+export function buildSelfUpdateDoctorCommand(
+  executablePath: string,
+  scope: "global" | "project" = "global"
+): string[] {
+  return [executablePath, "doctor", `--${scope}`, "--json"];
+}
+
+export function formatSelfUpdateLegacyRecovery(args: {
+  recovery: SelfUpdateLegacyRecovery;
+  executablePath: string;
+  scope?: "global" | "project";
+}): string[] {
+  const inspectCommand = formatSelfUpdateCommand(
+    buildSelfUpdateDoctorCommand(args.executablePath, args.scope ?? "global")
+  );
+  if (!args.recovery.supported) {
+    return [
+      "Self-update compatibility: this release does not report legacy recovery metadata.",
+    ];
+  }
+  if (args.recovery.state === "clear") {
+    return [
+      "Self-update compatibility: no legacy managed-state recovery is required.",
+    ];
+  }
+  if (args.recovery.state === "contained") {
+    return [
+      "Self-update compatibility: legacy managed state is contained; broad managed mutation remains disabled.",
+    ];
+  }
+  if (args.recovery.state === "cleanup_required") {
+    const actions = args.recovery.cleanupActions ?? [];
+    if (actions.length === 0) {
+      return [
+        "Self-update compatibility: legacy autosync cleanup requires explicit approval.",
+        `Inspect the approval-gated cleanup plan: ${inspectCommand}`,
+      ];
+    }
+    return [
+      "Self-update compatibility: legacy autosync cleanup requires explicit approval.",
+      ...actions.map(
+        (action) =>
+          `Approval-gated cleanup: ${formatSelfUpdateCommand([
+            args.executablePath,
+            ...action.argv.slice(1),
+          ])}`
+      ),
+    ];
+  }
+  return [
+    "Self-update compatibility: legacy recovery is blocked and needs manual review.",
+    `Inspect: ${inspectCommand}`,
+  ];
 }
 
 function printHelp() {
@@ -390,6 +598,10 @@ async function selfUpdateBinary(args: {
     await Bun.$`chmod +x ${tmpPath}`.quiet();
   }
   await rename(tmpPath, binaryPath);
+  const executablePath = await assertExecutableVersion({
+    executablePath: binaryPath,
+    expectedVersion: version,
+  });
   await writeInstallState({
     home: args.home,
     method: args.method === "unknown" ? "release-script" : args.method,
@@ -398,6 +610,7 @@ async function selfUpdateBinary(args: {
   });
   console.log(`Updated fclt binary to ${version}`);
   console.log(`Path: ${binaryPath}`);
+  await runSelfUpdateDoctorPostflight(executablePath);
 }
 
 type PackageManager = "npm" | "bun" | "mise";
@@ -497,7 +710,7 @@ async function selfUpdateViaPackageManager(args: {
   if (pm === "mise") {
     await runBestEffort(["mise", "reshim", `npm:${PACKAGE_NAME}`]);
   }
-  await assertActiveFcltVersion(target.version, pm);
+  const executablePath = await assertActiveFcltVersion(target.version, pm);
   await writeInstallState({
     home: args.home,
     method: pm === "mise" ? "mise-npm" : "npm-binary-cache",
@@ -508,6 +721,7 @@ async function selfUpdateViaPackageManager(args: {
   if (target.resolvedFromLatest) {
     console.log(`Resolved latest release to ${target.version}`);
   }
+  await runSelfUpdateDoctorPostflight(executablePath);
 }
 
 async function runBestEffort(cmd: string[]): Promise<void> {
@@ -524,8 +738,8 @@ async function runBestEffort(cmd: string[]): Promise<void> {
 async function assertActiveFcltVersion(
   expectedVersion: string,
   packageManager: PackageManager
-): Promise<void> {
-  let cmd = ["fclt", "--version"];
+): Promise<string> {
+  let executablePath: string | null = null;
   if (packageManager === "mise") {
     const which = Bun.spawn({
       cmd: ["mise", "which", "fclt"],
@@ -555,10 +769,25 @@ async function assertActiveFcltVersion(
         ].join("\n")
       );
     }
-    cmd = [resolvedPath, "--version"];
+    executablePath = resolvedPath;
+  } else {
+    executablePath = Bun.which("fclt") ?? (await resolveCommandPath("fclt"));
+    if (!executablePath) {
+      throw new Error(
+        "Updated package, but could not resolve the active fclt executable."
+      );
+    }
   }
+
+  return await assertExecutableVersion({ executablePath, expectedVersion });
+}
+
+async function assertExecutableVersion(args: {
+  executablePath: string;
+  expectedVersion: string;
+}): Promise<string> {
   const proc = Bun.spawn({
-    cmd,
+    cmd: [args.executablePath, "--version"],
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -575,14 +804,99 @@ async function assertActiveFcltVersion(
       `Updated package, but could not verify active fclt version: ${stderr.trim()}`
     );
   }
-  if (actual !== expectedVersion) {
+  if (actual !== args.expectedVersion) {
     throw new Error(
       [
-        `Updated package to ${expectedVersion}, but active fclt is still ${actual}.`,
+        `Updated package to ${args.expectedVersion}, but active fclt is still ${actual}.`,
         "Your PATH may be resolving an older shim. Run `mise which fclt` or `which fclt` to inspect it.",
       ].join("\n")
     );
   }
+  return args.executablePath;
+}
+
+export async function runSelfUpdateDoctorPostflight(
+  executablePath: string,
+  opts: {
+    cwd?: string;
+    projectRoot?: string | null;
+    invoke?: typeof invokeSelfUpdateDoctor;
+    log?: (line: string) => void;
+    warn?: (line: string) => void;
+  } = {}
+): Promise<void> {
+  const cwd = opts.cwd ?? process.cwd();
+  const invoke = opts.invoke ?? invokeSelfUpdateDoctor;
+  const log = opts.log ?? console.log;
+  const warn = opts.warn ?? console.warn;
+  const projectRoot =
+    opts.projectRoot === undefined
+      ? findGitRootFromPath(cwd)
+      : opts.projectRoot;
+  const scopes: Array<"global" | "project"> = ["global"];
+  const projectAiExists = projectRoot
+    ? await lstat(join(projectRoot, ".ai"))
+        .then((metadata) => metadata.isDirectory())
+        .catch(() => false)
+    : false;
+  if (projectAiExists) {
+    scopes.push("project");
+  }
+  for (const scope of scopes) {
+    let result: { stdout: string; exitCode: number };
+    try {
+      result = await invoke(executablePath, scope, cwd);
+    } catch {
+      warn(
+        `Self-update ${scope} postflight warning: compatibility doctor could not be started; the update remains installed.`
+      );
+      continue;
+    }
+    const assessment = assessSelfUpdateDoctorPostflight(result);
+    if (assessment.kind === "invocation_warning") {
+      warn(
+        `Self-update ${scope} postflight warning: compatibility doctor exited ${assessment.exitCode}; the update remains installed.`
+      );
+      continue;
+    }
+    if (assessment.kind === "parse_warning") {
+      warn(
+        `Self-update ${scope} postflight warning: compatibility doctor returned invalid JSON; the update remains installed.`
+      );
+      continue;
+    }
+    const lines = formatSelfUpdateLegacyRecovery({
+      recovery: assessment.recovery,
+      executablePath,
+      scope,
+    });
+    if (scope === "project" && lines.length > 0) {
+      log("Self-update project compatibility:");
+    }
+    for (const line of lines) {
+      log(line);
+    }
+  }
+}
+
+async function invokeSelfUpdateDoctor(
+  executablePath: string,
+  scope: "global" | "project",
+  cwd: string
+): Promise<{ stdout: string; exitCode: number }> {
+  const proc = Bun.spawn({
+    cmd: buildSelfUpdateDoctorCommand(executablePath, scope),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    env: process.env,
+    cwd,
+  });
+  const [stdout, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  return { stdout, exitCode };
 }
 
 async function fetchReleaseBinaryWithRetry(url: string): Promise<ArrayBuffer> {

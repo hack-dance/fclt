@@ -24,7 +24,11 @@ import {
   legacyAiIndexPath,
 } from "./ai-state";
 import {
+  type AutosyncRecoveryConfigInspection,
+  type AutosyncRecoveryInspection,
   assertAutosyncRepairAllowed,
+  inspectAutosyncRecovery,
+  type RecoveryInspectionCoverage,
   repairAutosyncServices,
 } from "./autosync";
 import {
@@ -41,7 +45,11 @@ import {
   LEGACY_MANAGED_MUTATION_FLAG,
   legacyManagedMutationApproved,
 } from "./legacy-mutation-policy";
-import { loadManagedState } from "./manage";
+import {
+  inspectManagedStateRecords,
+  loadManagedState,
+  type ManagedStateRecordInspection,
+} from "./manage";
 import { extractServersObject } from "./mcp-config";
 import {
   facultAiEvolutionLoopAuditPath,
@@ -73,6 +81,8 @@ import { packageVersion } from "./status";
 
 const TOML_FILE_SUFFIX_RE = /\.toml$/;
 const ISO_MILLIS_SUFFIX_RE = /\..+$/;
+const CURRENT_AUTOSYNC_LABEL_PREFIX_RE = /^com\.fclt\.autosync\./;
+const LEGACY_AUTOSYNC_LABEL_PREFIX_RE = /^com\.facult\.autosync\./;
 
 type DoctorHealthState =
   | "healthy"
@@ -101,7 +111,48 @@ interface DoctorAction {
     | "read_only"
     | "generated_state_write"
     | "canonical_write"
+    | "runtime_state_write"
     | "tool_home_write";
+}
+
+export type DoctorLegacyRecoveryState =
+  | "clear"
+  | "contained"
+  | "cleanup_required"
+  | "blocked";
+
+export interface DoctorLegacyRecovery {
+  state: DoctorLegacyRecoveryState;
+  mutationPolicy: "disabled_by_default";
+  reasonCodes: string[];
+  coverage: {
+    managed: "checked" | "unavailable";
+    autosyncConfigs: RecoveryInspectionCoverage;
+    launchAgents: RecoveryInspectionCoverage;
+    launchd: RecoveryInspectionCoverage;
+  };
+  managed: {
+    records: ManagedStateRecordInspection[];
+  };
+  autosync: {
+    configured: AutosyncRecoveryConfigInspection[];
+    ownedPlists: AutosyncRecoveryInspection["ownedPlists"];
+    ownedLoadedLabels: string[];
+    orphanedLabels: string[];
+  };
+  recovery: {
+    boundary: "none" | "owned_autosync_runtime_only" | "manual_review";
+    requiresApproval: boolean;
+    actions: Array<{
+      id: "cleanup-autosync";
+      service: string;
+      planId: string;
+      argv: string[];
+    }>;
+    preserves: Array<
+      "canonical_capability" | "live_tool_state" | "managed_state" | "backups"
+    >;
+  };
 }
 
 type LoopReadinessState = "ready" | "degraded" | "blocked";
@@ -204,6 +255,7 @@ export interface DoctorReport {
     projectSyncRepairNeeded: boolean;
     projectSyncRepairTools: string[];
   };
+  legacyRecovery: DoctorLegacyRecovery;
   loop: LoopReadiness;
   issues: DoctorIssue[];
   actions: DoctorAction[];
@@ -804,6 +856,167 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function shellCommand(argv: string[]): string {
+  return argv.map(shellQuote).join(" ");
+}
+
+async function inspectLegacyRecovery(args: {
+  home: string;
+  rootDir: string;
+  scope: "global" | "project";
+}): Promise<DoctorLegacyRecovery> {
+  const [managedRecords, autosync] = await Promise.all([
+    inspectManagedStateRecords({
+      homeDir: args.home,
+      rootDir: args.rootDir,
+    }),
+    inspectAutosyncRecovery({
+      homeDir: args.home,
+      rootDir: args.rootDir,
+    }),
+  ]);
+  const reasonCodes = new Set(autosync.reasonCodes);
+  const managedUnavailable = managedRecords.some(
+    (record) => record.state === "unavailable"
+  );
+  const managedInvalid = managedRecords.some(
+    (record) => record.state === "invalid"
+  );
+  if (managedRecords.length > 0) {
+    reasonCodes.add("managed_state_present");
+  }
+  if (managedUnavailable) {
+    reasonCodes.add("managed_state_inspection_unavailable");
+  }
+  if (managedInvalid) {
+    reasonCodes.add("managed_state_invalid");
+  }
+  if (autosync.configured.length > 0) {
+    reasonCodes.add("autosync_config_present");
+  }
+  if (
+    autosync.ownedPlists.length > 0 ||
+    autosync.ownedLoadedLabels.length > 0
+  ) {
+    reasonCodes.add("autosync_runtime_active");
+  }
+  if (autosync.configured.some((record) => record.location !== "machine")) {
+    reasonCodes.add("autosync_legacy_config");
+  }
+
+  // An unavailable launchd probe is only recovery-blocking when durable state
+  // indicates that a service could belong to this root. Fresh installs have no
+  // such state and must remain usable in launchd-less verification contexts.
+  const hasAutosyncDiskRecoverySignal =
+    autosync.configured.length > 0 || autosync.ownedPlists.length > 0;
+
+  const blocked =
+    managedUnavailable ||
+    managedInvalid ||
+    autosync.coverage.configs === "unavailable" ||
+    autosync.coverage.launchAgents === "unavailable" ||
+    (hasAutosyncDiskRecoverySignal &&
+      autosync.coverage.launchd === "unavailable") ||
+    autosync.orphanedLabels.length > 0 ||
+    autosync.configured.some((record) => record.state !== "valid") ||
+    autosync.reasonCodes.some((code) =>
+      [
+        "autosync_config_conflict",
+        "autosync_launch_agent_ownership_mismatch",
+        "autosync_loaded_ownership_unproven",
+        "autosync_loaded_root_mismatch",
+      ].includes(code)
+    );
+  const activeServices = new Set(
+    [
+      ...autosync.ownedPlists.map((plist) => plist.label),
+      ...autosync.ownedLoadedLabels,
+    ].map((label) => {
+      if (label === "com.fclt.autosync" || label === "com.facult.autosync") {
+        return "all";
+      }
+      return label
+        .replace(CURRENT_AUTOSYNC_LABEL_PREFIX_RE, "")
+        .replace(LEGACY_AUTOSYNC_LABEL_PREFIX_RE, "");
+    })
+  );
+  const cleanupCandidates = blocked
+    ? []
+    : autosync.configured.filter(
+        (record) =>
+          record.state === "valid" &&
+          Boolean(record.planId) &&
+          activeServices.has(record.service)
+      );
+  const cleanupByService = new Map(
+    cleanupCandidates.map((record) => [record.service, record] as const)
+  );
+  const actions = [...cleanupByService.values()]
+    .sort((a, b) => a.service.localeCompare(b.service))
+    .map((record) => ({
+      id: "cleanup-autosync" as const,
+      service: record.service,
+      planId: record.planId ?? "",
+      argv: [
+        "fclt",
+        "autosync",
+        "cleanup",
+        "--service",
+        record.service,
+        "--expected-plan",
+        record.planId ?? "",
+        `--${args.scope}`,
+        "--root",
+        args.rootDir,
+        LEGACY_MANAGED_MUTATION_FLAG,
+        "--json",
+      ],
+    }));
+  const hasContainedState =
+    managedRecords.length > 0 || autosync.configured.length > 0;
+  const state: DoctorLegacyRecoveryState = blocked
+    ? "blocked"
+    : actions.length > 0
+      ? "cleanup_required"
+      : hasContainedState
+        ? "contained"
+        : "clear";
+
+  return {
+    state,
+    mutationPolicy: "disabled_by_default",
+    reasonCodes: [...reasonCodes].sort((a, b) => a.localeCompare(b)),
+    coverage: {
+      managed: managedUnavailable ? "unavailable" : "checked",
+      autosyncConfigs: autosync.coverage.configs,
+      launchAgents: autosync.coverage.launchAgents,
+      launchd: autosync.coverage.launchd,
+    },
+    managed: { records: managedRecords },
+    autosync: {
+      configured: autosync.configured,
+      ownedPlists: autosync.ownedPlists,
+      ownedLoadedLabels: autosync.ownedLoadedLabels,
+      orphanedLabels: autosync.orphanedLabels,
+    },
+    recovery: {
+      boundary: blocked
+        ? "manual_review"
+        : actions.length > 0
+          ? "owned_autosync_runtime_only"
+          : "none",
+      requiresApproval: actions.length > 0,
+      actions,
+      preserves: [
+        "canonical_capability",
+        "live_tool_state",
+        "managed_state",
+        "backups",
+      ],
+    },
+  };
+}
+
 function projectAiInitCommand(rootDir: string, flags: string[] = []): string {
   const projectRoot = projectRootFromAiRoot(rootDir);
   const rootFlag = projectRoot ? "--project-root" : "--root";
@@ -1236,6 +1449,7 @@ export async function buildDoctorReport(opts?: {
       projectSyncPlan,
       reconciliation,
       scheduledLoop,
+      legacyRecovery,
     ] = await Promise.all([
       pathExists(rootDir),
       hasCanonicalSource(rootDir),
@@ -1249,6 +1463,11 @@ export async function buildDoctorReport(opts?: {
       planProjectSyncPolicyRepair({ home, rootDir }),
       reconciliationStatus({ homeDir: home, rootDir }),
       diagnoseEvolutionLoop({ homeDir: home, rootDir, scope: rootScope }),
+      inspectLegacyRecovery({
+        home,
+        rootDir,
+        scope: rootScope,
+      }),
     ]);
 
     const projectSyncRepairTools = Object.keys(
@@ -1333,6 +1552,39 @@ export async function buildDoctorReport(opts?: {
           : "degraded";
     const issues: DoctorIssue[] = [];
     const actions: DoctorAction[] = [];
+
+    if (legacyRecovery.state === "cleanup_required") {
+      issues.push({
+        severity: "warning",
+        code: "legacy-autosync-cleanup-required",
+        message:
+          "A root-owned legacy background autosync service remains contained but active.",
+        fix: "Run the exact approval-gated cleanup action from legacyRecovery.recovery.actions after reviewing its selected root and plan id.",
+      });
+      for (const recoveryAction of legacyRecovery.recovery.actions) {
+        actions.push({
+          id: `cleanup-autosync-${recoveryAction.service}`,
+          label: `Contain legacy autosync service ${recoveryAction.service}`,
+          command: shellCommand(recoveryAction.argv),
+          risk: "runtime_state_write",
+        });
+      }
+    } else if (legacyRecovery.state === "blocked") {
+      issues.push({
+        severity: "error",
+        code: "legacy-recovery-manual-review-required",
+        message:
+          "Legacy managed/autosync state could not be proven safe for automatic cleanup.",
+        fix: "Review legacyRecovery coverage and reason codes. No cleanup action is emitted until ownership and source coverage are complete.",
+      });
+    } else if (legacyRecovery.state === "contained") {
+      issues.push({
+        severity: "info",
+        code: "legacy-managed-state-contained",
+        message:
+          "Legacy managed records are present, but broad mutation is disabled and no background autosync cleanup is pending.",
+      });
+    }
 
     if (!rootExists) {
       issues.push({
@@ -1617,6 +1869,11 @@ export async function buildDoctorReport(opts?: {
       state = "project_generated_only";
     } else if (!(rootExists && canonicalSourceExists)) {
       state = "uninitialized";
+    } else if (
+      legacyRecovery.state === "cleanup_required" ||
+      legacyRecovery.state === "blocked"
+    ) {
+      state = "legacy_state_attention";
     } else if (!(canonicalGlobalDocs.valid && canonicalTemplateRefs.valid)) {
       state = "canonical_source_attention";
     } else if (loopState === "blocked") {
@@ -1691,6 +1948,7 @@ export async function buildDoctorReport(opts?: {
         projectSyncRepairNeeded: projectSyncPlan.needed,
         projectSyncRepairTools,
       },
+      legacyRecovery,
       loop: {
         state: loopState,
         ready: loopState === "ready",
