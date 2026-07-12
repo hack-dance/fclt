@@ -37,6 +37,7 @@ const AUTOSYNC_VERSION = 1 as const;
 const DEFAULT_DEBOUNCE_MS = 1500;
 const DEFAULT_GIT_INTERVAL_MINUTES = 60;
 const LINE_SPLIT_RE = /\r?\n/;
+const WHITESPACE_RE = /\s+/;
 const LAUNCHCTL_WORKING_DIRECTORY_RE = /^\s*working directory\s*=\s*(.+?)\s*$/i;
 
 export interface AutosyncGitConfig {
@@ -750,6 +751,11 @@ interface AutosyncPlistOwnership {
   foreignPaths: string[];
 }
 
+interface RootOwnedAutosyncPlist {
+  label: string;
+  path: string;
+}
+
 function launchctlServiceNotFound(result: CommandResult): boolean {
   const detail = `${result.stdout}\n${result.stderr}`.toLowerCase();
   return (
@@ -779,6 +785,131 @@ function launchctlServiceMatchesRoot(
   return Boolean(
     workingDirectory && resolve(workingDirectory) === resolve(rootDir)
   );
+}
+
+function isAutosyncLabel(label: string): boolean {
+  return (
+    label === "com.fclt.autosync" ||
+    label.startsWith("com.fclt.autosync.") ||
+    label === "com.facult.autosync" ||
+    label.startsWith("com.facult.autosync.")
+  );
+}
+
+function autosyncLabelFromPlistName(entry: string): string | null {
+  if (!entry.endsWith(".plist")) {
+    return null;
+  }
+  const label = entry.slice(0, -".plist".length);
+  return isAutosyncLabel(label) ? label : null;
+}
+
+async function rootOwnedAutosyncPlists(args: {
+  homeDir: string;
+  rootDir: string;
+}): Promise<RootOwnedAutosyncPlist[]> {
+  const launchAgentsDir = join(args.homeDir, "Library", "LaunchAgents");
+  let entries: string[];
+  try {
+    entries = await readdir(launchAgentsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Unable to inspect autosync LaunchAgent directory ${launchAgentsDir}: ${detail}`
+    );
+  }
+  const expectedWorkingDirectory = [
+    "  <key>WorkingDirectory</key>",
+    `  <string>${escapeXml(args.rootDir)}</string>`,
+  ].join("\n");
+  const owned: RootOwnedAutosyncPlist[] = [];
+  for (const entry of entries) {
+    const label = autosyncLabelFromPlistName(entry);
+    if (!label) {
+      continue;
+    }
+    const pathValue = join(launchAgentsDir, entry);
+    const contents = await readFile(pathValue, "utf8").catch(
+      (error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Unable to inspect autosync LaunchAgent ${pathValue}: ${detail}`
+        );
+      }
+    );
+    if (contents.includes(expectedWorkingDirectory)) {
+      owned.push({ label, path: pathValue });
+    }
+  }
+  return owned;
+}
+
+function shouldEnumerateLoadedAutosyncServices(): boolean {
+  if (launchctlSupportedForTests !== null) {
+    return launchctlSupportedForTests;
+  }
+  return process.platform === "darwin" && launchctlRunnerForTests === null;
+}
+
+function listedAutosyncLabels(stdout: string): string[] {
+  const labels = new Set<string>();
+  for (const line of stdout.split(LINE_SPLIT_RE)) {
+    const label = line.trim().split(WHITESPACE_RE).at(-1);
+    if (label && isAutosyncLabel(label)) {
+      labels.add(label);
+    }
+  }
+  return [...labels];
+}
+
+async function rootOwnedLoadedAutosyncLabels(
+  rootDir: string
+): Promise<string[]> {
+  if (!shouldEnumerateLoadedAutosyncServices()) {
+    return [];
+  }
+  const listed = await runLaunchctl(["list"]).catch((error: unknown) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to enumerate loaded autosync services: ${detail}`);
+  });
+  if (listed.exitCode !== 0) {
+    throw new Error(
+      `Unable to enumerate loaded autosync services: ${listed.stderr.trim() || listed.stdout.trim() || `exit ${listed.exitCode}`}`
+    );
+  }
+  const domain = launchdDomain();
+  const owned: string[] = [];
+  for (const label of listedAutosyncLabels(listed.stdout)) {
+    const inspected = await runLaunchctl(["print", `${domain}/${label}`]).catch(
+      (error: unknown) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Unable to inspect loaded autosync service ${label}: ${detail}`
+        );
+      }
+    );
+    if (inspected.exitCode !== 0) {
+      if (launchctlServiceNotFound(inspected)) {
+        continue;
+      }
+      throw new Error(
+        `Unable to inspect loaded autosync service ${label}: ${inspected.stderr.trim() || inspected.stdout.trim() || `exit ${inspected.exitCode}`}`
+      );
+    }
+    const workingDirectory = launchctlWorkingDirectory(inspected);
+    if (!workingDirectory) {
+      throw new Error(
+        `Unable to prove loaded autosync service root ownership: ${label}`
+      );
+    }
+    if (resolve(workingDirectory) === resolve(rootDir)) {
+      owned.push(label);
+    }
+  }
+  return owned;
 }
 
 async function inspectAutosyncPlistOwnership(args: {
@@ -1517,7 +1648,29 @@ export async function assertAutosyncRepairAllowed(
   rootDir?: string,
   allowLegacyManagedMutation?: boolean
 ): Promise<void> {
-  const configFiles = await autosyncServiceConfigFiles(homeDir, rootDir);
+  const activeRoot = rootDir ?? facultRootDir(homeDir);
+  const configFiles = await autosyncServiceConfigFiles(homeDir, activeRoot);
+  const configuredLabels = new Set(
+    configFiles.flatMap((entry) =>
+      autosyncLabelCandidates(basename(entry, ".json"))
+    )
+  );
+  const orphanedPlists = (
+    await rootOwnedAutosyncPlists({ homeDir, rootDir: activeRoot })
+  ).filter((plist) => !configuredLabels.has(plist.label));
+  if (orphanedPlists.length > 0) {
+    throw new Error(
+      `Refusing fclt doctor --repair while root-owned orphaned autosync LaunchAgent state remains: ${orphanedPlists.map((plist) => plist.path).join(", ")}. Restore its matching service config or explicitly uninstall the matching tool/root before retrying.`
+    );
+  }
+  const orphanedLoadedServices = (
+    await rootOwnedLoadedAutosyncLabels(activeRoot)
+  ).filter((label) => !configuredLabels.has(label));
+  if (orphanedLoadedServices.length > 0) {
+    throw new Error(
+      `Refusing fclt doctor --repair while a root-owned orphaned loaded autosync service remains: ${orphanedLoadedServices.join(", ")}. Restore its matching service config or explicitly unload the service before retrying.`
+    );
+  }
   const domain = launchdDomain();
   for (const entry of configFiles) {
     const serviceName = basename(entry, ".json");

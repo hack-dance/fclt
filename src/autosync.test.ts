@@ -553,6 +553,106 @@ describe("autosync launch agent migration", () => {
     });
   });
 
+  it("blocks repair before launchctl when a root-owned plist has no service config", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-orphan-"));
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const serviceName = "all";
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(
+      plistPath,
+      testPlist(homeDir, rootDir, serviceName),
+      "utf8"
+    );
+    const before = await readFile(plistPath, "utf8");
+    const launchctlCalls: string[][] = [];
+    setLaunchctlRunnerForTests((args) => {
+      launchctlCalls.push(args);
+      return Promise.resolve(launchctlLoaded(rootDir));
+    });
+
+    await expect(
+      repairAutosyncServices(homeDir, rootDir, {
+        allowLegacyManagedMutation: true,
+      })
+    ).rejects.toThrow("root-owned orphaned autosync LaunchAgent");
+
+    expect(launchctlCalls).toEqual([]);
+    expect(await readFile(plistPath, "utf8")).toBe(before);
+    expect(
+      await Bun.file(facultMachineStateDir(homeDir, rootDir)).exists()
+    ).toBe(false);
+  });
+
+  it("blocks repair for a loaded custom-root service with no config or plist", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-loaded-orphan-")
+    );
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, "shared", ".ai");
+    const label = "com.fclt.autosync.orphan-loaded-test";
+    const launchctlCalls: string[][] = [];
+    setLaunchctlRunnerForTests((args) => {
+      launchctlCalls.push(args);
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: `-\t0\t${label}\n`,
+          stderr: "",
+        });
+      }
+      return Promise.resolve(launchctlLoaded(rootDir));
+    });
+    setLaunchctlSupportedForTests(true);
+
+    await expect(
+      repairAutosyncServices(homeDir, rootDir, {
+        allowLegacyManagedMutation: true,
+      })
+    ).rejects.toThrow("root-owned orphaned loaded autosync service");
+
+    expect(launchctlCalls).toEqual([
+      ["list"],
+      ["print", expect.stringContaining(label)],
+    ]);
+    expect(
+      await Bun.file(facultMachineStateDir(homeDir, rootDir)).exists()
+    ).toBe(false);
+  });
+
+  it("does not claim a loaded autosync service owned by another root", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-loaded-foreign-")
+    );
+    tempDirs.push(homeDir);
+    const selectedRoot = join(homeDir, "selected", ".ai");
+    const foreignRoot = join(homeDir, "foreign", ".ai");
+    const label = "com.facult.autosync.foreign-loaded-test";
+    setLaunchctlRunnerForTests((args) =>
+      Promise.resolve(
+        args[0] === "list"
+          ? { exitCode: 0, stdout: `-\t0\t${label}\n`, stderr: "" }
+          : launchctlLoaded(foreignRoot)
+      )
+    );
+    setLaunchctlSupportedForTests(true);
+
+    expect(
+      await repairAutosyncServices(homeDir, selectedRoot, {
+        allowLegacyManagedMutation: true,
+      })
+    ).toBe(false);
+    expect(
+      await Bun.file(facultMachineStateDir(homeDir, selectedRoot)).exists()
+    ).toBe(false);
+  });
+
   it("preserves recovery artifacts when a loaded service cannot be unloaded", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-unload-"));
     tempDirs.push(homeDir);

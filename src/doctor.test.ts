@@ -64,6 +64,10 @@ async function installIsolatedLaunchctl(
     [
       "#!/bin/sh",
       'printf "%s\\n" "$*" >> "$FCLT_TEST_LAUNCHCTL_LOG"',
+      'if [ "$1" = "list" ]; then',
+      '  if [ -n "$FCLT_TEST_LAUNCHCTL_LABEL" ]; then printf -- "-\\t0\\t%s\\n" "$FCLT_TEST_LAUNCHCTL_LABEL"; fi',
+      "  exit 0",
+      "fi",
       'if [ "$1" = "print" ]; then',
       '  case "$2" in',
       '    *com.facult.autosync*) printf "working directory = %s\\n" "$FCLT_TEST_LAUNCHCTL_ROOT"; exit 0 ;;',
@@ -663,6 +667,61 @@ test("doctor --repair preserves an explicit custom global root and state scope",
     expect(
       await Bun.file(join(rootDir, ".facult", "ai", "graph.json")).exists()
     ).toBe(true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("doctor stops before all repair writes for an orphaned loaded autosync service", async () => {
+  const home = await mkdtemp(join(tmpdir(), "facult-doctor-orphan-"));
+  const rootDir = join(home, ".ai");
+  const serviceName = "doctor-orphan-test";
+  const label = `com.facult.autosync.${serviceName}`;
+  const repairedRootConfig = join(rootDir, ".facult", "config.json");
+
+  try {
+    await mkdir(rootDir, { recursive: true });
+    await writeJson(join(home, ".facult", "config.json"), {
+      rootDir: join(home, "agents", ".facult"),
+    });
+    const isolatedLaunchctl = await installIsolatedLaunchctl(home, rootDir);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      PATH: `${isolatedLaunchctl.binDir}${delimiter}${process.env.PATH ?? ""}`,
+      FCLT_TEST_LAUNCHCTL_LOG: isolatedLaunchctl.logPath,
+      FCLT_TEST_LAUNCHCTL_ROOT: isolatedLaunchctl.rootDir,
+      FCLT_TEST_LAUNCHCTL_LABEL: label,
+    };
+    const repair = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "doctor",
+        "--repair",
+        "--global",
+        "--root",
+        rootDir,
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const [code, stderr] = await Promise.all([
+      repair.exited,
+      new Response(repair.stderr).text(),
+    ]);
+
+    expect(code).toBe(1);
+    expect(stderr).toContain("root-owned orphaned loaded autosync service");
+    expect(await Bun.file(repairedRootConfig).exists()).toBe(false);
+    expect(
+      await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
+    ).toBe(false);
+    const launchctlLog = await readFile(isolatedLaunchctl.logPath, "utf8");
+    expect(launchctlLog).toContain("list");
+    expect(launchctlLog).toContain(label);
+    expect(launchctlLog).not.toContain("bootout");
   } finally {
     await rm(home, { recursive: true, force: true });
   }
