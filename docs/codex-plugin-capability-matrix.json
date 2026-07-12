@@ -435,8 +435,8 @@
     },
     {
       "id": "managed.apply",
-      "cli": "manage|sync",
-      "cliAvailability": "available",
+      "cli": "manage|sync --allow-legacy-managed-mutation",
+      "cliAvailability": "partial_unsafe",
       "mcp": {
         "disposition": "blocked_safer_api",
         "reason": "tool-home mutation needs an atomic snapshot, stale-state precondition, and tested restore API"
@@ -444,14 +444,14 @@
       "risk": "high_risk_destructive",
       "scope": "global|project plus explicit tool",
       "preview": "available through fclt_sync preview",
-      "apply": "withheld",
+      "apply": "deprecated broad mutation is blocked by default; explicit approval is reserved for a reviewed one-time migration",
       "rollback": "required before exposure",
       "verification": "rendered hashes, symlink targets, canonical provenance, and restoration smoke"
     },
     {
       "id": "managed.adopt_live",
-      "cli": "sync --adopt-live|manage --adopt-existing",
-      "cliAvailability": "available",
+      "cli": "sync --adopt-live|manage --adopt-existing plus --allow-legacy-managed-mutation",
+      "cliAvailability": "partial_unsafe",
       "mcp": {
         "disposition": "blocked_safer_api",
         "reason": "live-to-canonical adoption needs per-file conflict decisions and authored-boundary proof"
@@ -459,14 +459,14 @@
       "risk": "high_risk_destructive",
       "scope": "global|project plus explicit tool",
       "preview": "required",
-      "apply": "withheld",
+      "apply": "deprecated live adoption is blocked by default; explicit approval is reserved for a reviewed one-time migration",
       "rollback": "required before exposure",
       "verification": "canonical and live hashes plus generated/authored ownership"
     },
     {
       "id": "managed.unmanage",
-      "cli": "unmanage",
-      "cliAvailability": "available",
+      "cli": "unmanage --allow-legacy-managed-mutation",
+      "cliAvailability": "partial_unsafe",
       "mcp": {
         "disposition": "blocked_safer_api",
         "reason": "existing backup restore lacks corrupt-backup and stale-state guarantees required by MCP"
@@ -474,14 +474,14 @@
       "risk": "high_risk_destructive",
       "scope": "global|project plus explicit tool",
       "preview": "required",
-      "apply": "withheld",
+      "apply": "deprecated broad cleanup is blocked by default; explicit approval is reserved for a reviewed one-time migration",
       "rollback": "restore pre-unmanage managed state",
       "verification": "backup integrity and live tool smoke"
     },
     {
       "id": "managed.enable_disable",
-      "cli": "enable|disable",
-      "cliAvailability": "available",
+      "cli": "enable|disable --allow-legacy-managed-mutation",
+      "cliAvailability": "partial_unsafe",
       "mcp": {
         "disposition": "blocked_safer_api",
         "reason": "policy and rendered-output changes need an atomic inverse transaction"
@@ -489,7 +489,7 @@
       "risk": "reversible_mutation",
       "scope": "global|project plus explicit tools/assets",
       "preview": "required",
-      "apply": "exact asset selectors and tool ids required",
+      "apply": "exact asset selectors and tool ids plus reviewed one-time migration approval are required",
       "rollback": "inverse enable/disable transaction",
       "verification": "managed policy and rendered tool inventory agree"
     },
@@ -758,18 +758,18 @@
     },
     {
       "id": "autosync.mutation",
-      "cli": "autosync install|uninstall|restart|run",
-      "cliAvailability": "available",
+      "cli": "autosync status|uninstall|run --once",
+      "cliAvailability": "partial",
       "mcp": {
         "disposition": "blocked_safer_api",
         "reason": "background service and git-sync mutation needs dedicated service policy and rollback"
       },
       "risk": "high_risk_destructive",
       "scope": "global|project plus explicit tool/service",
-      "preview": "required",
-      "apply": "withheld pending a dedicated scheduling and service-lifecycle contract",
-      "rollback": "required before exposure",
-      "verification": "service lifecycle and remote-git safety"
+      "preview": "status is read-only; background install, restart, and continuous run are disabled",
+      "apply": "uninstall is idempotent cleanup; run --once requires explicit legacy-migration approval; background lifecycle mutation is withheld",
+      "rollback": "uninstall cleanup is idempotent; one-shot render and Git mutation have no transaction rollback and require separate recovery",
+      "verification": "root-owned service discovery, unload-before-delete, durable config replacement, failed-cleanup preservation, scoped one-shot recovery, and zero background restart"
     },
     {
       "id": "plugins_agents_skills_instructions_hooks_automations.inventory",

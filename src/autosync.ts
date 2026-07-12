@@ -1,8 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { watch as fsWatch } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import { basename, dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import {
   assertLegacyManagedMutationAllowed,
   LEGACY_MANAGED_MUTATION_FLAG,
@@ -14,13 +27,17 @@ import {
   facultRootDir,
   facultStateDir,
   legacyFacultStateDirForRoot,
+  machineStateProjectKey,
   projectRootFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 import { gitEnvironmentForRepository } from "./util/git-environment";
 
 const AUTOSYNC_VERSION = 1 as const;
 const DEFAULT_DEBOUNCE_MS = 1500;
 const DEFAULT_GIT_INTERVAL_MINUTES = 60;
+const LINE_SPLIT_RE = /\r?\n/;
+const LAUNCHCTL_WORKING_DIRECTORY_RE = /^\s*working directory\s*=\s*(.+?)\s*$/i;
 
 export interface AutosyncGitConfig {
   enabled: boolean;
@@ -66,11 +83,13 @@ export interface LaunchAgentSpec {
 }
 
 export interface AutosyncStatus {
+  serviceName: string;
   config: AutosyncServiceConfig | null;
   state: AutosyncRuntimeState | null;
   plistPath: string;
   plistExists: boolean;
   loaded: boolean;
+  ownershipMismatch: boolean;
   launchctlSummary?: string;
 }
 
@@ -83,6 +102,7 @@ interface CommandResult {
 interface RunnerOptions {
   homeDir?: string;
   once?: boolean;
+  expectedRootDir?: string;
   allowLegacyManagedMutation?: boolean;
   env?: NodeJS.ProcessEnv;
 }
@@ -156,6 +176,20 @@ function serviceSuffix(
   if (!projectRoot) {
     return null;
   }
+  return machineStateProjectKey(rootDir, home);
+}
+
+function legacyServiceSuffix(
+  rootDir: string | undefined,
+  home: string
+): string | null {
+  if (!rootDir) {
+    return null;
+  }
+  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  if (!projectRoot) {
+    return null;
+  }
   const base = basename(projectRoot).trim().toLowerCase();
   const slug = base.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return slug || "project";
@@ -168,6 +202,16 @@ function autosyncServiceName(
 ): string {
   const base = tool?.trim() ? tool.trim() : "all";
   const suffix = serviceSuffix(rootDir, home);
+  return suffix ? `${base}-${suffix}` : base;
+}
+
+function legacyAutosyncServiceName(
+  tool?: string,
+  rootDir?: string,
+  home: string = homedir()
+): string {
+  const base = tool?.trim() ? tool.trim() : "all";
+  const suffix = legacyServiceSuffix(rootDir, home);
   return suffix ? `${base}-${suffix}` : base;
 }
 
@@ -346,17 +390,12 @@ async function readJsonFile<T>(pathValue: string): Promise<T | null> {
   }
 }
 
-async function writeJsonFile(pathValue: string, data: unknown): Promise<void> {
-  await mkdir(dirname(pathValue), { recursive: true });
-  await writeFile(pathValue, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-}
-
-export async function loadAutosyncConfig(
+function autosyncConfigCandidates(
+  homeDir: string,
   serviceName: string,
-  homeDir: string = homedir(),
   rootDir?: string
-): Promise<AutosyncServiceConfig | null> {
-  const candidates = [
+): string[] {
+  return [
     autosyncConfigPath(homeDir, serviceName, rootDir),
     join(
       canonicalAutosyncDir(homeDir, rootDir),
@@ -364,24 +403,197 @@ export async function loadAutosyncConfig(
       `${serviceName}.json`
     ),
     legacyAutosyncConfigPath(homeDir, serviceName, rootDir),
-  ];
-  for (const candidate of candidates) {
-    const config = await readJsonFile<AutosyncServiceConfig>(candidate);
-    if (config) {
-      return config;
+  ].filter((candidate, index, candidates) => {
+    const resolved = resolve(candidate);
+    return (
+      candidates.findIndex((entry) => resolve(entry) === resolved) === index
+    );
+  });
+}
+
+function isAutosyncServiceConfig(
+  value: unknown
+): value is AutosyncServiceConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const config = value as Record<string, unknown>;
+  if (
+    config.version !== AUTOSYNC_VERSION ||
+    typeof config.name !== "string" ||
+    !config.name.trim() ||
+    (config.tool !== undefined && typeof config.tool !== "string") ||
+    typeof config.rootDir !== "string" ||
+    !config.rootDir.trim() ||
+    typeof config.debounceMs !== "number" ||
+    !Number.isFinite(config.debounceMs) ||
+    !config.git ||
+    typeof config.git !== "object" ||
+    Array.isArray(config.git)
+  ) {
+    return false;
+  }
+  const git = config.git as Record<string, unknown>;
+  return (
+    typeof git.enabled === "boolean" &&
+    typeof git.remote === "string" &&
+    typeof git.branch === "string" &&
+    typeof git.intervalMinutes === "number" &&
+    Number.isFinite(git.intervalMinutes) &&
+    typeof git.autoCommit === "boolean" &&
+    typeof git.commitPrefix === "string" &&
+    typeof git.source === "string"
+  );
+}
+
+interface AutosyncConfigFile {
+  config: AutosyncServiceConfig | null;
+  exists: boolean;
+}
+
+async function readAutosyncConfigFile(
+  pathValue: string
+): Promise<AutosyncConfigFile> {
+  try {
+    const parsed = JSON.parse(await readFile(pathValue, "utf8")) as unknown;
+    return {
+      config: isAutosyncServiceConfig(parsed) ? parsed : null,
+      exists: true,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { config: null, exists: false };
     }
+    return { config: null, exists: true };
+  }
+}
+
+async function autosyncConfigArtifactsExist(
+  serviceName: string,
+  homeDir: string,
+  rootDir?: string
+): Promise<boolean> {
+  const results = await Promise.all(
+    autosyncConfigCandidates(homeDir, serviceName, rootDir).map((candidate) =>
+      pathExists(candidate)
+    )
+  );
+  return results.some(Boolean);
+}
+
+function autosyncConfigMatchesRoot(
+  config: AutosyncServiceConfig,
+  rootDir: string
+): boolean {
+  return resolve(config.rootDir) === resolve(rootDir);
+}
+
+function assertAutosyncConfigRoot(
+  config: AutosyncServiceConfig,
+  rootDir: string,
+  serviceName: string
+): void {
+  if (!autosyncConfigMatchesRoot(config, rootDir)) {
+    throw new Error(
+      `Refusing autosync config without matching root ownership: ${serviceName} belongs to ${config.rootDir}, not ${rootDir}`
+    );
+  }
+}
+
+async function writeJsonFile(pathValue: string, data: unknown): Promise<void> {
+  await mkdir(dirname(pathValue), { recursive: true });
+  await writeFile(pathValue, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+interface StagedJsonFile {
+  commit: () => Promise<void>;
+  discard: () => Promise<void>;
+}
+
+async function stageJsonFile(
+  pathValue: string,
+  data: unknown
+): Promise<StagedJsonFile> {
+  const parentDir = dirname(pathValue);
+  let stagingDir = parentDir;
+  while (!(await pathExists(stagingDir))) {
+    const parent = dirname(stagingDir);
+    if (parent === stagingDir) {
+      throw new Error(`No writable ancestor for autosync config: ${pathValue}`);
+    }
+    stagingDir = parent;
+  }
+  const tempPath = join(
+    stagingDir,
+    `.${basename(pathValue)}.${randomUUID()}.tmp`
+  );
+  try {
+    await writeFile(tempPath, `${JSON.stringify(data, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    JSON.parse(await readFile(tempPath, "utf8"));
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => null);
+    throw error;
+  }
+  return {
+    commit: async () => {
+      await mkdir(parentDir, { recursive: true });
+      await rename(tempPath, pathValue);
+    },
+    discard: async () => {
+      await rm(tempPath, { force: true });
+    },
+  };
+}
+
+export async function loadAutosyncConfig(
+  serviceName: string,
+  homeDir: string = homedir(),
+  rootDir?: string
+): Promise<AutosyncServiceConfig | null> {
+  for (const candidate of autosyncConfigCandidates(
+    homeDir,
+    serviceName,
+    rootDir
+  )) {
+    const result = await readAutosyncConfigFile(candidate);
+    if (!result.exists) {
+      continue;
+    }
+    return result.config;
   }
   return null;
 }
 
-async function saveAutosyncConfig(
-  config: AutosyncServiceConfig,
-  homeDir: string
-): Promise<void> {
-  await writeJsonFile(
-    autosyncConfigPath(homeDir, config.name, config.rootDir),
-    config
+async function configuredAutosyncServiceName(args: {
+  homeDir: string;
+  rootDir: string;
+  tool?: string;
+}): Promise<string> {
+  const currentName = autosyncServiceName(
+    args.tool,
+    args.rootDir,
+    args.homeDir
   );
+  if (
+    await autosyncConfigArtifactsExist(currentName, args.homeDir, args.rootDir)
+  ) {
+    return currentName;
+  }
+  const legacyName = legacyAutosyncServiceName(
+    args.tool,
+    args.rootDir,
+    args.homeDir
+  );
+  if (
+    legacyName !== currentName &&
+    (await autosyncConfigArtifactsExist(legacyName, args.homeDir, args.rootDir))
+  ) {
+    return legacyName;
+  }
+  return currentName;
 }
 
 export async function loadAutosyncRuntimeState(
@@ -521,23 +733,156 @@ async function ensureGitRepo(repoDir: string): Promise<boolean> {
   return await pathExists(join(repoDir, ".git"));
 }
 
-async function cleanupAutosyncLaunchAgentArtifacts(args: {
-  homeDir: string;
-  serviceName: string;
-}) {
-  const domain = launchdDomain();
-  for (const label of autosyncLabelCandidates(args.serviceName)) {
-    await runLaunchctl(["bootout", `${domain}/${label}`]).catch(() => null);
-  }
+interface AutosyncPlistOwnership {
+  ownedPaths: Set<string>;
+  foreignPaths: string[];
+}
 
-  const legacyPlistPath = join(
-    args.homeDir,
-    "Library",
-    "LaunchAgents",
-    `${legacyAutosyncLabel(args.serviceName)}.plist`
+function launchctlServiceNotFound(result: CommandResult): boolean {
+  const detail = `${result.stdout}\n${result.stderr}`.toLowerCase();
+  return (
+    result.exitCode === 113 ||
+    detail.includes("could not find service") ||
+    detail.includes("service not found")
   );
-  if (legacyPlistPath !== autosyncPlistPath(args.homeDir, args.serviceName)) {
-    await rm(legacyPlistPath, { force: true });
+}
+
+function launchctlWorkingDirectory(result: CommandResult): string | null {
+  for (const line of `${result.stdout}\n${result.stderr}`.split(
+    LINE_SPLIT_RE
+  )) {
+    const match = line.match(LAUNCHCTL_WORKING_DIRECTORY_RE);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function launchctlServiceMatchesRoot(
+  result: CommandResult,
+  rootDir: string
+): boolean {
+  const workingDirectory = launchctlWorkingDirectory(result);
+  return Boolean(
+    workingDirectory && resolve(workingDirectory) === resolve(rootDir)
+  );
+}
+
+async function inspectAutosyncPlistOwnership(args: {
+  homeDir: string;
+  rootDir: string;
+  serviceName: string;
+}): Promise<AutosyncPlistOwnership> {
+  const expectedWorkingDirectory = [
+    "  <key>WorkingDirectory</key>",
+    `  <string>${escapeXml(args.rootDir)}</string>`,
+  ].join("\n");
+  const paths = [
+    autosyncPlistPath(args.homeDir, args.serviceName),
+    join(
+      args.homeDir,
+      "Library",
+      "LaunchAgents",
+      `${legacyAutosyncLabel(args.serviceName)}.plist`
+    ),
+  ];
+  const ownedPaths = new Set<string>();
+  const foreignPaths: string[] = [];
+  for (const pathValue of paths) {
+    const contents = await readFile(pathValue, "utf8").catch(() => null);
+    if (contents === null) {
+      continue;
+    }
+    if (contents.includes(expectedWorkingDirectory)) {
+      ownedPaths.add(pathValue);
+    } else {
+      foreignPaths.push(pathValue);
+    }
+  }
+  return { ownedPaths, foreignPaths };
+}
+
+async function unloadAutosyncLaunchAgents(args: {
+  homeDir: string;
+  rootDir: string;
+  serviceName: string;
+}): Promise<{ changed: boolean; ownedPaths: Set<string> }> {
+  const ownership = await inspectAutosyncPlistOwnership(args);
+  if (ownership.foreignPaths.length > 0) {
+    throw new Error(
+      `Refusing to remove autosync LaunchAgent without matching root ownership: ${ownership.foreignPaths.join(", ")}`
+    );
+  }
+  const domain = launchdDomain();
+  let changed = false;
+  const candidates = [
+    {
+      label: autosyncLabel(args.serviceName),
+      path: autosyncPlistPath(args.homeDir, args.serviceName),
+    },
+    {
+      label: legacyAutosyncLabel(args.serviceName),
+      path: join(
+        args.homeDir,
+        "Library",
+        "LaunchAgents",
+        `${legacyAutosyncLabel(args.serviceName)}.plist`
+      ),
+    },
+  ];
+  for (const candidate of candidates) {
+    const inspected = await runLaunchctl([
+      "print",
+      `${domain}/${candidate.label}`,
+    ]).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Unable to inspect loaded autosync service ${candidate.label}: ${detail}`
+      );
+    });
+    if (inspected.exitCode !== 0) {
+      if (!launchctlServiceNotFound(inspected)) {
+        throw new Error(
+          `Unable to inspect loaded autosync service ${candidate.label}: ${inspected.stderr.trim() || inspected.stdout.trim() || `exit ${inspected.exitCode}`}`
+        );
+      }
+      continue;
+    }
+    if (!ownership.ownedPaths.has(candidate.path)) {
+      throw new Error(
+        `Refusing to unload autosync service ${candidate.label} without a root-owned plist.`
+      );
+    }
+    if (!launchctlServiceMatchesRoot(inspected, args.rootDir)) {
+      throw new Error(
+        `Refusing to unload autosync service ${candidate.label} without matching loaded root ownership.`
+      );
+    }
+    const unloaded = await runLaunchctl([
+      "bootout",
+      `${domain}/${candidate.label}`,
+    ]).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Unable to unload autosync service ${candidate.label}: ${detail}`
+      );
+    });
+    if (unloaded.exitCode !== 0) {
+      throw new Error(
+        `Unable to unload autosync service ${candidate.label}: ${unloaded.stderr.trim() || unloaded.stdout.trim() || `exit ${unloaded.exitCode}`}`
+      );
+    }
+    changed = true;
+  }
+  return { changed, ownedPaths: ownership.ownedPaths };
+}
+
+async function removeAutosyncLaunchAgentPlists(
+  ownedPaths: Set<string>
+): Promise<void> {
+  for (const pathValue of ownedPaths) {
+    await rm(pathValue, { force: true });
   }
 }
 
@@ -546,6 +891,18 @@ async function cleanupLegacyAutosyncFiles(args: {
   serviceName: string;
   rootDir: string;
 }) {
+  const currentPaths = new Set([
+    autosyncConfigPath(args.homeDir, args.serviceName, args.rootDir),
+    autosyncRuntimeStatePath(args.homeDir, args.serviceName, args.rootDir),
+    join(
+      autosyncLogsDir(args.homeDir, args.rootDir),
+      `${args.serviceName}.log`
+    ),
+    join(
+      autosyncLogsDir(args.homeDir, args.rootDir),
+      `${args.serviceName}.err.log`
+    ),
+  ]);
   const legacyPaths = [
     join(
       canonicalAutosyncDir(args.homeDir, args.rootDir),
@@ -575,6 +932,9 @@ async function cleanupLegacyAutosyncFiles(args: {
     ),
   ];
   for (const candidate of legacyPaths) {
+    if (currentPaths.has(candidate)) {
+      continue;
+    }
     await rm(candidate, { force: true }).catch(() => null);
   }
 }
@@ -766,6 +1126,14 @@ export async function runAutosyncService(
   config: AutosyncServiceConfig,
   opts: RunnerOptions = {}
 ): Promise<void> {
+  if (
+    opts.expectedRootDir &&
+    resolve(config.rootDir) !== resolve(opts.expectedRootDir)
+  ) {
+    throw new Error(
+      `Autosync config root does not match the selected canonical root: ${config.rootDir}`
+    );
+  }
   const allowLegacyManagedMutation = legacyManagedMutationApproved({
     explicit: opts.allowLegacyManagedMutation,
     env: opts.env,
@@ -773,6 +1141,7 @@ export async function runAutosyncService(
   assertLegacyManagedMutationAllowed({
     action: "fclt autosync run",
     approved: allowLegacyManagedMutation,
+    safeAlternative: "fclt autosync status",
   });
   const home = opts.homeDir ?? homedir();
   const label = autosyncLabel(config.name);
@@ -988,6 +1357,7 @@ export async function installAutosyncService(args: {
   assertLegacyManagedMutationAllowed({
     action: "fclt autosync install",
     approved: allowLegacyManagedMutation,
+    safeAlternative: "fclt autosync status or uninstall",
   });
   const home = args.homeDir ?? homedir();
   const rootDir =
@@ -1004,6 +1374,20 @@ export async function installAutosyncService(args: {
     intervalMinutes: args.gitIntervalMinutes,
     gitEnabled: args.gitEnabled,
   });
+  const existingConfigExists = await autosyncConfigArtifactsExist(
+    serviceName,
+    home,
+    rootDir
+  );
+  const existingConfig = await loadAutosyncConfig(serviceName, home, rootDir);
+  if (existingConfigExists && !existingConfig) {
+    throw new Error(
+      `Autosync service config is invalid; refusing replacement without proven ownership: ${serviceName}`
+    );
+  }
+  if (existingConfig) {
+    assertAutosyncConfigRoot(existingConfig, rootDir, serviceName);
+  }
   const spec = buildLaunchAgentSpec({
     homeDir: home,
     serviceName,
@@ -1013,17 +1397,27 @@ export async function installAutosyncService(args: {
 
   await mkdir(dirname(spec.plistPath), { recursive: true });
   await mkdir(autosyncLogsDir(home, rootDir), { recursive: true });
-  await saveAutosyncConfig(config, home);
-  await cleanupLegacyAutosyncFiles({
-    homeDir: home,
-    serviceName,
-    rootDir: config.rootDir,
-  });
-  await cleanupAutosyncLaunchAgentArtifacts({
-    homeDir: home,
-    serviceName,
-  });
-  await writeFile(spec.plistPath, plist, "utf8");
+  const stagedConfig = await stageJsonFile(
+    autosyncConfigPath(home, serviceName, config.rootDir),
+    config
+  );
+  try {
+    const unloaded = await unloadAutosyncLaunchAgents({
+      homeDir: home,
+      rootDir: config.rootDir,
+      serviceName,
+    });
+    await stagedConfig.commit();
+    await cleanupLegacyAutosyncFiles({
+      homeDir: home,
+      serviceName,
+      rootDir: config.rootDir,
+    });
+    await removeAutosyncLaunchAgentPlists(unloaded.ownedPaths);
+    await writeFile(spec.plistPath, plist, "utf8");
+  } finally {
+    await stagedConfig.discard();
+  }
 
   const domain = launchdDomain();
   await runLaunchctl(["bootstrap", domain, spec.plistPath]);
@@ -1040,12 +1434,32 @@ export async function uninstallAutosyncService(args: {
   const rootDir =
     args.rootDir ??
     resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
-  const serviceName = autosyncServiceName(args.tool, rootDir, home);
-
-  await cleanupAutosyncLaunchAgentArtifacts({
+  const serviceName = await configuredAutosyncServiceName({
     homeDir: home,
+    rootDir,
+    tool: args.tool,
+  });
+  const configExists = await autosyncConfigArtifactsExist(
+    serviceName,
+    home,
+    rootDir
+  );
+  const config = await loadAutosyncConfig(serviceName, home, rootDir);
+  if (configExists && !config) {
+    throw new Error(
+      `Autosync service config is invalid; refusing cleanup without proven ownership: ${serviceName}`
+    );
+  }
+  if (config) {
+    assertAutosyncConfigRoot(config, rootDir, serviceName);
+  }
+
+  const unloaded = await unloadAutosyncLaunchAgents({
+    homeDir: home,
+    rootDir,
     serviceName,
   });
+  await removeAutosyncLaunchAgentPlists(unloaded.ownedPaths);
   await cleanupLegacyAutosyncFiles({
     homeDir: home,
     serviceName,
@@ -1086,20 +1500,53 @@ export async function assertAutosyncRepairAllowed(
   allowLegacyManagedMutation?: boolean
 ): Promise<void> {
   const configFiles = await autosyncServiceConfigFiles(homeDir, rootDir);
-  if (configFiles.length > 0) {
+  const domain = launchdDomain();
+  for (const entry of configFiles) {
+    const serviceName = basename(entry, ".json");
+    const currentPlist = autosyncPlistPath(homeDir, serviceName);
+    const legacyPlist = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      `${legacyAutosyncLabel(serviceName)}.plist`
+    );
+    const [currentPlistExists, legacyPlistExists, ...loadedChecks] =
+      await Promise.all([
+        pathExists(currentPlist),
+        pathExists(legacyPlist),
+        ...autosyncLabelCandidates(serviceName).map((label) =>
+          runLaunchctl(["print", `${domain}/${label}`]).catch(() => ({
+            exitCode: 1,
+            stdout: "",
+            stderr: "launchctl unavailable",
+          }))
+        ),
+      ]);
+    if (
+      !(currentPlistExists || legacyPlistExists) &&
+      loadedChecks.every((result) => result.exitCode !== 0)
+    ) {
+      continue;
+    }
     assertLegacyManagedMutationAllowed({
       action: "fclt doctor --repair autosync",
       approved: allowLegacyManagedMutation,
+      safeAlternative: "fclt autosync status or uninstall",
     });
+    return;
   }
 }
 
 export async function repairAutosyncServices(
   homeDir: string = homedir(),
   rootDir?: string,
-  opts: { allowLegacyManagedMutation?: boolean } = {}
+  opts: {
+    allowLegacyManagedMutation?: boolean;
+    targetRootDir?: string;
+  } = {}
 ): Promise<boolean> {
   const activeRoot = rootDir ?? facultRootDir(homeDir);
+  const targetRoot = opts.targetRootDir ?? activeRoot;
   const configFiles = await autosyncServiceConfigFiles(homeDir, activeRoot);
   await assertAutosyncRepairAllowed(
     homeDir,
@@ -1112,56 +1559,135 @@ export async function repairAutosyncServices(
     const serviceName = basename(entry, ".json");
     const config = await loadAutosyncConfig(serviceName, homeDir, activeRoot);
     if (!config) {
-      continue;
+      throw new Error(
+        `Autosync service config is invalid; refusing cleanup without proven ownership: ${serviceName}`
+      );
     }
-    const desiredRoot = projectRootFromAiRoot(config.rootDir, homeDir)
-      ? config.rootDir
-      : facultRootDir(homeDir);
-    if (config.rootDir !== desiredRoot) {
-      config.rootDir = desiredRoot;
-      await saveAutosyncConfig(config, homeDir);
-      changed = true;
+    if (
+      !(
+        autosyncConfigMatchesRoot(config, activeRoot) ||
+        autosyncConfigMatchesRoot(config, targetRoot)
+      )
+    ) {
+      throw new Error(
+        `Refusing autosync config without matching root ownership: ${serviceName} belongs to ${config.rootDir}, not ${activeRoot} or ${targetRoot}`
+      );
     }
-    await cleanupLegacyAutosyncFiles({
+    const sourceRoot = config.rootDir;
+    const desiredRoot = targetRoot;
+    const desiredConfig: AutosyncServiceConfig = {
+      version: AUTOSYNC_VERSION,
+      name: serviceName,
+      ...(config.tool ? { tool: config.tool } : {}),
+      rootDir: desiredRoot,
+      debounceMs: config.debounceMs,
+      git: { ...config.git },
+    };
+    const currentConfigPath = autosyncConfigPath(
       homeDir,
       serviceName,
-      rootDir: config.rootDir,
-    });
-
-    const spec = buildLaunchAgentSpec({
+      desiredRoot
+    );
+    const activeCurrentConfigPath = autosyncConfigPath(
       homeDir,
       serviceName,
-      rootDir: config.rootDir,
-    });
-    const desired = buildLaunchAgentPlist(spec);
+      activeRoot
+    );
+    const destination = await readAutosyncConfigFile(currentConfigPath);
+    const destinationConfig = await loadAutosyncConfig(
+      serviceName,
+      homeDir,
+      desiredRoot
+    );
+    const destinationArtifactsExist = await autosyncConfigArtifactsExist(
+      serviceName,
+      homeDir,
+      desiredRoot
+    );
+    const destinationIsSource =
+      resolve(currentConfigPath) === resolve(activeCurrentConfigPath);
+    if (
+      destinationArtifactsExist &&
+      !destinationIsSource &&
+      !(
+        destinationConfig && isDeepStrictEqual(destinationConfig, desiredConfig)
+      )
+    ) {
+      throw new Error(
+        `Refusing to overwrite an existing autosync destination config without matching content: ${currentConfigPath}`
+      );
+    }
+    const currentPlistPath = autosyncPlistPath(homeDir, serviceName);
     const legacyPlistPath = join(
       homeDir,
       "Library",
       "LaunchAgents",
       `${legacyAutosyncLabel(serviceName)}.plist`
     );
-    const currentText = await readFile(spec.plistPath, "utf8").catch(
-      () => null
+    const [currentPlistExists, legacyPlistExists] = await Promise.all([
+      pathExists(currentPlistPath),
+      pathExists(legacyPlistPath),
+    ]);
+    const configNeedsMigration = !(
+      destination.config && isDeepStrictEqual(destination.config, desiredConfig)
     );
-    const legacyExists = await pathExists(legacyPlistPath);
-    if (currentText !== desired || legacyExists) {
-      await mkdir(dirname(spec.plistPath), { recursive: true });
-      await mkdir(autosyncLogsDir(homeDir, config.rootDir), {
-        recursive: true,
-      });
-      await cleanupAutosyncLaunchAgentArtifacts({
+    const ownership = await inspectAutosyncPlistOwnership({
+      homeDir,
+      rootDir: sourceRoot,
+      serviceName,
+    });
+    if (ownership.foreignPaths.length > 0) {
+      throw new Error(
+        `Refusing to remove autosync LaunchAgent without matching root ownership: ${ownership.foreignPaths.join(", ")}`
+      );
+    }
+    const staged = configNeedsMigration
+      ? await stageJsonFile(currentConfigPath, desiredConfig)
+      : null;
+    try {
+      const unloaded = await unloadAutosyncLaunchAgents({
         homeDir,
+        rootDir: sourceRoot,
         serviceName,
       });
-      await writeFile(spec.plistPath, desired, "utf8");
-      const domain = launchdDomain();
-      await runLaunchctl(["bootstrap", domain, spec.plistPath]).catch(
-        () => null
-      );
-      await runLaunchctl(["kickstart", "-k", `${domain}/${spec.label}`]).catch(
-        () => null
-      );
-      changed = true;
+      if (staged) {
+        await staged.commit();
+      }
+      const persistedConfig =
+        await readJsonFile<AutosyncServiceConfig>(currentConfigPath);
+      if (!isDeepStrictEqual(persistedConfig, desiredConfig)) {
+        throw new Error(
+          `Autosync config replacement could not be verified: ${currentConfigPath}`
+        );
+      }
+      await removeAutosyncLaunchAgentPlists(unloaded.ownedPaths);
+      await cleanupLegacyAutosyncFiles({
+        homeDir,
+        serviceName,
+        rootDir: desiredRoot,
+      });
+      if (resolve(activeRoot) !== resolve(desiredRoot)) {
+        await cleanupLegacyAutosyncFiles({
+          homeDir,
+          serviceName,
+          rootDir: activeRoot,
+        });
+        const activeConfigPath = autosyncConfigPath(
+          homeDir,
+          serviceName,
+          activeRoot
+        );
+        if (resolve(activeConfigPath) !== resolve(currentConfigPath)) {
+          await rm(activeConfigPath, { force: true });
+        }
+      }
+      changed ||=
+        unloaded.changed ||
+        configNeedsMigration ||
+        currentPlistExists ||
+        legacyPlistExists;
+    } finally {
+      await staged?.discard();
     }
   }
 
@@ -1177,29 +1703,106 @@ export async function autosyncStatus(args: {
   const rootDir =
     args.rootDir ??
     resolveCliContextRoot({ homeDir: home, cwd: process.cwd() });
-  const serviceName = autosyncServiceName(args.tool, rootDir, home);
+  const serviceName = await configuredAutosyncServiceName({
+    homeDir: home,
+    rootDir,
+    tool: args.tool,
+  });
+  const configExists = await autosyncConfigArtifactsExist(
+    serviceName,
+    home,
+    rootDir
+  );
   const config = await loadAutosyncConfig(serviceName, home, rootDir);
   const state = await loadAutosyncRuntimeState(serviceName, home, rootDir);
-  const plistPath = autosyncPlistPath(home, serviceName);
-  const plistExists = await pathExists(plistPath);
-  const label = autosyncLabel(serviceName);
+  const currentPlistPath = autosyncPlistPath(home, serviceName);
+  const legacyPlistPath = join(
+    home,
+    "Library",
+    "LaunchAgents",
+    `${legacyAutosyncLabel(serviceName)}.plist`
+  );
+  const ownership = await inspectAutosyncPlistOwnership({
+    homeDir: home,
+    rootDir,
+    serviceName,
+  });
+  const legacyPlistOwned = ownership.ownedPaths.has(legacyPlistPath);
+  const currentPlistOwned = ownership.ownedPaths.has(currentPlistPath);
+  const plistPath = legacyPlistOwned
+    ? legacyPlistPath
+    : currentPlistOwned
+      ? currentPlistPath
+      : (ownership.foreignPaths[0] ?? currentPlistPath);
+  const plistExists = currentPlistOwned || legacyPlistOwned;
   const domain = launchdDomain();
-  const launchctl = await runLaunchctl(["print", `${domain}/${label}`]);
+  const launchctlChecks = await Promise.all([
+    runLaunchctl(["print", `${domain}/${autosyncLabel(serviceName)}`]).catch(
+      () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "launchctl unavailable",
+      })
+    ),
+    runLaunchctl([
+      "print",
+      `${domain}/${legacyAutosyncLabel(serviceName)}`,
+    ]).catch(() => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "launchctl unavailable",
+    })),
+  ]);
+  const ownedLoaded = [
+    currentPlistOwned &&
+    launchctlServiceMatchesRoot(launchctlChecks[0], rootDir)
+      ? launchctlChecks[0]
+      : null,
+    legacyPlistOwned && launchctlServiceMatchesRoot(launchctlChecks[1], rootDir)
+      ? launchctlChecks[1]
+      : null,
+  ].find((result) => result?.exitCode === 0);
+  const unownedLoaded = [
+    currentPlistOwned &&
+    launchctlServiceMatchesRoot(launchctlChecks[0], rootDir)
+      ? null
+      : launchctlChecks[0],
+    legacyPlistOwned && launchctlServiceMatchesRoot(launchctlChecks[1], rootDir)
+      ? null
+      : launchctlChecks[1],
+  ].some((result) => result?.exitCode === 0);
+  const configOwnershipMismatch =
+    configExists && !(config && autosyncConfigMatchesRoot(config, rootDir));
+  const ownershipMismatch =
+    configOwnershipMismatch ||
+    ownership.foreignPaths.length > 0 ||
+    unownedLoaded;
+  const launchctl = ownedLoaded ?? launchctlChecks[0];
 
   return {
+    serviceName,
     config,
     state,
     plistPath,
     plistExists,
-    loaded: launchctl.exitCode === 0,
-    launchctlSummary:
-      launchctl.exitCode === 0
+    loaded: Boolean(ownedLoaded),
+    ownershipMismatch,
+    launchctlSummary: ownershipMismatch
+      ? "service label or plist does not match the selected canonical root"
+      : ownedLoaded
         ? launchctl.stdout.trim()
         : launchctl.stderr.trim() || launchctl.stdout.trim() || undefined,
   };
 }
 
 export async function autosyncCommand(argv: string[]) {
+  await autosyncCommandWithScope(argv, false);
+}
+
+async function autosyncCommandWithScope(
+  argv: string[],
+  rootScopeActive: boolean
+) {
   const [sub, ...rest] = argv;
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(autosyncHelp());
@@ -1223,6 +1826,17 @@ export async function autosyncCommand(argv: string[]) {
       scope: parsed.scope,
       cwd: process.cwd(),
     });
+    const scope = resolveCliContextScope({
+      homeDir: home,
+      rootDir,
+      scope: parsed.scope,
+    });
+    if (!rootScopeActive) {
+      await withFacultRootScope({ rootDir, scope }, async () =>
+        autosyncCommandWithScope(argv, true)
+      );
+      return;
+    }
     const allowLegacyManagedMutation = legacyManagedMutationApproved({
       argv: parsed.argv,
     });
@@ -1235,20 +1849,26 @@ export async function autosyncCommand(argv: string[]) {
 
     if (sub === "uninstall") {
       const tool = parseAutosyncPositionals(parsed.argv, [])[0];
+      const serviceName = await configuredAutosyncServiceName({
+        homeDir: home,
+        rootDir,
+        tool,
+      });
       await uninstallAutosyncService({ homeDir: home, tool, rootDir });
-      console.log(
-        `Removed autosync service: ${autosyncServiceName(tool, rootDir)}`
-      );
+      console.log(`Removed autosync service: ${serviceName}`);
       return;
     }
 
     if (sub === "status") {
       const tool = parseAutosyncPositionals(parsed.argv, [])[0];
       const status = await autosyncStatus({ homeDir: home, tool, rootDir });
-      console.log(`Service: ${autosyncServiceName(tool, rootDir)}`);
+      console.log(`Service: ${status.serviceName}`);
       console.log(`Plist: ${status.plistPath}`);
       console.log(`Installed: ${status.plistExists ? "yes" : "no"}`);
       console.log(`Loaded: ${status.loaded ? "yes" : "no"}`);
+      if (status.ownershipMismatch) {
+        console.log("Ownership: mismatch; no cleanup is safe for this root");
+      }
       if (status.config) {
         console.log(`Root: ${status.config.rootDir}`);
         console.log(
@@ -1289,14 +1909,26 @@ export async function autosyncCommand(argv: string[]) {
       }
       const service = parseAutosyncStringFlag(parsed.argv, "--service");
       const tool = parseAutosyncPositionals(parsed.argv, ["--service"])[0];
-      const serviceName = service ?? autosyncServiceName(tool, rootDir);
+      const serviceName =
+        service ??
+        (await configuredAutosyncServiceName({
+          homeDir: home,
+          rootDir,
+          tool,
+        }));
       const config = await loadAutosyncConfig(serviceName, home, rootDir);
       if (!config) {
+        if (await autosyncConfigArtifactsExist(serviceName, home, rootDir)) {
+          throw new Error(
+            `Autosync service config is invalid; refusing to run without proven ownership: ${serviceName}`
+          );
+        }
         throw new Error(`Autosync service not configured: ${serviceName}`);
       }
       await runAutosyncService(config, {
         homeDir: home,
         once: parsed.argv.includes("--once"),
+        expectedRootDir: rootDir,
         allowLegacyManagedMutation,
       });
       return;

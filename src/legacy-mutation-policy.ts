@@ -27,6 +27,7 @@ export function assertLegacyManagedMutationAllowed(args: {
   approved?: boolean;
   dryRun?: boolean;
   env?: NodeJS.ProcessEnv;
+  safeAlternative?: string;
 }): void {
   if (args.dryRun) {
     return;
@@ -39,7 +40,8 @@ export function assertLegacyManagedMutationAllowed(args: {
   ) {
     return;
   }
+  const safeAlternative = args.safeAlternative ?? "--dry-run";
   throw new Error(
-    `${legacyManagedMutationNotice(args.action)} Use --dry-run, or rerun with ${LEGACY_MANAGED_MUTATION_FLAG} (or ${LEGACY_MANAGED_MUTATION_ENV}=1) only for an explicitly reviewed legacy migration.`
+    `${legacyManagedMutationNotice(args.action)} Use ${safeAlternative}, or rerun with ${LEGACY_MANAGED_MUTATION_FLAG} (or ${LEGACY_MANAGED_MUTATION_ENV}=1) only for an explicitly reviewed legacy migration.`
   );
 }

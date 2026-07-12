@@ -18,6 +18,8 @@ import {
 } from "./reconciliation-config";
 
 let tempRoot: string | null = null;
+const originalRootDir = process.env.FACULT_ROOT_DIR;
+const originalRootScope = process.env.FACULT_ROOT_SCOPE;
 
 async function makeFixture(): Promise<{
   homeDir: string;
@@ -146,6 +148,8 @@ async function runFixtureGit(args: {
 }
 
 afterEach(async () => {
+  process.env.FACULT_ROOT_DIR = originalRootDir;
+  process.env.FACULT_ROOT_SCOPE = originalRootScope;
   if (tempRoot) {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -838,7 +842,6 @@ describe("source reconciliation", () => {
         sources: [{ id: "writebacks", type: "writebacks" }],
       })
     );
-
     const review = await reconcileSources({
       ...fixture,
       since: "2026-07-03",
@@ -932,6 +935,8 @@ describe("source reconciliation", () => {
         ],
       })
     );
+    process.env.FACULT_ROOT_DIR = fixture.rootDir;
+    process.env.FACULT_ROOT_SCOPE = "project";
 
     const review = await reconcileSources({
       ...fixture,

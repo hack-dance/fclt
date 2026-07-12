@@ -52,7 +52,8 @@ When live content differs from canonical content:
 - rendered docs/config with local edits are skipped unless an explicit conflict option allows overwrite
 - built-in rendered defaults require `--builtin-conflicts overwrite` before replacing local edits
 
-This is deliberate. Managed mode should be predictable and reversible.
+This preserves deterministic inspection, but broad apply is not transaction-safe or sufficiently
+reversible to use as a routine deployment path.
 
 ## Legacy project managed mode
 

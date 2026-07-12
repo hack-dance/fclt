@@ -35,11 +35,13 @@ async function runCli(args: {
   home: string;
   cwd: string;
   argv: string[];
+  env?: NodeJS.ProcessEnv;
 }): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn(["bun", "run", cliEntry, ...args.argv], {
     cwd: args.cwd,
     env: {
       ...process.env,
+      ...args.env,
       HOME: args.home,
       FACULT_LOCAL_STATE_DIR: join(args.home, ".local-state"),
     },
@@ -69,6 +71,46 @@ describe("zero-config setup", () => {
     );
     expect(await Bun.file(join(home, ".ai")).exists()).toBe(false);
     expect(await Bun.file(join(repo, ".ai")).exists()).toBe(false);
+  });
+
+  it("keeps global-only setup out of an env-selected project root", async () => {
+    const home = await tempHome("fclt-setup-project-env-");
+    const repo = await initRepo(home);
+    const projectAiRoot = join(repo, ".ai");
+    await mkdir(projectAiRoot, { recursive: true });
+
+    const result = await runCli({
+      home,
+      cwd: repo,
+      argv: [
+        "setup",
+        "--dry-run",
+        "--global-only",
+        "--no-codex-plugin",
+        "--json",
+      ],
+      env: {
+        FACULT_ROOT_DIR: projectAiRoot,
+        FACULT_ROOT_SCOPE: "project",
+      },
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const parsed = JSON.parse(result.stdout) as {
+      globalRoot: string;
+      projectRoot: string | null;
+      changedPaths: string[];
+    };
+    expect(parsed.globalRoot).toBe(join(home, ".ai"));
+    expect(parsed.projectRoot).toBeNull();
+    expect(
+      parsed.changedPaths.every(
+        (pathValue) => !pathValue.startsWith(`${projectAiRoot}/`)
+      )
+    ).toBe(true);
+    expect(await readdir(projectAiRoot)).toEqual([]);
+    expect(await Bun.file(join(home, ".ai")).exists()).toBe(false);
   });
 
   it("preserves an invalid reconciliation config and reports repair", async () => {

@@ -7,6 +7,8 @@ import { aiCommand } from "./ai";
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
 const originalRoot = process.env.FACULT_ROOT_DIR;
+const originalRootScope = process.env.FACULT_ROOT_SCOPE;
+const originalLocalState = process.env.FACULT_LOCAL_STATE_DIR;
 const originalCwd = process.cwd();
 const proposalEvidenceArgs = (ref: string) => ["--evidence", `session:${ref}`];
 const allowEmptyEvidenceArgs = ["--allow-empty-evidence"];
@@ -45,6 +47,8 @@ afterEach(async () => {
   process.chdir(originalCwd);
   process.env.HOME = originalHome;
   process.env.FACULT_ROOT_DIR = originalRoot;
+  process.env.FACULT_ROOT_SCOPE = originalRootScope;
+  process.env.FACULT_LOCAL_STATE_DIR = originalLocalState;
   process.exitCode = 0;
   if (tempHome) {
     await rm(tempHome, { recursive: true, force: true });
@@ -971,6 +975,69 @@ describe("ai CLI", () => {
     expect(targetText).toContain(
       "Add a rule about explicit verification plans."
     );
+  });
+
+  it("keeps custom-global writeback, review, and apply state in global scope", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    process.env.FACULT_ROOT_DIR = undefined;
+    process.env.FACULT_ROOT_SCOPE = undefined;
+    process.env.FACULT_LOCAL_STATE_DIR = join(tempHome, "state");
+    const rootDir = join(tempHome, "shared", ".ai");
+    const defaultTarget = join(
+      tempHome,
+      ".ai",
+      "instructions",
+      "CUSTOM_GLOBAL.md"
+    );
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+    await Bun.write(
+      join(rootDir, ".facult", "ai", "graph.json"),
+      `${JSON.stringify({ version: 1, generatedAt: "2026-07-11T00:00:00.000Z", nodes: {}, edges: [] }, null, 2)}\n`
+    );
+    process.chdir(tempHome);
+    const scopeArgs = ["--global", "--root", rootDir];
+
+    const writebackOut = await captureConsole(async () => {
+      await aiCommand([
+        "writeback",
+        "add",
+        "--kind",
+        "missing_context",
+        "--summary",
+        "Custom global context is missing.",
+        "--suggested-destination",
+        "@ai/instructions/CUSTOM_GLOBAL.md",
+        ...proposalEvidenceArgs("custom-global-cli"),
+        ...scopeArgs,
+      ]);
+    });
+    expect(writebackOut.errors).toEqual([]);
+    expect(writebackOut.logs.join("\n")).toContain('"scope": "global"');
+
+    await aiCommand(["evolve", "propose", ...scopeArgs]);
+    await aiCommand(["evolve", "draft", "EV-00001", ...scopeArgs]);
+    await aiCommand(["evolve", "accept", "EV-00001", ...scopeArgs]);
+    const applyOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "apply", "EV-00001", ...scopeArgs]);
+    });
+    expect(applyOut.errors).toEqual([]);
+    expect(applyOut.logs.join("\n")).toContain("Applied EV-00001");
+    expect(
+      await Bun.file(join(rootDir, "instructions", "CUSTOM_GLOBAL.md")).exists()
+    ).toBe(true);
+    expect(await Bun.file(defaultTarget).exists()).toBe(false);
+
+    const statusOut = await captureConsole(async () => {
+      await aiCommand(["review", "status", "--json", ...scopeArgs]);
+    });
+    expect(statusOut.errors).toEqual([]);
+    const status = JSON.parse(statusOut.logs.join("\n")) as {
+      statePath: string;
+    };
+    expect(status.statePath).toContain(join("state", "global", "ai", "global"));
+    expect(status.statePath).not.toContain(join("state", "projects"));
   });
 
   it("applies low-risk project instruction proposals after draft without accept", async () => {

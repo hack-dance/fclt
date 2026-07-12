@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   readlink,
   rm,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { facultBuiltinPackRoot } from "./builtin";
+import { LEGACY_MANAGED_MUTATION_FLAG } from "./legacy-mutation-policy";
 import {
   loadManagedState,
   managedStatePath,
@@ -40,6 +42,52 @@ async function createTempDir(): Promise<string> {
 async function writeJson(p: string, data: unknown) {
   await mkdir(dirname(p), { recursive: true });
   await Bun.write(p, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+async function snapshotTree(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+
+  async function visit(pathValue: string, relativePath: string): Promise<void> {
+    const stat = await lstat(pathValue).catch(() => null);
+    if (!stat) {
+      return;
+    }
+    const key = relativePath || ".";
+    if (stat.isSymbolicLink()) {
+      snapshot[key] = `symlink:${await readlink(pathValue)}`;
+      return;
+    }
+    if (stat.isDirectory()) {
+      snapshot[key] = "directory";
+      const entries = await readdir(pathValue);
+      for (const entry of entries.sort()) {
+        await visit(join(pathValue, entry), join(relativePath, entry));
+      }
+      return;
+    }
+    snapshot[key] = `file:${(await readFile(pathValue)).toString("base64")}`;
+  }
+
+  await visit(root, "");
+  return snapshot;
+}
+
+async function runCli(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{ code: number; stderr: string; stdout: string }> {
+  const proc = Bun.spawn(["bun", "run", "./src/index.ts", ...args], {
+    cwd: process.cwd(),
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { code, stderr, stdout };
 }
 
 describe("managed state", () => {
@@ -78,6 +126,99 @@ describe("managed state", () => {
     const raw = await readFile(managedPath, "utf8");
     const parsed = JSON.parse(raw) as { tools: Record<string, unknown> };
     expect(parsed.tools.cursor).toBeTruthy();
+  });
+
+  it("keeps an explicit custom global root out of project tool and state paths", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, "shared", ".ai");
+    const stateRoot = join(home, "state");
+    const env = {
+      HOME: home,
+      FACULT_LOCAL_STATE_DIR: stateRoot,
+    };
+    await mkdir(join(rootDir, "skills", "alpha"), { recursive: true });
+    await Bun.write(join(rootDir, "skills", "alpha", "SKILL.md"), "# Alpha\n");
+    await writeJson(join(rootDir, "mcp", "servers.json"), {
+      servers: { first: { command: "first-server" } },
+    });
+
+    const managed = await runCli(
+      [
+        "manage",
+        "cursor",
+        "--global",
+        "--root",
+        rootDir,
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
+      env
+    );
+    expect(managed).toMatchObject({ code: 0, stderr: "" });
+    expect(await readlink(join(home, ".cursor", "skills", "alpha"))).toBe(
+      join(rootDir, "skills", "alpha")
+    );
+    expect(await Bun.file(join(home, ".cursor", "mcp.json")).exists()).toBe(
+      true
+    );
+    expect(
+      await Bun.file(join(home, "shared", ".cursor", "mcp.json")).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(join(stateRoot, "global", "managed.json")).exists()
+    ).toBe(true);
+    expect(await Bun.file(join(stateRoot, "projects")).exists()).toBe(false);
+
+    const listed = await runCli(
+      ["managed", "--global", "--root", rootDir],
+      env
+    );
+    expect(listed).toMatchObject({ code: 0, stderr: "" });
+    expect(listed.stdout).toContain("cursor");
+
+    await writeJson(join(rootDir, "mcp", "servers.json"), {
+      servers: { second: { command: "second-server" } },
+    });
+    const synced = await runCli(
+      [
+        "sync",
+        "cursor",
+        "--global",
+        "--root",
+        rootDir,
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
+      env
+    );
+    expect(synced).toMatchObject({ code: 0, stderr: "" });
+    expect(await readFile(join(home, ".cursor", "mcp.json"), "utf8")).toContain(
+      "second-server"
+    );
+    const ledger = (
+      await readFile(join(stateRoot, "global", "ledger", "sync.jsonl"), "utf8")
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { scope: string });
+    expect(ledger.length).toBeGreaterThan(0);
+    expect(ledger.every((event) => event.scope === "global")).toBe(true);
+
+    const unmanaged = await runCli(
+      [
+        "unmanage",
+        "cursor",
+        "--global",
+        "--root",
+        rootDir,
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
+      env
+    );
+    expect(unmanaged).toMatchObject({ code: 0, stderr: "" });
+    const finalState = JSON.parse(
+      await readFile(join(stateRoot, "global", "managed.json"), "utf8")
+    ) as { tools: Record<string, unknown> };
+    expect(finalState.tools.cursor).toBeUndefined();
+    expect(await Bun.file(join(stateRoot, "projects")).exists()).toBe(false);
   });
 
   it("renders codex agents into the default managed output dir", async () => {
@@ -1330,6 +1471,59 @@ describe("manage/unmanage", () => {
 });
 
 describe("syncManagedTools", () => {
+  it("keeps canonical, generated, runtime, and live trees unchanged during dry-run", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const skillsDir = join(home, "tool", "skills");
+    const agentsDir = join(home, "tool", "agents");
+
+    await mkdir(join(rootDir, "skills", "alpha"), { recursive: true });
+    await Bun.write(join(rootDir, "skills", "alpha", "SKILL.md"), "# Alpha\n");
+    await mkdir(join(rootDir, "agents", "reviewer"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "agents", "reviewer", "agent.toml"),
+      'name = "reviewer"\n\ndeveloper_instructions = "Review carefully."\n'
+    );
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers: {} });
+    await mkdir(skillsDir, { recursive: true });
+    await Bun.write(join(skillsDir, "owned.txt"), "tool-owned skill state\n");
+    await mkdir(agentsDir, { recursive: true });
+    await Bun.write(join(agentsDir, "owned.txt"), "tool-owned agent state\n");
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-07-11T00:00:00.000Z",
+            skillsDir,
+            agentsDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+    const before = await snapshotTree(home);
+
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      scope: "global",
+      tool: "codex",
+      dryRun: true,
+      allowLegacyManagedMutation: false,
+    });
+
+    expect(await snapshotTree(home)).toEqual(before);
+    expect(
+      await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(join(rootDir, ".facult", "ai", "graph.json")).exists()
+    ).toBe(false);
+  });
+
   it("preserves hidden tool-owned skill entries during sync planning", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");

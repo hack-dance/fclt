@@ -16,7 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { renderCanonicalText } from "./agents";
 import {
   ensureAiGraphPath,
@@ -31,7 +31,11 @@ import {
   facultBuiltinAgentsGlobalSourcePath,
   facultBuiltinPackRoot,
 } from "./builtin";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import { diagnoseEvolutionLoop } from "./evolution-loop";
 import {
   LEGACY_MANAGED_MUTATION_FLAG,
@@ -1148,8 +1152,8 @@ Usage:
 
 Options:
   --json     Print read-only setup health, issues, and recommended actions
-  --repair   Reconcile legacy Facult state, canonical root config, AI index/graph, and autosync service config when needed
-  ${LEGACY_MANAGED_MUTATION_FLAG}  Approve legacy autosync repair before any repair writes
+  --repair   Reconcile legacy state and remove contained background autosync launch agents
+  ${LEGACY_MANAGED_MUTATION_FLAG}  Approve stopping a detected legacy autosync launch agent before other repair writes
 `);
 }
 
@@ -1161,8 +1165,13 @@ export async function buildDoctorReport(opts?: {
 }): Promise<DoctorReport> {
   const home = opts?.homeDir ?? process.env.HOME?.trim() ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
+  const globalRoot = resolveCliContextRoot({
+    scope: "global",
+    cwd,
+    homeDir: home,
+  });
   const rootDir =
-    opts?.rootArg || opts?.scope === "project"
+    opts?.rootArg || opts?.scope === "project" || opts?.scope === "global"
       ? resolveCliContextRoot({
           rootArg: opts?.rootArg,
           scope: opts?.scope ?? "merged",
@@ -1269,21 +1278,14 @@ export async function buildDoctorReport(opts?: {
       Promise.all([
         pathExists(join(rootDir, "skills", "fclt-writeback", "SKILL.md")),
         projectRoot
-          ? pathExists(
-              join(facultRootDir(home), "skills", "fclt-writeback", "SKILL.md")
-            )
+          ? pathExists(join(globalRoot, "skills", "fclt-writeback", "SKILL.md"))
           : Promise.resolve(false),
       ]).then((values) => values.some(Boolean)),
       Promise.all([
         pathExists(join(rootDir, "skills", "capability-evolution", "SKILL.md")),
         projectRoot
           ? pathExists(
-              join(
-                facultRootDir(home),
-                "skills",
-                "capability-evolution",
-                "SKILL.md"
-              )
+              join(globalRoot, "skills", "capability-evolution", "SKILL.md")
             )
           : Promise.resolve(false),
       ]).then((values) => values.some(Boolean)),
@@ -1743,6 +1745,13 @@ export async function buildDoctorReport(opts?: {
 }
 
 export async function doctorCommand(argv: string[]) {
+  await doctorCommandWithScope(argv, false);
+}
+
+async function doctorCommandWithScope(
+  argv: string[],
+  rootScopeActive: boolean
+) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     printHelp();
     return;
@@ -1761,6 +1770,12 @@ export async function doctorCommand(argv: string[]) {
 
   try {
     const parsed = parseCliContextArgs(contextArgv);
+    const unknown = parsed.argv[0];
+    if (unknown) {
+      console.error(`Unknown option: ${unknown}`);
+      process.exitCode = 1;
+      return;
+    }
     if (json) {
       if (repair) {
         console.error(
@@ -1779,16 +1794,26 @@ export async function doctorCommand(argv: string[]) {
       return;
     }
 
-    const textParsed = parseCliContextArgs(contextArgv);
     const rootDir =
-      textParsed.rootArg || textParsed.scope === "project"
+      parsed.rootArg || parsed.scope !== "merged"
         ? resolveCliContextRoot({
-            rootArg: textParsed.rootArg,
-            scope: textParsed.scope,
+            rootArg: parsed.rootArg,
+            scope: parsed.scope,
             cwd: process.cwd(),
             homeDir: home,
           })
         : facultRootDir(home);
+    const rootScope = resolveCliContextScope({
+      homeDir: home,
+      rootDir,
+      scope: parsed.scope,
+    });
+    if (!rootScopeActive) {
+      await withFacultRootScope({ rootDir, scope: rootScope }, async () =>
+        doctorCommandWithScope(argv, true)
+      );
+      return;
+    }
     let rootConfigRepaired = false;
     let stateRepaired = false;
     let stateConflicts: string[] = [];
@@ -1816,15 +1841,20 @@ export async function doctorCommand(argv: string[]) {
         rootDir,
         allowLegacyManagedMutation
       );
+      const autosyncTargetRoot =
+        !parsed.rootArg &&
+        parsed.scope === "merged" &&
+        resolve(rootDir) === resolve(legacyDefaultRoot(home))
+          ? join(home, ".ai")
+          : rootDir;
+      autosyncRepaired = await repairAutosyncServices(home, rootDir, {
+        allowLegacyManagedMutation,
+        targetRootDir: autosyncTargetRoot,
+      });
       rootConfigRepaired = await repairLegacyRootConfig(home);
-    }
-    if (repair) {
       const stateRepair = await repairLegacyState({ home, rootDir });
       stateRepaired = stateRepair.changed;
       stateConflicts = stateRepair.conflicts;
-      autosyncRepaired = await repairAutosyncServices(home, rootDir, {
-        allowLegacyManagedMutation,
-      });
       const authoringRepair = await repairLegacyCodexAuthoringLayout({
         home,
         rootDir,
@@ -1863,7 +1893,11 @@ export async function doctorCommand(argv: string[]) {
     const generated = facultAiIndexPath(home, rootDir);
     const generatedGraph = facultAiGraphPath(home, rootDir);
     const legacy = legacyAiIndexPath(rootDir);
-    const result = await ensureAiIndexPath({ homeDir: home, rootDir, repair });
+    const result = await ensureAiIndexPath({
+      homeDir: home,
+      rootDir,
+      repair,
+    });
     const graphResult = await ensureAiGraphPath({
       homeDir: home,
       rootDir,
@@ -1891,7 +1925,9 @@ export async function doctorCommand(argv: string[]) {
       }
     }
     if (autosyncRepaired) {
-      console.log("Repaired autosync launch agent configuration.");
+      console.log(
+        "Removed contained background autosync launch agents and preserved one-shot recovery configuration."
+      );
     }
     if (codexAuthoringRepaired) {
       console.log(

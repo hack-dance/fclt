@@ -1,9 +1,10 @@
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { refreshAiReviewArtifacts } from "./ai";
+import { resolveCliContextRoot } from "./cli-context";
 import { buildDoctorReport, type DoctorReport } from "./doctor";
 import { type SetupCodexPluginResult, setupCodexPlugin } from "./manage";
-import { facultAiReconciliationConfigPath, facultRootDir } from "./paths";
+import { facultAiReconciliationConfigPath } from "./paths";
 import { initializeReconciliationConfig } from "./reconciliation-config";
 import {
   findGitRootFromPath,
@@ -82,7 +83,11 @@ export async function bootstrapFclt(
     opts.homeDir ?? process.env.HOME?.trim() ?? homedir()
   );
   const cwd = resolve(opts.cwd ?? process.cwd());
-  const globalRoot = facultRootDir(homeDir);
+  const globalRoot = resolveCliContextRoot({
+    homeDir,
+    cwd,
+    scope: "global",
+  });
   const detectedProject = findGitRootFromPath(cwd);
   const includeProject = opts.includeProject ?? detectedProject !== null;
   const projectCandidateRoot = resolve(detectedProject ?? cwd, ".ai");

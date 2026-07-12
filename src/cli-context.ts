@@ -4,6 +4,7 @@ import {
   facultContextRootDir,
   facultRootDir,
   findNearestProjectAiRoot,
+  preferredGlobalAiRoot,
   projectRootFromAiRoot,
 } from "./paths";
 
@@ -192,6 +193,12 @@ export function resolveCliContextRoot(args?: {
   }
 
   if (scope === "global") {
+    if (
+      process.env.FACULT_ROOT_DIR?.trim() &&
+      process.env.FACULT_ROOT_SCOPE?.trim() === "project"
+    ) {
+      return preferredGlobalAiRoot(homeDir);
+    }
     return facultRootDir(homeDir);
   }
 
@@ -214,4 +221,17 @@ export function resolveCliContextRoot(args?: {
   }
 
   return facultContextRootDir({ home: homeDir, cwd });
+}
+
+export function resolveCliContextScope(args: {
+  homeDir?: string;
+  rootDir: string;
+  scope?: CapabilityScopeMode;
+}): "global" | "project" {
+  if (args.scope === "global" || args.scope === "project") {
+    return args.scope;
+  }
+  return projectRootFromAiRoot(args.rootDir, args.homeDir)
+    ? "project"
+    : "global";
 }

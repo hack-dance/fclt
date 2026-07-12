@@ -68,6 +68,13 @@ describe("legacy managed mutation containment", () => {
         dryRun: true,
       })
     ).not.toThrow();
+    expect(() =>
+      assertLegacyManagedMutationAllowed({
+        action: "fclt doctor --repair autosync",
+        approved: false,
+        safeAlternative: "fclt autosync status or uninstall",
+      })
+    ).toThrow("Use fclt autosync status or uninstall");
   });
 
   it("blocks manage before target or managed-state writes", async () => {

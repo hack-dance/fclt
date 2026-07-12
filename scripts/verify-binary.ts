@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -18,6 +18,8 @@ async function execute(args: string[]): Promise<{
   stdout: string;
 }> {
   const env = { ...process.env };
+  env.FACULT_ROOT_DIR = undefined;
+  env.FACULT_ROOT_SCOPE = undefined;
   env.FCLT_ALLOW_LEGACY_MANAGED_MUTATION = undefined;
   const proc = Bun.spawn([binaryPath, ...args], {
     cwd: tempHome,
@@ -97,6 +99,70 @@ if (
 ) {
   throw new Error(
     `Expected compiled setup readiness, got ${JSON.stringify(setup)}`
+  );
+}
+
+const customGlobalRoot = join(tempHome, "shared", ".ai");
+await mkdir(join(customGlobalRoot, "skills", "compiled-preview"), {
+  recursive: true,
+});
+await Bun.write(
+  join(customGlobalRoot, "skills", "compiled-preview", "SKILL.md"),
+  "# Compiled Preview\n"
+);
+await mkdir(join(tempHome, ".ai", "skills", "default-only"), {
+  recursive: true,
+});
+await Bun.write(
+  join(tempHome, ".ai", "skills", "default-only", "SKILL.md"),
+  "# Default Only\n"
+);
+await mkdir(join(customGlobalRoot, "mcp"), { recursive: true });
+await Bun.write(
+  join(customGlobalRoot, "mcp", "servers.json"),
+  `${JSON.stringify({ servers: {} }, null, 2)}\n`
+);
+const customStatus = JSON.parse(
+  await run(["status", "--json", "--global", "--root", customGlobalRoot])
+) as { machineStateDir?: string; projectRoot?: string | null };
+if (
+  customStatus.projectRoot !== null ||
+  customStatus.machineStateDir !==
+    join(tempHome, ".local", "state", "fclt", "global")
+) {
+  throw new Error(
+    `Expected custom root to remain global, got ${JSON.stringify(customStatus)}`
+  );
+}
+await run([
+  "manage",
+  "cursor",
+  "--dry-run",
+  "--global",
+  "--root",
+  customGlobalRoot,
+]);
+const forbiddenPreviewWrites = [
+  join(tempHome, ".cursor"),
+  join(tempHome, "shared", ".cursor"),
+  join(customGlobalRoot, ".facult", "ai", "index.json"),
+  join(customGlobalRoot, ".facult", "ai", "graph.json"),
+];
+for (const pathValue of forbiddenPreviewWrites) {
+  if (await Bun.file(pathValue).exists()) {
+    throw new Error(`Managed dry-run unexpectedly wrote ${pathValue}`);
+  }
+}
+await run(["index", "--global", "--root", customGlobalRoot]);
+const customIndex = JSON.parse(
+  await Bun.file(join(customGlobalRoot, ".facult", "ai", "index.json")).text()
+) as { skills?: Record<string, { sourceKind?: string }> };
+if (
+  customIndex.skills?.["compiled-preview"]?.sourceKind !== "global" ||
+  customIndex.skills?.["default-only"]
+) {
+  throw new Error(
+    `Expected isolated custom-global index, got ${JSON.stringify(customIndex.skills)}`
   );
 }
 

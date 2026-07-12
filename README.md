@@ -551,7 +551,7 @@ proves desktop discovery.
 
 ### Does fclt have to manage Codex or Claude files?
 
-No. You can use `status`, `scan`, `inventory`, `list`, `show`, `graph`, `writeback`, and `evolve` without managed rendering. Use `manage` and `sync` only when `fclt` should write rendered output into a tool home.
+No. You can use `status`, `scan`, `inventory`, `list`, `show`, `graph`, `writeback`, and `evolve` without managed rendering. Broad managed apply is deprecated and contained; use `manage --dry-run` and `sync --dry-run` only to inspect legacy plans while per-asset deployment is built.
 
 ### Where do project writebacks go?
 

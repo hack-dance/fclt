@@ -21,7 +21,11 @@ import {
   facultBuiltinCodexPluginRoot,
   facultBuiltinPackRoot,
 } from "./builtin";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import { renderBullets, renderCode, renderPage } from "./cli-ui";
 import { contentHash, normalizeText } from "./conflicts";
 import {
@@ -36,6 +40,7 @@ import {
 import {
   type AgentEntry,
   buildIndex,
+  buildIndexSnapshot,
   type FacultIndex,
   type SkillEntry,
 } from "./index-builder";
@@ -56,6 +61,7 @@ import {
   legacyFacultStateDirForRoot,
   pathIsInsideOrEqual,
   projectRootFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 import { loadProjectToolSyncPolicy } from "./project-sync";
 
@@ -137,6 +143,7 @@ export interface ToolPaths {
 export interface ManageOptions {
   homeDir?: string;
   rootDir?: string;
+  scope?: "global" | "project";
   toolPaths?: Record<string, ToolPaths>;
   now?: () => Date;
   dryRun?: boolean;
@@ -149,6 +156,7 @@ export interface ManageOptions {
 export interface SyncOptions {
   homeDir?: string;
   rootDir?: string;
+  scope?: "global" | "project";
   tool?: string;
   dryRun?: boolean;
   builtinConflictMode?: "warn" | "overwrite";
@@ -1330,8 +1338,12 @@ async function hashDirectoryTree(
 
 async function loadMergedIndex(
   homeDir: string,
-  rootDir: string
+  rootDir: string,
+  persist: boolean
 ): Promise<FacultIndex> {
+  if (!persist) {
+    return (await buildIndexSnapshot({ homeDir, rootDir, force: false })).index;
+  }
   const { path: indexPath } = await ensureAiIndexPath({
     homeDir,
     rootDir,
@@ -1345,10 +1357,18 @@ async function loadMergedIndex(
 
 async function loadEnabledSkillEntries(args: {
   homeDir: string;
+  index?: FacultIndex;
   rootDir: string;
   tool: string;
+  persistIndex?: boolean;
 }): Promise<{ name: string; path: string }[]> {
-  const index = await loadMergedIndex(args.homeDir, args.rootDir);
+  const index =
+    args.index ??
+    (await loadMergedIndex(
+      args.homeDir,
+      args.rootDir,
+      args.persistIndex !== false
+    ));
   const projectPolicy = await loadProjectToolSyncPolicy(args);
   const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
     args.rootDir,
@@ -1399,10 +1419,18 @@ async function loadEnabledSkillEntries(args: {
 
 async function loadManagedAgentEntries(args: {
   homeDir: string;
+  index?: FacultIndex;
   rootDir: string;
   tool: string;
+  persistIndex?: boolean;
 }): Promise<{ name: string; sourcePath: string; raw: string }[]> {
-  const index = await loadMergedIndex(args.homeDir, args.rootDir);
+  const index =
+    args.index ??
+    (await loadMergedIndex(
+      args.homeDir,
+      args.rootDir,
+      args.persistIndex !== false
+    ));
   const projectPolicy = await loadProjectToolSyncPolicy(args);
   const useBuiltinDefaults = await builtinSyncDefaultsEnabled(
     args.rootDir,
@@ -1449,11 +1477,15 @@ async function loadManagedAgentEntries(args: {
 async function planAgentFileChanges({
   agentsDir,
   homeDir,
+  index,
+  persistIndex,
   rootDir,
   tool,
 }: {
   agentsDir: string;
   homeDir: string;
+  index?: FacultIndex;
+  persistIndex?: boolean;
   rootDir: string;
   tool: string;
 }): Promise<{
@@ -1462,7 +1494,13 @@ async function planAgentFileChanges({
   contents: Map<string, string>;
   sources: Map<string, string>;
 }> {
-  const agents = await loadManagedAgentEntries({ homeDir, rootDir, tool });
+  const agents = await loadManagedAgentEntries({
+    homeDir,
+    index,
+    persistIndex,
+    rootDir,
+    tool,
+  });
   const contents = new Map<string, string>();
   const sources = new Map<string, string>();
   const desiredPaths = new Set<string>();
@@ -2657,17 +2695,23 @@ async function restorePreservedToolSkillEntries({
 
 async function planSkillSymlinkChanges({
   homeDir,
+  index,
+  persistIndex,
   toolSkillsDir,
   rootDir,
   tool,
 }: {
   homeDir: string;
+  index?: FacultIndex;
+  persistIndex?: boolean;
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
 }): Promise<SkillSymlinkPlan> {
   const desiredEntries = await loadEnabledSkillEntries({
     homeDir,
+    index,
+    persistIndex,
     rootDir,
     tool,
   });
@@ -2783,6 +2827,7 @@ async function planSkillSymlinkChanges({
 
 async function syncSkillSymlinks({
   homeDir,
+  index,
   toolSkillsDir,
   rootDir,
   tool,
@@ -2790,6 +2835,7 @@ async function syncSkillSymlinks({
   adoptLive,
 }: {
   homeDir: string;
+  index?: FacultIndex;
   toolSkillsDir: string;
   rootDir: string;
   tool: string;
@@ -2798,6 +2844,8 @@ async function syncSkillSymlinks({
 }): Promise<SkillSymlinkPlan> {
   const plan = await planSkillSymlinkChanges({
     homeDir,
+    index,
+    persistIndex: !dryRun,
     toolSkillsDir,
     rootDir,
     tool,
@@ -2953,6 +3001,20 @@ async function writeToolMcpConfig({
 }
 
 export async function manageTool(tool: string, opts: ManageOptions = {}) {
+  const homeDir = opts.homeDir ?? homedir();
+  const rootDir = opts.rootDir ?? facultRootDir(homeDir);
+  const scope =
+    opts.scope ??
+    resolveCliContextScope({
+      homeDir,
+      rootDir,
+    });
+  return await withFacultRootScope({ rootDir, scope }, async () =>
+    manageToolInScope(tool, { ...opts, homeDir, rootDir })
+  );
+}
+
+async function manageToolInScope(tool: string, opts: ManageOptions) {
   assertLegacyManagedMutationAllowed({
     action: `fclt manage ${tool}`,
     approved: opts.allowLegacyManagedMutation,
@@ -3600,6 +3662,20 @@ async function removeSymlinks(skillsDir: string) {
 }
 
 export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
+  const homeDir = opts.homeDir ?? homedir();
+  const rootDir = opts.rootDir ?? facultRootDir(homeDir);
+  const scope =
+    opts.scope ??
+    resolveCliContextScope({
+      homeDir,
+      rootDir,
+    });
+  return await withFacultRootScope({ rootDir, scope }, async () =>
+    unmanageToolInScope(tool, { ...opts, homeDir, rootDir })
+  );
+}
+
+async function unmanageToolInScope(tool: string, opts: ManageOptions) {
   assertLegacyManagedMutationAllowed({
     action: `fclt unmanage ${tool}`,
     approved: opts.allowLegacyManagedMutation,
@@ -3701,12 +3777,20 @@ export async function unmanageTool(tool: string, opts: ManageOptions = {}) {
 }
 
 export async function listManagedTools(
-  opts: { homeDir?: string; rootDir?: string } = {}
+  opts: {
+    homeDir?: string;
+    rootDir?: string;
+    scope?: "global" | "project";
+  } = {}
 ): Promise<string[]> {
   const home = opts.homeDir ?? homedir();
   const rootDir = opts.rootDir ?? facultRootDir(home);
-  const state = await loadManagedState(home, rootDir);
-  return Object.keys(state.tools).sort();
+  const scope =
+    opts.scope ?? resolveCliContextScope({ homeDir: home, rootDir });
+  return await withFacultRootScope({ rootDir, scope }, async () => {
+    const state = await loadManagedState(home, rootDir);
+    return Object.keys(state.tools).sort();
+  });
 }
 
 async function canonicalAgentsExist(rootDir: string): Promise<boolean> {
@@ -5058,9 +5142,15 @@ async function syncManagedToolEntry({
           entry,
         });
 
+  const indexSnapshot =
+    dryRun && (entry.skillsDir || entry.agentsDir)
+      ? (await buildIndexSnapshot({ homeDir, rootDir })).index
+      : undefined;
+
   const skillPlan = entry.skillsDir
     ? await syncSkillSymlinks({
         homeDir,
+        index: indexSnapshot,
         toolSkillsDir: entry.skillsDir,
         rootDir,
         tool,
@@ -5084,6 +5174,8 @@ async function syncManagedToolEntry({
     ? await planAgentFileChanges({
         agentsDir: entry.agentsDir,
         homeDir,
+        index: indexSnapshot,
+        persistIndex: !dryRun,
         rootDir,
         tool,
       })
@@ -5496,6 +5588,20 @@ async function syncManagedToolEntry({
 }
 
 export async function syncManagedTools(opts: SyncOptions = {}) {
+  const homeDir = opts.homeDir ?? homedir();
+  const rootDir = opts.rootDir ?? facultRootDir(homeDir);
+  const scope =
+    opts.scope ??
+    resolveCliContextScope({
+      homeDir,
+      rootDir,
+    });
+  return await withFacultRootScope({ rootDir, scope }, async () =>
+    syncManagedToolsInScope({ ...opts, homeDir, rootDir })
+  );
+}
+
+async function syncManagedToolsInScope(opts: SyncOptions) {
   const home = opts.homeDir ?? homedir();
   const rootDir = opts.rootDir ?? facultRootDir(home);
   const state = await loadManagedState(home, rootDir);
@@ -5553,6 +5659,29 @@ export async function syncManagedTools(opts: SyncOptions = {}) {
   if (!opts.dryRun) {
     await saveManagedState(state, home, rootDir);
   }
+}
+
+function managedCliContext(parsed: ReturnType<typeof parseCliContextArgs>): {
+  homeDir: string;
+  rootDir: string;
+  scope: "global" | "project";
+} {
+  const homeDir = process.env.HOME?.trim() || homedir();
+  const rootDir = resolveCliContextRoot({
+    homeDir,
+    rootArg: parsed.rootArg,
+    scope: parsed.scope,
+    cwd: process.cwd(),
+  });
+  return {
+    homeDir,
+    rootDir,
+    scope: resolveCliContextScope({
+      homeDir,
+      rootDir,
+      scope: parsed.scope,
+    }),
+  };
 }
 
 export async function manageCommand(argv: string[]) {
@@ -5621,12 +5750,9 @@ Usage:
     return;
   }
   try {
+    const context = managedCliContext(parsed);
     await manageTool(tool, {
-      rootDir: resolveCliContextRoot({
-        rootArg: parsed.rootArg,
-        scope: parsed.scope,
-        cwd: process.cwd(),
-      }),
+      ...context,
       dryRun,
       adoptExisting,
       existingConflictMode,
@@ -5667,12 +5793,9 @@ Usage:
   }
   try {
     const dryRun = parsed.argv.includes("--dry-run");
+    const context = managedCliContext(parsed);
     await unmanageTool(tool, {
-      rootDir: resolveCliContextRoot({
-        rootArg: parsed.rootArg,
-        scope: parsed.scope,
-        cwd: process.cwd(),
-      }),
+      ...context,
       dryRun,
       allowLegacyManagedMutation: legacyManagedMutationApproved({
         argv: parsed.argv,
@@ -5713,13 +5836,7 @@ export async function managedCommand(argv: string[] = []) {
     );
     return;
   }
-  const tools = await listManagedTools({
-    rootDir: resolveCliContextRoot({
-      rootArg: parsed.rootArg,
-      scope: parsed.scope,
-      cwd: process.cwd(),
-    }),
-  });
+  const tools = await listManagedTools(managedCliContext(parsed));
   if (!tools.length) {
     console.log(
       renderPage({
@@ -5842,18 +5959,15 @@ Options:
     builtinConflictMode = value;
   }
   try {
+    const context = managedCliContext(parsed);
     await syncManagedTools({
+      ...context,
       tool,
       dryRun,
       adoptLive,
       builtinConflictMode,
       allowLegacyManagedMutation: legacyManagedMutationApproved({
         argv: parsed.argv,
-      }),
-      rootDir: resolveCliContextRoot({
-        rootArg: parsed.rootArg,
-        scope: parsed.scope,
-        cwd: process.cwd(),
       }),
     });
     if (dryRun) {

@@ -3,6 +3,7 @@ import {
   type CapabilityScopeMode,
   parseCliContextArgs,
   resolveCliContextRoot,
+  resolveCliContextScope,
 } from "./cli-context";
 import { renderCode, renderKeyValue, renderPage } from "./cli-ui";
 import { loadManagedState } from "./manage";
@@ -30,11 +31,11 @@ import {
   facultLocalCacheRoot,
   facultLocalStateRoot,
   facultMachineStateDir,
-  facultRootDir,
   facultRuntimeCacheDir,
   machineStateProjectKey,
   preferredGlobalAiRoot,
   projectRootFromAiRoot,
+  withFacultRootScope,
 } from "./paths";
 
 export interface FacultPaths {
@@ -83,16 +84,46 @@ export interface FacultPaths {
   managedTools: string[];
 }
 
-export async function buildPaths(opts?: {
+interface PathsOptions {
   cwd?: string;
   homeDir?: string;
   rootArg?: string;
   scope?: CapabilityScopeMode;
-}): Promise<FacultPaths> {
+}
+
+export async function buildPaths(opts?: PathsOptions): Promise<FacultPaths> {
+  const homeDir = opts?.homeDir ?? process.env.HOME?.trim() ?? homedir();
+  const cwd = opts?.cwd ?? process.cwd();
+  const contextRoot = resolveCliContextRoot({
+    homeDir,
+    cwd,
+    rootArg: opts?.rootArg,
+    scope: opts?.scope,
+  });
+  const scope = resolveCliContextScope({
+    homeDir,
+    rootDir: contextRoot,
+    scope: opts?.scope,
+  });
+  return await withFacultRootScope({ rootDir: contextRoot, scope }, async () =>
+    buildPathsInScope({
+      ...opts,
+      cwd,
+      homeDir,
+      rootArg: contextRoot,
+    })
+  );
+}
+
+async function buildPathsInScope(opts?: PathsOptions): Promise<FacultPaths> {
   const homeDir = opts?.homeDir ?? process.env.HOME?.trim() ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
   const scope = opts?.scope ?? "merged";
-  const globalRoot = facultRootDir(homeDir);
+  const globalRoot = resolveCliContextRoot({
+    homeDir,
+    cwd,
+    scope: "global",
+  });
   const contextRoot = resolveCliContextRoot({
     homeDir,
     cwd,

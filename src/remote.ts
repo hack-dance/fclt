@@ -24,7 +24,11 @@ import {
   builtinOperatingModelInstallRelPath,
   facultBuiltinPackRoot,
 } from "./builtin";
-import { parseCliContextArgs, resolveCliContextRoot } from "./cli-context";
+import {
+  parseCliContextArgs,
+  resolveCliContextRoot,
+  resolveCliContextScope,
+} from "./cli-context";
 import {
   renderBullets,
   renderCatalog,
@@ -43,6 +47,7 @@ import {
   facultRootDir,
   projectRootFromAiRoot,
   readFacultConfig,
+  withFacultRootScope,
 } from "./paths";
 import {
   assertManifestIntegrity,
@@ -2920,6 +2925,7 @@ export async function checkRemoteUpdates(args?: {
     assertLegacyManagedMutationAllowed({
       action: "fclt update --apply",
       approved: args.allowLegacyManagedMutation,
+      safeAlternative: "fclt update without --apply",
     });
   }
   const home = args?.homeDir ?? homedir();
@@ -3913,13 +3919,21 @@ export async function templatesCommand(
               homeDir: ctx.homeDir,
               cwd,
             });
-      const result = await scaffoldBuiltinOperatingModelPack({
+      const homeDir = ctx.homeDir ?? process.env.HOME?.trim() ?? homedir();
+      const scope = resolveCliContextScope({
+        homeDir,
         rootDir,
-        homeDir: ctx.homeDir,
-        dryRun,
-        force,
-        update,
+        scope: context.scope,
       });
+      const result = await withFacultRootScope({ rootDir, scope }, async () =>
+        scaffoldBuiltinOperatingModelPack({
+          rootDir,
+          homeDir,
+          dryRun,
+          force,
+          update,
+        })
+      );
       if (json) {
         console.log(JSON.stringify(result, null, 2));
         return;

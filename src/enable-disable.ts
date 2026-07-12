@@ -218,6 +218,7 @@ export async function applyEnableDisable({
     assertLegacyManagedMutationAllowed({
       action: `fclt ${mode}`,
       approved: allowLegacyManagedMutation,
+      safeAlternative: "fclt inventory and fclt managed",
     });
   }
 

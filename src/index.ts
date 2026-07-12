@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   type CapabilityScopeMode,
   parseCliContextArgs,
   resolveCliContextRoot,
+  resolveCliContextScope,
 } from "./cli-context";
 import {
   renderBadge,
@@ -32,6 +34,7 @@ import type {
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
+import { withFacultRootScope } from "./paths";
 import type { QueryFilters } from "./query";
 import {
   filterAgents,
@@ -568,6 +571,27 @@ function resolveContextualOptions(
   };
 }
 
+async function withContextualCommandScope<T>(
+  context: ContextualCommandOptions,
+  operation: (rootDir: string) => Promise<T>
+): Promise<T> {
+  const homeDir = process.env.HOME?.trim() || homedir();
+  const rootDir = resolveCliContextRoot({
+    homeDir,
+    rootArg: context.rootArg,
+    scope: context.scopeMode,
+    cwd: process.cwd(),
+  });
+  const scope = resolveCliContextScope({
+    homeDir,
+    rootDir,
+    scope: context.scopeMode,
+  });
+  return await withFacultRootScope({ rootDir, scope }, async () =>
+    operation(rootDir)
+  );
+}
+
 async function listCommand(argv: string[]) {
   const { argv: contextualArgv, context } = resolveContextualOptions(argv, {
     allowSource: true,
@@ -600,13 +624,9 @@ async function listCommand(argv: string[]) {
 
   let index: FacultIndex;
   try {
-    index = await loadIndex({
-      rootDir: resolveCliContextRoot({
-        rootArg: context.rootArg,
-        scope: context.scopeMode,
-        cwd: process.cwd(),
-      }),
-    });
+    index = await withContextualCommandScope(context, async (rootDir) =>
+      loadIndex({ rootDir })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -766,13 +786,9 @@ async function findCommand(argv: string[]) {
 
   let index: FacultIndex;
   try {
-    index = await loadIndex({
-      rootDir: resolveCliContextRoot({
-        rootArg: context.rootArg,
-        scope: context.scopeMode,
-        cwd: process.cwd(),
-      }),
-    });
+    index = await withContextualCommandScope(context, async (rootDir) =>
+      loadIndex({ rootDir })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -901,15 +917,11 @@ async function showCommand(argv: string[]) {
     return;
   }
 
-  const rootDir = resolveCliContextRoot({
-    rootArg: context.rootArg,
-    scope: context.scopeMode,
-    cwd: process.cwd(),
-  });
-
   let index: FacultIndex;
   try {
-    index = await loadIndex({ rootDir });
+    index = await withContextualCommandScope(context, async (rootDir) =>
+      loadIndex({ rootDir })
+    );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
@@ -928,7 +940,9 @@ async function showCommand(argv: string[]) {
   }
 
   try {
-    const graph = await loadGraph({ rootDir });
+    const graph = await withContextualCommandScope(context, async (rootDir) =>
+      loadGraph({ rootDir })
+    );
     const node = resolveGraphNode(graph, raw, {
       sourceKind: context.sourceKind,
       scope: scopeFilterForMode(context.scopeMode),
@@ -1087,13 +1101,9 @@ async function graphCommand(argv: string[]) {
   }
 
   try {
-    const graph = await loadGraph({
-      rootDir: resolveCliContextRoot({
-        rootArg: context.rootArg,
-        scope: context.scopeMode,
-        cwd: process.cwd(),
-      }),
-    });
+    const graph = await withContextualCommandScope(context, async (rootDir) =>
+      loadGraph({ rootDir })
+    );
     const node = resolveGraphNode(graph, opts.target, {
       sourceKind: context.sourceKind,
       scope: scopeFilterForMode(context.scopeMode),
