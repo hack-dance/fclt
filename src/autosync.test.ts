@@ -23,6 +23,7 @@ import {
   runAutosyncService,
   runGitAutosyncOnce,
   setLaunchctlRunnerForTests,
+  setLaunchctlSupportedForTests,
   uninstallAutosyncService,
 } from "./autosync";
 import {
@@ -165,6 +166,7 @@ let tempDirs: string[] = [];
 
 afterEach(async () => {
   setLaunchctlRunnerForTests(null);
+  setLaunchctlSupportedForTests(null);
   for (const dir of tempDirs) {
     await rm(dir, { recursive: true, force: true });
   }
@@ -388,6 +390,39 @@ describe("autosync invocation", () => {
 });
 
 describe("autosync launch agent migration", () => {
+  it("rejects unsupported-host installation before writing recovery artifacts", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-unsupported-")
+    );
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      "all.json"
+    );
+    const launchctlCalls: string[][] = [];
+    setLaunchctlRunnerForTests((args) => {
+      launchctlCalls.push(args);
+      return Promise.resolve(launchctlNotFound());
+    });
+    setLaunchctlSupportedForTests(false);
+
+    await expect(
+      installAutosyncService({
+        homeDir,
+        rootDir,
+        gitEnabled: false,
+        allowLegacyManagedMutation: true,
+      })
+    ).rejects.toThrow("requires macOS launchd");
+
+    expect(launchctlCalls).toEqual([]);
+    expect(await Bun.file(configPath).exists()).toBe(false);
+    expect(await Bun.file(join(homeDir, "Library")).exists()).toBe(false);
+  });
+
   it("installs the new com.fclt autosync label and removes the legacy plist", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-home-"));
     tempDirs.push(homeDir);
@@ -624,6 +659,43 @@ describe("autosync launch agent migration", () => {
     ).rejects.toThrow("Unable to unload autosync service");
     expect(await readFile(configPath, "utf8")).toBe(configBefore);
     expect(await readFile(plistPath, "utf8")).toBe(plistBefore);
+  });
+
+  it("removes root-owned recovery artifacts without launchctl on non-macOS", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-linux-"));
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      "all.json"
+    );
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `${JSON.stringify(testConfig(rootDir, "all"), null, 2)}\n`
+    );
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(plistPath, testPlist(homeDir, rootDir, "all"));
+    const launchctlCalls: string[][] = [];
+    setLaunchctlRunnerForTests((args) => {
+      launchctlCalls.push(args);
+      return Promise.resolve(launchctlNotFound());
+    });
+    setLaunchctlSupportedForTests(false);
+
+    await uninstallAutosyncService({ homeDir, rootDir });
+
+    expect(launchctlCalls).toEqual([]);
+    expect(await Bun.file(configPath).exists()).toBe(false);
+    expect(await Bun.file(plistPath).exists()).toBe(false);
   });
 
   it("stages config replacement before unload and preserves the source on destination failure", async () => {
@@ -1070,8 +1142,10 @@ describe("autosync launch agent migration", () => {
       new Response(status.stdout).text(),
       new Response(status.stderr).text(),
     ]);
-    expect(statusCode).toBe(0);
-    expect(statusError).toBe("");
+    expect({ statusCode, statusError }).toEqual({
+      statusCode: 0,
+      statusError: "",
+    });
     expect(statusOut).toContain("Service: all\n");
     expect(statusOut).toContain(`Root: ${rootDir}`);
     expect(statusOut).not.toContain("Service: all-shared");
@@ -1094,8 +1168,10 @@ describe("autosync launch agent migration", () => {
       uninstall.exited,
       new Response(uninstall.stderr).text(),
     ]);
-    expect(uninstallCode).toBe(0);
-    expect(uninstallError).toBe("");
+    expect({ uninstallCode, uninstallError }).toEqual({
+      uninstallCode: 0,
+      uninstallError: "",
+    });
     expect(await Bun.file(configPath).exists()).toBe(false);
     expect(await Bun.file(join(stateRoot, "projects")).exists()).toBe(false);
   });

@@ -116,6 +116,7 @@ interface GitSyncOutcome {
 let launchctlRunnerForTests:
   | ((args: string[]) => Promise<CommandResult>)
   | null = null;
+let launchctlSupportedForTests: boolean | null = null;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -665,6 +666,17 @@ export function setLaunchctlRunnerForTests(
   launchctlRunnerForTests = runner;
 }
 
+export function setLaunchctlSupportedForTests(supported: boolean | null) {
+  launchctlSupportedForTests = supported;
+}
+
+function launchctlLifecycleSupported(): boolean {
+  return (
+    launchctlSupportedForTests ??
+    (process.platform === "darwin" || launchctlRunnerForTests !== null)
+  );
+}
+
 function launchdDomain(): string {
   return `gui/${process.getuid?.() ?? process.geteuid?.() ?? 0}`;
 }
@@ -813,6 +825,9 @@ async function unloadAutosyncLaunchAgents(args: {
     throw new Error(
       `Refusing to remove autosync LaunchAgent without matching root ownership: ${ownership.foreignPaths.join(", ")}`
     );
+  }
+  if (!launchctlLifecycleSupported()) {
+    return { changed: false, ownedPaths: ownership.ownedPaths };
   }
   const domain = launchdDomain();
   let changed = false;
@@ -1359,6 +1374,9 @@ export async function installAutosyncService(args: {
     approved: allowLegacyManagedMutation,
     safeAlternative: "fclt autosync status or uninstall",
   });
+  if (!launchctlLifecycleSupported()) {
+    throw new Error("Background autosync installation requires macOS launchd.");
+  }
   const home = args.homeDir ?? homedir();
   const rootDir =
     args.rootDir ??
