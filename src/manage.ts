@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   readdir,
+  readFile,
   readlink,
   rename,
   rm,
@@ -100,6 +101,13 @@ interface ManagedRenderedTargetState {
 export interface ManagedState {
   version: 1;
   tools: Record<string, ManagedToolState>;
+}
+
+export interface ManagedStateRecordInspection {
+  path: string;
+  location: "machine" | "legacy";
+  state: "valid" | "invalid" | "unavailable";
+  tools: string[];
 }
 
 type SyncLedgerAction = "add" | "adopt" | "remove" | "skip" | "write";
@@ -677,6 +685,87 @@ function legacyManagedStatePathForRoot(
     legacyFacultStateDirForRoot(rootDir ?? facultRootDir(home), home),
     "managed.json"
   );
+}
+
+export async function inspectManagedStateRecords(
+  args: { homeDir?: string; rootDir?: string } = {}
+): Promise<ManagedStateRecordInspection[]> {
+  const homeDir = args.homeDir ?? homedir();
+  const rootDir = args.rootDir ?? facultRootDir(homeDir);
+  const candidates: Pick<ManagedStateRecordInspection, "location" | "path">[] =
+    [
+      {
+        location: "machine",
+        path: managedStatePathForRoot(homeDir, rootDir),
+      },
+      {
+        location: "legacy",
+        path: legacyManagedStatePathForRoot(homeDir, rootDir),
+      },
+    ];
+  const inspections: ManagedStateRecordInspection[] = [];
+
+  for (const candidate of candidates) {
+    let stats: Awaited<ReturnType<typeof lstat>>;
+    try {
+      stats = await lstat(candidate.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      inspections.push({
+        ...candidate,
+        state: "unavailable",
+        tools: [],
+      });
+      continue;
+    }
+
+    if (stats.isSymbolicLink() || !stats.isFile()) {
+      inspections.push({
+        ...candidate,
+        state: "unavailable",
+        tools: [],
+      });
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(candidate.path, "utf8")) as unknown;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      inspections.push({
+        ...candidate,
+        state: error instanceof SyntaxError ? "invalid" : "unavailable",
+        tools: [],
+      });
+      continue;
+    }
+
+    if (
+      !isPlainObject(parsed) ||
+      parsed.version !== MANAGED_VERSION ||
+      !isPlainObject(parsed.tools)
+    ) {
+      inspections.push({
+        ...candidate,
+        state: "invalid",
+        tools: [],
+      });
+      continue;
+    }
+
+    inspections.push({
+      ...candidate,
+      state: "valid",
+      tools: Object.keys(parsed.tools).sort((a, b) => a.localeCompare(b)),
+    });
+  }
+
+  return inspections;
 }
 
 export async function loadManagedState(

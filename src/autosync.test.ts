@@ -16,12 +16,15 @@ import {
   autosyncStatus,
   buildLaunchAgentPlist,
   buildLaunchAgentSpec,
+  cleanupAutosyncRecovery,
+  inspectAutosyncRecovery,
   installAutosyncService,
   loadAutosyncConfig,
   repairAutosyncServices,
   resolveAutosyncInvocation,
   runAutosyncService,
   runGitAutosyncOnce,
+  setAutosyncMutationLockHookForTests,
   setLaunchctlRunnerForTests,
   setLaunchctlSupportedForTests,
   uninstallAutosyncService,
@@ -31,6 +34,7 @@ import {
   LEGACY_MANAGED_MUTATION_FLAG,
 } from "./legacy-mutation-policy";
 import {
+  facultInstallStatePath,
   facultMachineStateDir,
   machineStateProjectKey,
   withFacultRootScope,
@@ -70,6 +74,20 @@ async function readGitPath(
   return await readFile(absolutePath)
     .then((value) => value.toString("base64"))
     .catch(() => null);
+}
+
+async function readUpgradeFixture(
+  name: "managed.json" | "autosync.json" | "autosync.plist",
+  homeDir: string,
+  rootDir: string
+): Promise<string> {
+  const raw = await readFile(
+    join(import.meta.dir, "..", "test", "fixtures", "upgrade-2.22.1", name),
+    "utf8"
+  );
+  return raw
+    .replaceAll("__HOME_DIR__", homeDir)
+    .replaceAll("__ROOT_DIR__", rootDir);
 }
 
 async function snapshotRepository(
@@ -146,6 +164,25 @@ function testPlist(
   );
 }
 
+function testLegacyPlist(
+  homeDir: string,
+  rootDir: string,
+  serviceName: string
+): string {
+  const currentLabel =
+    serviceName === "all"
+      ? "com.fclt.autosync"
+      : `com.fclt.autosync.${serviceName}`;
+  const legacyLabel =
+    serviceName === "all"
+      ? "com.facult.autosync"
+      : `com.facult.autosync.${serviceName}`;
+  return testPlist(homeDir, rootDir, serviceName).replace(
+    `<string>${currentLabel}</string>`,
+    `<string>${legacyLabel}</string>`
+  );
+}
+
 function launchctlNotFound() {
   return {
     exitCode: 113,
@@ -165,6 +202,7 @@ function launchctlLoaded(rootDir: string, detail = "loaded") {
 let tempDirs: string[] = [];
 
 afterEach(async () => {
+  setAutosyncMutationLockHookForTests(null);
   setLaunchctlRunnerForTests(null);
   setLaunchctlSupportedForTests(null);
   for (const dir of tempDirs) {
@@ -390,6 +428,1053 @@ describe("autosync invocation", () => {
 });
 
 describe("autosync launch agent migration", () => {
+  it("diagnoses and idempotently contains only the selected root-owned runtime", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-recovery-"));
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const serviceName = "all";
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      `${serviceName}.json`
+    );
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    const liveSentinel = join(homeDir, ".codex", "AGENTS.md");
+    const backupSentinel = join(homeDir, "backups", "codex.txt");
+    const managedSentinel = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "managed.json"
+    );
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      await readUpgradeFixture("autosync.json", homeDir, rootDir)
+    );
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(
+      plistPath,
+      await readUpgradeFixture("autosync.plist", homeDir, rootDir)
+    );
+    await mkdir(dirname(liveSentinel), { recursive: true });
+    await writeFile(liveSentinel, "live tool state\n");
+    await mkdir(dirname(backupSentinel), { recursive: true });
+    await writeFile(backupSentinel, "backup state\n");
+    await mkdir(dirname(managedSentinel), { recursive: true });
+    await writeFile(
+      managedSentinel,
+      await readUpgradeFixture("managed.json", homeDir, rootDir)
+    );
+    const preserved = await Promise.all(
+      [liveSentinel, backupSentinel, managedSentinel].map((pathValue) =>
+        readFile(pathValue, "utf8")
+      )
+    );
+
+    let loaded = true;
+    const launchctlCalls: string[][] = [];
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests((args) => {
+      launchctlCalls.push(args);
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: loaded ? "-\t0\tcom.fclt.autosync\n" : "",
+          stderr: "",
+        });
+      }
+      if (args[0] === "print") {
+        return Promise.resolve(
+          loaded && args[1]?.includes("com.fclt.autosync")
+            ? launchctlLoaded(rootDir)
+            : launchctlNotFound()
+        );
+      }
+      if (args[0] === "bootout") {
+        loaded = false;
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+      }
+      return Promise.resolve({
+        exitCode: 64,
+        stdout: "",
+        stderr: "unexpected",
+      });
+    });
+
+    const before = await inspectAutosyncRecovery({ homeDir, rootDir });
+    const planId = before.configured[0]?.planId;
+    expect(before.coverage).toEqual({
+      configs: "checked",
+      launchAgents: "checked",
+      launchd: "checked",
+    });
+    expect(before.ownedLoadedLabels).toEqual(["com.fclt.autosync"]);
+    expect(before.configured[0]).toMatchObject({
+      service: serviceName,
+      location: "machine",
+      state: "valid",
+      planId: expect.any(String),
+    });
+    expect(planId).toBeTruthy();
+
+    const ambientApproval = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "autosync",
+        "cleanup",
+        "--service",
+        serviceName,
+        "--expected-plan",
+        planId ?? "",
+        "--global",
+        "--root",
+        rootDir,
+        "--json",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          [LEGACY_MANAGED_MUTATION_ENV]: "1",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [ambientCode, ambientError] = await Promise.all([
+      ambientApproval.exited,
+      new Response(ambientApproval.stderr).text(),
+    ]);
+    expect(ambientCode).toBe(1);
+    expect(ambientError).toContain(
+      "requires the explicit --allow-legacy-managed-mutation flag"
+    );
+    expect(await Bun.file(plistPath).exists()).toBe(true);
+
+    const originalConfig = await readFile(configPath, "utf8");
+    const staleConfig = JSON.parse(originalConfig) as AutosyncServiceConfig;
+    staleConfig.debounceMs += 1;
+    await writeFile(configPath, `${JSON.stringify(staleConfig, null, 2)}\n`);
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: serviceName,
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("plan is stale");
+    expect(await Bun.file(plistPath).exists()).toBe(true);
+    await writeFile(configPath, originalConfig);
+
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: serviceName,
+        expectedPlanId: planId ?? "",
+        approved: false,
+      })
+    ).rejects.toThrow(
+      "requires the explicit --allow-legacy-managed-mutation flag"
+    );
+    expect(await Bun.file(plistPath).exists()).toBe(true);
+
+    const staleToken = "00000000-0000-4000-8000-000000000001";
+    const staleLockPath = join(
+      dirname(facultInstallStatePath(homeDir)),
+      "autosync",
+      "recovery",
+      "lifecycle-locks",
+      `${staleToken}.json`
+    );
+    await mkdir(dirname(staleLockPath), { recursive: true });
+    await writeFile(
+      staleLockPath,
+      `${JSON.stringify({
+        version: 1,
+        pid: 2_147_483_647,
+        token: staleToken,
+        operation: "stale-test",
+        rootDir,
+        startedAt: "2026-07-11T00:00:00.000Z",
+      })}\n`
+    );
+
+    const cleaned = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: serviceName,
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(cleaned).toMatchObject({
+      changed: true,
+      alreadyApplied: false,
+      service: serviceName,
+      planId,
+    });
+    expect(await Bun.file(staleLockPath).exists()).toBe(false);
+    expect(await Bun.file(plistPath).exists()).toBe(false);
+    expect(await loadAutosyncConfig(serviceName, homeDir, rootDir)).toEqual(
+      JSON.parse(
+        await readUpgradeFixture("autosync.json", homeDir, rootDir)
+      ) as AutosyncServiceConfig
+    );
+    expect(
+      await Promise.all(
+        [liveSentinel, backupSentinel, managedSentinel].map((pathValue) =>
+          readFile(pathValue, "utf8")
+        )
+      )
+    ).toEqual(preserved);
+
+    const bootoutCount = launchctlCalls.filter(
+      (args) => args[0] === "bootout"
+    ).length;
+    const repeated = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: serviceName,
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(repeated).toMatchObject({ changed: false, alreadyApplied: true });
+    expect(launchctlCalls.filter((args) => args[0] === "bootout").length).toBe(
+      bootoutCount
+    );
+
+    loaded = true;
+    await writeFile(
+      plistPath,
+      await readUpgradeFixture("autosync.plist", homeDir, rootDir)
+    );
+    const recurred = await inspectAutosyncRecovery({ homeDir, rootDir });
+    expect(recurred.configured[0]?.planId).toBe(planId);
+    const cleanedAgain = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: serviceName,
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(cleanedAgain).toMatchObject({
+      changed: true,
+      alreadyApplied: false,
+    });
+    expect(await Bun.file(plistPath).exists()).toBe(false);
+    expect(launchctlCalls.filter((args) => args[0] === "bootout").length).toBe(
+      bootoutCount + 1
+    );
+  });
+
+  it("cleans one diagnosed service while preserving another root-owned service", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-multi-"));
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const servicesDir = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services"
+    );
+    const { tool: _allTool, ...allConfig } = testConfig(rootDir, "all");
+    const codexConfig = testConfig(rootDir, "codex");
+    const allPlist = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    const codexPlist = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.codex.plist"
+    );
+    await mkdir(servicesDir, { recursive: true });
+    await writeFile(
+      join(servicesDir, "all.json"),
+      `${JSON.stringify(allConfig, null, 2)}\n`
+    );
+    await writeFile(
+      join(servicesDir, "codex.json"),
+      `${JSON.stringify(codexConfig, null, 2)}\n`
+    );
+    await mkdir(dirname(allPlist), { recursive: true });
+    await writeFile(allPlist, testPlist(homeDir, rootDir, "all"));
+    await writeFile(codexPlist, testPlist(homeDir, rootDir, "codex"));
+    const loaded = new Set(["com.fclt.autosync", "com.fclt.autosync.codex"]);
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests((args) => {
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: [...loaded].map((label) => `-\t0\t${label}`).join("\n"),
+          stderr: "",
+        });
+      }
+      if (args[0] === "print") {
+        const label = args[1]?.split("/").at(-1) ?? "";
+        return Promise.resolve(
+          loaded.has(label) ? launchctlLoaded(rootDir) : launchctlNotFound()
+        );
+      }
+      if (args[0] === "bootout") {
+        loaded.delete(args[1]?.split("/").at(-1) ?? "");
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+      }
+      return Promise.resolve({
+        exitCode: 64,
+        stdout: "",
+        stderr: "unexpected",
+      });
+    });
+
+    const inspection = await inspectAutosyncRecovery({ homeDir, rootDir });
+    const codexPlan = inspection.configured.find(
+      (record) => record.service === "codex"
+    )?.planId;
+    expect(codexPlan).toBeTruthy();
+    await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: "codex",
+      expectedPlanId: codexPlan ?? "",
+      approved: true,
+    });
+    expect(await Bun.file(codexPlist).exists()).toBe(false);
+    expect(await Bun.file(allPlist).exists()).toBe(true);
+    expect(loaded).toEqual(new Set(["com.fclt.autosync"]));
+    expect(await loadAutosyncConfig("all", homeDir, rootDir)).toEqual(
+      allConfig
+    );
+    expect(await loadAutosyncConfig("codex", homeDir, rootDir)).toEqual(
+      codexConfig
+    );
+  });
+
+  it("retries the prepared cleanup plan after an unload failure", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-retry-"));
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      "all.json"
+    );
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    const { tool: _retryTool, ...config } = testConfig(rootDir, "all");
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(plistPath, testPlist(homeDir, rootDir, "all"));
+    let failBootout = true;
+    let loaded = true;
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests((args) => {
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: loaded ? "-\t0\tcom.fclt.autosync\n" : "",
+          stderr: "",
+        });
+      }
+      if (args[0] === "print") {
+        return Promise.resolve(
+          loaded ? launchctlLoaded(rootDir) : launchctlNotFound()
+        );
+      }
+      if (args[0] === "bootout") {
+        if (failBootout) {
+          return Promise.resolve({ exitCode: 9, stdout: "", stderr: "busy" });
+        }
+        loaded = false;
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+      }
+      return Promise.resolve({
+        exitCode: 64,
+        stdout: "",
+        stderr: "unexpected",
+      });
+    });
+    const preparedInspection = await inspectAutosyncRecovery({
+      homeDir,
+      rootDir,
+    });
+    const planId = preparedInspection.configured[0]?.planId;
+    expect(planId).toBeTruthy();
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: "all",
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("Unable to unload autosync service");
+    expect(await Bun.file(plistPath).exists()).toBe(true);
+    expect(await readFile(configPath, "utf8")).toBe(
+      `${JSON.stringify(config, null, 2)}\n`
+    );
+
+    failBootout = false;
+    const retried = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: "all",
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(retried).toMatchObject({ changed: true, alreadyApplied: false });
+    expect(await Bun.file(plistPath).exists()).toBe(false);
+    expect(await loadAutosyncConfig("all", homeDir, rootDir)).toEqual(config);
+  });
+
+  it("resumes an unchanged subset after interruption removes one prepared plist", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-partial-plist-")
+    );
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      "all.json"
+    );
+    const currentPlistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    const legacyPlistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.facult.autosync.plist"
+    );
+    const { tool: _partialTool, ...config } = testConfig(rootDir, "all");
+    const currentPlist = testPlist(homeDir, rootDir, "all");
+    const legacyPlist = testLegacyPlist(homeDir, rootDir, "all");
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(dirname(currentPlistPath), { recursive: true });
+    await writeFile(currentPlistPath, currentPlist);
+    await writeFile(legacyPlistPath, legacyPlist);
+
+    const loaded = new Set(["com.fclt.autosync", "com.facult.autosync"]);
+    let failBootout = true;
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests((args) => {
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: [...loaded].map((label) => `-\t0\t${label}`).join("\n"),
+          stderr: "",
+        });
+      }
+      if (args[0] === "print") {
+        const label = args[1]?.split("/").at(-1) ?? "";
+        return Promise.resolve(
+          loaded.has(label) ? launchctlLoaded(rootDir) : launchctlNotFound()
+        );
+      }
+      if (args[0] === "bootout") {
+        if (failBootout) {
+          return Promise.resolve({ exitCode: 9, stdout: "", stderr: "busy" });
+        }
+        loaded.delete(args[1]?.split("/").at(-1) ?? "");
+        return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+      }
+      return Promise.resolve({
+        exitCode: 64,
+        stdout: "",
+        stderr: "unexpected",
+      });
+    });
+
+    const initial = await inspectAutosyncRecovery({ homeDir, rootDir });
+    const planId = initial.configured[0]?.planId;
+    expect(planId).toBeTruthy();
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: "all",
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("Unable to unload autosync service");
+    const planPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "recovery",
+      "plans",
+      `${planId}.json`
+    );
+    const prepared = JSON.parse(await readFile(planPath, "utf8")) as {
+      plists: Array<{ label: string; path: string; hash: string }>;
+    };
+    expect(prepared.plists).toHaveLength(2);
+
+    failBootout = false;
+    loaded.clear();
+    await rm(currentPlistPath);
+    const partial = await inspectAutosyncRecovery({ homeDir, rootDir });
+    expect(partial.configured[0]?.planId).not.toBe(planId);
+
+    await writeFile(legacyPlistPath, `${legacyPlist}\n`);
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: "all",
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("plist state changed");
+    expect(await readFile(legacyPlistPath, "utf8")).toBe(`${legacyPlist}\n`);
+
+    await writeFile(legacyPlistPath, legacyPlist);
+    const resumed = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: "all",
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(resumed).toMatchObject({ changed: true, alreadyApplied: false });
+    expect(await Bun.file(legacyPlistPath).exists()).toBe(false);
+    expect(await readFile(configPath, "utf8")).toBe(
+      `${JSON.stringify(config, null, 2)}\n`
+    );
+  });
+
+  it("refuses a receipt when config changes during cleanup", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-postflight-config-")
+    );
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      "all.json"
+    );
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    const { tool: _postflightTool, ...config } = testConfig(rootDir, "all");
+    const changedConfig = { ...config, debounceMs: config.debounceMs + 1 };
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(plistPath, testPlist(homeDir, rootDir, "all"));
+    let loaded = true;
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(async (args) => {
+      if (args[0] === "list") {
+        return {
+          exitCode: 0,
+          stdout: loaded ? "-\t0\tcom.fclt.autosync\n" : "",
+          stderr: "",
+        };
+      }
+      if (args[0] === "print") {
+        return loaded ? launchctlLoaded(rootDir) : launchctlNotFound();
+      }
+      if (args[0] === "bootout") {
+        loaded = false;
+        await writeFile(
+          configPath,
+          `${JSON.stringify(changedConfig, null, 2)}\n`
+        );
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 64, stdout: "", stderr: "unexpected" };
+    });
+
+    const initial = await inspectAutosyncRecovery({ homeDir, rootDir });
+    const planId = initial.configured[0]?.planId;
+    expect(planId).toBeTruthy();
+    const receiptPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "recovery",
+      "receipts",
+      `${planId}.json`
+    );
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: "all",
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("postflight could not prove");
+    expect(await Bun.file(plistPath).exists()).toBe(false);
+    expect(await Bun.file(receiptPath).exists()).toBe(false);
+
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: "all",
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("config changed after the cleanup plan was prepared");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const finalized = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: "all",
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(finalized).toMatchObject({ changed: true, alreadyApplied: false });
+    expect(await Bun.file(receiptPath).exists()).toBe(true);
+  });
+
+  it("finalizes a prepared plan after interruption removed the owned runtime", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "facult-autosync-resume-"));
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const configPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "services",
+      "all.json"
+    );
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      "com.fclt.autosync.plist"
+    );
+    const { tool: _resumeTool, ...config } = testConfig(rootDir, "all");
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(plistPath, testPlist(homeDir, rootDir, "all"));
+    setLaunchctlSupportedForTests(false);
+    const preparedInspection = await inspectAutosyncRecovery({
+      homeDir,
+      rootDir,
+    });
+    const planId = preparedInspection.configured[0]?.planId;
+    const configFingerprint = preparedInspection.configFingerprints.all;
+    expect(planId).toBeTruthy();
+    const planPath = join(
+      facultMachineStateDir(homeDir, rootDir),
+      "autosync",
+      "recovery",
+      "plans",
+      `${planId}.json`
+    );
+    await mkdir(dirname(planPath), { recursive: true });
+    await writeFile(
+      planPath,
+      `${JSON.stringify({
+        version: 1,
+        rootDir,
+        service: "all",
+        planId,
+        configFingerprint,
+        plists: preparedInspection.plistSnapshots,
+        preparedAt: "2026-07-11T00:00:00.000Z",
+      })}\n`
+    );
+    await rm(plistPath);
+
+    const changedConfig = { ...config, debounceMs: config.debounceMs + 1 };
+    await writeFile(configPath, `${JSON.stringify(changedConfig, null, 2)}\n`);
+    await expect(
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: "all",
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    ).rejects.toThrow("config changed after the cleanup plan was prepared");
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const resumed = await cleanupAutosyncRecovery({
+      homeDir,
+      rootDir,
+      service: "all",
+      expectedPlanId: planId ?? "",
+      approved: true,
+    });
+    expect(resumed).toMatchObject({ changed: true, alreadyApplied: false });
+    expect(resumed.dispositions).toEqual([]);
+    expect(await loadAutosyncConfig("all", homeDir, rootDir)).toEqual(config);
+  });
+
+  it("contains a project-scoped service without touching global state", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-project-cleanup-")
+    );
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, "work", "repo", ".ai");
+    const serviceName = `codex-${machineStateProjectKey(rootDir, homeDir)}`;
+    const projectState = facultMachineStateDir(homeDir, rootDir);
+    const configPath = join(
+      projectState,
+      "autosync",
+      "services",
+      `${serviceName}.json`
+    );
+    const plistPath = join(
+      homeDir,
+      "Library",
+      "LaunchAgents",
+      `com.fclt.autosync.${serviceName}.plist`
+    );
+    const config = testConfig(rootDir, serviceName);
+    config.tool = "codex";
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(dirname(plistPath), { recursive: true });
+    await writeFile(plistPath, testPlist(homeDir, rootDir, serviceName));
+    setLaunchctlSupportedForTests(false);
+    const inspection = await withFacultRootScope(
+      { rootDir, scope: "project" },
+      async () => await inspectAutosyncRecovery({ homeDir, rootDir })
+    );
+    const planId = inspection.configured[0]?.planId;
+    expect(planId).toBeTruthy();
+    await withFacultRootScope({ rootDir, scope: "project" }, async () =>
+      cleanupAutosyncRecovery({
+        homeDir,
+        rootDir,
+        service: serviceName,
+        expectedPlanId: planId ?? "",
+        approved: true,
+      })
+    );
+    expect(await Bun.file(plistPath).exists()).toBe(false);
+    expect(await readFile(configPath, "utf8")).toBe(
+      `${JSON.stringify(config, null, 2)}\n`
+    );
+    expect(
+      await Bun.file(
+        join(facultMachineStateDir(homeDir), "managed.json")
+      ).exists()
+    ).toBe(false);
+  });
+
+  it("serializes colliding launch-agent labels across explicit global roots", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-global-lock-")
+    );
+    tempDirs.push(homeDir);
+    const rootA = join(homeDir, "global-a", ".ai");
+    const rootB = join(homeDir, "global-b", ".ai");
+    const liveToken = "00000000-0000-4000-8000-000000000002";
+    const lockPath = join(
+      dirname(facultInstallStatePath(homeDir)),
+      "autosync",
+      "recovery",
+      "lifecycle-locks",
+      `${liveToken}.json`
+    );
+    await mkdir(rootA, { recursive: true });
+    await mkdir(rootB, { recursive: true });
+    await mkdir(dirname(lockPath), { recursive: true });
+    await writeFile(
+      lockPath,
+      `${JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        token: liveToken,
+        operation: "live-test",
+        rootDir: rootA,
+        startedAt: "2026-07-11T00:00:00.000Z",
+      })}\n`
+    );
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(() => Promise.resolve(launchctlNotFound()));
+
+    await expect(
+      withFacultRootScope({ rootDir: rootB, scope: "global" }, async () =>
+        installAutosyncService({
+          homeDir,
+          rootDir: rootB,
+          gitEnabled: false,
+          allowLegacyManagedMutation: true,
+        })
+      )
+    ).rejects.toThrow(
+      "Another autosync mutation holds the machine lifecycle boundary"
+    );
+    expect(
+      await Bun.file(
+        join(
+          facultMachineStateDir(homeDir, rootB),
+          "autosync",
+          "services",
+          "all.json"
+        )
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        join(homeDir, "Library", "LaunchAgents", "com.fclt.autosync.plist")
+      ).exists()
+    ).toBe(false);
+  });
+
+  it("never enters two lifecycle mutations while contenders reap a dead claim", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-lock-contenders-")
+    );
+    tempDirs.push(homeDir);
+    const rootA = join(homeDir, "global-a", ".ai");
+    const rootB = join(homeDir, "global-b", ".ai");
+    const claimsDir = join(
+      dirname(facultInstallStatePath(homeDir)),
+      "autosync",
+      "recovery",
+      "lifecycle-locks"
+    );
+    const deadToken = "00000000-0000-4000-8000-000000000003";
+    const deadClaim = join(claimsDir, `${deadToken}.json`);
+    await mkdir(rootA, { recursive: true });
+    await mkdir(rootB, { recursive: true });
+    await mkdir(claimsDir, { recursive: true });
+    await writeFile(
+      deadClaim,
+      `${JSON.stringify({
+        version: 1,
+        pid: 2_147_483_647,
+        token: deadToken,
+        operation: "dead-test",
+        rootDir: rootA,
+        startedAt: "2026-07-11T00:00:00.000Z",
+      })}\n`
+    );
+
+    let published = 0;
+    let releaseClaims: (() => void) | null = null;
+    const bothPublished = new Promise<void>((resolvePromise) => {
+      releaseClaims = resolvePromise;
+    });
+    let reapers = 0;
+    let releaseReapers: (() => void) | null = null;
+    const bothReapers = new Promise<void>((resolvePromise) => {
+      releaseReapers = resolvePromise;
+    });
+    let criticalEntries = 0;
+    setAutosyncMutationLockHookForTests(async (event) => {
+      if (event.phase === "claim_published") {
+        published += 1;
+        if (published === 2) {
+          releaseClaims?.();
+        }
+        await bothPublished;
+      } else if (
+        event.phase === "before_dead_claim_remove" &&
+        event.claimPath === deadClaim
+      ) {
+        reapers += 1;
+        if (reapers === 2) {
+          releaseReapers?.();
+        }
+        await bothReapers;
+      } else if (event.phase === "before_critical_section") {
+        criticalEntries += 1;
+      }
+    });
+    setLaunchctlSupportedForTests(true);
+    let activeLifecycleCalls = 0;
+    let maxActiveLifecycleCalls = 0;
+    setLaunchctlRunnerForTests(async () => {
+      activeLifecycleCalls += 1;
+      maxActiveLifecycleCalls = Math.max(
+        maxActiveLifecycleCalls,
+        activeLifecycleCalls
+      );
+      await Promise.resolve();
+      activeLifecycleCalls -= 1;
+      return launchctlNotFound();
+    });
+
+    const outcomes = await Promise.allSettled([
+      withFacultRootScope({ rootDir: rootA, scope: "global" }, async () =>
+        installAutosyncService({
+          homeDir,
+          rootDir: rootA,
+          gitEnabled: false,
+          allowLegacyManagedMutation: true,
+        })
+      ),
+      withFacultRootScope({ rootDir: rootB, scope: "global" }, async () =>
+        installAutosyncService({
+          homeDir,
+          rootDir: rootB,
+          gitEnabled: false,
+          allowLegacyManagedMutation: true,
+        })
+      ),
+    ]);
+
+    expect(published).toBe(2);
+    expect(reapers).toBe(2);
+    expect(
+      outcomes.filter((outcome) => outcome.status === "fulfilled").length
+    ).toBeLessThanOrEqual(1);
+    expect(
+      outcomes.filter((outcome) => outcome.status === "rejected").length
+    ).toBeGreaterThanOrEqual(1);
+    expect(criticalEntries).toBeLessThanOrEqual(1);
+    expect(maxActiveLifecycleCalls).toBeLessThanOrEqual(1);
+    expect(await Bun.file(deadClaim).exists()).toBe(false);
+  });
+
+  it("rejects a later contender while the first lifecycle callback is held", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-lock-held-callback-")
+    );
+    tempDirs.push(homeDir);
+    const rootA = join(homeDir, "global-a", ".ai");
+    const rootB = join(homeDir, "global-b", ".ai");
+    await mkdir(rootA, { recursive: true });
+    await mkdir(rootB, { recursive: true });
+    let criticalEntries = 0;
+    let markFirstEntered: () => void = () => undefined;
+    const firstEntered = new Promise<void>((resolvePromise) => {
+      markFirstEntered = resolvePromise;
+    });
+    let releaseFirst: () => void = () => undefined;
+    const firstReleased = new Promise<void>((resolvePromise) => {
+      releaseFirst = resolvePromise;
+    });
+    setAutosyncMutationLockHookForTests(async (event) => {
+      if (event.phase !== "before_critical_section") {
+        return;
+      }
+      criticalEntries += 1;
+      if (criticalEntries === 1) {
+        markFirstEntered();
+        await firstReleased;
+      }
+    });
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(() => Promise.resolve(launchctlNotFound()));
+
+    const first = withFacultRootScope(
+      { rootDir: rootA, scope: "global" },
+      async () =>
+        await installAutosyncService({
+          homeDir,
+          rootDir: rootA,
+          gitEnabled: false,
+          allowLegacyManagedMutation: true,
+        })
+    );
+    await firstEntered;
+
+    await expect(
+      withFacultRootScope({ rootDir: rootB, scope: "global" }, async () =>
+        installAutosyncService({
+          homeDir,
+          rootDir: rootB,
+          gitEnabled: false,
+          allowLegacyManagedMutation: true,
+        })
+      )
+    ).rejects.toThrow(
+      "Another autosync mutation holds the machine lifecycle boundary"
+    );
+    expect(criticalEntries).toBe(1);
+    releaseFirst();
+    await first;
+    expect(criticalEntries).toBe(1);
+  });
+
+  it("continues when an owner releases its claim after enumeration", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "facult-autosync-lock-release-")
+    );
+    tempDirs.push(homeDir);
+    const rootDir = join(homeDir, ".ai");
+    const claimsDir = join(
+      dirname(facultInstallStatePath(homeDir)),
+      "autosync",
+      "recovery",
+      "lifecycle-locks"
+    );
+    const ownerToken = "00000000-0000-4000-8000-000000000004";
+    const ownerClaim = join(claimsDir, `${ownerToken}.json`);
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(claimsDir, { recursive: true });
+    await writeFile(
+      ownerClaim,
+      `${JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        token: ownerToken,
+        operation: "finishing-owner",
+        rootDir,
+        startedAt: "2026-07-11T00:00:00.000Z",
+      })}\n`
+    );
+    let released = false;
+    setAutosyncMutationLockHookForTests(async (event) => {
+      if (
+        event.phase === "before_claim_load" &&
+        event.claimPath === ownerClaim &&
+        !released
+      ) {
+        released = true;
+        await rm(ownerClaim);
+      }
+    });
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(() => Promise.resolve(launchctlNotFound()));
+
+    await installAutosyncService({
+      homeDir,
+      rootDir,
+      gitEnabled: false,
+      allowLegacyManagedMutation: true,
+    });
+
+    expect(released).toBe(true);
+    expect(
+      await Bun.file(
+        join(
+          facultMachineStateDir(homeDir, rootDir),
+          "autosync",
+          "services",
+          "all.json"
+        )
+      ).exists()
+    ).toBe(true);
+  });
+
   it("rejects unsupported-host installation before writing recovery artifacts", async () => {
     const homeDir = await mkdtemp(
       join(tmpdir(), "facult-autosync-unsupported-")
@@ -438,7 +1523,7 @@ describe("autosync launch agent migration", () => {
     await mkdir(join(homeDir, "Library", "LaunchAgents"), { recursive: true });
     await writeFile(
       legacyPlistPath,
-      testPlist(homeDir, rootDir, "all"),
+      testLegacyPlist(homeDir, rootDir, "all"),
       "utf8"
     );
     setLaunchctlRunnerForTests((args) => {
@@ -509,7 +1594,7 @@ describe("autosync launch agent migration", () => {
     );
     await writeFile(
       legacyPlistPath,
-      testPlist(homeDir, rootDir, "all"),
+      testLegacyPlist(homeDir, rootDir, "all"),
       "utf8"
     );
     setLaunchctlRunnerForTests((args) => {
@@ -1178,7 +2263,7 @@ describe("autosync launch agent migration", () => {
     await mkdir(dirname(legacyPlistPath), { recursive: true });
     await writeFile(
       legacyPlistPath,
-      testPlist(homeDir, rootDir, "all"),
+      testLegacyPlist(homeDir, rootDir, "all"),
       "utf8"
     );
     setLaunchctlRunnerForTests((args) =>

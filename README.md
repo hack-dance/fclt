@@ -138,8 +138,10 @@ available. Disable it without deleting history with `fclt ai loop disable
 --project`.
 
 `doctor --json` is read-only and includes `loop` readiness for canonical roots, writable runtime
-and review state, asset targeting, required skills, reconciliation, scheduled-loop health, and
-Codex registration/discovery. External trackers are not required by the core loop; configure a
+and review state, asset targeting, required skills, reconciliation, scheduled-loop health,
+Codex registration/discovery, and structured legacy recovery coverage. Recovery distinguishes
+contained records from an active root-owned autosync service and withholds cleanup when ownership
+or coverage is incomplete. External trackers are not required by the core loop; configure a
 local evidence export only when tracker events should participate in reconciliation. Codex
 registration is reported separately from fresh-session tool discovery.
 
@@ -161,6 +163,9 @@ fclt self-update --version 2.12.0
 directly, npm/Bun global installs through their package manager, and
 mise-managed npm installs with `mise use -g --pin npm:facult@<version>`, then
 verifies the active `fclt --version`.
+The verified new executable then runs a read-only global doctor postflight plus a
+current-project postflight when the current Git repository has a `.ai` root. It prints any exact,
+approval-gated legacy autosync cleanup action without applying it.
 
 ## Quick start
 
@@ -279,6 +284,12 @@ legacy installations may use `--allow-legacy-managed-mutation` only for an expli
 migration. Do not use the escape hatch for ordinary sync, background autosync, or stale-backup
 restoration. A legacy autosync service may be run once with explicit approval; install, restart, and
 continuous run remain disabled.
+
+`fclt doctor --json` reports any legacy runtime recovery under `legacyRecovery`. If it emits an
+`autosync cleanup` argv, that command is scoped to one root-owned service and a stale-plan
+precondition. It preserves canonical capability, live tool state, managed records, backups, and the
+autosync config. Cleanup requires the explicit flag in the emitted argv; ambient approval is not
+accepted, and no cleanup mutation is exposed through MCP.
 
 Project-managed sync remains default-deny. Repo-local tool outputs only receive assets that the
 project explicitly allows.

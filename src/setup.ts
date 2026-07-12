@@ -183,7 +183,10 @@ export async function bootstrapFclt(
   );
   const coreBlocked = reports.some((report) => report.loop.state === "blocked");
   const coreDegraded = reports.some(
-    (report) => report.loop.state === "degraded"
+    (report) =>
+      report.loop.state === "degraded" ||
+      report.legacyRecovery.state === "cleanup_required" ||
+      report.legacyRecovery.state === "blocked"
   );
   const pluginFailed = codexPlugin?.codexInstall.status === "failed";
   const pluginNeedsFreshSession =

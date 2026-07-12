@@ -1,17 +1,147 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
+import {
+  buildLaunchAgentPlist,
+  buildLaunchAgentSpec,
+  setLaunchctlRunnerForTests,
+  setLaunchctlSupportedForTests,
+} from "./autosync";
+import { facultMachineStateDir } from "./paths";
 import { bootstrapFclt } from "./setup";
 
 const cleanupPaths: string[] = [];
 const cliEntry = join(import.meta.dir, "index.ts");
 
 afterEach(async () => {
+  setLaunchctlRunnerForTests(null);
+  setLaunchctlSupportedForTests(null);
   for (const pathValue of cleanupPaths.splice(0)) {
     await rm(pathValue, { recursive: true, force: true });
   }
+});
+
+it("setup surfaces active legacy recovery without touching owned runtime or live tools", async () => {
+  const home = await tempHome("facult-setup-recovery-");
+  const rootDir = join(home, ".ai");
+  const stateDir = facultMachineStateDir(home, rootDir);
+  const configPath = join(stateDir, "autosync", "services", "all.json");
+  const managedPath = join(stateDir, "managed.json");
+  const plistPath = join(
+    home,
+    "Library",
+    "LaunchAgents",
+    "com.fclt.autosync.plist"
+  );
+  const livePath = join(home, ".codex", "AGENTS.md");
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        name: "all",
+        rootDir,
+        debounceMs: 100,
+        git: {
+          enabled: false,
+          remote: "origin",
+          branch: "main",
+          intervalMinutes: 60,
+          autoCommit: false,
+          commitPrefix: "test",
+          source: "fixture",
+        },
+      },
+      null,
+      2
+    )}\n`
+  );
+  await writeFile(
+    managedPath,
+    `${JSON.stringify({ version: 1, tools: { codex: {} } }, null, 2)}\n`
+  );
+  await mkdir(dirname(plistPath), { recursive: true });
+  await writeFile(
+    plistPath,
+    buildLaunchAgentPlist(
+      buildLaunchAgentSpec({
+        homeDir: home,
+        rootDir,
+        serviceName: "all",
+        invocation: [join(home, "bin", "fclt")],
+      })
+    )
+  );
+  await mkdir(dirname(livePath), { recursive: true });
+  await writeFile(livePath, "live user content\n");
+  const before = await Promise.all(
+    [configPath, managedPath, plistPath, livePath].map((pathValue) =>
+      readFile(pathValue, "utf8")
+    )
+  );
+  setLaunchctlSupportedForTests(true);
+  setLaunchctlRunnerForTests((args) => {
+    if (args[0] === "list") {
+      return Promise.resolve({
+        exitCode: 0,
+        stdout: "-\t0\tcom.fclt.autosync\n",
+        stderr: "",
+      });
+    }
+    if (args[0] === "print") {
+      return Promise.resolve({
+        exitCode: 0,
+        stdout: `working directory = ${rootDir}\n`,
+        stderr: "",
+      });
+    }
+    return Promise.resolve({ exitCode: 64, stdout: "", stderr: "unexpected" });
+  });
+
+  const first = await bootstrapFclt({
+    homeDir: home,
+    cwd: home,
+    includeProject: false,
+    installCodexPlugin: false,
+  });
+  const second = await bootstrapFclt({
+    homeDir: home,
+    cwd: home,
+    includeProject: false,
+    installCodexPlugin: false,
+  });
+  expect(first.health).toBe("degraded");
+  expect(first.readiness.global.legacyRecovery.state).toBe("cleanup_required");
+  expect(first.repairActions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        scope: "global",
+        command: expect.stringContaining("'autosync' 'cleanup'"),
+      }),
+    ])
+  );
+  expect(second.readiness.global.legacyRecovery).toEqual(
+    first.readiness.global.legacyRecovery
+  );
+  expect(
+    await Promise.all(
+      [configPath, managedPath, plistPath, livePath].map((pathValue) =>
+        readFile(pathValue, "utf8")
+      )
+    )
+  ).toEqual(before);
 });
 
 async function tempHome(prefix: string): Promise<string> {

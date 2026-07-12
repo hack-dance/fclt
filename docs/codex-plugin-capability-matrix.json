@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "packageVersion": "2.22.1",
+    "packageVersion": "2.22.2",
     "pluginVersion": "0.1.1",
-    "auditedAt": "2026-07-11T17:22:00Z"
+    "auditedAt": "2026-07-12T02:10:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
@@ -758,7 +758,7 @@
     },
     {
       "id": "autosync.mutation",
-      "cli": "autosync status|uninstall|run --once",
+      "cli": "autosync status|cleanup|uninstall|run --once",
       "cliAvailability": "partial",
       "mcp": {
         "disposition": "blocked_safer_api",
@@ -766,10 +766,10 @@
       },
       "risk": "high_risk_destructive",
       "scope": "global|project plus explicit tool/service",
-      "preview": "status is read-only; background install, restart, and continuous run are disabled",
-      "apply": "uninstall is idempotent cleanup; run --once requires explicit legacy-migration approval; background lifecycle mutation is withheld",
-      "rollback": "uninstall cleanup is idempotent; one-shot render and Git mutation have no transaction rollback and require separate recovery",
-      "verification": "root-owned service discovery, unload-before-delete, durable config replacement, failed-cleanup preservation, scoped one-shot recovery, and zero background restart"
+      "preview": "status and doctor legacyRecovery are read-only; background install, restart, and continuous run are disabled",
+      "apply": "cleanup is CLI-only and requires exact service/root/scope/plan preconditions plus explicit argv approval; uninstall and run --once remain legacy migration operations; MCP mutation is withheld",
+      "rollback": "cleanup preserves autosync config and authored/tool state, records an idempotency receipt, and can be safely retried; one-shot render and Git mutation have no transaction rollback",
+      "verification": "complete recovery coverage, structured plist ownership, a machine-local autosync lifecycle boundary shared across roots, stale-plan refusal, unload-before-delete when launchd applies, receipt recurrence checks, failed-cleanup retry, scoped isolation, and zero background restart"
     },
     {
       "id": "plugins_agents_skills_instructions_hooks_automations.inventory",

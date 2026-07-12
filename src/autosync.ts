@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { watch as fsWatch } from "node:fs";
 import {
+  link,
+  lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -23,6 +26,7 @@ import {
 } from "./legacy-mutation-policy";
 import { syncManagedTools } from "./manage";
 import {
+  facultInstallStatePath,
   facultMachineStateDir,
   facultRootDir,
   facultStateDir,
@@ -39,6 +43,19 @@ const DEFAULT_GIT_INTERVAL_MINUTES = 60;
 const LINE_SPLIT_RE = /\r?\n/;
 const WHITESPACE_RE = /\s+/;
 const LAUNCHCTL_WORKING_DIRECTORY_RE = /^\s*working directory\s*=\s*(.+?)\s*$/i;
+const PLIST_COMMENT_RE = /<!--[\s\S]*?-->/g;
+const PLIST_LABEL_RE = /<key>Label<\/key>\s*<string>([^<]*)<\/string>/;
+const PLIST_PROGRAM_ARGUMENTS_RE =
+  /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/;
+const PLIST_STRING_RE = /<string>([^<]*)<\/string>/g;
+const PLIST_WORKING_DIRECTORY_RE =
+  /<key>WorkingDirectory<\/key>\s*<string>([^<]*)<\/string>/;
+const XML_ENTITY_RE = /&(?:amp|lt|gt|quot|apos);/g;
+const UNKNOWN_XML_ENTITY_RE = /&[^;\s]*;/;
+const RECOVERY_PLAN_ID_RE = /^[a-f0-9]{24}$/;
+const SHA256_RE = /^[a-f0-9]{64}$/;
+const UUID_V4_RE =
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 
 export interface AutosyncGitConfig {
   enabled: boolean;
@@ -94,6 +111,64 @@ export interface AutosyncStatus {
   launchctlSummary?: string;
 }
 
+export type RecoveryInspectionCoverage =
+  | "checked"
+  | "not_applicable"
+  | "unavailable";
+
+export interface AutosyncRecoveryConfigInspection {
+  service: string;
+  tool: string | null;
+  path: string;
+  location: "machine" | "canonical_legacy" | "external_legacy";
+  state: "valid" | "invalid" | "foreign_root";
+  unknownFieldCount: number;
+  planId?: string;
+}
+
+export interface AutosyncRecoveryInspection {
+  coverage: {
+    configs: RecoveryInspectionCoverage;
+    launchAgents: RecoveryInspectionCoverage;
+    launchd: RecoveryInspectionCoverage;
+  };
+  configured: AutosyncRecoveryConfigInspection[];
+  ownedPlists: Array<{
+    label: string;
+    path: string;
+    generation: "current" | "legacy";
+  }>;
+  ownedLoadedLabels: string[];
+  foreignLoadedLabels: string[];
+  orphanedLabels: string[];
+  reasonCodes: string[];
+  configFingerprints: Record<string, string>;
+  plistSnapshots: Array<{
+    label: string;
+    path: string;
+    hash: string;
+  }>;
+}
+
+export interface AutosyncRecoveryCleanupResult {
+  version: 1;
+  rootDir: string;
+  service: string;
+  planId: string;
+  changed: boolean;
+  alreadyApplied: boolean;
+  receiptPath: string;
+  appliedAt: string;
+  dispositions: Array<"launch_agent_unloaded" | "owned_plist_removed">;
+  preserves: Array<
+    | "canonical_capability"
+    | "live_tool_state"
+    | "managed_state"
+    | "autosync_config"
+    | "backups"
+  >;
+}
+
 interface CommandResult {
   exitCode: number;
   stdout: string;
@@ -118,6 +193,16 @@ let launchctlRunnerForTests:
   | ((args: string[]) => Promise<CommandResult>)
   | null = null;
 let launchctlSupportedForTests: boolean | null = null;
+let autosyncMutationLockHookForTests:
+  | ((event: {
+      phase:
+        | "claim_published"
+        | "before_claim_load"
+        | "before_dead_claim_remove"
+        | "before_critical_section";
+      claimPath: string;
+    }) => Promise<void>)
+  | null = null;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -231,6 +316,103 @@ function legacyAutosyncLabel(serviceName: string): string {
 
 function autosyncLabelCandidates(serviceName: string): string[] {
   return [autosyncLabel(serviceName), legacyAutosyncLabel(serviceName)];
+}
+
+function serviceNameFromAutosyncLabel(label: string): string | null {
+  if (label === "com.fclt.autosync" || label === "com.facult.autosync") {
+    return "all";
+  }
+  for (const prefix of ["com.fclt.autosync.", "com.facult.autosync."]) {
+    if (label.startsWith(prefix) && label.length > prefix.length) {
+      return label.slice(prefix.length);
+    }
+  }
+  return null;
+}
+
+function decodePlistString(value: string): string | null {
+  const withoutKnownEntities = value.replace(XML_ENTITY_RE, "");
+  if (UNKNOWN_XML_ENTITY_RE.test(withoutKnownEntities)) {
+    return null;
+  }
+  return value
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'");
+}
+
+function singlePlistCapture(contents: string, pattern: RegExp): string | null {
+  const match = contents.match(pattern);
+  if (!match?.[1]) {
+    return null;
+  }
+  if (contents.replace(pattern, "").match(pattern)) {
+    return null;
+  }
+  return match[1];
+}
+
+function plistContainsOwnedAutosyncProgram(
+  contents: string,
+  rootDir: string,
+  serviceName: string,
+  pathLabel: string
+): boolean {
+  const normalized = contents.replace(PLIST_COMMENT_RE, "");
+  const labelRaw = singlePlistCapture(normalized, PLIST_LABEL_RE);
+  const workingDirectoryRaw = singlePlistCapture(
+    normalized,
+    PLIST_WORKING_DIRECTORY_RE
+  );
+  const argumentsRaw = singlePlistCapture(
+    normalized,
+    PLIST_PROGRAM_ARGUMENTS_RE
+  );
+  if (!(labelRaw && workingDirectoryRaw && argumentsRaw)) {
+    return false;
+  }
+  const label = decodePlistString(labelRaw);
+  const workingDirectory = decodePlistString(workingDirectoryRaw);
+  const argumentMatches = [...argumentsRaw.matchAll(PLIST_STRING_RE)];
+  const unparsedArguments = argumentsRaw.replace(PLIST_STRING_RE, "").trim();
+  const programArguments = argumentMatches.map((match) =>
+    decodePlistString(match[1] ?? "")
+  );
+  if (
+    unparsedArguments ||
+    programArguments.some((argument) => argument === null)
+  ) {
+    return false;
+  }
+  const argv = programArguments.filter(
+    (argument): argument is string => argument !== null
+  );
+  const autosyncIndex = argv.indexOf("autosync");
+  const expectedTail = [
+    "autosync",
+    "run",
+    ...(serviceName === "all" ? [] : [serviceName]),
+    "--service",
+    serviceName,
+  ];
+  return (
+    label === pathLabel &&
+    autosyncLabelCandidates(serviceName).includes(label) &&
+    workingDirectory !== null &&
+    resolve(workingDirectory) === resolve(rootDir) &&
+    autosyncIndex > 0 &&
+    isDeepStrictEqual(argv.slice(autosyncIndex), expectedTail)
+  );
+}
+
+function plistWorkingDirectoryValue(contents: string): string | null {
+  const raw = singlePlistCapture(
+    contents.replace(PLIST_COMMENT_RE, ""),
+    PLIST_WORKING_DIRECTORY_RE
+  );
+  return raw ? decodePlistString(raw) : null;
 }
 
 function autosyncPlistPath(home: string, serviceName: string): string {
@@ -671,6 +853,21 @@ export function setLaunchctlSupportedForTests(supported: boolean | null) {
   launchctlSupportedForTests = supported;
 }
 
+export function setAutosyncMutationLockHookForTests(
+  hook:
+    | ((event: {
+        phase:
+          | "claim_published"
+          | "before_claim_load"
+          | "before_dead_claim_remove"
+          | "before_critical_section";
+        claimPath: string;
+      }) => Promise<void>)
+    | null
+) {
+  autosyncMutationLockHookForTests = hook;
+}
+
 function launchctlLifecycleSupported(): boolean {
   return (
     launchctlSupportedForTests ??
@@ -748,6 +945,7 @@ async function ensureGitRepo(repoDir: string): Promise<boolean> {
 
 interface AutosyncPlistOwnership {
   ownedPaths: Set<string>;
+  ownedHashes: Map<string, string>;
   foreignPaths: string[];
 }
 
@@ -821,10 +1019,6 @@ async function rootOwnedAutosyncPlists(args: {
       `Unable to inspect autosync LaunchAgent directory ${launchAgentsDir}: ${detail}`
     );
   }
-  const expectedWorkingDirectory = [
-    "  <key>WorkingDirectory</key>",
-    `  <string>${escapeXml(args.rootDir)}</string>`,
-  ].join("\n");
   const owned: RootOwnedAutosyncPlist[] = [];
   for (const entry of entries) {
     const label = autosyncLabelFromPlistName(entry);
@@ -832,6 +1026,17 @@ async function rootOwnedAutosyncPlists(args: {
       continue;
     }
     const pathValue = join(launchAgentsDir, entry);
+    const metadata = await lstat(pathValue).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Unable to inspect autosync LaunchAgent ${pathValue}: ${detail}`
+      );
+    });
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error(
+        `Unable to prove autosync LaunchAgent ownership for non-regular path: ${pathValue}`
+      );
+    }
     const contents = await readFile(pathValue, "utf8").catch(
       (error: unknown) => {
         const detail = error instanceof Error ? error.message : String(error);
@@ -840,8 +1045,34 @@ async function rootOwnedAutosyncPlists(args: {
         );
       }
     );
-    if (contents.includes(expectedWorkingDirectory)) {
+    const serviceName = serviceNameFromAutosyncLabel(label);
+    const workingDirectory = plistWorkingDirectoryValue(contents);
+    if (!workingDirectory) {
+      throw new Error(
+        `Unable to prove autosync LaunchAgent working directory: ${pathValue}`
+      );
+    }
+    if (resolve(workingDirectory) !== resolve(args.rootDir)) {
+      continue;
+    }
+    if (!serviceName) {
+      throw new Error(
+        `Unable to prove autosync LaunchAgent service identity: ${pathValue}`
+      );
+    }
+    if (
+      plistContainsOwnedAutosyncProgram(
+        contents,
+        args.rootDir,
+        serviceName,
+        label
+      )
+    ) {
       owned.push({ label, path: pathValue });
+    } else {
+      throw new Error(
+        `Unable to prove autosync LaunchAgent program ownership: ${pathValue}`
+      );
     }
   }
   return owned;
@@ -912,45 +1143,165 @@ async function rootOwnedLoadedAutosyncLabels(
   return owned;
 }
 
+interface LoadedAutosyncRecoveryInspection {
+  coverage: RecoveryInspectionCoverage;
+  ownedLabels: string[];
+  foreignLabels: string[];
+  unprovenLabels: string[];
+}
+
+async function inspectLoadedAutosyncRecovery(
+  rootDir: string
+): Promise<LoadedAutosyncRecoveryInspection> {
+  if (!shouldEnumerateLoadedAutosyncServices()) {
+    return {
+      coverage: "not_applicable",
+      ownedLabels: [],
+      foreignLabels: [],
+      unprovenLabels: [],
+    };
+  }
+  let listed: CommandResult;
+  try {
+    listed = await runLaunchctl(["list"]);
+  } catch {
+    return {
+      coverage: "unavailable",
+      ownedLabels: [],
+      foreignLabels: [],
+      unprovenLabels: [],
+    };
+  }
+  if (listed.exitCode !== 0) {
+    return {
+      coverage: "unavailable",
+      ownedLabels: [],
+      foreignLabels: [],
+      unprovenLabels: [],
+    };
+  }
+  const domain = launchdDomain();
+  const ownedLabels: string[] = [];
+  const foreignLabels: string[] = [];
+  const unprovenLabels: string[] = [];
+  for (const label of listedAutosyncLabels(listed.stdout)) {
+    let inspected: CommandResult;
+    try {
+      inspected = await runLaunchctl(["print", `${domain}/${label}`]);
+    } catch {
+      return {
+        coverage: "unavailable",
+        ownedLabels: [],
+        foreignLabels: [],
+        unprovenLabels: [],
+      };
+    }
+    if (inspected.exitCode !== 0) {
+      if (launchctlServiceNotFound(inspected)) {
+        continue;
+      }
+      return {
+        coverage: "unavailable",
+        ownedLabels: [],
+        foreignLabels: [],
+        unprovenLabels: [],
+      };
+    }
+    const workingDirectory = launchctlWorkingDirectory(inspected);
+    if (!workingDirectory) {
+      unprovenLabels.push(label);
+    } else if (resolve(workingDirectory) === resolve(rootDir)) {
+      ownedLabels.push(label);
+    } else {
+      foreignLabels.push(label);
+    }
+  }
+  return {
+    coverage: "checked",
+    ownedLabels: ownedLabels.sort((a, b) => a.localeCompare(b)),
+    foreignLabels: foreignLabels.sort((a, b) => a.localeCompare(b)),
+    unprovenLabels: unprovenLabels.sort((a, b) => a.localeCompare(b)),
+  };
+}
+
 async function inspectAutosyncPlistOwnership(args: {
   homeDir: string;
   rootDir: string;
   serviceName: string;
 }): Promise<AutosyncPlistOwnership> {
-  const expectedWorkingDirectory = [
-    "  <key>WorkingDirectory</key>",
-    `  <string>${escapeXml(args.rootDir)}</string>`,
-  ].join("\n");
-  const paths = [
-    autosyncPlistPath(args.homeDir, args.serviceName),
-    join(
-      args.homeDir,
-      "Library",
-      "LaunchAgents",
-      `${legacyAutosyncLabel(args.serviceName)}.plist`
-    ),
+  const candidates = [
+    {
+      path: autosyncPlistPath(args.homeDir, args.serviceName),
+      label: autosyncLabel(args.serviceName),
+    },
+    {
+      path: join(
+        args.homeDir,
+        "Library",
+        "LaunchAgents",
+        `${legacyAutosyncLabel(args.serviceName)}.plist`
+      ),
+      label: legacyAutosyncLabel(args.serviceName),
+    },
   ];
   const ownedPaths = new Set<string>();
+  const ownedHashes = new Map<string, string>();
   const foreignPaths: string[] = [];
-  for (const pathValue of paths) {
-    const contents = await readFile(pathValue, "utf8").catch(() => null);
-    if (contents === null) {
+  for (const candidate of candidates) {
+    let metadata: Awaited<ReturnType<typeof lstat>>;
+    try {
+      metadata = await lstat(candidate.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Unable to inspect autosync LaunchAgent ${candidate.path}: ${detail}`
+      );
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      foreignPaths.push(candidate.path);
       continue;
     }
-    if (contents.includes(expectedWorkingDirectory)) {
-      ownedPaths.add(pathValue);
+    let contents: string;
+    try {
+      contents = await readFile(candidate.path, "utf8");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Unable to inspect autosync LaunchAgent ${candidate.path}: ${detail}`
+      );
+    }
+    if (
+      plistContainsOwnedAutosyncProgram(
+        contents,
+        args.rootDir,
+        args.serviceName,
+        candidate.label
+      )
+    ) {
+      ownedPaths.add(candidate.path);
+      ownedHashes.set(
+        candidate.path,
+        createHash("sha256").update(contents).digest("hex")
+      );
     } else {
-      foreignPaths.push(pathValue);
+      foreignPaths.push(candidate.path);
     }
   }
-  return { ownedPaths, foreignPaths };
+  return { ownedPaths, ownedHashes, foreignPaths };
 }
 
 async function unloadAutosyncLaunchAgents(args: {
   homeDir: string;
   rootDir: string;
   serviceName: string;
-}): Promise<{ changed: boolean; ownedPaths: Set<string> }> {
+}): Promise<{
+  changed: boolean;
+  ownedPaths: Set<string>;
+  ownedHashes: Map<string, string>;
+}> {
   const ownership = await inspectAutosyncPlistOwnership(args);
   if (ownership.foreignPaths.length > 0) {
     throw new Error(
@@ -958,7 +1309,11 @@ async function unloadAutosyncLaunchAgents(args: {
     );
   }
   if (!launchctlLifecycleSupported()) {
-    return { changed: false, ownedPaths: ownership.ownedPaths };
+    return {
+      changed: false,
+      ownedPaths: ownership.ownedPaths,
+      ownedHashes: ownership.ownedHashes,
+    };
   }
   const domain = launchdDomain();
   let changed = false;
@@ -1021,13 +1376,29 @@ async function unloadAutosyncLaunchAgents(args: {
     }
     changed = true;
   }
-  return { changed, ownedPaths: ownership.ownedPaths };
+  return {
+    changed,
+    ownedPaths: ownership.ownedPaths,
+    ownedHashes: ownership.ownedHashes,
+  };
 }
 
 async function removeAutosyncLaunchAgentPlists(
-  ownedPaths: Set<string>
+  ownedPaths: Set<string>,
+  expectedHashes?: Map<string, string>
 ): Promise<void> {
   for (const pathValue of ownedPaths) {
+    const expectedHash = expectedHashes?.get(pathValue);
+    if (expectedHash) {
+      const currentHash = createHash("sha256")
+        .update(await readFile(pathValue))
+        .digest("hex");
+      if (currentHash !== expectedHash) {
+        throw new Error(
+          `Refusing to remove autosync LaunchAgent changed after ownership inspection: ${pathValue}`
+        );
+      }
+    }
     await rm(pathValue, { force: true });
   }
 }
@@ -1474,6 +1845,7 @@ function autosyncHelp(): string {
 Usage:
   fclt autosync uninstall [tool]
   fclt autosync status [tool]
+  fclt autosync cleanup --service <name> --expected-plan <id> [--root <path> | --global | --project] ${LEGACY_MANAGED_MUTATION_FLAG}
   fclt autosync run [tool] [--service <name>] --once ${LEGACY_MANAGED_MUTATION_FLAG}
 
 Options:
@@ -1481,6 +1853,8 @@ Options:
   --global                      Force the global canonical root
   --project                     Force the nearest repo-local .ai root
   --once                        Run one local+remote sync cycle and exit
+  --service <name>              Select the exact diagnosed autosync service
+  --expected-plan <id>          Refuse cleanup if owned recovery state changed
   ${LEGACY_MANAGED_MUTATION_FLAG}  Explicitly opt into deprecated broad mutation
 
 Background install, restart, and continuous run are disabled while broad managed mutation is contained.
@@ -1488,6 +1862,44 @@ Background install, restart, and continuous run are disabled while broad managed
 }
 
 export async function installAutosyncService(args: {
+  tool?: string;
+  homeDir?: string;
+  rootDir?: string;
+  gitRemote?: string;
+  gitBranch?: string;
+  gitIntervalMinutes?: number;
+  gitEnabled?: boolean;
+  allowLegacyManagedMutation?: boolean;
+}): Promise<AutosyncServiceConfig> {
+  const allowLegacyManagedMutation = legacyManagedMutationApproved({
+    explicit: args.allowLegacyManagedMutation,
+  });
+  assertLegacyManagedMutationAllowed({
+    action: "fclt autosync install",
+    approved: allowLegacyManagedMutation,
+    safeAlternative: "fclt autosync status or uninstall",
+  });
+  if (!launchctlLifecycleSupported()) {
+    throw new Error("Background autosync installation requires macOS launchd.");
+  }
+  const homeDir = args.homeDir ?? homedir();
+  const rootDir =
+    args.rootDir ?? resolveCliContextRoot({ homeDir, cwd: process.cwd() });
+  return await withAutosyncMutationLock({
+    homeDir,
+    rootDir,
+    operation: `install:${args.tool ?? "all"}`,
+    fn: async () =>
+      await installAutosyncServiceUnlocked({
+        ...args,
+        homeDir,
+        rootDir,
+        allowLegacyManagedMutation,
+      }),
+  });
+}
+
+async function installAutosyncServiceUnlocked(args: {
   tool?: string;
   homeDir?: string;
   rootDir?: string;
@@ -1562,7 +1974,10 @@ export async function installAutosyncService(args: {
       serviceName,
       rootDir: config.rootDir,
     });
-    await removeAutosyncLaunchAgentPlists(unloaded.ownedPaths);
+    await removeAutosyncLaunchAgentPlists(
+      unloaded.ownedPaths,
+      unloaded.ownedHashes
+    );
     await writeFile(spec.plistPath, plist, "utf8");
   } finally {
     await stagedConfig.discard();
@@ -1575,6 +1990,27 @@ export async function installAutosyncService(args: {
 }
 
 export async function uninstallAutosyncService(args: {
+  tool?: string;
+  homeDir?: string;
+  rootDir?: string;
+}): Promise<void> {
+  const homeDir = args.homeDir ?? homedir();
+  const rootDir =
+    args.rootDir ?? resolveCliContextRoot({ homeDir, cwd: process.cwd() });
+  return await withAutosyncMutationLock({
+    homeDir,
+    rootDir,
+    operation: `uninstall:${args.tool ?? "all"}`,
+    fn: async () =>
+      await uninstallAutosyncServiceUnlocked({
+        ...args,
+        homeDir,
+        rootDir,
+      }),
+  });
+}
+
+async function uninstallAutosyncServiceUnlocked(args: {
   tool?: string;
   homeDir?: string;
   rootDir?: string;
@@ -1608,13 +2044,15 @@ export async function uninstallAutosyncService(args: {
     rootDir,
     serviceName,
   });
-  await removeAutosyncLaunchAgentPlists(unloaded.ownedPaths);
+  await removeAutosyncLaunchAgentPlists(
+    unloaded.ownedPaths,
+    unloaded.ownedHashes
+  );
   await cleanupLegacyAutosyncFiles({
     homeDir: home,
     serviceName,
     rootDir,
   });
-  await rm(autosyncPlistPath(home, serviceName), { force: true });
   await rm(autosyncConfigPath(home, serviceName, rootDir), { force: true });
 }
 
@@ -1643,15 +2081,394 @@ async function autosyncServiceConfigFiles(
   return files.filter((entry) => entry.endsWith(".json"));
 }
 
+interface InternalAutosyncRecoveryConfigInspection {
+  service: string;
+  tool: string | null;
+  path: string;
+  location: "machine" | "canonical_legacy" | "external_legacy";
+  state: "valid" | "invalid" | "foreign_root";
+  unknownFields: string[];
+  planId?: string;
+  config: AutosyncServiceConfig | null;
+  contentHash: string | null;
+}
+
+function unknownAutosyncConfigFields(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+  const record = value as Record<string, unknown>;
+  const topLevel = new Set([
+    "version",
+    "name",
+    "tool",
+    "rootDir",
+    "debounceMs",
+    "git",
+  ]);
+  const gitFields = new Set([
+    "enabled",
+    "remote",
+    "branch",
+    "intervalMinutes",
+    "autoCommit",
+    "commitPrefix",
+    "source",
+  ]);
+  const unknown = Object.keys(record)
+    .filter((key) => !topLevel.has(key))
+    .map((key) => `config.${key}`);
+  const git = record.git;
+  if (git && typeof git === "object" && !Array.isArray(git)) {
+    unknown.push(
+      ...Object.keys(git as Record<string, unknown>)
+        .filter((key) => !gitFields.has(key))
+        .map((key) => `config.git.${key}`)
+    );
+  }
+  return unknown.sort((a, b) => a.localeCompare(b));
+}
+
+async function inspectAutosyncRecoveryConfigs(args: {
+  homeDir: string;
+  rootDir: string;
+}): Promise<{
+  coverage: RecoveryInspectionCoverage;
+  records: InternalAutosyncRecoveryConfigInspection[];
+  reasonCodes: string[];
+}> {
+  const candidates = [
+    {
+      dir: autosyncServicesDir(args.homeDir, args.rootDir),
+      location: "machine" as const,
+    },
+    {
+      dir: join(canonicalAutosyncDir(args.homeDir, args.rootDir), "services"),
+      location: "canonical_legacy" as const,
+    },
+    {
+      dir: legacyAutosyncServicesDir(args.homeDir, args.rootDir),
+      location: "external_legacy" as const,
+    },
+  ].filter(
+    (candidate, index, all) =>
+      all.findIndex(
+        (entry) => resolve(entry.dir) === resolve(candidate.dir)
+      ) === index
+  );
+  const records: InternalAutosyncRecoveryConfigInspection[] = [];
+  const reasonCodes = new Set<string>();
+  let coverage: RecoveryInspectionCoverage = "checked";
+
+  for (const candidate of candidates) {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(candidate.dir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      coverage = "unavailable";
+      reasonCodes.add("autosync_config_inspection_unavailable");
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.name.endsWith(".json")) {
+        continue;
+      }
+      const pathValue = join(candidate.dir, entry.name);
+      const service = basename(entry.name, ".json");
+      let raw: string;
+      try {
+        const metadata = await lstat(pathValue);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) {
+          records.push({
+            service,
+            tool: null,
+            path: pathValue,
+            location: candidate.location,
+            state: "invalid",
+            unknownFields: [],
+            config: null,
+            contentHash: null,
+          });
+          reasonCodes.add("autosync_config_invalid");
+          continue;
+        }
+        raw = await readFile(pathValue, "utf8");
+      } catch {
+        records.push({
+          service,
+          tool: null,
+          path: pathValue,
+          location: candidate.location,
+          state: "invalid",
+          unknownFields: [],
+          config: null,
+          contentHash: null,
+        });
+        coverage = "unavailable";
+        reasonCodes.add("autosync_config_inspection_unavailable");
+        continue;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch {
+        parsed = null;
+      }
+      const unknownFields = unknownAutosyncConfigFields(parsed);
+      const config = isAutosyncServiceConfig(parsed) ? parsed : null;
+      const expectedNames = config
+        ? [
+            autosyncServiceName(config.tool, args.rootDir, args.homeDir),
+            legacyAutosyncServiceName(config.tool, args.rootDir, args.homeDir),
+          ]
+        : [];
+      const identityValid = Boolean(
+        config && config.name === service && expectedNames.includes(service)
+      );
+      const state =
+        !(config && identityValid) || unknownFields.length > 0
+          ? "invalid"
+          : autosyncConfigMatchesRoot(config, args.rootDir)
+            ? "valid"
+            : "foreign_root";
+      if (state === "invalid") {
+        reasonCodes.add("autosync_config_invalid");
+      } else if (state === "foreign_root") {
+        reasonCodes.add("autosync_config_foreign_root");
+      }
+      records.push({
+        service,
+        tool: config?.tool ?? null,
+        path: pathValue,
+        location: candidate.location,
+        state,
+        unknownFields,
+        config,
+        contentHash: createHash("sha256").update(raw).digest("hex"),
+      });
+    }
+  }
+
+  for (const service of new Set(records.map((record) => record.service))) {
+    const duplicates = records.filter((record) => record.service === service);
+    const validConfigs = duplicates
+      .map((record) => record.config)
+      .filter((config): config is AutosyncServiceConfig => config !== null);
+    if (
+      duplicates.length > 1 &&
+      validConfigs.some(
+        (config) => !isDeepStrictEqual(config, validConfigs[0] ?? config)
+      )
+    ) {
+      for (const record of duplicates) {
+        record.state = "invalid";
+      }
+      reasonCodes.add("autosync_config_conflict");
+    }
+  }
+
+  return {
+    coverage,
+    records: records.sort((a, b) => a.path.localeCompare(b.path)),
+    reasonCodes: [...reasonCodes].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+function autosyncRecoveryPlanId(args: {
+  rootDir: string;
+  service: string;
+  configs: InternalAutosyncRecoveryConfigInspection[];
+  plists: Array<{ label: string; path: string; hash: string }>;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        rootDir: resolve(args.rootDir),
+        service: args.service,
+        configs: args.configs
+          .map((record) => ({
+            path: resolve(record.path),
+            location: record.location,
+            state: record.state,
+            contentHash: record.contentHash,
+          }))
+          .sort((a, b) => a.path.localeCompare(b.path)),
+        plists: [...args.plists].sort((a, b) => a.path.localeCompare(b.path)),
+      })
+    )
+    .digest("hex")
+    .slice(0, 24);
+}
+
+function autosyncRecoveryConfigFingerprint(
+  records: InternalAutosyncRecoveryConfigInspection[]
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        records
+          .map((record) => ({
+            path: resolve(record.path),
+            location: record.location,
+            state: record.state,
+            contentHash: record.contentHash,
+          }))
+          .sort((a, b) => a.path.localeCompare(b.path))
+      )
+    )
+    .digest("hex");
+}
+
+export async function inspectAutosyncRecovery(
+  args: { homeDir?: string; rootDir?: string } = {}
+): Promise<AutosyncRecoveryInspection> {
+  const homeDir = args.homeDir ?? homedir();
+  const rootDir = args.rootDir ?? facultRootDir(homeDir);
+  const configs = await inspectAutosyncRecoveryConfigs({ homeDir, rootDir });
+  const reasonCodes = new Set(configs.reasonCodes);
+  let launchAgentsCoverage: RecoveryInspectionCoverage = "checked";
+  let ownedPlists: RootOwnedAutosyncPlist[] = [];
+  try {
+    ownedPlists = await rootOwnedAutosyncPlists({ homeDir, rootDir });
+  } catch {
+    launchAgentsCoverage = "unavailable";
+    reasonCodes.add("autosync_launch_agent_inspection_unavailable");
+  }
+
+  const uniqueServices = [
+    ...new Set(configs.records.map((entry) => entry.service)),
+  ];
+  for (const serviceName of uniqueServices) {
+    try {
+      const ownership = await inspectAutosyncPlistOwnership({
+        homeDir,
+        rootDir,
+        serviceName,
+      });
+      if (ownership.foreignPaths.length > 0) {
+        reasonCodes.add("autosync_launch_agent_ownership_mismatch");
+      }
+    } catch {
+      launchAgentsCoverage = "unavailable";
+      reasonCodes.add("autosync_launch_agent_inspection_unavailable");
+    }
+  }
+
+  const loaded = await inspectLoadedAutosyncRecovery(rootDir);
+  if (loaded.coverage === "unavailable") {
+    reasonCodes.add("autosync_launchd_inspection_unavailable");
+  }
+  if (loaded.unprovenLabels.length > 0) {
+    reasonCodes.add("autosync_loaded_ownership_unproven");
+  }
+
+  const configuredLabels = new Set(
+    configs.records.flatMap((entry) => autosyncLabelCandidates(entry.service))
+  );
+  const orphanedLabels = [
+    ...ownedPlists
+      .map((entry) => entry.label)
+      .filter((label) => !configuredLabels.has(label)),
+    ...loaded.ownedLabels.filter((label) => !configuredLabels.has(label)),
+  ].filter((label, index, all) => all.indexOf(label) === index);
+  if (orphanedLabels.length > 0) {
+    reasonCodes.add("autosync_orphaned_runtime");
+  }
+  if (loaded.foreignLabels.some((label) => configuredLabels.has(label))) {
+    reasonCodes.add("autosync_loaded_root_mismatch");
+  }
+
+  const plistSnapshots = await Promise.all(
+    ownedPlists.map(async (entry) => ({
+      label: entry.label,
+      path: entry.path,
+      hash: createHash("sha256")
+        .update(await readFile(entry.path))
+        .digest("hex"),
+    }))
+  ).catch(() => {
+    launchAgentsCoverage = "unavailable";
+    reasonCodes.add("autosync_launch_agent_inspection_unavailable");
+    return [];
+  });
+
+  for (const record of configs.records) {
+    if (
+      record.state !== "valid" ||
+      configs.coverage !== "checked" ||
+      launchAgentsCoverage !== "checked" ||
+      loaded.coverage === "unavailable"
+    ) {
+      continue;
+    }
+    const labels = new Set(autosyncLabelCandidates(record.service));
+    record.planId = autosyncRecoveryPlanId({
+      rootDir,
+      service: record.service,
+      configs: configs.records.filter(
+        (candidate) => candidate.service === record.service
+      ),
+      plists: plistSnapshots.filter((plist) => labels.has(plist.label)),
+    });
+  }
+
+  const configFingerprints = Object.fromEntries(
+    uniqueServices.map((service) => [
+      service,
+      autosyncRecoveryConfigFingerprint(
+        configs.records.filter((record) => record.service === service)
+      ),
+    ])
+  );
+
+  return {
+    coverage: {
+      configs: configs.coverage,
+      launchAgents: launchAgentsCoverage,
+      launchd: loaded.coverage,
+    },
+    configured: configs.records.map(
+      ({ config: _config, contentHash: _hash, unknownFields, ...record }) => ({
+        ...record,
+        unknownFieldCount: unknownFields.length,
+      })
+    ),
+    ownedPlists: ownedPlists.map((entry) => ({
+      label: entry.label,
+      path: entry.path,
+      generation: entry.label.startsWith("com.facult.") ? "legacy" : "current",
+    })),
+    ownedLoadedLabels: loaded.ownedLabels,
+    foreignLoadedLabels: loaded.foreignLabels,
+    orphanedLabels: orphanedLabels.sort((a, b) => a.localeCompare(b)),
+    reasonCodes: [...reasonCodes].sort((a, b) => a.localeCompare(b)),
+    configFingerprints,
+    plistSnapshots: plistSnapshots.map((snapshot) => ({
+      ...snapshot,
+      path: resolve(snapshot.path),
+    })),
+  };
+}
+
 export async function assertAutosyncRepairAllowed(
   homeDir: string = homedir(),
   rootDir?: string,
-  allowLegacyManagedMutation?: boolean
+  allowLegacyManagedMutation?: boolean,
+  serviceName?: string
 ): Promise<void> {
   const activeRoot = rootDir ?? facultRootDir(homeDir);
-  const configFiles = await autosyncServiceConfigFiles(homeDir, activeRoot);
+  const allConfigFiles = await autosyncServiceConfigFiles(homeDir, activeRoot);
+  const configFiles = allConfigFiles.filter(
+    (entry) =>
+      serviceName === undefined || basename(entry, ".json") === serviceName
+  );
   const configuredLabels = new Set(
-    configFiles.flatMap((entry) =>
+    allConfigFiles.flatMap((entry) =>
       autosyncLabelCandidates(basename(entry, ".json"))
     )
   );
@@ -1714,15 +2531,36 @@ export async function repairAutosyncServices(
   opts: {
     allowLegacyManagedMutation?: boolean;
     targetRootDir?: string;
+    serviceName?: string;
+    lockHeld?: boolean;
   } = {}
 ): Promise<boolean> {
   const activeRoot = rootDir ?? facultRootDir(homeDir);
+  if (!opts.lockHeld) {
+    return await withAutosyncMutationLock({
+      homeDir,
+      rootDir: activeRoot,
+      operation: `repair:${opts.serviceName ?? "all"}`,
+      fn: async () =>
+        await repairAutosyncServices(homeDir, activeRoot, {
+          ...opts,
+          lockHeld: true,
+        }),
+    });
+  }
   const targetRoot = opts.targetRootDir ?? activeRoot;
-  const configFiles = await autosyncServiceConfigFiles(homeDir, activeRoot);
+  const configFiles = (
+    await autosyncServiceConfigFiles(homeDir, activeRoot)
+  ).filter(
+    (entry) =>
+      opts.serviceName === undefined ||
+      basename(entry, ".json") === opts.serviceName
+  );
   await assertAutosyncRepairAllowed(
     homeDir,
     activeRoot,
-    opts.allowLegacyManagedMutation
+    opts.allowLegacyManagedMutation,
+    opts.serviceName
   );
   let changed = false;
 
@@ -1831,7 +2669,10 @@ export async function repairAutosyncServices(
           `Autosync config replacement could not be verified: ${currentConfigPath}`
         );
       }
-      await removeAutosyncLaunchAgentPlists(unloaded.ownedPaths);
+      await removeAutosyncLaunchAgentPlists(
+        unloaded.ownedPaths,
+        unloaded.ownedHashes
+      );
       await cleanupLegacyAutosyncFiles({
         homeDir,
         serviceName,
@@ -1863,6 +2704,635 @@ export async function repairAutosyncServices(
   }
 
   return changed;
+}
+
+function autosyncRecoveryReceiptPath(
+  homeDir: string,
+  rootDir: string,
+  planId: string
+): string {
+  return join(
+    autosyncDir(homeDir, rootDir),
+    "recovery",
+    "receipts",
+    `${planId}.json`
+  );
+}
+
+function autosyncRecoveryPlanPath(
+  homeDir: string,
+  rootDir: string,
+  planId: string
+): string {
+  return join(
+    autosyncDir(homeDir, rootDir),
+    "recovery",
+    "plans",
+    `${planId}.json`
+  );
+}
+
+interface AutosyncRecoveryPreparedPlan {
+  version: 1;
+  rootDir: string;
+  service: string;
+  planId: string;
+  configFingerprint: string;
+  plists: Array<{
+    label: string;
+    path: string;
+    hash: string;
+  }>;
+  preparedAt: string;
+}
+
+interface AutosyncMutationClaim {
+  version: 1;
+  pid: number;
+  token: string;
+  operation: string;
+  rootDir: string;
+  startedAt: string;
+}
+
+async function loadAutosyncMutationClaim(
+  claimPath: string
+): Promise<AutosyncMutationClaim> {
+  const metadata = await lstat(claimPath);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(
+      `Autosync mutation claim is not a regular owned file: ${claimPath}`
+    );
+  }
+  const parsed = JSON.parse(await readFile(claimPath, "utf8")) as unknown;
+  if (!(parsed && typeof parsed === "object" && !Array.isArray(parsed))) {
+    throw new Error(`Autosync mutation claim owner is invalid: ${claimPath}`);
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    !(Number.isSafeInteger(record.pid) && Number(record.pid) > 0) ||
+    typeof record.token !== "string" ||
+    !UUID_V4_RE.test(record.token) ||
+    basename(claimPath) !== `${record.token}.json` ||
+    typeof record.operation !== "string" ||
+    typeof record.rootDir !== "string" ||
+    typeof record.startedAt !== "string"
+  ) {
+    throw new Error(`Autosync mutation claim owner is invalid: ${claimPath}`);
+  }
+  return parsed as AutosyncMutationClaim;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function withAutosyncMutationLock<T>(args: {
+  homeDir: string;
+  rootDir: string;
+  operation: string;
+  fn: () => Promise<T>;
+}): Promise<T> {
+  const recoveryDir = join(
+    dirname(facultInstallStatePath(args.homeDir)),
+    "autosync",
+    "recovery"
+  );
+  const claimsDir = join(recoveryDir, "lifecycle-locks");
+  await mkdir(claimsDir, { recursive: true });
+  // A UUID-v4 claim path is published once and never reused. That invariant
+  // makes dead-claim removal local to one immutable generation and avoids the
+  // stale-owner ABA race of replacing a shared lock filename.
+  const token = randomUUID();
+  const claimPath = join(claimsDir, `${token}.json`);
+  const ownerPayload = `${JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    token,
+    operation: args.operation,
+    rootDir: resolve(args.rootDir),
+    startedAt: new Date().toISOString(),
+  })}\n`;
+  const stagingPath = join(recoveryDir, `.lifecycle.${token}.tmp`);
+  let staged: Awaited<ReturnType<typeof open>> | null = null;
+  let published = false;
+  try {
+    staged = await open(stagingPath, "wx", 0o600);
+    await staged.writeFile(ownerPayload);
+    await staged.sync();
+    await staged.close();
+    staged = null;
+    await link(stagingPath, claimPath);
+    published = true;
+    await rm(stagingPath, { force: true });
+    await autosyncMutationLockHookForTests?.({
+      phase: "claim_published",
+      claimPath,
+    });
+
+    const liveOwners: AutosyncMutationClaim[] = [];
+    const entries = await readdir(claimsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const candidatePath = join(claimsDir, entry.name);
+      if (
+        !entry.isFile() ||
+        entry.isSymbolicLink() ||
+        !entry.name.endsWith(".json")
+      ) {
+        throw new Error(
+          `Autosync mutation claim directory contains an unowned entry: ${candidatePath}`
+        );
+      }
+      if (entry.name === `${token}.json`) {
+        continue;
+      }
+      await autosyncMutationLockHookForTests?.({
+        phase: "before_claim_load",
+        claimPath: candidatePath,
+      });
+      const owner = await loadAutosyncMutationClaim(candidatePath).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
+          }
+          throw error;
+        }
+      );
+      if (!owner) {
+        continue;
+      }
+      if (processIsAlive(owner.pid)) {
+        liveOwners.push(owner);
+        continue;
+      }
+
+      // Claim paths are UUID-scoped and never reused. Revalidate the immutable
+      // owner tuple before removing only this abandoned contender.
+      const current = await loadAutosyncMutationClaim(candidatePath).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
+          }
+          throw error;
+        }
+      );
+      if (
+        current &&
+        current.pid === owner.pid &&
+        current.token === owner.token
+      ) {
+        await autosyncMutationLockHookForTests?.({
+          phase: "before_dead_claim_remove",
+          claimPath: candidatePath,
+        });
+        await rm(candidatePath, { force: true });
+      }
+    }
+    if (liveOwners.length > 0) {
+      throw new Error(
+        `Another autosync mutation holds the machine lifecycle boundary (pid${liveOwners.length === 1 ? "" : "s"} ${liveOwners.map((owner) => owner.pid).join(", ")}).`
+      );
+    }
+    await autosyncMutationLockHookForTests?.({
+      phase: "before_critical_section",
+      claimPath,
+    });
+    return await args.fn();
+  } finally {
+    await staged?.close().catch(() => null);
+    await rm(stagingPath, { force: true }).catch(() => null);
+    if (published) {
+      const owner = await readFile(claimPath, "utf8").catch(() => "");
+      if (owner.includes(`"token":"${token}"`)) {
+        await rm(claimPath, { force: true });
+      }
+    }
+  }
+}
+
+async function loadAutosyncRecoveryReceipt(
+  pathValue: string
+): Promise<AutosyncRecoveryCleanupResult | null> {
+  try {
+    const metadata = await lstat(pathValue);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error(`Invalid autosync recovery receipt path: ${pathValue}`);
+    }
+    const parsed = JSON.parse(await readFile(pathValue, "utf8")) as unknown;
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    const dispositions = record?.dispositions;
+    const preserves = record?.preserves;
+    if (
+      record?.version === 1 &&
+      typeof record.rootDir === "string" &&
+      typeof record.service === "string" &&
+      typeof record.planId === "string" &&
+      RECOVERY_PLAN_ID_RE.test(record.planId) &&
+      typeof record.changed === "boolean" &&
+      typeof record.alreadyApplied === "boolean" &&
+      typeof record.receiptPath === "string" &&
+      typeof record.appliedAt === "string" &&
+      Array.isArray(dispositions) &&
+      dispositions.every(
+        (value) =>
+          value === "launch_agent_unloaded" || value === "owned_plist_removed"
+      ) &&
+      Array.isArray(preserves) &&
+      preserves.every((value) =>
+        [
+          "canonical_capability",
+          "live_tool_state",
+          "managed_state",
+          "autosync_config",
+          "backups",
+        ].includes(String(value))
+      )
+    ) {
+      return parsed as AutosyncRecoveryCleanupResult;
+    }
+    throw new Error(`Invalid autosync recovery receipt: ${pathValue}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function loadAutosyncRecoveryPreparedPlan(args: {
+  pathValue: string;
+  homeDir: string;
+  service: string;
+}): Promise<AutosyncRecoveryPreparedPlan | null> {
+  const { pathValue } = args;
+  try {
+    const metadata = await lstat(pathValue);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error(`Invalid autosync recovery plan path: ${pathValue}`);
+    }
+    const parsed = JSON.parse(await readFile(pathValue, "utf8")) as unknown;
+    const record =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    const plists = record?.plists;
+    const allowedPlistPaths = new Map([
+      [
+        autosyncLabel(args.service),
+        resolve(autosyncPlistPath(args.homeDir, args.service)),
+      ],
+      [
+        legacyAutosyncLabel(args.service),
+        resolve(
+          join(
+            args.homeDir,
+            "Library",
+            "LaunchAgents",
+            `${legacyAutosyncLabel(args.service)}.plist`
+          )
+        ),
+      ],
+    ]);
+    const seenLabels = new Set<string>();
+    const seenPaths = new Set<string>();
+    const validPlists =
+      Array.isArray(plists) &&
+      plists.length > 0 &&
+      plists.length <= allowedPlistPaths.size &&
+      plists.every((value) => {
+        if (!(value && typeof value === "object" && !Array.isArray(value))) {
+          return false;
+        }
+        const plist = value as Record<string, unknown>;
+        if (
+          typeof plist.label !== "string" ||
+          typeof plist.path !== "string" ||
+          typeof plist.hash !== "string" ||
+          !SHA256_RE.test(plist.hash)
+        ) {
+          return false;
+        }
+        const resolvedPath = resolve(plist.path);
+        if (
+          allowedPlistPaths.get(plist.label) !== resolvedPath ||
+          seenLabels.has(plist.label) ||
+          seenPaths.has(resolvedPath)
+        ) {
+          return false;
+        }
+        seenLabels.add(plist.label);
+        seenPaths.add(resolvedPath);
+        return true;
+      }) &&
+      (plists as Array<{ path: string }>).every(
+        (plist, index, all) =>
+          index === 0 ||
+          resolve(all[index - 1]?.path ?? "").localeCompare(
+            resolve(plist.path)
+          ) < 0
+      );
+    if (
+      record?.version === 1 &&
+      typeof record.rootDir === "string" &&
+      typeof record.service === "string" &&
+      typeof record.planId === "string" &&
+      RECOVERY_PLAN_ID_RE.test(
+        (record as Record<string, string>).planId ?? ""
+      ) &&
+      typeof record.configFingerprint === "string" &&
+      SHA256_RE.test(
+        (record as Record<string, string>).configFingerprint ?? ""
+      ) &&
+      validPlists &&
+      typeof record.preparedAt === "string"
+    ) {
+      return parsed as AutosyncRecoveryPreparedPlan;
+    }
+    throw new Error(`Invalid autosync recovery plan: ${pathValue}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export async function cleanupAutosyncRecovery(args: {
+  homeDir?: string;
+  rootDir: string;
+  service: string;
+  expectedPlanId: string;
+  approved: boolean;
+}): Promise<AutosyncRecoveryCleanupResult> {
+  const homeDir = args.homeDir ?? homedir();
+  const rootDir = resolve(args.rootDir);
+  const service = args.service.trim();
+  const expectedPlanId = args.expectedPlanId.trim();
+  if (!(service && RECOVERY_PLAN_ID_RE.test(expectedPlanId))) {
+    throw new Error(
+      "Autosync cleanup requires an explicit service and a 24-character lowercase hex expected plan id."
+    );
+  }
+  if (!args.approved) {
+    throw new Error(
+      `fclt autosync cleanup requires the explicit ${LEGACY_MANAGED_MUTATION_FLAG} flag from the current doctor action. Ambient environment approval is intentionally ignored.`
+    );
+  }
+
+  const receiptPath = autosyncRecoveryReceiptPath(
+    homeDir,
+    rootDir,
+    expectedPlanId
+  );
+  const planPath = autosyncRecoveryPlanPath(homeDir, rootDir, expectedPlanId);
+  return await withAutosyncMutationLock({
+    homeDir,
+    rootDir,
+    operation: `cleanup:${service}`,
+    fn: async () => {
+      const [previous, prepared, before] = await Promise.all([
+        loadAutosyncRecoveryReceipt(receiptPath),
+        loadAutosyncRecoveryPreparedPlan({
+          pathValue: planPath,
+          homeDir,
+          service,
+        }),
+        inspectAutosyncRecovery({ homeDir, rootDir }),
+      ]);
+      for (const record of [previous, prepared]) {
+        if (
+          record &&
+          (resolve(record.rootDir) !== rootDir ||
+            record.service !== service ||
+            record.planId !== expectedPlanId)
+        ) {
+          throw new Error(
+            `Autosync recovery record does not match the selected root and service: ${record === previous ? receiptPath : planPath}`
+          );
+        }
+      }
+      if (previous && resolve(previous.receiptPath) !== resolve(receiptPath)) {
+        throw new Error(
+          `Autosync recovery receipt path does not match its owned location: ${receiptPath}`
+        );
+      }
+      const labels = new Set(autosyncLabelCandidates(service));
+      const currentPlistSnapshots = before.plistSnapshots
+        .filter((plist) => labels.has(plist.label))
+        .sort((a, b) => a.path.localeCompare(b.path));
+      const hasOwnedRuntime =
+        before.ownedPlists.some((plist) => labels.has(plist.label)) ||
+        before.ownedLoadedLabels.some((label) => labels.has(label));
+      const serviceRecords = before.configured.filter(
+        (record) => record.service === service
+      );
+      const selected = serviceRecords.find(
+        (record) => record.state === "valid" && record.planId === expectedPlanId
+      );
+      if (prepared) {
+        if (before.configFingerprints[service] !== prepared.configFingerprint) {
+          throw new Error(
+            "Autosync recovery config changed after the cleanup plan was prepared; refusing to attest the stale plan. Run `fclt doctor --json` again."
+          );
+        }
+        const expectedPlists = new Map(
+          prepared.plists.map((plist) => [resolve(plist.path), plist] as const)
+        );
+        if (
+          currentPlistSnapshots.some((plist) => {
+            const expected = expectedPlists.get(resolve(plist.path));
+            return !(
+              expected &&
+              expected.label === plist.label &&
+              expected.hash === plist.hash
+            );
+          })
+        ) {
+          throw new Error(
+            "Autosync recovery plist state changed after the cleanup plan was prepared; refusing to continue the stale plan. Run `fclt doctor --json` again."
+          );
+        }
+      }
+      const unsafe =
+        before.coverage.configs !== "checked" ||
+        before.coverage.launchAgents !== "checked" ||
+        before.coverage.launchd === "unavailable" ||
+        before.orphanedLabels.length > 0 ||
+        serviceRecords.length === 0 ||
+        serviceRecords.some((record) => record.state !== "valid") ||
+        before.ownedLoadedLabels.some(
+          (label) =>
+            labels.has(label) &&
+            !currentPlistSnapshots.some((plist) => plist.label === label)
+        ) ||
+        before.reasonCodes.some((code) =>
+          [
+            "autosync_config_invalid",
+            "autosync_config_conflict",
+            "autosync_config_foreign_root",
+            "autosync_launch_agent_ownership_mismatch",
+            "autosync_loaded_root_mismatch",
+            "autosync_loaded_ownership_unproven",
+          ].includes(code)
+        );
+      if (unsafe) {
+        throw new Error(
+          "Autosync recovery state is incomplete or ambiguous; refusing cleanup. Review `fclt doctor --json`."
+        );
+      }
+      if (previous && !hasOwnedRuntime) {
+        return { ...previous, changed: false, alreadyApplied: true };
+      }
+      if (!hasOwnedRuntime) {
+        if (!prepared) {
+          throw new Error(
+            "Autosync recovery plan is stale or no cleanup is pending. Run `fclt doctor --json` and use the newly reported action."
+          );
+        }
+        const recoveredReceipt: AutosyncRecoveryCleanupResult = {
+          version: 1,
+          rootDir,
+          service,
+          planId: expectedPlanId,
+          changed: true,
+          alreadyApplied: false,
+          receiptPath,
+          appliedAt: new Date().toISOString(),
+          dispositions: [],
+          preserves: [
+            "canonical_capability",
+            "live_tool_state",
+            "managed_state",
+            "autosync_config",
+            "backups",
+          ],
+        };
+        const staged = await stageJsonFile(receiptPath, recoveredReceipt);
+        try {
+          await staged.commit();
+        } finally {
+          await staged.discard();
+        }
+        return recoveredReceipt;
+      }
+      if (!(selected || prepared)) {
+        throw new Error(
+          "Autosync recovery plan is stale or no longer matches owned files. Run `fclt doctor --json` and use the newly reported action."
+        );
+      }
+      let recoveryPlan = prepared;
+      if (!recoveryPlan) {
+        const configFingerprint = before.configFingerprints[service];
+        if (!(configFingerprint && SHA256_RE.test(configFingerprint))) {
+          throw new Error(
+            "Autosync recovery could not fingerprint the selected service config."
+          );
+        }
+        if (currentPlistSnapshots.length === 0) {
+          throw new Error(
+            "Autosync recovery could not bind the selected service to an owned LaunchAgent plist."
+          );
+        }
+        recoveryPlan = {
+          version: 1,
+          rootDir,
+          service,
+          planId: expectedPlanId,
+          configFingerprint,
+          plists: currentPlistSnapshots,
+          preparedAt: new Date().toISOString(),
+        };
+        const staged = await stageJsonFile(planPath, recoveryPlan);
+        try {
+          await staged.commit();
+        } finally {
+          await staged.discard();
+        }
+      }
+
+      const unloaded = await unloadAutosyncLaunchAgents({
+        homeDir,
+        rootDir,
+        serviceName: service,
+      });
+      const expectedPlists = new Map(
+        recoveryPlan.plists.map(
+          (plist) => [resolve(plist.path), plist] as const
+        )
+      );
+      for (const pathValue of unloaded.ownedPaths) {
+        const expected = expectedPlists.get(resolve(pathValue));
+        if (
+          !expected ||
+          unloaded.ownedHashes.get(pathValue) !== expected.hash
+        ) {
+          throw new Error(
+            `Autosync recovery LaunchAgent no longer matches the prepared plan: ${pathValue}`
+          );
+        }
+      }
+      await removeAutosyncLaunchAgentPlists(
+        unloaded.ownedPaths,
+        unloaded.ownedHashes
+      );
+      const after = await inspectAutosyncRecovery({ homeDir, rootDir });
+      if (
+        after.coverage.configs !== "checked" ||
+        after.coverage.launchAgents !== "checked" ||
+        after.coverage.launchd === "unavailable" ||
+        after.configFingerprints[service] !== recoveryPlan.configFingerprint ||
+        after.configured
+          .filter((record) => record.service === service)
+          .some((record) => record.state !== "valid") ||
+        after.ownedPlists.some((plist) => labels.has(plist.label)) ||
+        after.ownedLoadedLabels.some((label) => labels.has(label))
+      ) {
+        throw new Error(
+          "Autosync cleanup postflight could not prove the owned background service was contained."
+        );
+      }
+
+      const receipt: AutosyncRecoveryCleanupResult = {
+        version: 1,
+        rootDir,
+        service,
+        planId: expectedPlanId,
+        changed: unloaded.changed || unloaded.ownedPaths.size > 0,
+        alreadyApplied: false,
+        receiptPath,
+        appliedAt: new Date().toISOString(),
+        dispositions: [
+          ...(unloaded.changed ? (["launch_agent_unloaded"] as const) : []),
+          ...(unloaded.ownedPaths.size > 0
+            ? (["owned_plist_removed"] as const)
+            : []),
+        ],
+        preserves: [
+          "canonical_capability",
+          "live_tool_state",
+          "managed_state",
+          "autosync_config",
+          "backups",
+        ],
+      };
+      const staged = await stageJsonFile(receiptPath, receipt);
+      try {
+        await staged.commit();
+      } finally {
+        await staged.discard();
+      }
+      return receipt;
+    },
+  });
 }
 
 export async function autosyncStatus(args: {
@@ -2016,6 +3486,40 @@ async function autosyncCommandWithScope(
       throw new Error(
         "Background autosync installation is disabled while broad managed mutation is contained. Use autosync status or uninstall; a reviewed one-time migration may use autosync run --once with explicit approval."
       );
+    }
+
+    if (sub === "cleanup") {
+      if (!parsed.rootArg && parsed.scope === "merged") {
+        throw new Error(
+          "Autosync cleanup requires an explicit --root, --global, or --project selection."
+        );
+      }
+      const service = parseAutosyncStringFlag(parsed.argv, "--service");
+      const expectedPlanId = parseAutosyncStringFlag(
+        parsed.argv,
+        "--expected-plan"
+      );
+      if (!(service && expectedPlanId)) {
+        throw new Error(
+          "Autosync cleanup requires --service and --expected-plan from the current doctor report."
+        );
+      }
+      const result = await cleanupAutosyncRecovery({
+        homeDir: home,
+        rootDir,
+        service,
+        expectedPlanId,
+        approved: parsed.argv.includes(LEGACY_MANAGED_MUTATION_FLAG),
+      });
+      if (parsed.argv.includes("--json")) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (result.alreadyApplied) {
+        console.log(`Autosync recovery already applied: ${result.planId}`);
+      } else {
+        console.log(`Contained autosync service: ${result.service}`);
+        console.log(`Recovery receipt: ${result.receiptPath}`);
+      }
+      return;
     }
 
     if (sub === "uninstall") {

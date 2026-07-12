@@ -13,7 +13,12 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
-import { buildLaunchAgentPlist, buildLaunchAgentSpec } from "./autosync";
+import {
+  buildLaunchAgentPlist,
+  buildLaunchAgentSpec,
+  setLaunchctlRunnerForTests,
+  setLaunchctlSupportedForTests,
+} from "./autosync";
 import { buildDoctorReport } from "./doctor";
 import { enableEvolutionLoop } from "./evolution-loop";
 import {
@@ -32,6 +37,316 @@ import {
   facultMachineStateDir,
 } from "./paths";
 
+test("doctor keeps fresh homes clear when launchd inspection is unavailable", async () => {
+  const home = await mkdtemp(join(tmpdir(), "facult-doctor-fresh-launchd-"));
+  const rootDir = join(home, ".ai");
+
+  try {
+    await mkdir(rootDir, { recursive: true });
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(() =>
+      Promise.resolve({ exitCode: 1, stdout: "", stderr: "unavailable" })
+    );
+
+    const report = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+
+    expect(report.legacyRecovery.state).toBe("clear");
+    expect(report.legacyRecovery.coverage.launchd).toBe("unavailable");
+    expect(report.legacyRecovery.reasonCodes).toContain(
+      "autosync_launchd_inspection_unavailable"
+    );
+    expect(report.legacyRecovery.recovery.actions).toEqual([]);
+    expect(report.health.state).not.toBe("legacy_state_attention");
+  } finally {
+    setLaunchctlRunnerForTests(null);
+    setLaunchctlSupportedForTests(null);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor blocks configured autosync when launchd inspection is unavailable", async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), "facult-doctor-configured-launchd-")
+  );
+  const rootDir = join(home, ".ai");
+  const serviceName = "all";
+  const configPath = join(
+    facultMachineStateDir(home, rootDir),
+    "autosync",
+    "services",
+    `${serviceName}.json`
+  );
+
+  try {
+    await mkdir(rootDir, { recursive: true });
+    await writeJson(configPath, {
+      version: 1,
+      name: serviceName,
+      rootDir,
+      debounceMs: 100,
+      git: {
+        enabled: false,
+        remote: "origin",
+        branch: "main",
+        intervalMinutes: 60,
+        autoCommit: false,
+        commitPrefix: "test",
+        source: "local",
+      },
+    });
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests(() =>
+      Promise.resolve({ exitCode: 1, stdout: "", stderr: "unavailable" })
+    );
+
+    const report = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+
+    expect(report.legacyRecovery.state).toBe("blocked");
+    expect(report.legacyRecovery.coverage.launchd).toBe("unavailable");
+    expect(report.legacyRecovery.recovery.actions).toEqual([]);
+    expect(report.health.ok).toBe(false);
+    expect(report.issues.map((issue) => issue.code)).toContain(
+      "legacy-recovery-manual-review-required"
+    );
+  } finally {
+    setLaunchctlRunnerForTests(null);
+    setLaunchctlSupportedForTests(null);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports legacy recovery coverage without mutating owned state", async () => {
+  const home = await mkdtemp(join(tmpdir(), "facult-doctor-recovery-"));
+  const rootDir = join(home, ".ai");
+  const serviceName = "all";
+  const configPath = join(
+    facultMachineStateDir(home, rootDir),
+    "autosync",
+    "services",
+    `${serviceName}.json`
+  );
+  const managedPath = join(
+    facultMachineStateDir(home, rootDir),
+    "managed.json"
+  );
+  const plistPath = join(
+    home,
+    "Library",
+    "LaunchAgents",
+    "com.fclt.autosync.plist"
+  );
+  try {
+    await mkdir(join(rootDir, "mcp"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "mcp", "servers.json"),
+      `${JSON.stringify({ servers: {} }, null, 2)}\n`
+    );
+    await writeJson(managedPath, {
+      version: 1,
+      tools: { codex: { privatePath: "/must-not-leak" } },
+    });
+    await writeJson(configPath, {
+      version: 1,
+      name: serviceName,
+      rootDir,
+      debounceMs: 100,
+      git: {
+        enabled: false,
+        remote: "private-remote-must-not-leak",
+        branch: "main",
+        intervalMinutes: 60,
+        autoCommit: false,
+        commitPrefix: "test",
+        source: "private-host-must-not-leak",
+      },
+    });
+
+    const contained = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    expect(contained.legacyRecovery).toMatchObject({
+      state: "contained",
+      mutationPolicy: "disabled_by_default",
+      coverage: {
+        managed: "checked",
+        autosyncConfigs: "checked",
+        launchAgents: "checked",
+      },
+      managed: {
+        records: [
+          {
+            path: managedPath,
+            location: "machine",
+            state: "valid",
+            tools: ["codex"],
+          },
+        ],
+      },
+      recovery: { boundary: "none", actions: [] },
+    });
+    expect(JSON.stringify(contained.legacyRecovery)).not.toContain(
+      "must-not-leak"
+    );
+
+    await mkdir(dirname(plistPath), { recursive: true });
+    await Bun.write(plistPath, doctorAutosyncPlist(home, rootDir, serviceName));
+    let loaded = true;
+    setLaunchctlSupportedForTests(true);
+    setLaunchctlRunnerForTests((args) => {
+      if (args[0] === "list") {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: loaded ? "-\t0\tcom.fclt.autosync\n" : "",
+          stderr: "",
+        });
+      }
+      if (args[0] === "print" && loaded) {
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: `working directory = ${rootDir}\n`,
+          stderr: "",
+        });
+      }
+      return Promise.resolve({
+        exitCode: 113,
+        stdout: "",
+        stderr: "Could not find service",
+      });
+    });
+    const beforeBytes = await Promise.all(
+      [managedPath, configPath, plistPath].map((pathValue) =>
+        readFile(pathValue, "utf8")
+      )
+    );
+    const first = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    const second = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    expect(first.legacyRecovery.state).toBe("cleanup_required");
+    expect(first.health).toEqual({
+      state: "legacy_state_attention",
+      ok: false,
+    });
+    expect(first.legacyRecovery.recovery.actions).toHaveLength(1);
+    expect(first.legacyRecovery.recovery.actions[0]?.argv).toEqual([
+      "fclt",
+      "autosync",
+      "cleanup",
+      "--service",
+      serviceName,
+      "--expected-plan",
+      expect.any(String),
+      "--global",
+      "--root",
+      rootDir,
+      LEGACY_MANAGED_MUTATION_FLAG,
+      "--json",
+    ]);
+    expect(second.legacyRecovery).toEqual(first.legacyRecovery);
+    expect(
+      await Promise.all(
+        [managedPath, configPath, plistPath].map((pathValue) =>
+          readFile(pathValue, "utf8")
+        )
+      )
+    ).toEqual(beforeBytes);
+    loaded = false;
+  } finally {
+    setLaunchctlRunnerForTests(null);
+    setLaunchctlSupportedForTests(null);
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor blocks orphaned autosync runtime without emitting cleanup", async () => {
+  const home = await mkdtemp(join(tmpdir(), "facult-doctor-recovery-orphan-"));
+  const rootDir = join(home, ".ai");
+  const plistPath = join(
+    home,
+    "Library",
+    "LaunchAgents",
+    "com.fclt.autosync.plist"
+  );
+  try {
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(dirname(plistPath), { recursive: true });
+    await Bun.write(plistPath, doctorAutosyncPlist(home, rootDir, "all"));
+    const before = await readFile(plistPath, "utf8");
+    const report = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    expect(report.legacyRecovery.state).toBe("blocked");
+    expect(report.legacyRecovery.reasonCodes).toContain(
+      "autosync_orphaned_runtime"
+    );
+    expect(report.legacyRecovery.recovery).toMatchObject({
+      boundary: "manual_review",
+      actions: [],
+    });
+    expect(
+      report.actions.some((action) => action.id.includes("autosync"))
+    ).toBe(false);
+    expect(await readFile(plistPath, "utf8")).toBe(before);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("doctor blocks malformed or comment-spoofed orphan launch artifacts", async () => {
+  const home = await mkdtemp(
+    join(tmpdir(), "facult-doctor-recovery-malformed-")
+  );
+  const rootDir = join(home, ".ai");
+  const plistPath = join(
+    home,
+    "Library",
+    "LaunchAgents",
+    "com.fclt.autosync.plist"
+  );
+  try {
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(dirname(plistPath), { recursive: true });
+    const spoof = doctorAutosyncPlist(home, rootDir, "all");
+    await Bun.write(
+      plistPath,
+      `<!-- ${spoof.replaceAll("--", "-")} -->\n<plist><dict><key>Label</key><string>com.fclt.autosync</string></dict></plist>\n`
+    );
+    const before = await readFile(plistPath, "utf8");
+    const report = await buildDoctorReport({
+      homeDir: home,
+      rootArg: rootDir,
+      scope: "global",
+    });
+    expect(report.legacyRecovery.state).toBe("blocked");
+    expect(report.legacyRecovery.coverage.launchAgents).toBe("unavailable");
+    expect(report.legacyRecovery.reasonCodes).toContain(
+      "autosync_launch_agent_inspection_unavailable"
+    );
+    expect(report.legacyRecovery.recovery.actions).toEqual([]);
+    expect(await readFile(plistPath, "utf8")).toBe(before);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 function doctorAutosyncPlist(
   homeDir: string,
   rootDir: string,
@@ -44,6 +359,25 @@ function doctorAutosyncPlist(
       serviceName,
       invocation: [join(homeDir, "bin", "fclt")],
     })
+  );
+}
+
+function doctorLegacyAutosyncPlist(
+  homeDir: string,
+  rootDir: string,
+  serviceName: string
+): string {
+  const currentLabel =
+    serviceName === "all"
+      ? "com.fclt.autosync"
+      : `com.fclt.autosync.${serviceName}`;
+  const legacyLabel =
+    serviceName === "all"
+      ? "com.facult.autosync"
+      : `com.facult.autosync.${serviceName}`;
+  return doctorAutosyncPlist(homeDir, rootDir, serviceName).replace(
+    `<string>${currentLabel}</string>`,
+    `<string>${legacyLabel}</string>`
   );
 }
 
@@ -457,7 +791,10 @@ test("doctor preflights legacy autosync before any repair writes", async () => {
       },
     });
     await mkdir(dirname(legacyPlist), { recursive: true });
-    await Bun.write(legacyPlist, doctorAutosyncPlist(dir, aiRoot, serviceName));
+    await Bun.write(
+      legacyPlist,
+      doctorLegacyAutosyncPlist(dir, aiRoot, serviceName)
+    );
     const isolatedLaunchctl = await installIsolatedLaunchctl(dir, aiRoot);
 
     const env: NodeJS.ProcessEnv = {
@@ -621,7 +958,7 @@ test("doctor --repair preserves an explicit custom global root and state scope",
     await mkdir(dirname(legacyPlist), { recursive: true });
     await Bun.write(
       legacyPlist,
-      doctorAutosyncPlist(home, rootDir, serviceName)
+      doctorLegacyAutosyncPlist(home, rootDir, serviceName)
     );
     const isolatedLaunchctl = await installIsolatedLaunchctl(home, rootDir);
     const env = {
@@ -699,7 +1036,10 @@ test("doctor stops before all repair writes for an orphaned autosync plist", asy
       rootDir: join(home, "agents", ".facult"),
     });
     await mkdir(dirname(plistPath), { recursive: true });
-    await Bun.write(plistPath, doctorAutosyncPlist(home, rootDir, serviceName));
+    await Bun.write(
+      plistPath,
+      doctorLegacyAutosyncPlist(home, rootDir, serviceName)
+    );
     const before = await readFile(plistPath, "utf8");
     const isolatedLaunchctl = await installIsolatedLaunchctl(home, rootDir);
     const env: NodeJS.ProcessEnv = {
