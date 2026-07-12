@@ -523,9 +523,15 @@ test("doctor preflights legacy autosync before any repair writes", async () => {
     expect(await Bun.file(repairedConfig).exists()).toBe(true);
     expect(await Bun.file(serviceConfig).exists()).toBe(false);
     expect(await Bun.file(legacyPlist).exists()).toBe(false);
-    expect(await readFile(isolatedLaunchctl.logPath, "utf8")).toContain(
-      "bootout"
+    const approvedLaunchctlLog = await readFile(
+      isolatedLaunchctl.logPath,
+      "utf8"
     );
+    if (process.platform === "darwin") {
+      expect(approvedLaunchctlLog).toContain("bootout");
+    } else {
+      expect(approvedLaunchctlLog).not.toContain("bootout");
+    }
     expect(
       await Bun.file(
         join(
@@ -657,9 +663,12 @@ test("doctor --repair preserves an explicit custom global root and state scope",
     };
     expect(preserved.rootDir).toBe(rootDir);
     expect(await Bun.file(legacyPlist).exists()).toBe(false);
-    expect(await readFile(isolatedLaunchctl.logPath, "utf8")).toContain(
-      "bootout"
-    );
+    const launchctlLog = await readFile(isolatedLaunchctl.logPath, "utf8");
+    if (process.platform === "darwin") {
+      expect(launchctlLog).toContain("bootout");
+    } else {
+      expect(launchctlLog).not.toContain("bootout");
+    }
     expect(await Bun.file(join(stateRoot, "projects")).exists()).toBe(false);
     expect(
       await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
@@ -672,11 +681,16 @@ test("doctor --repair preserves an explicit custom global root and state scope",
   }
 }, 15_000);
 
-test("doctor stops before all repair writes for an orphaned loaded autosync service", async () => {
+test("doctor stops before all repair writes for an orphaned autosync plist", async () => {
   const home = await mkdtemp(join(tmpdir(), "facult-doctor-orphan-"));
   const rootDir = join(home, ".ai");
   const serviceName = "doctor-orphan-test";
-  const label = `com.facult.autosync.${serviceName}`;
+  const plistPath = join(
+    home,
+    "Library",
+    "LaunchAgents",
+    `com.facult.autosync.${serviceName}.plist`
+  );
   const repairedRootConfig = join(rootDir, ".facult", "config.json");
 
   try {
@@ -684,6 +698,9 @@ test("doctor stops before all repair writes for an orphaned loaded autosync serv
     await writeJson(join(home, ".facult", "config.json"), {
       rootDir: join(home, "agents", ".facult"),
     });
+    await mkdir(dirname(plistPath), { recursive: true });
+    await Bun.write(plistPath, doctorAutosyncPlist(home, rootDir, serviceName));
+    const before = await readFile(plistPath, "utf8");
     const isolatedLaunchctl = await installIsolatedLaunchctl(home, rootDir);
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -691,7 +708,6 @@ test("doctor stops before all repair writes for an orphaned loaded autosync serv
       PATH: `${isolatedLaunchctl.binDir}${delimiter}${process.env.PATH ?? ""}`,
       FCLT_TEST_LAUNCHCTL_LOG: isolatedLaunchctl.logPath,
       FCLT_TEST_LAUNCHCTL_ROOT: isolatedLaunchctl.rootDir,
-      FCLT_TEST_LAUNCHCTL_LABEL: label,
     };
     const repair = Bun.spawn(
       [
@@ -713,115 +729,122 @@ test("doctor stops before all repair writes for an orphaned loaded autosync serv
     ]);
 
     expect(code).toBe(1);
-    expect(stderr).toContain("root-owned orphaned loaded autosync service");
+    expect(stderr).toContain("root-owned orphaned autosync LaunchAgent");
+    expect(await readFile(plistPath, "utf8")).toBe(before);
     expect(await Bun.file(repairedRootConfig).exists()).toBe(false);
     expect(
       await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
     ).toBe(false);
-    const launchctlLog = await readFile(isolatedLaunchctl.logPath, "utf8");
-    expect(launchctlLog).toContain("list");
-    expect(launchctlLog).toContain(label);
-    expect(launchctlLog).not.toContain("bootout");
+    expect(
+      await readFile(isolatedLaunchctl.logPath, "utf8").catch(() => "")
+    ).toBe("");
   } finally {
     await rm(home, { recursive: true, force: true });
   }
 }, 15_000);
 
-test("doctor stops before other repair writes when autosync unload fails", async () => {
-  const home = await mkdtemp(join(tmpdir(), "facult-doctor-unload-fail-"));
-  const rootDir = join(home, ".ai");
-  const serviceName = "doctor-unload-fail-test";
-  const serviceConfig = join(
-    rootDir,
-    ".facult",
-    "autosync",
-    "services",
-    `${serviceName}.json`
-  );
-  const plistPath = join(
-    home,
-    "Library",
-    "LaunchAgents",
-    `com.fclt.autosync.${serviceName}.plist`
-  );
-  const legacyRootConfig = join(home, ".facult", "config.json");
-  const repairedRootConfig = join(rootDir, ".facult", "config.json");
-  const fakeBin = join(home, "bin");
-  const fakeLaunchctl = join(fakeBin, "launchctl");
-
-  try {
-    await writeJson(legacyRootConfig, {
-      rootDir: join(home, "agents", ".facult"),
-    });
-    await writeJson(serviceConfig, {
-      version: 1,
-      name: serviceName,
+test.skipIf(process.platform !== "darwin")(
+  "doctor stops before other repair writes when autosync unload fails",
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-doctor-unload-fail-"));
+    const rootDir = join(home, ".ai");
+    const serviceName = "doctor-unload-fail-test";
+    const serviceConfig = join(
       rootDir,
-      debounceMs: 100,
-      git: {
-        enabled: false,
-        remote: "origin",
-        branch: "main",
-        intervalMinutes: 60,
-        autoCommit: false,
-        commitPrefix: "test",
-        source: "test",
-      },
-    });
-    await mkdir(dirname(plistPath), { recursive: true });
-    await Bun.write(plistPath, doctorAutosyncPlist(home, rootDir, serviceName));
-    await mkdir(fakeBin, { recursive: true });
-    await Bun.write(
-      fakeLaunchctl,
-      [
-        "#!/bin/sh",
-        'if [ "$1" = "print" ]; then printf "working directory = %s\\n" "$FCLT_TEST_LAUNCHCTL_ROOT"; exit 0; fi',
-        'if [ "$1" = "bootout" ]; then echo "still loaded" >&2; exit 9; fi',
-        "exit 0",
-        "",
-      ].join("\n")
+      ".facult",
+      "autosync",
+      "services",
+      `${serviceName}.json`
     );
-    await chmod(fakeLaunchctl, 0o755);
-    const configBefore = await readFile(serviceConfig, "utf8");
-    const plistBefore = await readFile(plistPath, "utf8");
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      HOME: home,
-      PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
-      FCLT_TEST_LAUNCHCTL_ROOT: rootDir,
-    };
-    env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
-    const repair = Bun.spawn(
-      [
-        "bun",
-        "run",
-        "./src/index.ts",
-        "doctor",
-        "--repair",
-        "--global",
-        "--root",
-        rootDir,
-        LEGACY_MANAGED_MUTATION_FLAG,
-      ],
-      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    const plistPath = join(
+      home,
+      "Library",
+      "LaunchAgents",
+      `com.fclt.autosync.${serviceName}.plist`
     );
-    const [code, stderr] = await Promise.all([
-      repair.exited,
-      new Response(repair.stderr).text(),
-    ]);
+    const legacyRootConfig = join(home, ".facult", "config.json");
+    const repairedRootConfig = join(rootDir, ".facult", "config.json");
+    const fakeBin = join(home, "bin");
+    const fakeLaunchctl = join(fakeBin, "launchctl");
 
-    expect(code).toBe(1);
-    expect(stderr).toContain("Unable to unload autosync service");
-    expect(await readFile(serviceConfig, "utf8")).toBe(configBefore);
-    expect(await readFile(plistPath, "utf8")).toBe(plistBefore);
-    expect(await Bun.file(repairedRootConfig).exists()).toBe(false);
-    expect(
-      await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
-    ).toBe(false);
-  } finally {
-    await rm(home, { recursive: true, force: true });
-  }
-}, 15_000);
+    try {
+      await writeJson(legacyRootConfig, {
+        rootDir: join(home, "agents", ".facult"),
+      });
+      await writeJson(serviceConfig, {
+        version: 1,
+        name: serviceName,
+        rootDir,
+        debounceMs: 100,
+        git: {
+          enabled: false,
+          remote: "origin",
+          branch: "main",
+          intervalMinutes: 60,
+          autoCommit: false,
+          commitPrefix: "test",
+          source: "test",
+        },
+      });
+      await mkdir(dirname(plistPath), { recursive: true });
+      await Bun.write(
+        plistPath,
+        doctorAutosyncPlist(home, rootDir, serviceName)
+      );
+      await mkdir(fakeBin, { recursive: true });
+      await Bun.write(
+        fakeLaunchctl,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "print" ]; then printf "working directory = %s\\n" "$FCLT_TEST_LAUNCHCTL_ROOT"; exit 0; fi',
+          'if [ "$1" = "bootout" ]; then echo "still loaded" >&2; exit 9; fi',
+          "exit 0",
+          "",
+        ].join("\n")
+      );
+      await chmod(fakeLaunchctl, 0o755);
+      const configBefore = await readFile(serviceConfig, "utf8");
+      const plistBefore = await readFile(plistPath, "utf8");
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HOME: home,
+        PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        FCLT_TEST_LAUNCHCTL_ROOT: rootDir,
+      };
+      env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
+      const repair = Bun.spawn(
+        [
+          "bun",
+          "run",
+          "./src/index.ts",
+          "doctor",
+          "--repair",
+          "--global",
+          "--root",
+          rootDir,
+          LEGACY_MANAGED_MUTATION_FLAG,
+        ],
+        { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+      );
+      const [code, stderr] = await Promise.all([
+        repair.exited,
+        new Response(repair.stderr).text(),
+      ]);
+
+      expect(code).toBe(1);
+      expect(stderr).toContain("Unable to unload autosync service");
+      expect(await readFile(serviceConfig, "utf8")).toBe(configBefore);
+      expect(await readFile(plistPath, "utf8")).toBe(plistBefore);
+      expect(await Bun.file(repairedRootConfig).exists()).toBe(false);
+      expect(
+        await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
+      ).toBe(false);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+  15_000
+);
 
 test("doctor --repair migrates legacy codex skill and plugin layouts into .agents and plugins", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-doctor-codex-layout-"));
