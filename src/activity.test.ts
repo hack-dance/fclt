@@ -382,6 +382,9 @@ describe("activity feed", () => {
     const encodedPlainPath = "%252FUsers%252Fexample%252Fprivate%252Frepo";
     const encodedWindowsPath = "C%3A%5CUsers%5Cexample%5Cprivate%5Crepo";
     const bareHomePath = "home/example/.ssh/id_rsa";
+    const encodedKeyValuePath = "path=%2Fworkspace%2Ffclt";
+    const encodedKeyValueWindowsPath = "cwd=C%3A%5Cworkspace%5Cfclt";
+    const doubleEncodedKeyValuePath = "root=%252Fopt%252Fapp";
     const unsafeReview = review();
     unsafeReview.signals[0] = {
       ...unsafeReview.signals[0]!,
@@ -389,13 +392,13 @@ describe("activity feed", () => {
       dispositionTarget: windowsPath,
     };
     const unsafeWriteback = writeback("WB-00001", "internal");
-    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}; source ${encodedLocalUrl}; path ${encodedPlainPath}`;
+    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}; source ${encodedLocalUrl}; path ${encodedPlainPath}; kv ${encodedKeyValuePath}`;
     unsafeWriteback.capture = {
       ...unsafeWriteback.capture!,
-      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}; raw ${rawLocalUrl}; encoded ${encodedWindowsPath}`,
+      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}; raw ${rawLocalUrl}; encoded ${encodedWindowsPath}; cwd ${encodedKeyValueWindowsPath}`,
       impact: "Could not read ~/private/config",
       attemptedWorkaround: "Opened file:///Users/example/private/repo/config",
-      desiredOutcome: `No path from ${unixPath}; JWT ${jwt}; home ${bareHomePath}`,
+      desiredOutcome: `No path from ${unixPath}; JWT ${jwt}; home ${bareHomePath}; root ${doubleEncodedKeyValuePath}`,
     };
     const unsafeReport = report({
       coverage: [
@@ -440,6 +443,9 @@ describe("activity feed", () => {
       encodedPlainPath,
       encodedWindowsPath,
       bareHomePath,
+      encodedKeyValuePath,
+      encodedKeyValueWindowsPath,
+      doubleEncodedKeyValuePath,
     ]) {
       expect(portable).not.toContain(secret);
     }
@@ -450,6 +456,9 @@ describe("activity feed", () => {
       encodedPlainPath,
       encodedWindowsPath,
       bareHomePath,
+      encodedKeyValuePath,
+      encodedKeyValueWindowsPath,
+      doubleEncodedKeyValuePath,
     ]) {
       expect(redactPortableActivityText(`scrub ${unsafePath}`)).toBe(
         "scrub <redacted-path>"

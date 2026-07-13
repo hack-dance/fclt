@@ -1262,8 +1262,19 @@ describe("Codex plugin capability matrix", () => {
     expect(matrix.generatedFrom.packageVersion).toBe(packageJson.version);
     expect(matrix.generatedFrom.pluginVersion).toBe(pluginJson.version);
     expect(packageJson.scripts.version).toBe(
-      "bun run scripts/sync-release-metadata.ts"
+      "bun run scripts/sync-release-metadata.mjs"
     );
+    const npmPluginIndex = releaseConfig.plugins.findIndex(
+      (plugin) => Array.isArray(plugin) && plugin[0] === "@semantic-release/npm"
+    );
+    const metadataPluginIndex = releaseConfig.plugins.indexOf(
+      "./scripts/sync-release-metadata.mjs"
+    );
+    const gitPluginIndex = releaseConfig.plugins.findIndex(
+      (plugin) => Array.isArray(plugin) && plugin[0] === "@semantic-release/git"
+    );
+    expect(metadataPluginIndex).toBeGreaterThan(npmPluginIndex);
+    expect(metadataPluginIndex).toBeLessThan(gitPluginIndex);
     expect(
       releaseConfig.plugins.find(
         (plugin): plugin is [string, { assets?: string[] }] =>
