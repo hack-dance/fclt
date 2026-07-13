@@ -232,6 +232,14 @@ describe("activity feed", () => {
           {
             sourceUri: "https://logs.example/C:/Users/example/private/repo",
           },
+          {
+            sourceUri:
+              "https://logs.example/run//Users/example/private/repo/log.txt",
+          },
+          {
+            sourceUri:
+              "https://logs.example/run/C:/Users/example/private/repo/log.txt",
+          },
         ],
       },
       {

@@ -31,7 +31,8 @@ const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
 const URL_METADATA_SEPARATOR_RE = /[?#]/;
 const ENCODED_PATH_SEPARATOR_RE = /%(?:2f|5c)/i;
 const LOCAL_URL_PATH_RE =
-  /^\/(?:(?:Users|home|tmp|Volumes)(?:\/|$)|private\/(?:var|tmp)(?:\/|$)|var\/(?:folders|tmp)(?:\/|$)|[A-Za-z]:(?:\/|$)|~(?:\/|$)|\/)/i;
+  /(?:^|\/)(?:(?:Users|home|tmp|Volumes)(?:\/|$)|private\/(?:var|tmp)(?:\/|$)|var\/(?:folders|tmp)(?:\/|$)|[A-Za-z]:(?:\/|$)|~(?:\/|$))/i;
+const DOUBLE_PATH_SEPARATOR_RE = /\/\//;
 const WINDOWS_DRIVE_SELECTOR_RE = /^[A-Za-z]:\//;
 const FILE_SELECTOR_RE = /^file:/i;
 const HTTP_SELECTOR_RE = /^https?:/i;
@@ -374,7 +375,10 @@ function safeActivityLink(value: string): string | null {
       }
       decodedPathname = next;
     }
-    if (LOCAL_URL_PATH_RE.test(decodedPathname)) {
+    if (
+      DOUBLE_PATH_SEPARATOR_RE.test(decodedPathname) ||
+      LOCAL_URL_PATH_RE.test(decodedPathname)
+    ) {
       return null;
     }
     // Query strings are not portable evidence: signed URLs use many
