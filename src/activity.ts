@@ -29,6 +29,7 @@ const HOME_RELATIVE_PATH_RE = /(^|[\s([{:="'`])~[\\/][^\s)\]}>"'`,;]+/g;
 const POSIX_ABSOLUTE_PATH_RE = /(^|[\s([{:="'`])\/(?!\/)[^\s)\]}>"'`,;]+/g;
 const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
 const URL_METADATA_SEPARATOR_RE = /[?#]/;
+const ENCODED_PATH_SEPARATOR_RE = /%(?:2f|5c)/i;
 const WINDOWS_DRIVE_SELECTOR_RE = /^[A-Za-z]:\//;
 const FILE_SELECTOR_RE = /^file:/i;
 const HTTP_SELECTOR_RE = /^https?:/i;
@@ -353,6 +354,23 @@ function safeActivityLink(value: string): string | null {
     }
     if (parsed.username || parsed.password) {
       return null;
+    }
+    let decodedPathname = parsed.pathname;
+    for (
+      let remaining = parsed.pathname.length;
+      remaining > 0;
+      remaining -= 1
+    ) {
+      // Encoded separators can hide absolute machine paths at any encoding
+      // depth. Decode until stable and fail closed before publishing the URL.
+      if (ENCODED_PATH_SEPARATOR_RE.test(decodedPathname)) {
+        return null;
+      }
+      const next = decodeURIComponent(decodedPathname);
+      if (next === decodedPathname) {
+        break;
+      }
+      decodedPathname = next;
     }
     // Query strings are not portable evidence: signed URLs use many
     // provider-specific credential keys, so an allowlist would fail open.

@@ -218,6 +218,14 @@ describe("activity feed", () => {
               "https://example.com/work/123?path=/Users/example/private/repo",
           },
           { sourceUri: "https://example.com/work/123" },
+          {
+            sourceUri:
+              "https://logs.example/%2FUsers%2Fexample%2Fprivate%2Frepo",
+          },
+          {
+            sourceUri:
+              "https://logs.example/%252FUsers%252Fexample%252Fprivate%252Frepo",
+          },
         ],
       },
       {
