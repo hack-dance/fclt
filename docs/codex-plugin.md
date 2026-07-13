@@ -54,10 +54,10 @@ preview, precondition, verification, and rollback contracts.
 
 The evolution-loop actions exposed through `fclt_automation` are
 `loop_status` and `loop_preview`. Both require an explicit scope;
-`loop_preview` uses the latest completed reconciliation review and does not
-write state. Enabling, disabling, or manually running the scheduler remains a
-CLI-only operation. The router accepts no raw argv, credentials, endpoints, or
-external mutation fields.
+`loop_preview` performs a fresh incremental scan of configured sources without
+advancing cursors or writing reconciliation or loop state. Enabling, disabling,
+or manually running the scheduler remains a CLI-only operation. The router
+accepts no raw argv, credentials, endpoints, or external mutation fields.
 
 ## Install In Codex
 

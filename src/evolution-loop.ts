@@ -34,11 +34,7 @@ import {
   projectRootFromAiRoot,
   withFacultRootScope,
 } from "./paths";
-import {
-  latestReconciliationReview,
-  reconcileSources,
-  reconciliationStatus,
-} from "./reconciliation";
+import { reconcileSources, reconciliationStatus } from "./reconciliation";
 import type {
   CorrelatedSignal,
   ReconciliationReview,
@@ -1925,40 +1921,35 @@ async function runEvolutionLoopScoped(args: {
     const until = args.until ?? generatedAt;
     const attempts: EvolutionLoopReport["attempts"] = [];
     let review: ReconciliationReview | null = null;
-    if (args.dryRun) {
-      review = await latestReconciliationReview(args);
-      if (!review) {
-        throw new Error(
-          "Loop preview requires an existing reconciliation review; run a normal loop after setup first"
-        );
-      }
-    } else {
-      for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
-        try {
-          review = await reconcileSources({
-            homeDir: args.homeDir,
-            rootDir: args.rootDir,
-            since,
-            until,
-            sourceIds:
-              args.sourceIds && args.sourceIds.length > 0
-                ? args.sourceIds
-                : config.sourceIds,
-            incremental: true,
-          });
-          attempts.push({ attempt, ok: true });
-          break;
-        } catch (error) {
-          attempts.push({
-            attempt,
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+    for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+      try {
+        review = await reconcileSources({
+          homeDir: args.homeDir,
+          rootDir: args.rootDir,
+          since,
+          until,
+          sourceIds:
+            args.sourceIds && args.sourceIds.length > 0
+              ? args.sourceIds
+              : config.sourceIds,
+          incremental: true,
+          persist: !args.dryRun,
+        });
+        attempts.push({ attempt, ok: true });
+        break;
+      } catch (error) {
+        attempts.push({
+          attempt,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     if (!review) {
       const message = attempts.at(-1)?.error ?? "Reconciliation failed";
+      if (args.dryRun) {
+        throw new Error(message);
+      }
       return await persistFailedLoopRun({
         homeDir: args.homeDir,
         rootDir: args.rootDir,

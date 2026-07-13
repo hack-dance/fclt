@@ -281,6 +281,58 @@ describe("source reconciliation", () => {
     ).toBeNull();
   });
 
+  it("scans current sources without persisting preview state or artifacts", async () => {
+    const fixture = await makeFixture();
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      `${JSON.stringify({
+        version: 1,
+        sources: [
+          {
+            id: "review-notes",
+            type: "markdown",
+            root: "project",
+            paths: ["review.md"],
+          },
+        ],
+      })}\n`
+    );
+    const reviewPath = join(fixture.projectRoot, "review.md");
+    await Bun.write(
+      reviewPath,
+      "## Setup friction\n\nThe setup instructions need a reusable recovery step.\n"
+    );
+    const changedAt = new Date("2026-07-10T16:30:00.000Z");
+    await utimes(reviewPath, changedAt, changedAt);
+
+    const preview = await reconcileSources({
+      ...fixture,
+      since: "2026-07-10T00:00:00.000Z",
+      until: "2026-07-11T00:00:00.000Z",
+      incremental: true,
+      persist: false,
+    });
+
+    expect(preview.coverage[0]).toMatchObject({
+      sourceId: "review-notes",
+      state: "changed",
+      recordsScanned: 1,
+      watermarkAfter: changedAt.toISOString(),
+    });
+    expect(preview.signals.length).toBeGreaterThan(0);
+    expect(
+      await Bun.file(
+        facultAiReconciliationStatePath(fixture.homeDir, fixture.rootDir)
+      ).exists()
+    ).toBe(false);
+    expect(
+      await Bun.file(
+        facultAiReconciliationReviewDir(fixture.homeDir, fixture.rootDir)
+      ).exists()
+    ).toBe(false);
+    expect(await latestReconciliationReview(fixture)).toBeNull();
+  });
+
   it("recovers the writeback cluster without ticket proposal spam and is idempotent", async () => {
     const fixture = await makeFixture();
     await writeQueue(fixture);

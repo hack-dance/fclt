@@ -23,10 +23,17 @@ describe("sync release metadata", () => {
     await Bun.write(join(repoRoot, "package.json"), '{"version":"3.4.5"}\n');
     await Bun.write(
       join(docsDir, "codex-plugin-capability-matrix.json"),
-      JSON.stringify({
-        generatedFrom: { packageVersion: "3.4.4", pluginVersion: "0.1.1" },
-        capabilities: [],
-      })
+      [
+        "{",
+        '  "generatedFrom": {',
+        '    "packageVersion": "3.4.4",',
+        '    "pluginVersion": "0.1.1"',
+        "  },",
+        '  "dispositions": ["exposed", "withheld"],',
+        '  "capabilities": []',
+        "}",
+        "",
+      ].join("\n")
     );
 
     expect(await syncReleaseMetadata({ repoRoot })).toEqual({
@@ -40,6 +47,11 @@ describe("sync release metadata", () => {
     ).toMatchObject({
       generatedFrom: { packageVersion: "3.4.5", pluginVersion: "0.1.1" },
     });
+    expect(
+      await Bun.file(
+        join(docsDir, "codex-plugin-capability-matrix.json")
+      ).text()
+    ).toContain('  "dispositions": ["exposed", "withheld"],');
     expect(await syncReleaseMetadata({ repoRoot })).toEqual({
       changed: false,
       version: "3.4.5",

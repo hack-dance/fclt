@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyEdits, modify } from "jsonc-parser";
 
 const defaultRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -24,7 +25,8 @@ export async function syncReleaseMetadata({
   if (!version) {
     throw new Error("release metadata requires a non-empty package version");
   }
-  const matrix = JSON.parse(await readFile(matrixPath, "utf8"));
+  const matrixText = await readFile(matrixPath, "utf8");
+  const matrix = JSON.parse(matrixText);
   if (!matrix.generatedFrom) {
     throw new Error(
       "codex-plugin-capability-matrix.json must declare generatedFrom"
@@ -33,8 +35,23 @@ export async function syncReleaseMetadata({
   if (matrix.generatedFrom.packageVersion === version) {
     return { changed: false, version };
   }
-  matrix.generatedFrom.packageVersion = version;
-  await writeFile(matrixPath, `${JSON.stringify(matrix, null, 2)}\n`);
+  const edits = modify(
+    matrixText,
+    ["generatedFrom", "packageVersion"],
+    version,
+    {
+      formattingOptions: {
+        eol: "\n",
+        insertSpaces: true,
+        tabSize: 2,
+      },
+    }
+  );
+  const updated = applyEdits(matrixText, edits);
+  await writeFile(
+    matrixPath,
+    updated.endsWith("\n") ? updated : `${updated}\n`
+  );
   return { changed: true, version };
 }
 
