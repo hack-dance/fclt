@@ -245,6 +245,8 @@ describe("activity feed", () => {
           { sourceUri: "https://logs.example/session/usr/local/bin/tool" },
           { sourceUri: "https://logs.example/session/opt/tool/config" },
           { sourceUri: "https://logs.example/session/mnt/share/report" },
+          { sourceUri: "https://logs.example/Users" },
+          { sourceUri: "https://logs.example/etc" },
         ],
       },
       {
@@ -505,36 +507,30 @@ describe("activity feed", () => {
     for (const [unsafeUrl, expectedUrl] of [
       [
         "https://logs.example/run?file=/Users/example/repo/.env",
-        "https://logs.example/run",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?file=%2FUsers%2Fexample%2Frepo%2F.env",
-        "https://logs.example/run",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=/Users/example/repo/.env",
-        "https://logs.example/run",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=file:///Users/example/repo/.env",
-        "https://logs.example/run",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=C%3A%5CUsers%5Cexample%5Crepo%5C.env",
-        "https://logs.example/run",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=%5C%5Cserver%5Cshare%5Cprivate.log",
-        "https://logs.example/run",
+        "<redacted-url>",
       ],
-      [
-        "https://logs.example/run?note=~%2Fprivate%2Fconfig",
-        "https://logs.example/run",
-      ],
-      [
-        "https://logs.example/run#/Users/example/repo/.env",
-        "https://logs.example/run",
-      ],
+      ["https://logs.example/run?note=~%2Fprivate%2Fconfig", "<redacted-url>"],
+      ["https://logs.example/run#/Users/example/repo/.env", "<redacted-url>"],
     ]) {
       expect(redactPortableActivityText(`scrub ${unsafeUrl}`)).toBe(
         `scrub ${expectedUrl}`

@@ -31,7 +31,7 @@ const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
 const URL_METADATA_SEPARATOR_RE = /[?#]/;
 const ENCODED_PATH_SEPARATOR_RE = /%(?:2f|5c)/i;
 const LOCAL_URL_PATH_RE =
-  /(?:^|\/)(?:(?:Applications|Library|Network|System|Users|Volumes|afs|bin|boot|cdrom|dev|etc|export|home|lib(?:32|64)?|lost\+found|media|mnt|net|nix|opt|private|proc|root|run|sbin|selinux|srv|sys|tmp|usr|var)\/|[A-Za-z]:\/|~(?:\/|$))/i;
+  /(?:^|\/)(?:(?:Applications|Library|Network|System|Users|Volumes|afs|bin|boot|cdrom|dev|etc|export|home|lib(?:32|64)?|lost\+found|media|mnt|net|nix|opt|private|proc|root|run|sbin|selinux|srv|sys|tmp|usr|var)(?:\/|$)|[A-Za-z]:(?:\/|$)|~(?:\/|$))/i;
 const DOUBLE_PATH_SEPARATOR_RE = /\/\//;
 const WINDOWS_DRIVE_SELECTOR_RE = /^[A-Za-z]:\//;
 const FILE_SELECTOR_RE = /^file:/i;
