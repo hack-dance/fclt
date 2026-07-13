@@ -31,7 +31,7 @@ const SECRET_VALUE_RE =
 const JSON_SECRET_VALUE_RE =
   /("[^"]*(?:api[_-]?key|token|secret|password|authorization)[^"]*"\s*:\s*")[^"]*(")/gi;
 const AUTHORIZATION_VALUE_RE =
-  /\b(authorization\s*[:=]\s*)(?:basic|bearer)\s+[A-Za-z0-9+/_=-]+/gi;
+  /\b(authorization\s*[:=]\s*)(?:basic|bearer)\s+[A-Za-z0-9+/_=.-]+/gi;
 const SECRET_TOKEN_RE =
   /\b(?:sk[-_]|ghp_|github_pat_|lin_api_)[A-Za-z0-9_-]{12,}\b/g;
 const AWS_ACCESS_KEY_RE =

@@ -273,6 +273,9 @@ describe("activity feed", () => {
     }
     expect(portable).toContain("<redacted-path>");
     expect(portable).toContain("<redacted>");
+    expect(redactPortableActivityText(`Authorization: Bearer ${jwt}`)).toBe(
+      "Authorization: <redacted>"
+    );
     for (const path of ["/etc/passwd", "/usr/bin", "/repo/config", "/secret"]) {
       expect(redactPortableActivityText(`Failure at ${path}`)).toBe(
         "Failure at <redacted-path>"
