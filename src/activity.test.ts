@@ -369,6 +369,9 @@ describe("activity feed", () => {
     ].join(".");
     const signedUrl =
       "https://storage.example/object?X-Amz-Signature=signed-value&X-Amz-Expires=900";
+    const encodedLocalUrl =
+      "https://logs.example/%2FUsers%2Fexample%2Fprivate%2Frepo";
+    const rawLocalUrl = "https://logs.example/run/Users/example/private/repo";
     const unsafeReview = review();
     unsafeReview.signals[0] = {
       ...unsafeReview.signals[0]!,
@@ -376,10 +379,10 @@ describe("activity feed", () => {
       dispositionTarget: windowsPath,
     };
     const unsafeWriteback = writeback("WB-00001", "internal");
-    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}`;
+    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}; source ${encodedLocalUrl}`;
     unsafeWriteback.capture = {
       ...unsafeWriteback.capture!,
-      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}`,
+      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}; raw ${rawLocalUrl}`,
       impact: "Could not read ~/private/config",
       attemptedWorkaround: "Opened file:///Users/example/private/repo/config",
       desiredOutcome: `No path from ${unixPath}; JWT ${jwt}`,
@@ -422,10 +425,13 @@ describe("activity feed", () => {
       jwt,
       "X-Amz-Signature",
       "signed-value",
+      "%2FUsers%2Fexample",
+      "logs.example/run/Users/example",
     ]) {
       expect(portable).not.toContain(secret);
     }
     expect(portable).toContain("<redacted-path>");
+    expect(portable).toContain("<redacted-url>");
     expect(portable).toContain("<redacted>");
     expect(redactPortableActivityText(`Authorization: Bearer ${jwt}`)).toBe(
       "Authorization: <redacted>"

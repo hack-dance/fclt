@@ -195,6 +195,46 @@ function stripHttpUrlMetadata(value: string): string {
   return metadataIndex >= 0 ? value.slice(0, metadataIndex) : value;
 }
 
+function isPortableUrlPath(pathname: string): boolean {
+  try {
+    let decodedPathname = pathname;
+    for (let remaining = pathname.length; remaining > 0; remaining -= 1) {
+      // Encoded separators can hide absolute machine paths at any encoding
+      // depth. Decode until stable and fail closed before publishing the URL.
+      if (ENCODED_PATH_SEPARATOR_RE.test(decodedPathname)) {
+        return false;
+      }
+      const next = decodeURIComponent(decodedPathname);
+      if (next === decodedPathname) {
+        break;
+      }
+      decodedPathname = next;
+    }
+    return !(
+      DOUBLE_PATH_SEPARATOR_RE.test(decodedPathname) ||
+      LOCAL_URL_PATH_RE.test(decodedPathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function redactPortableHttpUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol === "https:" || parsed.protocol === "http:") &&
+      !(parsed.username || parsed.password) &&
+      isPortableUrlPath(parsed.pathname)
+    ) {
+      return stripHttpUrlMetadata(value);
+    }
+  } catch {
+    // Malformed or partially redacted URLs fail closed below.
+  }
+  return "<redacted-url>";
+}
+
 export function redactPortableActivityText(value: string): string {
   const redactedSecrets = redactReconciliationText(value);
   let cursor = 0;
@@ -202,7 +242,7 @@ export function redactPortableActivityText(value: string): string {
   for (const match of redactedSecrets.matchAll(HTTP_URL_RE)) {
     const index = match.index;
     output += redactActivityPaths(redactedSecrets.slice(cursor, index));
-    output += stripHttpUrlMetadata(match[0]);
+    output += redactPortableHttpUrl(match[0]);
     cursor = index + match[0].length;
   }
   return output + redactActivityPaths(redactedSecrets.slice(cursor));
@@ -358,27 +398,7 @@ function safeActivityLink(value: string): string | null {
     if (parsed.username || parsed.password) {
       return null;
     }
-    let decodedPathname = parsed.pathname;
-    for (
-      let remaining = parsed.pathname.length;
-      remaining > 0;
-      remaining -= 1
-    ) {
-      // Encoded separators can hide absolute machine paths at any encoding
-      // depth. Decode until stable and fail closed before publishing the URL.
-      if (ENCODED_PATH_SEPARATOR_RE.test(decodedPathname)) {
-        return null;
-      }
-      const next = decodeURIComponent(decodedPathname);
-      if (next === decodedPathname) {
-        break;
-      }
-      decodedPathname = next;
-    }
-    if (
-      DOUBLE_PATH_SEPARATOR_RE.test(decodedPathname) ||
-      LOCAL_URL_PATH_RE.test(decodedPathname)
-    ) {
+    if (!isPortableUrlPath(parsed.pathname)) {
       return null;
     }
     // Query strings are not portable evidence: signed URLs use many
