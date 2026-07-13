@@ -286,6 +286,25 @@ describe("activity feed", () => {
     expect(
       redactPortableActivityText(`Captured key: ${partialPrivateKey}`)
     ).toBe("Captured key: <redacted-private-key>");
+    const encryptedPrivateKey = [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "Proc-Type: 4,ENCRYPTED",
+      "DEK-Info: AES-256-CBC,0123456789ABCDEF",
+      "",
+      "c2Vuc2l0aXZlLWVuY3J5cHRlZC1rZXktbWF0ZXJpYWw=",
+      "-----END RSA PRIVATE KEY-----",
+    ].join("\n");
+    expect(
+      redactPortableActivityText(`Captured key: ${encryptedPrivateKey}`)
+    ).toBe("Captured key: <redacted-private-key>");
+    const truncatedEncryptedPrivateKey = encryptedPrivateKey
+      .replace("-----END RSA PRIVATE KEY-----", "")
+      .concat("\nSafe context");
+    expect(
+      redactPortableActivityText(
+        `Captured key: ${truncatedEncryptedPrivateKey}`
+      )
+    ).toBe("Captured key: <redacted-private-key>\n\nSafe context");
     for (const path of ["/etc/passwd", "/usr/bin", "/repo/config", "/secret"]) {
       expect(redactPortableActivityText(`Failure at ${path}`)).toBe(
         "Failure at <redacted-path>"
