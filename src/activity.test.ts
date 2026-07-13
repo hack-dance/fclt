@@ -247,6 +247,13 @@ describe("activity feed", () => {
           { sourceUri: "https://logs.example/session/mnt/share/report" },
           { sourceUri: "https://logs.example/Users" },
           { sourceUri: "https://logs.example/etc" },
+          {
+            sourceUri: "https://logs.example/artifact/path=/workspace/fclt/log",
+          },
+          {
+            sourceUri:
+              "https://logs.example/artifact/cwd=C:/workspace/fclt/log",
+          },
         ],
       },
       {
@@ -333,6 +340,8 @@ describe("activity feed", () => {
     expect(portable).not.toContain("X-Goog-Signature");
     expect(portable).not.toContain("private/source-event");
     expect(portable).not.toContain("private/writeback");
+    expect(portable).not.toContain("path=/workspace");
+    expect(portable).not.toContain("cwd=C:/workspace");
   });
 
   it("never describes a failed empty run as checked and clear", () => {
@@ -520,7 +529,10 @@ describe("activity feed", () => {
         "Failure at file:///<redacted-path>"
       );
     }
-    for (const url of ["https://example.com/docs"]) {
+    for (const url of [
+      "https://example.com/docs",
+      "https://example.com/artifact/path=workspace/fclt/log",
+    ]) {
       expect(redactPortableActivityText(`keep ${url}`)).toBe(`keep ${url}`);
     }
     expect(
@@ -555,6 +567,14 @@ describe("activity feed", () => {
       ],
       ["https://logs.example/run?note=~%2Fprivate%2Fconfig", "<redacted-url>"],
       ["https://logs.example/run#/Users/example/repo/.env", "<redacted-url>"],
+      [
+        "https://logs.example/artifact/path=/workspace/fclt/log",
+        "<redacted-url>",
+      ],
+      [
+        "https://logs.example/artifact/cwd=C:/workspace/fclt/log",
+        "<redacted-url>",
+      ],
     ]) {
       expect(redactPortableActivityText(`scrub ${unsafeUrl}`)).toBe(
         `scrub ${expectedUrl}`

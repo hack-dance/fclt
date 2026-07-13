@@ -30,7 +30,7 @@ const POSIX_ABSOLUTE_PATH_RE = /(^|[\s([{:="'`])\/(?!\/)[^\s)\]}>"'`,;]+/g;
 const PATH_TOKEN_RE = /[^\s)\]}>"'`,;]+/g;
 const PERCENT_ENCODED_BYTE_RE = /%([0-9a-f]{2})/gi;
 const FILE_SCHEME_PATH_RE = /^file:\/\//i;
-const EMBEDDED_ABSOLUTE_PATH_RE = /(?:^|[=:])(?:\/|[A-Za-z]:\/)/;
+const EMBEDDED_ABSOLUTE_PATH_RE = /[=:](?:\/|[A-Za-z]:\/)/;
 const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
 const URL_METADATA_SEPARATOR_RE = /[?#]/;
 const ENCODED_PATH_SEPARATOR_RE = /%(?:2f|5c)/i;
@@ -244,9 +244,11 @@ function isPortableUrlPath(pathname: string): boolean {
       }
       decodedPathname = next;
     }
+    const normalizedPathname = decodedPathname.replaceAll("\\", "/");
     return !(
-      DOUBLE_PATH_SEPARATOR_RE.test(decodedPathname) ||
-      LOCAL_URL_PATH_RE.test(decodedPathname)
+      DOUBLE_PATH_SEPARATOR_RE.test(normalizedPathname) ||
+      EMBEDDED_ABSOLUTE_PATH_RE.test(normalizedPathname) ||
+      LOCAL_URL_PATH_RE.test(normalizedPathname)
     );
   } catch {
     return false;
