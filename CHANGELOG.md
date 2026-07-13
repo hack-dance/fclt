@@ -1,3 +1,18 @@
+## [2.23.0](https://github.com/hack-dance/fclt/compare/v2.22.3...v2.23.0) (2026-07-13)
+
+### Features
+
+* add privacy-safe evolution activity feed ([a8d1075](https://github.com/hack-dance/fclt/commit/a8d1075b87e6244a9a7b448a4e7d54387be5f22d))
+
+### Bug Fixes
+
+* close portable redaction gaps ([a975119](https://github.com/hack-dance/fclt/commit/a97511915289d325aa8cb91b378565b037e3508d))
+* fully redact bearer authorization values ([06c2298](https://github.com/hack-dance/fclt/commit/06c22984ad03d39952d4e1991794ac261ea7866c))
+* harden portable activity redaction ([58e9ae2](https://github.com/hack-dance/fclt/commit/58e9ae201e0d4628cd7f035222be09c2a83117f1))
+* parse bounded private key blocks ([8bcbe52](https://github.com/hack-dance/fclt/commit/8bcbe528244806fca692bcb1509f33e8b0e10c74))
+* redact host-qualified file URLs ([67e7f67](https://github.com/hack-dance/fclt/commit/67e7f6706b7d40471366111957ee1568ee6cc52f))
+* redact partial private keys ([1d92e16](https://github.com/hack-dance/fclt/commit/1d92e167aae159d2b3124b6256a9c43b9ef194fe))
+
 ## [2.22.3](https://github.com/hack-dance/fclt/compare/v2.22.2...v2.22.3) (2026-07-12)
 
 ### Bug Fixes
