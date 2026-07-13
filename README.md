@@ -183,7 +183,11 @@ Agents can record one durable observation directly:
 ```bash
 fclt ai writeback add \
   --kind missing_context \
+  --category opportunity \
   --summary "The runbook did not identify the production verification path" \
+  --impact "The agent could not prove the deployed behavior" \
+  --desired-outcome "The verification path is available at task start" \
+  --sensitivity internal \
   --evidence run:production-verification \
   --asset instruction:VERIFICATION
 ```
@@ -197,6 +201,18 @@ fclt ai review reconcile --since 2026-07-01 --until 2026-07-08 --json
 
 The result records coverage, correlations, exclusions, linked work, and one disposition for every
 included signal. Empty is valid only when configured coverage proves the window was checked.
+
+After the loop runs, read the human activity view or consume its portable JSON:
+
+```bash
+fclt ai loop activity --project
+fclt ai loop activity --project --json
+```
+
+The activity snapshot explains what agents captured, what sources were checked,
+how repeated observations were correlated, the current disposition, linked
+implementation work, and the next action. It is embedded in the immutable loop
+report so later writeback edits cannot rewrite history.
 
 ### 3. Inspect existing AI state
 
@@ -347,6 +363,13 @@ Record one targeted writeback when the signal is durable:
 fclt ai writeback add \
   --kind weak_verification \
   --summary "Checks were too shallow" \
+  --category friction \
+  --details "The package check did not exercise the installed launcher" \
+  --impact "A source-only green result hid a packaging regression" \
+  --attempted-workaround "Ran the launcher directly from the build directory" \
+  --desired-outcome "The installed launcher is covered by the standard verification path" \
+  --sensitivity internal \
+  --evidence test:installed-launcher \
   --asset instruction:VERIFICATION
 ```
 
@@ -371,6 +394,13 @@ modification time and may otherwise make old material look current.
 Bounded reviews rescan the full requested window; `--incremental` explicitly
 opts into advancing from stored watermarks. Use `fclt ai review init --force`
 to back up and replace an invalid reconciliation config.
+
+Structured capture is intentionally compact. Record factual context, impact,
+the attempted workaround, the desired outcome, and a redacted evidence
+reference when they improve synthesis. Do not record hidden chain-of-thought,
+raw transcripts, unbounded logs, secrets, tokens, or credential-bearing
+payloads. `private` sensitivity omits supplemental context from portable
+activity and writeback review surfaces; it does not make secrets safe to store.
 
 Draft a proposal only when the evidence repeats, a capability is clearly missing, or a canonical asset is stale:
 

@@ -97,7 +97,7 @@ The ambient legacy-approval environment variable does not authorize this command
 ## Writeback and evolution
 
 ```bash
-fclt ai writeback add --kind <kind> --summary <text> --asset <selector>
+fclt ai writeback add --kind <kind> --summary <text> [--category <friction|opportunity|reusable-success>] [--details <text>] [--impact <text>] [--attempted-workaround <text>] [--desired-outcome <text>] [--sensitivity <public|internal|private>] --evidence <type:ref> --asset <selector>
 fclt ai writeback list
 fclt ai writeback show WB-00001
 fclt ai writeback group --by asset
@@ -121,6 +121,7 @@ fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incr
 fclt ai loop enable [--rrule <rrule>] [--source <id>] [--dry-run] [--json]
 fclt ai loop disable [--dry-run] [--json]
 fclt ai loop status [--json]
+fclt ai loop activity [--json]
 fclt ai loop run [--since <date>] [--until <date>] [--source <id>] [--dry-run] [--scheduled] [--json]
 ```
 
@@ -137,6 +138,10 @@ correlated signals, linked work, exclusions, and mandatory dispositions.
 Bounded windows always rescan their complete requested range. Use
 `--incremental` only when advancing from the stored per-source watermarks is
 intended. A source-filtered run cannot prove an empty review.
+
+`loop activity` reads the immutable activity snapshot embedded in the latest
+loop report. Its JSON is portable and path-free; use `loop report --json` when
+you need machine-local technical paths and the full controller record.
 
 `loop enable` is an explicit opt-in that installs an fclt-owned Codex
 automation. The loop persists the full current queue, emits a delta for

@@ -181,6 +181,27 @@ describe("ai CLI", () => {
       trigger: "scheduled",
     });
 
+    const activityOut = await captureConsole(async () => {
+      await aiCommand(["loop", "activity", "--global", "--json"]);
+    });
+    expect(activityOut.errors).toEqual([]);
+    const activityText = activityOut.logs.join("\n");
+    expect(JSON.parse(activityText)).toMatchObject({
+      version: 1,
+      mode: "latest",
+      snapshot: "embedded",
+      scope: "global",
+      run: { status: "complete" },
+    });
+    expect(activityText).not.toContain(tempHome);
+
+    const readableActivity = await captureConsole(async () => {
+      await aiCommand(["loop", "activity", "--global"]);
+    });
+    expect(readableActivity.logs.join("\n")).toContain(
+      "configured coverage was checked"
+    );
+
     const disabledOut = await captureConsole(async () => {
       await aiCommand(["loop", "disable", "--global", "--json"]);
     });
@@ -313,6 +334,57 @@ describe("ai CLI", () => {
     expect(addOut.errors.join("\n")).toContain(
       "writeback add requires at least one evidence item"
     );
+  });
+
+  it("returns one parseable redacted JSON record for typed writeback callers", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    await mkdir(join(rootDir, ".facult", "ai"), { recursive: true });
+    await Bun.write(
+      join(rootDir, ".facult", "ai", "graph.json"),
+      `${JSON.stringify({ version: 1, generatedAt: "2026-07-13T00:00:00.000Z", nodes: {}, edges: [] })}\n`
+    );
+    process.chdir(tempHome);
+    const basicCredential = ["dXNlcjpw", "YXNzd29yZA=="].join("");
+    const awsAccessKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+    const jwt = [
+      "eyJhbGciOiJIUzI1NiJ9",
+      "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+      "signaturevalue",
+    ].join(".");
+    const privateKey = [
+      ["-----BEGIN", "PRIVATE KEY-----"].join(" "),
+      "private-material",
+      ["-----END", "PRIVATE KEY-----"].join(" "),
+    ].join("\n");
+
+    const addOut = await captureConsole(async () => {
+      await aiCommand([
+        "writeback",
+        "add",
+        "--kind",
+        "tool_friction",
+        "--summary",
+        `Authorization: Basic ${basicCredential}; ${awsAccessKey}; ${jwt}`,
+        "--details",
+        privateKey,
+        "--evidence",
+        "session:typed-output",
+        "--json",
+      ]);
+    });
+    const output = addOut.logs.join("\n");
+    expect(addOut.errors).toEqual([]);
+    expect(JSON.parse(output)).toMatchObject({
+      id: "WB-00001",
+      capture: { category: "friction", sensitivity: "internal" },
+    });
+    expect(output).not.toContain(basicCredential);
+    expect(output).not.toContain(awsAccessKey);
+    expect(output).not.toContain(jwt);
+    expect(output).not.toContain("private-material");
   });
 
   it("supports grouping and summarizing writebacks through the ai namespace", async () => {

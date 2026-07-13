@@ -355,6 +355,33 @@ describe("bundled fclt MCP plugin", () => {
           params: {
             name: "fclt_automation",
             arguments: {
+              action: "loop_activity",
+              scope: "project",
+            },
+          },
+        })
+      );
+      const activityResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(activityResponse)).toMatchObject({
+        operation: { preview: false, risk: "read_only" },
+        result: {
+          stdout: {
+            cwd: await realpath(workspace),
+            argv: ["ai", "loop", "--project", "activity", "--json"],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 34,
+          method: "tools/call",
+          params: {
+            name: "fclt_automation",
+            arguments: {
               action: "loop_preview",
               scope: "project",
             },
@@ -595,7 +622,7 @@ describe("bundled fclt MCP plugin", () => {
           }
         | undefined;
       expect(automation?.inputSchema?.properties?.action?.enum).toEqual(
-        expect.arrayContaining(["loop_status", "loop_preview"])
+        expect.arrayContaining(["loop_status", "loop_activity", "loop_preview"])
       );
     } finally {
       child.kill();
@@ -656,7 +683,13 @@ describe("bundled fclt MCP plugin", () => {
               approve: true,
               scope: "project",
               kind: "capability_gap",
+              category: "opportunity",
               summary: "Missing review context",
+              details: "The project instructions were not discoverable.",
+              impact: "The review had to reconstruct setup context.",
+              attemptedWorkaround: "Inspected the repository manually.",
+              desiredOutcome: "Project guidance is available at task start.",
+              sensitivity: "internal",
               evidence: ["session:runtime-router"],
             },
           },
@@ -677,8 +710,21 @@ describe("bundled fclt MCP plugin", () => {
           "capability_gap",
           "--summary",
           "Missing review context",
+          "--category",
+          "opportunity",
+          "--details",
+          "The project instructions were not discoverable.",
+          "--impact",
+          "The review had to reconstruct setup context.",
+          "--attempted-workaround",
+          "Inspected the repository manually.",
+          "--desired-outcome",
+          "Project guidance is available at task start.",
+          "--sensitivity",
+          "internal",
           "--evidence",
           "session:runtime-router",
+          "--json",
         ],
       });
       expect(workflow.operation.risk).toBe("review_producing");
@@ -694,7 +740,11 @@ describe("bundled fclt MCP plugin", () => {
               approve: true,
               scope: "project",
               kind: "capability_gap",
+              category: "opportunity",
               summary: "Legacy review context",
+              details: "Legacy callers can provide structured context.",
+              desiredOutcome: "Both typed writeback surfaces agree.",
+              sensitivity: "internal",
               evidence: "session:legacy-router",
             },
           },
@@ -706,6 +756,30 @@ describe("bundled fclt MCP plugin", () => {
       expect(toolPayload(legacyWritebackResponse).operation.risk).toBe(
         "review_producing"
       );
+      expect(toolPayload(legacyWritebackResponse).result.stdout).toEqual({
+        cwd: await realpath(workspace),
+        argv: [
+          "ai",
+          "writeback",
+          "--project",
+          "add",
+          "--kind",
+          "capability_gap",
+          "--summary",
+          "Legacy review context",
+          "--category",
+          "opportunity",
+          "--details",
+          "Legacy callers can provide structured context.",
+          "--desired-outcome",
+          "Both typed writeback surfaces agree.",
+          "--sensitivity",
+          "internal",
+          "--evidence",
+          "session:legacy-router",
+          "--json",
+        ],
+      });
 
       child.stdin.write(
         frame({
@@ -784,6 +858,32 @@ describe("bundled fclt MCP plugin", () => {
         error?: { message?: string };
       };
       expect(unapproved.error?.message).toContain("requires approve=true");
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "fclt_workflow",
+            arguments: {
+              action: "writeback_add",
+              approve: true,
+              scope: "project",
+              kind: "capability_gap",
+              summary: "Do not confuse lifecycle and capture outcomes",
+              expectedOutcome: "This field belongs to disposition",
+              evidence: ["session:wrong-field"],
+            },
+          },
+        })
+      );
+      const irrelevant = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(irrelevant.error?.message).toContain(
+        "writeback_add received unsupported fields: expectedOutcome"
+      );
     } finally {
       child.kill();
     }
@@ -1166,7 +1266,7 @@ describe("Codex plugin capability matrix", () => {
     expect(evolutionLoop?.mcp).toMatchObject({
       disposition: "exposed",
       tool: "fclt_automation",
-      actions: ["loop_status", "loop_preview"],
+      actions: ["loop_status", "loop_activity", "loop_preview"],
     });
   });
 });

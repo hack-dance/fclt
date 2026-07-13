@@ -125,7 +125,19 @@ const tools = [
         cwd: { type: "string" },
         id: { type: "string" },
         kind: { type: "string" },
+        category: {
+          type: "string",
+          enum: ["friction", "opportunity", "reusable-success"],
+        },
         summary: { type: "string" },
+        details: { type: "string", maxLength: 2000 },
+        impact: { type: "string", maxLength: 1000 },
+        attemptedWorkaround: { type: "string", maxLength: 1000 },
+        desiredOutcome: { type: "string", maxLength: 1000 },
+        sensitivity: {
+          type: "string",
+          enum: ["public", "internal", "private"],
+        },
         asset: { type: "string" },
         evidence: { type: "array", items: { type: "string" } },
         confidence: { type: "string", enum: ["low", "medium", "high"] },
@@ -240,7 +252,12 @@ const tools = [
       properties: {
         action: {
           type: "string",
-          enum: ["autosync_status", "loop_status", "loop_preview"],
+          enum: [
+            "autosync_status",
+            "loop_status",
+            "loop_activity",
+            "loop_preview",
+          ],
         },
         scope: { type: "string", enum: ["global", "project"] },
         cwd: { type: "string" },
@@ -308,7 +325,19 @@ const tools = [
         scope: { type: "string", enum: ["global", "project"] },
         cwd: { type: "string" },
         kind: { type: "string" },
+        category: {
+          type: "string",
+          enum: ["friction", "opportunity", "reusable-success"],
+        },
         summary: { type: "string" },
+        details: { type: "string", maxLength: 2000 },
+        impact: { type: "string", maxLength: 1000 },
+        attemptedWorkaround: { type: "string", maxLength: 1000 },
+        desiredOutcome: { type: "string", maxLength: 1000 },
+        sensitivity: {
+          type: "string",
+          enum: ["public", "internal", "private"],
+        },
         asset: { type: "string" },
         evidence: { type: "string" },
         confidence: {
@@ -530,8 +559,60 @@ const WORKFLOW_MUTATIONS = new Set([
   "evolve_verify",
 ]);
 
+const WORKFLOW_ACTION_FIELDS = {
+  writeback_list: [],
+  writeback_show: ["id"],
+  writeback_group: ["by"],
+  writeback_summarize: ["by"],
+  writeback_add: [
+    "kind",
+    "category",
+    "summary",
+    "details",
+    "impact",
+    "attemptedWorkaround",
+    "desiredOutcome",
+    "sensitivity",
+    "asset",
+    "evidence",
+    "confidence",
+    "approve",
+  ],
+  writeback_link: ["id", "issue", "approve"],
+  writeback_disposition: [
+    "id",
+    "disposition",
+    "target",
+    "nextTrigger",
+    "expectedOutcome",
+    "approve",
+  ],
+  evolve_assess: ["asset"],
+  evolve_list: [],
+  evolve_show: ["id"],
+  evolve_propose: ["asset", "approve"],
+  evolve_draft: ["id", "append", "approve"],
+  evolve_review: ["id", "approve"],
+  evolve_verify: ["id", "effectiveness", "evidence", "note", "approve"],
+};
+
+function requireOnlyWorkflowFields(args) {
+  const fields = WORKFLOW_ACTION_FIELDS[args.action];
+  if (!fields) {
+    return;
+  }
+  const allowed = new Set(["action", "scope", "cwd", ...fields]);
+  const unexpected = Object.keys(args).filter((key) => !allowed.has(key));
+  if (unexpected.length > 0) {
+    throw new Error(
+      `${args.action} received unsupported fields: ${unexpected.join(", ")}`
+    );
+  }
+}
+
 function workflowCommand(args) {
   const action = args.action;
+  requireOnlyWorkflowFields(args);
   if (WORKFLOW_MUTATIONS.has(action)) {
     requireMutationApproval(action, args);
   }
@@ -573,8 +654,15 @@ function workflowCommand(args) {
       "--summary",
       requireString("summary", args.summary),
       ...stringFlag("--asset", args.asset),
+      ...stringFlag("--category", args.category),
+      ...stringFlag("--details", args.details),
+      ...stringFlag("--impact", args.impact),
+      ...stringFlag("--attempted-workaround", args.attemptedWorkaround),
+      ...stringFlag("--desired-outcome", args.desiredOutcome),
+      ...stringFlag("--sensitivity", args.sensitivity),
       ...repeatedStringFlag("--evidence", args.evidence),
       ...stringFlag("--confidence", args.confidence),
+      "--json",
     ];
   }
   if (action === "writeback_link") {
@@ -913,6 +1001,9 @@ function commandForTool(name, args = {}) {
       if (args.action === "loop_status") {
         return ["ai", "loop", ...scopeArgs(args.scope), "status", "--json"];
       }
+      if (args.action === "loop_activity") {
+        return ["ai", "loop", ...scopeArgs(args.scope), "activity", "--json"];
+      }
       if (args.action === "loop_preview") {
         return [
           "ai",
@@ -964,8 +1055,15 @@ function commandForTool(name, args = {}) {
         "--summary",
         args.summary,
         ...stringFlag("--asset", args.asset),
+        ...stringFlag("--category", args.category),
+        ...stringFlag("--details", args.details),
+        ...stringFlag("--impact", args.impact),
+        ...stringFlag("--attempted-workaround", args.attemptedWorkaround),
+        ...stringFlag("--desired-outcome", args.desiredOutcome),
+        ...stringFlag("--sensitivity", args.sensitivity),
         ...stringFlag("--evidence", args.evidence),
         ...stringFlag("--confidence", args.confidence),
+        "--json",
       ];
     case "fclt_writeback_review": {
       const mode = args.mode || "list";

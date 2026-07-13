@@ -22,7 +22,17 @@ annoyance.
 3. Record concrete evidence:
 
 ```bash
-fclt ai writeback add --kind missing_context --summary "..." --asset @project/instructions/TESTING.md
+fclt ai writeback add \
+  --kind missing_context \
+  --category opportunity \
+  --summary "Project verification guidance was not discoverable" \
+  --details "The task had to reconstruct the command from CI configuration" \
+  --impact "Verification took longer and could have selected the wrong harness" \
+  --attempted-workaround "Inspected package scripts and CI" \
+  --desired-outcome "The supported verification command is available at task start" \
+  --sensitivity internal \
+  --evidence session:<id> \
+  --asset @project/instructions/TESTING.md
 ```
 
 4. Review current signal:
@@ -31,11 +41,17 @@ fclt ai writeback add --kind missing_context --summary "..." --asset @project/in
 fclt ai writeback list
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by domain
+fclt ai loop activity --project
 ```
 
 ## Rules
 
 - Prefer one high-signal writeback over several weak ones.
+- Capture a concise observation, impact, attempted workaround, desired outcome,
+  evidence reference, and sensitivity when those fields add real context.
+- Never capture hidden chain-of-thought, raw transcripts, unbounded logs,
+  secrets, tokens, or credential-bearing payloads. Reference redacted external
+  evidence instead.
 - Do not copy private project detail into global writebacks.
 - Use task tracking for executable product work; use writeback for reusable operating-layer
   learning.

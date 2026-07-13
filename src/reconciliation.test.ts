@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdir, readFile, rm, utimes } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
 import {
   latestReconciliationReview,
   reconcileSources,
+  reconciliationReviewById,
   reconciliationStatus,
 } from "./reconciliation";
 import {
@@ -270,6 +271,16 @@ describe("reconciliation config", () => {
 });
 
 describe("source reconciliation", () => {
+  it("rejects non-canonical review ids before resolving a window path", async () => {
+    const fixture = await makeFixture();
+    expect(
+      await reconciliationReviewById({
+        ...fixture,
+        reviewId: "../../outside",
+      })
+    ).toBeNull();
+  });
+
   it("recovers the writeback cluster without ticket proposal spam and is idempotent", async () => {
     const fixture = await makeFixture();
     await writeQueue(fixture);
@@ -1616,6 +1627,15 @@ describe("source reconciliation", () => {
         )
       )
     );
+    await Promise.all(
+      (await readdir(logDir)).map((name) =>
+        utimes(
+          join(logDir, name),
+          new Date("2026-07-10T00:00:00.000Z"),
+          new Date("2026-07-10T00:00:00.000Z")
+        )
+      )
+    );
     await Bun.write(
       join(fixture.rootDir, "reconciliation.json"),
       JSON.stringify({
@@ -1650,6 +1670,15 @@ describe("source reconciliation", () => {
     await Promise.all(
       Array.from({ length: 300 }, (_, index) =>
         Bun.write(join(logDir, `entry-${index}.md`), "No signal.\n")
+      )
+    );
+    await Promise.all(
+      (await readdir(logDir)).map((name) =>
+        utimes(
+          join(logDir, name),
+          new Date("2026-07-10T00:00:00.000Z"),
+          new Date("2026-07-10T00:00:00.000Z")
+        )
       )
     );
     await Bun.write(

@@ -30,6 +30,7 @@ import {
   projectSlugFromAiRoot,
   withFacultRootScope,
 } from "./paths";
+import { redactReconciliationText } from "./reconciliation-adapters";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -57,6 +58,16 @@ export type ProposalStatus =
   | "failed"
   | "superseded";
 export type ConfidenceLevel = "low" | "medium" | "high";
+export type WritebackCategory = "friction" | "opportunity" | "reusable-success";
+export type WritebackSensitivity = "public" | "internal" | "private";
+export interface WritebackCapture {
+  category: WritebackCategory;
+  details?: string;
+  impact?: string;
+  attemptedWorkaround?: string;
+  desiredOutcome?: string;
+  sensitivity: WritebackSensitivity;
+}
 export type WritebackDisposition =
   | "propose"
   | "apply-local"
@@ -107,6 +118,7 @@ export interface AiWritebackRecord {
   projectRoot?: string;
   kind: string;
   summary: string;
+  capture?: WritebackCapture;
   evidence: WritebackEvidence[];
   confidence: ConfidenceLevel;
   source: string;
@@ -270,7 +282,13 @@ interface AddWritebackArgs {
   homeDir?: string;
   rootDir: string;
   kind: string;
+  category?: WritebackCategory;
   summary: string;
+  details?: string;
+  impact?: string;
+  attemptedWorkaround?: string;
+  desiredOutcome?: string;
+  sensitivity?: WritebackSensitivity;
   asset?: string;
   evidence?: WritebackEvidence[];
   allowEmptyEvidence?: boolean;
@@ -279,6 +297,51 @@ interface AddWritebackArgs {
   suggestedDestination?: string;
   domain?: string;
   tags?: string[];
+}
+
+const WRITEBACK_CAPTURE_LIMITS = {
+  details: 2000,
+  impact: 1000,
+  attemptedWorkaround: 1000,
+  desiredOutcome: 1000,
+} as const;
+
+function normalizedCaptureText(
+  value: string | undefined,
+  field: keyof typeof WRITEBACK_CAPTURE_LIMITS
+): string | undefined {
+  const normalized = value ? redactReconciliationText(value).trim() : undefined;
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized.includes("\0")) {
+    throw new Error(`${field} must not contain null bytes`);
+  }
+  const limit = WRITEBACK_CAPTURE_LIMITS[field];
+  if (normalized.length > limit) {
+    throw new Error(`${field} must be ${limit} characters or fewer`);
+  }
+  return normalized;
+}
+
+function inferredWritebackCategory(kind: string): WritebackCategory {
+  const normalized = kind.toLowerCase().replaceAll("_", "-");
+  if (
+    normalized.includes("success") ||
+    normalized.includes("pattern") ||
+    normalized.includes("proof")
+  ) {
+    return "reusable-success";
+  }
+  if (
+    normalized.includes("gap") ||
+    normalized.includes("opportunity") ||
+    normalized.includes("missing") ||
+    normalized.includes("stale")
+  ) {
+    return "opportunity";
+  }
+  return "friction";
 }
 
 function nowIso(): string {
@@ -450,7 +513,9 @@ async function writeWritebackReviewArtifact(args: {
       status: args.record.status,
       scope: args.record.scope,
       kind: args.record.kind,
+      category: args.record.capture?.category,
       confidence: args.record.confidence,
+      sensitivity: args.record.capture?.sensitivity,
       source: args.record.source,
       assetRef: args.record.assetRef,
       assetId: args.record.assetId,
@@ -470,6 +535,18 @@ async function writeWritebackReviewArtifact(args: {
     "",
     "## Summary",
     args.record.summary,
+    "",
+    "## Capture Context",
+    `- category: ${args.record.capture?.category ?? inferredWritebackCategory(args.record.kind)}`,
+    `- sensitivity: ${args.record.capture?.sensitivity ?? "internal"}`,
+    ...(args.record.capture?.sensitivity === "private"
+      ? ["- supplemental context: omitted from this review artifact"]
+      : [
+          `- details: ${args.record.capture?.details ?? "not provided"}`,
+          `- impact: ${args.record.capture?.impact ?? "not provided"}`,
+          `- attempted workaround: ${args.record.capture?.attemptedWorkaround ?? "not provided"}`,
+          `- desired outcome: ${args.record.capture?.desiredOutcome ?? "not provided"}`,
+        ]),
     "",
     "## Evidence",
     ...renderEvidenceList(args.record.evidence),
@@ -858,7 +935,10 @@ export async function addWriteback(
   args: AddWritebackArgs
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
-  const evidence = args.evidence ?? [];
+  const evidence = (args.evidence ?? []).map((entry) => ({
+    type: redactReconciliationText(entry.type),
+    ref: redactReconciliationText(entry.ref),
+  }));
   if (evidence.length === 0 && !args.allowEmptyEvidence) {
     throw new Error(
       "writeback add requires at least one evidence item; pass --evidence <type:ref> or use --allow-empty-evidence for scratch/demo notes"
@@ -882,8 +962,22 @@ export async function addWriteback(
     scope: scopeContext.scope,
     projectSlug: scopeContext.projectSlug,
     projectRoot: scopeContext.projectRoot,
-    kind: args.kind.trim(),
-    summary: args.summary.trim(),
+    kind: redactReconciliationText(args.kind).trim(),
+    summary: redactReconciliationText(args.summary).trim(),
+    capture: {
+      category: args.category ?? inferredWritebackCategory(args.kind),
+      details: normalizedCaptureText(args.details, "details"),
+      impact: normalizedCaptureText(args.impact, "impact"),
+      attemptedWorkaround: normalizedCaptureText(
+        args.attemptedWorkaround,
+        "attemptedWorkaround"
+      ),
+      desiredOutcome: normalizedCaptureText(
+        args.desiredOutcome,
+        "desiredOutcome"
+      ),
+      sensitivity: args.sensitivity ?? "internal",
+    },
     evidence,
     confidence: args.confidence ?? "medium",
     source: args.source ?? "facult:manual",
@@ -936,6 +1030,31 @@ export async function listWritebacks(args?: {
     rootDir: args.rootDir,
   });
   return [...latest.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function portableWritebackRecord(record: AiWritebackRecord): Omit<
+  AiWritebackRecord,
+  "capture"
+> & {
+  capture?:
+    | WritebackCapture
+    | {
+        category: WritebackCategory;
+        sensitivity: "private";
+        contextOmitted: true;
+      };
+} {
+  if (record.capture?.sensitivity !== "private") {
+    return record;
+  }
+  return {
+    ...record,
+    capture: {
+      category: record.capture.category,
+      sensitivity: "private",
+      contextOmitted: true,
+    },
+  };
 }
 
 export async function showWriteback(
@@ -2690,7 +2809,7 @@ Usage:
   fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
   fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
   fclt ai review <init|status|reconcile> [args...]
-  fclt ai loop <enable|disable|status|report|run> [args...]
+  fclt ai loop <enable|disable|status|report|activity|run> [args...]
 `;
 }
 
@@ -2702,6 +2821,7 @@ Usage:
   fclt ai loop disable [--dry-run] [--json]
   fclt ai loop status [--json]
   fclt ai loop report [--json]
+  fclt ai loop activity [--json]
   fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
 
 The loop keeps a full machine-local review queue and emits a delta for
@@ -2728,7 +2848,7 @@ function writebackHelp(): string {
   return `fclt ai writeback
 
 Usage:
-  fclt ai writeback add --kind <kind> --summary <text> [--asset <selector>] [--tag <tag>] [--evidence <type:ref>] [--allow-empty-evidence]
+  fclt ai writeback add --kind <kind> --summary <text> [--category <friction|opportunity|reusable-success>] [--details <text>] [--impact <text>] [--attempted-workaround <text>] [--desired-outcome <text>] [--sensitivity <public|internal|private>] [--asset <selector>] [--tag <tag>] [--evidence <type:ref>] [--allow-empty-evidence]
   fclt ai writeback list [--json]
   fclt ai writeback show <id> [--json]
   fclt ai writeback link <id> --issue <issue-id>
@@ -2919,6 +3039,23 @@ async function loopCommand(argv: string[]) {
       );
       return;
     }
+    if (sub === "activity") {
+      const { latestActivityFeed, renderActivityFeed } = await import(
+        "./activity"
+      );
+      const result = await latestActivityFeed({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+      });
+      if (!result) {
+        throw new Error("No evolution loop report has been recorded");
+      }
+      console.log(
+        json ? JSON.stringify(result, null, 2) : renderActivityFeed(result)
+      );
+      return;
+    }
     if (sub === "run") {
       const result = await runEvolutionLoop({
         homeDir,
@@ -2991,10 +3128,39 @@ async function writebackCommand(argv: string[]) {
       if (!(kind && summary)) {
         throw new Error("writeback add requires --kind and --summary");
       }
+      const category = parseStringFlag(commandArgs, "--category") as
+        | WritebackCategory
+        | undefined;
+      const sensitivity = parseStringFlag(commandArgs, "--sensitivity") as
+        | WritebackSensitivity
+        | undefined;
+      if (
+        category &&
+        !(["friction", "opportunity", "reusable-success"] as const).includes(
+          category
+        )
+      ) {
+        throw new Error(`Unsupported writeback category: ${category}`);
+      }
+      if (
+        sensitivity &&
+        !(["public", "internal", "private"] as const).includes(sensitivity)
+      ) {
+        throw new Error(`Unsupported writeback sensitivity: ${sensitivity}`);
+      }
       const record = await addWriteback({
         rootDir,
         kind,
+        category,
         summary,
+        details: parseStringFlag(commandArgs, "--details"),
+        impact: parseStringFlag(commandArgs, "--impact"),
+        attemptedWorkaround: parseStringFlag(
+          commandArgs,
+          "--attempted-workaround"
+        ),
+        desiredOutcome: parseStringFlag(commandArgs, "--desired-outcome"),
+        sensitivity,
         asset: parseStringFlag(commandArgs, "--asset"),
         allowEmptyEvidence: commandArgs.includes("--allow-empty-evidence"),
         confidence:
@@ -3008,15 +3174,19 @@ async function writebackCommand(argv: string[]) {
         tags: parseRepeatedFlag(commandArgs, "--tag"),
         evidence: parseEvidence(commandArgs),
       });
+      if (commandArgs.includes("--json")) {
+        console.log(JSON.stringify(portableWritebackRecord(record), null, 2));
+        return;
+      }
       console.log(`Recorded writeback ${record.id}`);
-      console.log(JSON.stringify(record, null, 2));
+      console.log(JSON.stringify(portableWritebackRecord(record), null, 2));
       return;
     }
 
     if (sub === "list") {
       const rows = await listWritebacks({ rootDir });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(rows, null, 2));
+        console.log(JSON.stringify(rows.map(portableWritebackRecord), null, 2));
         return;
       }
       console.log(`writebacks root: ${rootDir}`);
@@ -3063,7 +3233,7 @@ async function writebackCommand(argv: string[]) {
       if (!row) {
         throw new Error(`Writeback not found: ${id}`);
       }
-      console.log(JSON.stringify(row, null, 2));
+      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
       return;
     }
 
@@ -3075,7 +3245,7 @@ async function writebackCommand(argv: string[]) {
       }
       const row = await linkWritebackIssue(id, issue, { rootDir });
       console.log(`Linked ${row.id} to ${issue}`);
-      console.log(JSON.stringify(row, null, 2));
+      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
       return;
     }
 
@@ -3103,7 +3273,7 @@ async function writebackCommand(argv: string[]) {
         expectedOutcome: parseStringFlag(commandArgs, "--expected-outcome"),
       });
       console.log(`Updated disposition for ${row.id}`);
-      console.log(JSON.stringify(row, null, 2));
+      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
       return;
     }
 
@@ -3117,7 +3287,7 @@ async function writebackCommand(argv: string[]) {
           ? await dismissWriteback(id, { rootDir })
           : await promoteWriteback(id, { rootDir });
       console.log(`${sub === "dismiss" ? "Dismissed" : "Promoted"} ${row.id}`);
-      console.log(JSON.stringify(row, null, 2));
+      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
       return;
     }
 

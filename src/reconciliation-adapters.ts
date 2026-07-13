@@ -30,8 +30,18 @@ const SECRET_VALUE_RE =
   /(bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi;
 const JSON_SECRET_VALUE_RE =
   /("[^"]*(?:api[_-]?key|token|secret|password|authorization)[^"]*"\s*:\s*")[^"]*(")/gi;
+const AUTHORIZATION_VALUE_RE =
+  /\b(authorization\s*[:=]\s*)(?:basic|bearer)\s+[A-Za-z0-9+/_=-]+/gi;
 const SECRET_TOKEN_RE =
   /\b(?:sk[-_]|ghp_|github_pat_|lin_api_)[A-Za-z0-9_-]{12,}\b/g;
+const AWS_ACCESS_KEY_RE =
+  /\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/g;
+const JWT_RE =
+  /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g;
+const PEM_PRIVATE_KEY_BLOCK_RE =
+  /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/g;
+const PEM_PRIVATE_KEY_MARKER_RE =
+  /-----(?:BEGIN|END) [^-\r\n]*PRIVATE KEY-----/g;
 const LINE_SPLIT_RE = /\r?\n/;
 const PATH_SEGMENT_RE = /[\\/]/;
 const MARKDOWN_SECTION_RE = /(?=^#{1,3}\s+)/m;
@@ -66,10 +76,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export function redactReconciliationText(value: string): string {
   return value
+    .replace(PEM_PRIVATE_KEY_BLOCK_RE, "<redacted-private-key>")
+    .replace(PEM_PRIVATE_KEY_MARKER_RE, "<redacted-private-key>")
     .replace(URL_USERINFO_RE, "$1<redacted>@")
     .replace(JSON_SECRET_VALUE_RE, "$1<redacted>$2")
+    .replace(AUTHORIZATION_VALUE_RE, "$1<redacted>")
     .replace(SECRET_VALUE_RE, "$1<redacted>")
     .replace(SECRET_TOKEN_RE, "<redacted-token>")
+    .replace(AWS_ACCESS_KEY_RE, "<redacted-aws-access-key>")
+    .replace(JWT_RE, "<redacted-jwt>")
     .slice(0, MAX_BODY_CHARS);
 }
 
