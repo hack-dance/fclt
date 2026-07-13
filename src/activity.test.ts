@@ -276,6 +276,9 @@ describe("activity feed", () => {
     expect(redactPortableActivityText(`Authorization: Bearer ${jwt}`)).toBe(
       "Authorization: <redacted>"
     );
+    expect(redactPortableActivityText("Authorization: Bearer abc~def")).toBe(
+      "Authorization: <redacted>"
+    );
     for (const path of ["/etc/passwd", "/usr/bin", "/repo/config", "/secret"]) {
       expect(redactPortableActivityText(`Failure at ${path}`)).toBe(
         "Failure at <redacted-path>"
@@ -295,6 +298,28 @@ describe("activity feed", () => {
       "https://example.com:8443/a/b?next=/guides/setup/install#fragment",
     ]) {
       expect(redactPortableActivityText(`keep ${url}`)).toBe(`keep ${url}`);
+    }
+    for (const [unsafeUrl, expectedUrl] of [
+      [
+        "https://logs.example/run?file=/Users/example/repo/.env",
+        "https://logs.example/run?file=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run?file=%2FUsers%2Fexample%2Frepo%2F.env",
+        "https://logs.example/run?file=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run?note=/Users/example/repo/.env",
+        "https://logs.example/run?note=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run#/Users/example/repo/.env",
+        "https://logs.example/run#<redacted-path>",
+      ],
+    ]) {
+      expect(redactPortableActivityText(`scrub ${unsafeUrl}`)).toBe(
+        `scrub ${expectedUrl}`
+      );
     }
   });
 });
