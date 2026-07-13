@@ -305,6 +305,16 @@ describe("activity feed", () => {
         `Captured key: ${truncatedEncryptedPrivateKey}`
       )
     ).toBe("Captured key: <redacted-private-key>\n\nSafe context");
+    const emptyHeaderPrivateKey = [
+      "-----BEGIN PRIVATE KEY-----",
+      "",
+      "c2Vuc2l0aXZlLWtleS1tYXRlcmlhbA==",
+      "",
+      "Safe context",
+    ].join("\n");
+    expect(
+      redactPortableActivityText(`Captured key: ${emptyHeaderPrivateKey}`)
+    ).toBe("Captured key: <redacted-private-key>\n\nSafe context");
     for (const path of ["/etc/passwd", "/usr/bin", "/repo/config", "/secret"]) {
       expect(redactPortableActivityText(`Failure at ${path}`)).toBe(
         "Failure at <redacted-path>"
@@ -336,6 +346,22 @@ describe("activity feed", () => {
       ],
       [
         "https://logs.example/run?note=/Users/example/repo/.env",
+        "https://logs.example/run?note=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run?note=file:///Users/example/repo/.env",
+        "https://logs.example/run?note=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run?note=C%3A%5CUsers%5Cexample%5Crepo%5C.env",
+        "https://logs.example/run?note=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run?note=%5C%5Cserver%5Cshare%5Cprivate.log",
+        "https://logs.example/run?note=<redacted-path>",
+      ],
+      [
+        "https://logs.example/run?note=~%2Fprivate%2Fconfig",
         "https://logs.example/run?note=<redacted-path>",
       ],
       [

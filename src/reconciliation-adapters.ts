@@ -87,7 +87,7 @@ function partialPrivateKeyEnd(value: string, bodyStart: number): number {
     .map((line) => line.trim())
     .filter(Boolean);
   const boundaryEndsPemHeaders =
-    precedingLines.length > 0 &&
+    precedingLines.length === 0 ||
     precedingLines.every((line) => PEM_HEADER_LINE_RE.test(line));
   if (!boundaryEndsPemHeaders) {
     return bodyStart + firstBoundary.index;

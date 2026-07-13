@@ -166,19 +166,19 @@ function decodedUrlValue(value: string): string {
 
 function looksLikeUrlLocalPath(value: string, knownRootsOnly = false): boolean {
   const decoded = decodedUrlValue(value);
-  if (LOCAL_POSIX_ROOT_RE.test(decoded)) {
+  if (
+    LOCAL_POSIX_ROOT_RE.test(decoded) ||
+    URL_WINDOWS_PATH_RE.test(decoded) ||
+    URL_UNC_PATH_RE.test(decoded) ||
+    URL_HOME_PATH_RE.test(decoded) ||
+    URL_FILE_SCHEME_RE.test(decoded)
+  ) {
     return true;
   }
   if (knownRootsOnly) {
     return false;
   }
-  return (
-    URL_ABSOLUTE_POSIX_PATH_RE.test(decoded) ||
-    URL_WINDOWS_PATH_RE.test(decoded) ||
-    URL_UNC_PATH_RE.test(decoded) ||
-    URL_HOME_PATH_RE.test(decoded) ||
-    URL_FILE_SCHEME_RE.test(decoded)
-  );
+  return URL_ABSOLUTE_POSIX_PATH_RE.test(decoded);
 }
 
 function redactHttpUrlMetadata(value: string): string {
