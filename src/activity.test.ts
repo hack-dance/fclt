@@ -226,6 +226,12 @@ describe("activity feed", () => {
             sourceUri:
               "https://logs.example/%252FUsers%252Fexample%252Fprivate%252Frepo",
           },
+          {
+            sourceUri: "https://logs.example/Users/example/private/repo",
+          },
+          {
+            sourceUri: "https://logs.example/C:/Users/example/private/repo",
+          },
         ],
       },
       {
