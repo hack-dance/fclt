@@ -1,3 +1,9 @@
+## [2.24.1](https://github.com/hack-dance/fclt/compare/v2.24.0...v2.24.1) (2026-07-13)
+
+### Bug Fixes
+
+* refresh evolution loop previews ([6562492](https://github.com/hack-dance/fclt/commit/6562492a4aa717062fb4e3e0e85df08e3bcab76b))
+
 ## [2.24.0](https://github.com/hack-dance/fclt/compare/v2.23.0...v2.24.0) (2026-07-13)
 
 ### Features
