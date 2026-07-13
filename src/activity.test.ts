@@ -174,8 +174,103 @@ describe("activity feed", () => {
       contextOmitted: true,
     });
     expect(feed.items[0]?.observations[1]?.details).toBeUndefined();
+    expect(feed.items[0]?.context).toMatchObject({
+      scope: "project",
+      project: { key: "repo", name: "repo" },
+      targets: [
+        {
+          kind: "instruction",
+          scope: "project",
+          selector: "@project/instructions/SETUP.md",
+          label: "SETUP",
+        },
+      ],
+    });
     expect(JSON.stringify(feed)).not.toContain("/Users/");
-    expect(renderActivityFeed(feed)).toContain("Needs attention");
+    expect(renderActivityFeed(feed)).toContain(
+      "Target: instruction · SETUP (@project/instructions/SETUP.md)"
+    );
+    expect(renderActivityFeed(feed)).toContain(
+      "Why: Repeated evidence points to one project setup gap."
+    );
+  });
+
+  it("shows only portable capability targets and source-owned links", () => {
+    const linkedReview = review();
+    linkedReview.evidence = [
+      {
+        dedupeKey: "evidence-1",
+        sourceIds: ["tracker-export"],
+        sourceRecordIds: ["event-1"],
+        observedAt: "2026-07-13T00:00:00.000Z",
+        title: "Scoped source event",
+        body: "Evidence",
+        classification: "capability-source",
+        assetRefs: ["skill:capability-evolution"],
+        issueRefs: [],
+        writebackRefs: ["WB-00001"],
+        correlationKeys: ["asset:skill:capability-evolution"],
+        disposition: "propose",
+        isNew: true,
+        provenance: [
+          {
+            sourceUri:
+              "https://example.com/work/123?path=/Users/example/private/repo",
+          },
+          { sourceUri: "https://example.com/work/123" },
+        ],
+      },
+    ];
+    linkedReview.signals[0] = {
+      ...linkedReview.signals[0]!,
+      assetRefs: [
+        "skill:capability-evolution",
+        "@project/prompts/review.md",
+        "/Users/example/private/repo/.ai/skills/private/SKILL.md",
+        "TASK-1",
+      ],
+    };
+    const linkedWriteback = writeback("WB-00001", "internal");
+    linkedWriteback.evidence = [
+      { type: "review", ref: "https://example.com/work/123" },
+      { type: "secret", ref: "https://user:pass@example.com/private" },
+      { type: "token", ref: "https://example.com/private?token=secret" },
+      { type: "local", ref: "file:///Users/example/private/repo/report.md" },
+    ];
+
+    const feed = buildActivityFeed({
+      report: report(),
+      review: linkedReview,
+      writebacks: [linkedWriteback],
+      proposals: [],
+    });
+
+    expect(feed.items[0]?.context?.targets).toEqual([
+      {
+        kind: "skill",
+        scope: "project",
+        selector: "skill:capability-evolution",
+        label: "capability evolution",
+      },
+      {
+        kind: "prompt",
+        scope: "project",
+        selector: "@project/prompts/review.md",
+        label: "review",
+      },
+    ]);
+    expect(feed.items[0]?.context?.links).toEqual([
+      {
+        label: "example.com",
+        url: "https://example.com/work/123",
+        source: "evidence",
+      },
+    ]);
+    const portable = JSON.stringify(feed);
+    expect(portable).not.toContain("/Users/example/private");
+    expect(portable).not.toContain("file://");
+    expect(portable).not.toContain("user:pass");
+    expect(portable).not.toContain("token=secret");
   });
 
   it("never describes a failed empty run as checked and clear", () => {

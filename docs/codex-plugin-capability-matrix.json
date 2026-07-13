@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "packageVersion": "2.22.3",
+    "packageVersion": "2.23.0",
     "pluginVersion": "0.1.1",
     "auditedAt": "2026-07-13T00:00:00Z"
   },
@@ -751,10 +751,10 @@
       },
       "risk": "read_only",
       "scope": "global|project",
-      "preview": "loop_activity returns the embedded privacy-aware activity snapshot; loop_preview reads the latest review and returns the full technical queue plus notification delta without mutation",
+      "preview": "loop_activity returns the embedded privacy-aware activity snapshot with project scope, typed capability targets, decision rationale, and source-owned links; loop_preview reads the latest review and returns the full technical queue plus notification delta without mutation",
       "apply": "withheld; enable, disable, scheduled run, and canonical apply remain CLI-only",
       "rollback": "not_applicable",
-      "verification": "typed schema, explicit scope, immutable activity snapshots, no absolute paths in portable activity JSON, queue continuity, and zero writes during preview"
+      "verification": "typed schema, explicit scope, immutable activity snapshots, bounded targets and HTTP(S) links, no absolute paths or credential-bearing URLs in portable activity JSON, queue continuity, and zero writes during preview"
     },
     {
       "id": "autosync.mutation",

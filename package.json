@@ -71,6 +71,7 @@
     "pack:dry-run": "bun run scripts/pack-dry-run.ts",
     "release:dry-run": "bunx semantic-release --dry-run --no-ci",
     "release": "bunx semantic-release",
+    "version": "bun run scripts/sync-release-metadata.ts",
     "prepare": "husky"
   },
   "devDependencies": {

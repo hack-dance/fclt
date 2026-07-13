@@ -1218,6 +1218,7 @@ describe("Codex plugin capability matrix", () => {
       join(repoRoot, "package.json")
     ).json()) as {
       version: string;
+      scripts: { version?: string };
     };
     const pluginJson = (await Bun.file(
       join(repoRoot, "plugins", "fclt", ".codex-plugin", "plugin.json")
@@ -1239,6 +1240,13 @@ describe("Codex plugin capability matrix", () => {
         risk: string;
       }[];
     };
+    const releaseConfig = (await Bun.file(
+      join(repoRoot, ".releaserc.json")
+    ).json()) as {
+      plugins: Array<
+        string | [string, { assets?: string[]; [key: string]: unknown }]
+      >;
+    };
     const ids = matrix.capabilities.map((capability) => capability.id);
     const setup = matrix.capabilities.find(
       (capability) => capability.id === "setup.readiness"
@@ -1253,6 +1261,15 @@ describe("Codex plugin capability matrix", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(matrix.generatedFrom.packageVersion).toBe(packageJson.version);
     expect(matrix.generatedFrom.pluginVersion).toBe(pluginJson.version);
+    expect(packageJson.scripts.version).toBe(
+      "bun run scripts/sync-release-metadata.ts"
+    );
+    expect(
+      releaseConfig.plugins.find(
+        (plugin): plugin is [string, { assets?: string[] }] =>
+          Array.isArray(plugin) && plugin[0] === "@semantic-release/git"
+      )?.[1].assets
+    ).toContain("docs/codex-plugin-capability-matrix.json");
     expect(setup?.mcp).toMatchObject({
       disposition: "exposed",
       tool: "fclt_setup",

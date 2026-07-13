@@ -13,7 +13,12 @@
     [
       "@semantic-release/git",
       {
-        "assets": ["CHANGELOG.md", "package.json", "bun.lock"],
+        "assets": [
+          "CHANGELOG.md",
+          "package.json",
+          "bun.lock",
+          "docs/codex-plugin-capability-matrix.json"
+        ],
         "message": "chore(release): ${nextRelease.version}\n\n${nextRelease.notes}"
       }
     ]
