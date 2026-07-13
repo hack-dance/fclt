@@ -240,6 +240,11 @@ describe("activity feed", () => {
             sourceUri:
               "https://logs.example/run/C:/Users/example/private/repo/log.txt",
           },
+          { sourceUri: "https://logs.example/root/.ssh/id_rsa" },
+          { sourceUri: "https://logs.example/session/etc/passwd" },
+          { sourceUri: "https://logs.example/session/usr/local/bin/tool" },
+          { sourceUri: "https://logs.example/session/opt/tool/config" },
+          { sourceUri: "https://logs.example/session/mnt/share/report" },
         ],
       },
       {
