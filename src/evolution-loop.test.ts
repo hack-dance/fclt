@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { latestActivityFeed } from "./activity";
 import {
   type AiProposalRecord,
   acceptProposal,
@@ -22,6 +23,7 @@ import {
   listWritebacks,
   proposeEvolution,
   rejectProposal,
+  setWritebackDisposition,
   showProposal,
   verifyProposalEffectiveness,
 } from "./ai";
@@ -82,6 +84,37 @@ afterEach(async () => {
 });
 
 describe("evolution loop", () => {
+  it("keeps embedded activity immutable when writebacks change after the run", async () => {
+    const project = await makeProject();
+    await enableEvolutionLoop({
+      ...project,
+      now: () => new Date("2026-07-13T00:00:00.000Z"),
+    });
+    const report = await runEvolutionLoop({
+      ...project,
+      since: "2026-07-12T00:00:00.000Z",
+      until: "2026-07-13T00:00:00.000Z",
+      now: () => new Date("2026-07-13T00:00:00.000Z"),
+    });
+    const before = await latestActivityFeed({ ...project, scope: "project" });
+    const later = await addWriteback({
+      ...project,
+      kind: "tool_friction",
+      summary:
+        "A later writeback must not rewrite an earlier activity snapshot.",
+      evidence: [{ type: "test", ref: "post-report-mutation" }],
+    });
+    await setWritebackDisposition(later.id, "defer", {
+      ...project,
+      nextTrigger: "A second setup failure",
+      expectedOutcome: "Project context remains available",
+    });
+    const after = await latestActivityFeed({ ...project, scope: "project" });
+
+    expect(report.activity?.snapshot).toBe("embedded");
+    expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+  });
+
   it("enables, observes, and safely pauses its owned Codex automation", async () => {
     const project = await makeProject();
     const enabled = await enableEvolutionLoop({

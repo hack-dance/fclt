@@ -727,6 +727,91 @@ describe("ai writeback", () => {
     expect(record.evidence).toEqual([]);
   });
 
+  it("records bounded structured context, redacts secrets, and keeps desired and lifecycle outcomes separate", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    await writeGraph(tempHome, rootDir, {
+      version: 1,
+      generatedAt: "2026-07-13T00:00:00.000Z",
+      nodes: {},
+      edges: [],
+    });
+
+    const basicCredential = ["dXNlcjpw", "YXNzd29yZA=="].join("");
+    const awsAccessKey = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
+    const jwt = [
+      "eyJhbGciOiJIUzI1NiJ9",
+      "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+      "signaturevalue",
+    ].join(".");
+    const privateKeyMaterial = ["cHJpdmF0ZS1rZXkt", "bWF0ZXJpYWw="].join("");
+    const privateKey = [
+      ["-----BEGIN", "PRIVATE KEY-----"].join(" "),
+      privateKeyMaterial,
+      ["-----END", "PRIVATE KEY-----"].join(" "),
+    ].join("\n");
+    const record = await addWriteback({
+      homeDir: tempHome,
+      rootDir,
+      kind: "tool_friction",
+      category: "friction",
+      summary: `The tool printed token=super-secret-value, Authorization: Basic ${basicCredential}, ${awsAccessKey}, and ${jwt} during setup.`,
+      details: `The configured command failed with sk-abcdefghijklmnopqrstuvwxyz and ${privateKey}.`,
+      impact: "The agent could not finish setup.",
+      attemptedWorkaround: "Retried with bearer very-secret-value.",
+      desiredOutcome: "Setup should recover without exposing credentials.",
+      sensitivity: "private",
+      evidence: [
+        {
+          type: "log",
+          ref: `https://user:password@example.invalid/run ${privateKey}`,
+        },
+      ],
+    });
+    const dispositioned = await setWritebackDisposition(record.id, "task", {
+      homeDir: tempHome,
+      rootDir,
+      target: "TASK-1",
+      expectedOutcome: "A regression test passes after the fix.",
+    });
+
+    expect(dispositioned.capture).toMatchObject({
+      category: "friction",
+      sensitivity: "private",
+      desiredOutcome: "Setup should recover without exposing credentials.",
+    });
+    expect(dispositioned.expectedOutcome).toBe(
+      "A regression test passes after the fix."
+    );
+    const queue = await readFile(
+      facultAiWritebackQueuePath(tempHome, rootDir),
+      "utf8"
+    );
+    const artifact = await readFile(
+      join(facultAiWritebackReviewDir(tempHome, rootDir), `${record.id}.md`),
+      "utf8"
+    );
+    expect(queue).not.toContain("super-secret-value");
+    expect(queue).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+    expect(queue).not.toContain("very-secret-value");
+    expect(queue).not.toContain("user:password");
+    expect(queue).not.toContain(basicCredential);
+    expect(queue).not.toContain(awsAccessKey);
+    expect(queue).not.toContain(jwt);
+    expect(queue).not.toContain(privateKeyMaterial);
+    expect(artifact).not.toContain(basicCredential);
+    expect(artifact).not.toContain(awsAccessKey);
+    expect(artifact).not.toContain(jwt);
+    expect(artifact).not.toContain("BEGIN PRIVATE KEY");
+    expect(artifact).not.toContain("The configured command failed");
+    expect(artifact).toContain(
+      "supplemental context: omitted from this review artifact"
+    );
+  });
+
   it("groups recorded writebacks into structured proposals", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

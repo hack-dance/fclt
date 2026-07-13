@@ -44,6 +44,7 @@ const STOP_WORD_RE =
 const NON_ALPHANUMERIC_RE = /[^a-z0-9]+/g;
 const WHITESPACE_RE = /\s+/g;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const REVIEW_ID_RE = /^RV-[a-f0-9]{16}$/;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -1101,7 +1102,23 @@ export async function latestReconciliationReview(args: {
   if (!latestId) {
     return null;
   }
-  const windowPath = join(dirname(statePath), "windows", `${latestId}.json`);
+  return await reconciliationReviewById({ ...args, reviewId: latestId });
+}
+
+export async function reconciliationReviewById(args: {
+  homeDir: string;
+  rootDir: string;
+  reviewId: string;
+}): Promise<ReconciliationReview | null> {
+  if (!REVIEW_ID_RE.test(args.reviewId)) {
+    return null;
+  }
+  const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
+  const windowPath = join(
+    dirname(statePath),
+    "windows",
+    `${args.reviewId}.json`
+  );
   try {
     return JSON.parse(
       await readFile(windowPath, "utf8")

@@ -41,6 +41,7 @@ history, and audit records:
 fclt ai loop enable --project
 fclt ai loop status --project --json
 fclt ai loop run --project --json
+fclt ai loop activity --project
 fclt ai loop disable --project
 ```
 
@@ -80,6 +81,11 @@ an append-only audit log. Human-readable review artifacts remain under the
 global review root, including project metadata for project runs. The full queue
 is the source of truth; notifications contain only new, changed, or resolved
 items so repeated schedules do not spam unchanged findings.
+Each run embeds a portable activity snapshot that explains captured friction,
+opportunities, reusable success, source degradation, decisions, linked work,
+and next actions without absolute machine paths. Use `fclt ai loop activity
+--project --json` as the downstream UI contract; use the technical loop report
+only for diagnostics.
 
 ## Suggested Cadence
 

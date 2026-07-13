@@ -184,6 +184,7 @@ export interface EvolutionLoopReport {
   attempts: Array<{ attempt: number; ok: boolean; error?: string }>;
   artifactPath: string;
   auditPath: string;
+  activity?: import("./activity").ActivityFeed;
 }
 
 const ACTIVE_LOOP_PROPOSAL_STATUSES = new Set([
@@ -1285,6 +1286,36 @@ async function materializeSignals(args: {
 }
 
 function renderReport(report: EvolutionLoopReport): string {
+  const activityItems = report.activity?.items ?? [];
+  const activityAttention = activityItems.filter(
+    (item) => item.state !== "resolved" && item.state !== "deferred"
+  );
+  const activityLines = activityAttention.flatMap((item) => [
+    `### ${markdownCell(item.title)}`,
+    "",
+    `- kind: ${markdownCell(item.kind)}`,
+    `- category: ${markdownCell(item.categories.join(", "))}`,
+    `- state: ${markdownCell(item.state)}`,
+    `- decision: ${markdownCell(item.decision.disposition ?? item.decision.proposalStatus ?? "unassigned")}`,
+    ...(item.decision.rationale
+      ? [`- why: ${markdownCell(item.decision.rationale)}`]
+      : []),
+    ...item.observations.flatMap((observation) => [
+      `- captured: ${markdownCell(observation.summary)}`,
+      ...(observation.contextOmitted
+        ? ["- context: omitted because the observation is private"]
+        : [
+            ...(observation.details
+              ? [`- context: ${markdownCell(observation.details)}`]
+              : []),
+            ...(observation.impact
+              ? [`- impact: ${markdownCell(observation.impact)}`]
+              : []),
+          ]),
+    ]),
+    `- next: ${markdownCell(item.nextAction)}`,
+    "",
+  ]);
   const queueRows = report.queue.map(
     (item) =>
       `| ${markdownCell(item.id)} | ${markdownCell(item.kind)} | ${markdownCell(item.state)} | ${markdownCell(item.disposition ?? item.proposalStatus ?? "-")} | ${markdownCell(item.linkedWork.join(", ") || "-")} | ${markdownCell(item.verification?.state ?? "-")} | ${item.approvalRequired ? "yes" : "no"} |`
@@ -1316,6 +1347,21 @@ function renderReport(report: EvolutionLoopReport): string {
     "",
     `# Evolution loop ${report.runId}`,
     "",
+    "## Activity summary",
+    "",
+    `- Run status: ${report.status}`,
+    `- Coverage: ${report.coverageComplete ? "complete" : "incomplete"} (${report.activity?.coverage.checked ?? 0}/${report.coverage.length} sources checked)`,
+    `- Changes: ${report.delta.new.length} new, ${report.delta.changed.length} changed, ${report.delta.resolved.length} resolved`,
+    `- Needs attention: ${activityAttention.length}`,
+    "",
+    ...(activityLines.length > 0
+      ? activityLines
+      : [
+          report.status !== "failed" && report.coverageComplete
+            ? "Configured coverage was checked and nothing needs attention."
+            : "The run did not prove complete coverage; inspect source problems below.",
+          "",
+        ]),
     "## Notification delta",
     "",
     `- New: ${report.delta.new.join(", ") || "none"}`,
@@ -1777,6 +1823,13 @@ async function persistFailedLoopRun(args: {
     artifactPath,
     auditPath,
   };
+  const { buildActivityFeed } = await import("./activity");
+  report.activity = buildActivityFeed({
+    report,
+    review: args.review ?? null,
+    writebacks: [],
+    proposals: [],
+  });
   await atomicWrite(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   await atomicWrite(artifactPath, `${renderReport(report)}\n`);
   const failedState: EvolutionLoopState = {
@@ -1997,6 +2050,13 @@ async function runEvolutionLoopScoped(args: {
         artifactPath,
         auditPath,
       };
+      const { buildActivityFeed } = await import("./activity");
+      report.activity = buildActivityFeed({
+        report,
+        review,
+        writebacks,
+        proposals,
+      });
       if (!args.dryRun) {
         const reportPath = join(reportDir, `${runId}.json`);
         await atomicWrite(reportPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -2068,6 +2128,12 @@ async function runEvolutionLoopScoped(args: {
             status: "failed",
             attempts: failedAttempts,
           };
+          failedReport.activity = buildActivityFeed({
+            report: failedReport,
+            review,
+            writebacks,
+            proposals,
+          });
           await atomicWrite(
             reportPath,
             `${JSON.stringify(failedReport, null, 2)}\n`

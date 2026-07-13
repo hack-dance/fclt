@@ -171,8 +171,31 @@ Record writeback when the signal is durable and targetable:
 fclt ai writeback add \
   --kind weak_verification \
   --summary "Checks were too shallow" \
+  --category friction \
+  --details "The source check did not exercise the installed launcher" \
+  --impact "Packaging could fail after a source-only green result" \
+  --attempted-workaround "Ran the built launcher directly" \
+  --desired-outcome "The supported check covers the installed path" \
+  --sensitivity internal \
+  --evidence test:installed-launcher \
   --asset instruction:VERIFICATION
 ```
+
+Use the structured fields only for concise, observable context:
+
+- `category`: `friction`, `opportunity`, or `reusable-success`
+- `details`: what happened and in what bounded context
+- `impact`: why it mattered
+- `attempted-workaround`: what was tried, if anything
+- `desired-outcome`: what better behavior looks like
+- `sensitivity`: `public`, `internal`, or `private`
+
+This is not a reasoning transcript. Never record hidden chain-of-thought, raw
+session transcripts, unbounded logs, secrets, tokens, or credential-bearing
+payloads. Keep logs in their source system and store a small redacted evidence
+reference. Secret-shaped content is redacted at capture regardless of
+sensitivity. `private` retains the actionable summary while omitting
+supplemental context from portable review surfaces.
 
 Useful kinds:
 
@@ -198,6 +221,25 @@ fclt ai writeback disposition WB-00021 \
 
 Issue links are evidence and routing destinations, not capability assets. Group tickets by the
 underlying friction or reusable success rather than creating one writeback per ticket.
+
+## Activity
+
+Read the latest completed loop in plain language:
+
+```bash
+fclt ai loop activity --project
+fclt ai loop activity --project --json
+```
+
+The versioned JSON is a portable, read-only projection for agents and UI. It
+contains source coverage, new/changed/resolved counts, correlated observations,
+decisions, linked work, approvals, verification state, and the next action. It
+does not contain absolute machine paths. Each activity snapshot is embedded in
+its loop report, so a later writeback or proposal transition cannot rewrite an
+older run. Unchanged queue items are suppressed from change counts, while stale
+or unavailable sources remain visible. A complete empty run means configured
+coverage was checked; degraded or failed empty runs never claim that nothing is
+pending.
 
 ## Evolution
 

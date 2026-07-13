@@ -25,8 +25,33 @@ then record the writeback instead of only suggesting that someone should do it l
 Use:
 
 ```bash
-fclt ai writeback add --kind <kind> --summary "<summary>" --asset <asset-selector>
+fclt ai writeback add \
+  --kind <kind> \
+  --category <friction|opportunity|reusable-success> \
+  --summary "<one-sentence observation>" \
+  --details "<concise context>" \
+  --impact "<why it mattered>" \
+  --attempted-workaround "<what was tried, if anything>" \
+  --desired-outcome "<what better looks like>" \
+  --sensitivity <public|internal|private> \
+  --evidence <type:ref> \
+  --asset <asset-selector>
 ```
+
+Keep the capture concise and factual. Preserve decision rationale as a short
+explanation of the observed evidence and selected disposition. Never record
+hidden chain-of-thought, raw transcripts, unbounded logs, secrets, tokens, or
+credential-bearing payloads. Store logs in their existing system and reference
+the smallest redacted evidence identifier that lets a reviewer retrieve them.
+
+Sensitivity controls supplemental context in portable review surfaces:
+
+- `public`: generic context that is safe to show broadly
+- `internal`: context for the exact local/project review surface; this is the default
+- `private`: keep the actionable summary, but omit supplemental context from portable artifacts and tools
+
+Sensitivity is not a secret store. Secret-shaped values are redacted at the
+writeback boundary regardless of the selected sensitivity.
 
 The writeback queue is runtime state, not canonical source. `fclt` stores JSON
 queue state in machine-local `fclt` state so sandboxed agents can record durable
@@ -78,4 +103,5 @@ Target the smallest composable unit that explains the friction:
 - mention the writeback id when summarizing what changed
 - escalate to `capability-evolution` or `fclt ai evolve ...` only when the signal is repeated or clearly points at a durable capability change
 - use `fclt ai writeback group --by asset` or `fclt ai writeback summarize --by domain` to review accumulated signal before proposing broad changes
+- use `fclt ai loop activity --project` (or `--global`) for the readable latest activity snapshot; use `--json` for downstream UI
 - use scheduled `learning-review`, `evolution-review`, or `tool-call-audit` automations when the signal should be reviewed in the background

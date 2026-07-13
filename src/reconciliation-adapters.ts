@@ -30,8 +30,19 @@ const SECRET_VALUE_RE =
   /(bearer\s+|(?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi;
 const JSON_SECRET_VALUE_RE =
   /("[^"]*(?:api[_-]?key|token|secret|password|authorization)[^"]*"\s*:\s*")[^"]*(")/gi;
+const AUTHORIZATION_VALUE_RE =
+  /\b(authorization\s*[:=]\s*)(?:basic|bearer)\s+[^\s"']+/gi;
 const SECRET_TOKEN_RE =
   /\b(?:sk[-_]|ghp_|github_pat_|lin_api_)[A-Za-z0-9_-]{12,}\b/g;
+const AWS_ACCESS_KEY_RE =
+  /\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/g;
+const JWT_RE =
+  /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g;
+const PEM_PRIVATE_KEY_BEGIN_RE = /-----BEGIN ([^-\r\n]*PRIVATE KEY)-----/g;
+const PEM_PRIVATE_KEY_MARKER_RE =
+  /-----(?:BEGIN|END) [^-\r\n]*PRIVATE KEY-----/g;
+const PEM_BLANK_LINE_RE = /\r?\n[\t ]*\r?\n/;
+const PEM_HEADER_LINE_RE = /^[A-Za-z][A-Za-z0-9-]*:\s*\S.*$/;
 const LINE_SPLIT_RE = /\r?\n/;
 const PATH_SEGMENT_RE = /[\\/]/;
 const MARKDOWN_SECTION_RE = /(?=^#{1,3}\s+)/m;
@@ -64,12 +75,64 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function partialPrivateKeyEnd(value: string, bodyStart: number): number {
+  const body = value.slice(bodyStart);
+  const firstBoundary = PEM_BLANK_LINE_RE.exec(body);
+  if (!firstBoundary) {
+    return value.length;
+  }
+  const precedingLines = body
+    .slice(0, firstBoundary.index)
+    .split(LINE_SPLIT_RE)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const boundaryEndsPemHeaders =
+    precedingLines.length === 0 ||
+    precedingLines.every((line) => PEM_HEADER_LINE_RE.test(line));
+  if (!boundaryEndsPemHeaders) {
+    return bodyStart + firstBoundary.index;
+  }
+  const keyBodyStart =
+    bodyStart + firstBoundary.index + firstBoundary[0].length;
+  const nextBoundary = PEM_BLANK_LINE_RE.exec(value.slice(keyBodyStart));
+  return nextBoundary ? keyBodyStart + nextBoundary.index : value.length;
+}
+
+function redactPrivateKeyMaterial(value: string): string {
+  let cursor = 0;
+  let output = "";
+  for (const match of value.matchAll(PEM_PRIVATE_KEY_BEGIN_RE)) {
+    const beginIndex = match.index;
+    if (beginIndex < cursor) {
+      continue;
+    }
+    const label = match[1];
+    if (!label) {
+      continue;
+    }
+    const bodyStart = beginIndex + match[0].length;
+    const endMarker = `-----END ${label}-----`;
+    const endIndex = value.indexOf(endMarker, bodyStart);
+    const redactionEnd =
+      endIndex >= 0
+        ? endIndex + endMarker.length
+        : partialPrivateKeyEnd(value, bodyStart);
+    output += `${value.slice(cursor, beginIndex)}<redacted-private-key>`;
+    cursor = redactionEnd;
+  }
+  return output + value.slice(cursor);
+}
+
 export function redactReconciliationText(value: string): string {
-  return value
+  return redactPrivateKeyMaterial(value)
+    .replace(PEM_PRIVATE_KEY_MARKER_RE, "<redacted-private-key>")
     .replace(URL_USERINFO_RE, "$1<redacted>@")
     .replace(JSON_SECRET_VALUE_RE, "$1<redacted>$2")
+    .replace(AUTHORIZATION_VALUE_RE, "$1<redacted>")
     .replace(SECRET_VALUE_RE, "$1<redacted>")
     .replace(SECRET_TOKEN_RE, "<redacted-token>")
+    .replace(AWS_ACCESS_KEY_RE, "<redacted-aws-access-key>")
+    .replace(JWT_RE, "<redacted-jwt>")
     .slice(0, MAX_BODY_CHARS);
 }
 

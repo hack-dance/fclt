@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "packageVersion": "2.22.2",
+    "packageVersion": "2.22.3",
     "pluginVersion": "0.1.1",
-    "auditedAt": "2026-07-12T02:10:00Z"
+    "auditedAt": "2026-07-13T00:00:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
@@ -276,9 +276,9 @@
       "risk": "review_producing",
       "scope": "global|project",
       "preview": "structured intent returned before recording",
-      "apply": "explicit evidence, problem, target, expected outcome, and scope",
+      "apply": "explicit evidence, concise observation, category, target, desired outcome, sensitivity, and scope; hidden reasoning, raw logs, and secrets are excluded",
       "rollback": "dismiss/reopen via journaled state transition; queue remains auditable",
-      "verification": "queue record, review artifact, evidence, and journal event agree"
+      "verification": "queue record, privacy-aware review artifact, redacted evidence, structured capture, and journal event agree"
     },
     {
       "id": "writeback.review_links",
@@ -742,19 +742,19 @@
     },
     {
       "id": "evolution_loop.review",
-      "cli": "ai loop status|run --dry-run",
+      "cli": "ai loop status|activity|run --dry-run",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_automation",
-        "actions": ["loop_status", "loop_preview"]
+        "actions": ["loop_status", "loop_activity", "loop_preview"]
       },
       "risk": "read_only",
       "scope": "global|project",
-      "preview": "loop_preview reads the latest review and returns the full queue plus notification delta without mutation",
+      "preview": "loop_activity returns the embedded privacy-aware activity snapshot; loop_preview reads the latest review and returns the full technical queue plus notification delta without mutation",
       "apply": "withheld; enable, disable, scheduled run, and canonical apply remain CLI-only",
       "rollback": "not_applicable",
-      "verification": "typed schema, explicit scope, queue continuity, and zero writes during preview"
+      "verification": "typed schema, explicit scope, immutable activity snapshots, no absolute paths in portable activity JSON, queue continuity, and zero writes during preview"
     },
     {
       "id": "autosync.mutation",
