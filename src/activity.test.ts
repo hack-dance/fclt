@@ -174,8 +174,174 @@ describe("activity feed", () => {
       contextOmitted: true,
     });
     expect(feed.items[0]?.observations[1]?.details).toBeUndefined();
+    expect(feed.items[0]?.context).toMatchObject({
+      scope: "project",
+      project: { key: "repo", name: "repo" },
+      targets: [
+        {
+          kind: "instruction",
+          scope: "project",
+          selector: "@project/instructions/SETUP.md",
+          label: "SETUP",
+        },
+      ],
+    });
     expect(JSON.stringify(feed)).not.toContain("/Users/");
-    expect(renderActivityFeed(feed)).toContain("Needs attention");
+    expect(renderActivityFeed(feed)).toContain(
+      "Target: instruction · SETUP (@project/instructions/SETUP.md)"
+    );
+    expect(renderActivityFeed(feed)).toContain(
+      "Why: Repeated evidence points to one project setup gap."
+    );
+  });
+
+  it("shows only portable capability targets and source-owned links", () => {
+    const linkedReview = review();
+    linkedReview.evidence = [
+      {
+        dedupeKey: "evidence-1",
+        sourceIds: ["tracker-export"],
+        sourceRecordIds: ["event-1"],
+        observedAt: "2026-07-13T00:00:00.000Z",
+        title: "Scoped source event",
+        body: "Evidence",
+        classification: "capability-source",
+        assetRefs: ["skill:capability-evolution"],
+        issueRefs: [],
+        writebackRefs: ["WB-00001"],
+        correlationKeys: ["asset:skill:capability-evolution"],
+        disposition: "propose",
+        isNew: true,
+        provenance: [
+          {
+            sourceUri:
+              "https://example.com/work/123?path=/Users/example/private/repo",
+          },
+          { sourceUri: "https://example.com/work/123" },
+          {
+            sourceUri:
+              "https://logs.example/%2FUsers%2Fexample%2Fprivate%2Frepo",
+          },
+          {
+            sourceUri:
+              "https://logs.example/%252FUsers%252Fexample%252Fprivate%252Frepo",
+          },
+          {
+            sourceUri: "https://logs.example/Users/example/private/repo",
+          },
+          {
+            sourceUri: "https://logs.example/C:/Users/example/private/repo",
+          },
+          {
+            sourceUri:
+              "https://logs.example/run//Users/example/private/repo/log.txt",
+          },
+          {
+            sourceUri:
+              "https://logs.example/run/C:/Users/example/private/repo/log.txt",
+          },
+          { sourceUri: "https://logs.example/root/.ssh/id_rsa" },
+          { sourceUri: "https://logs.example/session/etc/passwd" },
+          { sourceUri: "https://logs.example/session/usr/local/bin/tool" },
+          { sourceUri: "https://logs.example/session/opt/tool/config" },
+          { sourceUri: "https://logs.example/session/mnt/share/report" },
+          { sourceUri: "https://logs.example/Users" },
+          { sourceUri: "https://logs.example/etc" },
+          {
+            sourceUri: "https://logs.example/artifact/path=/workspace/fclt/log",
+          },
+          {
+            sourceUri:
+              "https://logs.example/artifact/cwd=C:/workspace/fclt/log",
+          },
+        ],
+      },
+      {
+        dedupeKey: "evidence-2",
+        sourceIds: ["writebacks"],
+        sourceRecordIds: ["WB-00002"],
+        observedAt: "2026-07-13T00:00:00.000Z",
+        title: "Private source event",
+        body: "Private evidence",
+        classification: "capability-source",
+        assetRefs: [],
+        issueRefs: [],
+        writebackRefs: ["WB-00002"],
+        correlationKeys: ["asset:skill:capability-evolution"],
+        disposition: "propose",
+        isNew: true,
+        provenance: [{ sourceUri: "https://example.com/private/source-event" }],
+      },
+    ];
+    linkedReview.signals[0] = {
+      ...linkedReview.signals[0]!,
+      assetRefs: [
+        "skill:capability-evolution",
+        "@project/prompts/review.md",
+        "@project/instructions/SETUP.md?token=target-secret",
+        "@project/%2FUsers%2Fexample%2Fprivate%2Fplan.md",
+        "skill:%252FUsers%252Fexample%252Fprivate",
+        "/Users/example/private/repo/.ai/skills/private/SKILL.md",
+        "TASK-1",
+      ],
+    };
+    const linkedWriteback = writeback("WB-00001", "internal");
+    linkedWriteback.evidence = [
+      { type: "review", ref: "https://example.com/work/123" },
+      { type: "secret", ref: "https://user:pass@example.com/private" },
+      { type: "token", ref: "https://example.com/private?token=secret" },
+      {
+        type: "signed",
+        ref: "https://storage.example/object?X-Goog-Signature=credential",
+      },
+      { type: "local", ref: "file:///Users/example/private/repo/report.md" },
+    ];
+    const privateWriteback = writeback("WB-00002", "private");
+    privateWriteback.evidence = [
+      { type: "private", ref: "https://example.com/private/writeback" },
+    ];
+
+    const feed = buildActivityFeed({
+      report: report(),
+      review: linkedReview,
+      writebacks: [linkedWriteback, privateWriteback],
+      proposals: [],
+    });
+
+    expect(feed.items[0]?.context?.targets).toEqual([
+      {
+        kind: "skill",
+        scope: "project",
+        selector: "skill:capability-evolution",
+        label: "capability evolution",
+      },
+      {
+        kind: "prompt",
+        scope: "project",
+        selector: "@project/prompts/review.md",
+        label: "review",
+      },
+    ]);
+    expect(feed.items[0]?.context?.links).toEqual([
+      {
+        label: "example.com",
+        url: "https://example.com/work/123",
+        source: "evidence",
+      },
+    ]);
+    const portable = JSON.stringify(feed);
+    expect(portable).not.toContain("/Users/example/private");
+    expect(portable).not.toContain("file://");
+    expect(portable).not.toContain("user:pass");
+    expect(portable).not.toContain("token=secret");
+    expect(portable).not.toContain("target-secret");
+    expect(portable).not.toContain("%2FUsers");
+    expect(portable).not.toContain("%252FUsers");
+    expect(portable).not.toContain("X-Goog-Signature");
+    expect(portable).not.toContain("private/source-event");
+    expect(portable).not.toContain("private/writeback");
+    expect(portable).not.toContain("path=/workspace");
+    expect(portable).not.toContain("cwd=C:/workspace");
   });
 
   it("never describes a failed empty run as checked and clear", () => {
@@ -217,6 +383,17 @@ describe("activity feed", () => {
       "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
       "signaturevalue",
     ].join(".");
+    const signedUrl =
+      "https://storage.example/object?X-Amz-Signature=signed-value&X-Amz-Expires=900";
+    const encodedLocalUrl =
+      "https://logs.example/%2FUsers%2Fexample%2Fprivate%2Frepo";
+    const rawLocalUrl = "https://logs.example/run/Users/example/private/repo";
+    const encodedPlainPath = "%252FUsers%252Fexample%252Fprivate%252Frepo";
+    const encodedWindowsPath = "C%3A%5CUsers%5Cexample%5Cprivate%5Crepo";
+    const bareHomePath = "home/example/.ssh/id_rsa";
+    const encodedKeyValuePath = "path=%2Fworkspace%2Ffclt";
+    const encodedKeyValueWindowsPath = "cwd=C%3A%5Cworkspace%5Cfclt";
+    const doubleEncodedKeyValuePath = "root=%252Fopt%252Fapp";
     const unsafeReview = review();
     unsafeReview.signals[0] = {
       ...unsafeReview.signals[0]!,
@@ -224,13 +401,13 @@ describe("activity feed", () => {
       dispositionTarget: windowsPath,
     };
     const unsafeWriteback = writeback("WB-00001", "internal");
-    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}`;
+    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}; source ${encodedLocalUrl}; path ${encodedPlainPath}; kv ${encodedKeyValuePath}`;
     unsafeWriteback.capture = {
       ...unsafeWriteback.capture!,
-      details: `Compared ${windowsPath} and ${uncPath}`,
+      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}; raw ${rawLocalUrl}; encoded ${encodedWindowsPath}; cwd ${encodedKeyValueWindowsPath}`,
       impact: "Could not read ~/private/config",
       attemptedWorkaround: "Opened file:///Users/example/private/repo/config",
-      desiredOutcome: `No path from ${unixPath}; JWT ${jwt}`,
+      desiredOutcome: `No path from ${unixPath}; JWT ${jwt}; home ${bareHomePath}; root ${doubleEncodedKeyValuePath}`,
     };
     const unsafeReport = report({
       coverage: [
@@ -238,15 +415,15 @@ describe("activity feed", () => {
           ...report().coverage[0]!,
           sourceId: unixPath,
           state: "unavailable",
-          unavailableReason: `Could not read ${windowsPath}`,
+          unavailableReason: `Could not read ${windowsPath}; source ${signedUrl}`,
         },
       ],
       coverageComplete: false,
       queue: [
         queueItem({
-          title: `Setup failed at ${unixPath}`,
+          title: `Setup failed at ${unixPath}; source ${signedUrl}`,
           sourceIds: [unixPath],
-          linkedWork: [uncPath],
+          linkedWork: [uncPath, signedUrl],
         }),
       ],
     });
@@ -268,11 +445,34 @@ describe("activity feed", () => {
       basicCredential,
       awsAccessKey,
       jwt,
+      "X-Amz-Signature",
+      "signed-value",
+      "%2FUsers%2Fexample",
+      "logs.example/run/Users/example",
+      encodedPlainPath,
+      encodedWindowsPath,
+      bareHomePath,
+      encodedKeyValuePath,
+      encodedKeyValueWindowsPath,
+      doubleEncodedKeyValuePath,
     ]) {
       expect(portable).not.toContain(secret);
     }
     expect(portable).toContain("<redacted-path>");
+    expect(portable).toContain("<redacted-url>");
     expect(portable).toContain("<redacted>");
+    for (const unsafePath of [
+      encodedPlainPath,
+      encodedWindowsPath,
+      bareHomePath,
+      encodedKeyValuePath,
+      encodedKeyValueWindowsPath,
+      doubleEncodedKeyValuePath,
+    ]) {
+      expect(redactPortableActivityText(`scrub ${unsafePath}`)).toBe(
+        "scrub <redacted-path>"
+      );
+    }
     expect(redactPortableActivityText(`Authorization: Bearer ${jwt}`)).toBe(
       "Authorization: <redacted>"
     );
@@ -331,42 +531,49 @@ describe("activity feed", () => {
     }
     for (const url of [
       "https://example.com/docs",
-      "https://example.com:8443/a/b?next=/guides/setup/install#fragment",
+      "https://example.com/artifact/path=workspace/fclt/log",
     ]) {
       expect(redactPortableActivityText(`keep ${url}`)).toBe(`keep ${url}`);
     }
+    expect(
+      redactPortableActivityText(
+        "keep https://example.com:8443/a/b?next=/guides/setup/install#fragment"
+      )
+    ).toBe("keep https://example.com:8443/a/b");
     for (const [unsafeUrl, expectedUrl] of [
       [
         "https://logs.example/run?file=/Users/example/repo/.env",
-        "https://logs.example/run?file=<redacted-path>",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?file=%2FUsers%2Fexample%2Frepo%2F.env",
-        "https://logs.example/run?file=<redacted-path>",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=/Users/example/repo/.env",
-        "https://logs.example/run?note=<redacted-path>",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=file:///Users/example/repo/.env",
-        "https://logs.example/run?note=<redacted-path>",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=C%3A%5CUsers%5Cexample%5Crepo%5C.env",
-        "https://logs.example/run?note=<redacted-path>",
+        "<redacted-url>",
       ],
       [
         "https://logs.example/run?note=%5C%5Cserver%5Cshare%5Cprivate.log",
-        "https://logs.example/run?note=<redacted-path>",
+        "<redacted-url>",
+      ],
+      ["https://logs.example/run?note=~%2Fprivate%2Fconfig", "<redacted-url>"],
+      ["https://logs.example/run#/Users/example/repo/.env", "<redacted-url>"],
+      [
+        "https://logs.example/artifact/path=/workspace/fclt/log",
+        "<redacted-url>",
       ],
       [
-        "https://logs.example/run?note=~%2Fprivate%2Fconfig",
-        "https://logs.example/run?note=<redacted-path>",
-      ],
-      [
-        "https://logs.example/run#/Users/example/repo/.env",
-        "https://logs.example/run#<redacted-path>",
+        "https://logs.example/artifact/cwd=C:/workspace/fclt/log",
+        "<redacted-url>",
       ],
     ]) {
       expect(redactPortableActivityText(`scrub ${unsafeUrl}`)).toBe(

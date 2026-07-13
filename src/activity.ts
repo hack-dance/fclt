@@ -19,32 +19,33 @@ import type {
 } from "./reconciliation-types";
 
 const MAX_OBSERVATIONS_PER_ITEM = 10;
+const MAX_TARGETS_PER_ITEM = 5;
+const MAX_LINKS_PER_ITEM = 5;
 const FILE_URL_PATH_RE = /\bfile:\/\/[^\s)\]}>"'`,;]+/gi;
 const WINDOWS_ABSOLUTE_PATH_RE =
   /\b[A-Za-z]:[\\/](?:[^\\/\s)\]}>"'`,;]+[\\/])*[^\\/\s)\]}>"'`,;]*/g;
 const UNC_ABSOLUTE_PATH_RE = /\\\\[^\\\s)\]}>"'`,;]+\\[^\s)\]}>"'`,;]+/g;
 const HOME_RELATIVE_PATH_RE = /(^|[\s([{:="'`])~[\\/][^\s)\]}>"'`,;]+/g;
 const POSIX_ABSOLUTE_PATH_RE = /(^|[\s([{:="'`])\/(?!\/)[^\s)\]}>"'`,;]+/g;
+const PATH_TOKEN_RE = /[^\s)\]}>"'`,;]+/g;
+const PERCENT_ENCODED_BYTE_RE = /%([0-9a-f]{2})/gi;
+const FILE_SCHEME_PATH_RE = /^file:\/\//i;
+const EMBEDDED_ABSOLUTE_PATH_RE = /[=:](?:\/|[A-Za-z]:\/)/;
 const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
-const URL_METADATA_PARAM_RE = /([?&#])([^=&#]+)=([^&#]*)/g;
-const URL_LOCAL_PATH_PARAM_KEYS = new Set([
-  "file",
-  "path",
-  "root",
-  "cwd",
-  "dir",
-  "directory",
-  "workspace",
-  "repo",
-  "log",
-]);
-const LOCAL_POSIX_ROOT_RE =
-  /^\/(?:Users|home|private|var|tmp|etc|usr|opt|Volumes|mnt|root)(?:\/|$)/;
-const URL_ABSOLUTE_POSIX_PATH_RE = /^\/(?!\/)/;
-const URL_WINDOWS_PATH_RE = /^[A-Za-z]:[\\/]/;
-const URL_UNC_PATH_RE = /^\\\\/;
-const URL_HOME_PATH_RE = /^~[\\/]/;
-const URL_FILE_SCHEME_RE = /^file:\/\//i;
+const URL_METADATA_SEPARATOR_RE = /[?#]/;
+const ENCODED_PATH_SEPARATOR_RE = /%(?:2f|5c)/i;
+const LOCAL_URL_PATH_RE =
+  /(?:^|\/)(?:(?:Applications|Library|Network|System|Users|Volumes|afs|bin|boot|cdrom|dev|etc|export|home|lib(?:32|64)?|lost\+found|media|mnt|net|nix|opt|private|proc|root|run|sbin|selinux|srv|sys|tmp|usr|var)(?:\/|$)|[A-Za-z]:(?:\/|$)|~(?:\/|$))/i;
+const DOUBLE_PATH_SEPARATOR_RE = /\/\//;
+const WINDOWS_DRIVE_SELECTOR_RE = /^[A-Za-z]:\//;
+const FILE_SELECTOR_RE = /^file:/i;
+const HTTP_SELECTOR_RE = /^https?:/i;
+const ISSUE_SELECTOR_RE = /^[A-Z][A-Z0-9]+-\d+$/;
+const TYPED_TARGET_SELECTOR_RE =
+  /^(instruction|snippet|skill|agent|prompt|automation|mcp|tool):(.+)$/i;
+const CANONICAL_SCOPE_PREFIX_RE = /^@(ai|project)\//;
+const FILE_EXTENSION_RE = /\.[^.]+$/;
+const TARGET_LABEL_SEPARATOR_RE = /[-_]+/g;
 
 export type ActivityCategory =
   | WritebackCategory
@@ -64,6 +65,41 @@ export interface ActivityObservation {
   desiredOutcome?: string;
 }
 
+export type ActivityTargetKind =
+  | "instruction"
+  | "snippet"
+  | "skill"
+  | "agent"
+  | "prompt"
+  | "automation"
+  | "mcp"
+  | "tool"
+  | "document"
+  | "capability";
+
+export interface ActivityTarget {
+  kind: ActivityTargetKind;
+  scope: "global" | "project" | "unknown";
+  selector: string;
+  label: string;
+}
+
+export interface ActivityLink {
+  label: string;
+  url: string;
+  source: "evidence" | "linked-work";
+}
+
+export interface ActivityContext {
+  scope: "global" | "project";
+  project?: {
+    key: string;
+    name: string;
+  };
+  targets: ActivityTarget[];
+  links: ActivityLink[];
+}
+
 export interface ActivityItem {
   id: string;
   kind: LoopQueueItem["kind"];
@@ -81,6 +117,7 @@ export interface ActivityItem {
   };
   observations: ActivityObservation[];
   omittedObservations: number;
+  context?: ActivityContext;
   decision: {
     disposition?: LoopQueueItem["disposition"];
     proposalStatus?: LoopQueueItem["proposalStatus"];
@@ -141,8 +178,38 @@ function unique(values: string[]): string[] {
   );
 }
 
+function containsEncodedOrBareLocalPath(value: string): boolean {
+  let decoded = value;
+  for (let remaining = value.length; remaining > 0; remaining -= 1) {
+    const next = decoded.replace(
+      PERCENT_ENCODED_BYTE_RE,
+      (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))
+    );
+    if (next === decoded) {
+      break;
+    }
+    decoded = next;
+  }
+  const normalized = decoded.replaceAll("\\", "/");
+  if (!normalized.includes("/")) {
+    return false;
+  }
+  return (
+    normalized.startsWith("/") ||
+    normalized.startsWith("~/") ||
+    FILE_SCHEME_PATH_RE.test(normalized) ||
+    EMBEDDED_ABSOLUTE_PATH_RE.test(normalized) ||
+    LOCAL_URL_PATH_RE.test(normalized)
+  );
+}
+
 function redactActivityPaths(value: string): string {
   return value
+    .replace(PATH_TOKEN_RE, (token) =>
+      !FILE_SCHEME_PATH_RE.test(token) && containsEncodedOrBareLocalPath(token)
+        ? "<redacted-path>"
+        : token
+    )
     .replace(FILE_URL_PATH_RE, "file:///<redacted-path>")
     .replace(WINDOWS_ABSOLUTE_PATH_RE, "<redacted-path>")
     .replace(UNC_ABSOLUTE_PATH_RE, "<redacted-path>")
@@ -156,62 +223,52 @@ function redactActivityPaths(value: string): string {
     );
 }
 
-function decodedUrlValue(value: string): string {
-  try {
-    return decodeURIComponent(value.replaceAll("+", "%20"));
-  } catch {
-    return value;
-  }
+function stripHttpUrlMetadata(value: string): string {
+  // Provider-specific signed URL credentials cannot be safely enumerated.
+  const metadataIndex = value.search(URL_METADATA_SEPARATOR_RE);
+  return metadataIndex >= 0 ? value.slice(0, metadataIndex) : value;
 }
 
-function looksLikeUrlLocalPath(value: string, knownRootsOnly = false): boolean {
-  const decoded = decodedUrlValue(value);
-  if (
-    LOCAL_POSIX_ROOT_RE.test(decoded) ||
-    URL_WINDOWS_PATH_RE.test(decoded) ||
-    URL_UNC_PATH_RE.test(decoded) ||
-    URL_HOME_PATH_RE.test(decoded) ||
-    URL_FILE_SCHEME_RE.test(decoded)
-  ) {
-    return true;
-  }
-  if (knownRootsOnly) {
+function isPortableUrlPath(pathname: string): boolean {
+  try {
+    let decodedPathname = pathname;
+    for (let remaining = pathname.length; remaining > 0; remaining -= 1) {
+      // Encoded separators can hide absolute machine paths at any encoding
+      // depth. Decode until stable and fail closed before publishing the URL.
+      if (ENCODED_PATH_SEPARATOR_RE.test(decodedPathname)) {
+        return false;
+      }
+      const next = decodeURIComponent(decodedPathname);
+      if (next === decodedPathname) {
+        break;
+      }
+      decodedPathname = next;
+    }
+    const normalizedPathname = decodedPathname.replaceAll("\\", "/");
+    return !(
+      DOUBLE_PATH_SEPARATOR_RE.test(normalizedPathname) ||
+      EMBEDDED_ABSOLUTE_PATH_RE.test(normalizedPathname) ||
+      LOCAL_URL_PATH_RE.test(normalizedPathname)
+    );
+  } catch {
     return false;
   }
-  return URL_ABSOLUTE_POSIX_PATH_RE.test(decoded);
 }
 
-function redactHttpUrlMetadata(value: string): string {
-  const suffixIndexCandidates = [value.indexOf("?"), value.indexOf("#")].filter(
-    (index) => index >= 0
-  );
-  if (suffixIndexCandidates.length === 0) {
-    return value;
-  }
-  const suffixIndex = Math.min(...suffixIndexCandidates);
-  const base = value.slice(0, suffixIndex);
-  let suffix = value
-    .slice(suffixIndex)
-    .replace(
-      URL_METADATA_PARAM_RE,
-      (match, prefix: string, rawKey: string, rawValue: string) => {
-        const key = decodedUrlValue(rawKey).toLowerCase();
-        const localPath = looksLikeUrlLocalPath(rawValue, true);
-        const pathParameter =
-          URL_LOCAL_PATH_PARAM_KEYS.has(key) && looksLikeUrlLocalPath(rawValue);
-        return localPath || pathParameter
-          ? `${prefix}${rawKey}=<redacted-path>`
-          : match;
-      }
-    );
-  const fragmentIndex = suffix.indexOf("#");
-  if (fragmentIndex >= 0) {
-    const fragment = suffix.slice(fragmentIndex + 1);
-    if (looksLikeUrlLocalPath(fragment, true)) {
-      suffix = `${suffix.slice(0, fragmentIndex + 1)}<redacted-path>`;
+function redactPortableHttpUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (
+      (parsed.protocol === "https:" || parsed.protocol === "http:") &&
+      !(parsed.username || parsed.password) &&
+      isPortableUrlPath(parsed.pathname)
+    ) {
+      return stripHttpUrlMetadata(value);
     }
+  } catch {
+    // Malformed or partially redacted URLs fail closed below.
   }
-  return base + suffix;
+  return "<redacted-url>";
 }
 
 export function redactPortableActivityText(value: string): string {
@@ -221,7 +278,7 @@ export function redactPortableActivityText(value: string): string {
   for (const match of redactedSecrets.matchAll(HTTP_URL_RE)) {
     const index = match.index;
     output += redactActivityPaths(redactedSecrets.slice(cursor, index));
-    output += redactHttpUrlMetadata(match[0]);
+    output += redactPortableHttpUrl(match[0]);
     cursor = index + match[0].length;
   }
   return output + redactActivityPaths(redactedSecrets.slice(cursor));
@@ -242,6 +299,222 @@ function projectKey(projectRoot: string): string {
     .toLowerCase()
     .replaceAll(/[^a-z0-9]+/g, "-")
     .replaceAll(/^-|-$/g, "");
+}
+
+function activityProject(
+  projectRoot: string | undefined
+): ActivityContext["project"] {
+  return projectRoot
+    ? {
+        key: projectKey(projectRoot),
+        name: basename(projectRoot),
+      }
+    : undefined;
+}
+
+function safeTargetSelector(value: string): string | null {
+  const selector = value.trim();
+  if (
+    !selector ||
+    selector.length > 300 ||
+    selector.includes("\\") ||
+    selector.includes("%") ||
+    selector.includes("?") ||
+    selector.includes("#") ||
+    selector.startsWith("/") ||
+    selector.startsWith("~") ||
+    WINDOWS_DRIVE_SELECTOR_RE.test(selector) ||
+    FILE_SELECTOR_RE.test(selector) ||
+    HTTP_SELECTOR_RE.test(selector) ||
+    ISSUE_SELECTOR_RE.test(selector)
+  ) {
+    return null;
+  }
+  const typed = TYPED_TARGET_SELECTOR_RE.exec(selector);
+  const pathValue =
+    typed?.[2] ?? selector.replace(CANONICAL_SCOPE_PREFIX_RE, "");
+  const segments = pathValue.split("/");
+  if (
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  const redacted = redactPortableActivityText(selector);
+  return redacted.includes("<redacted") ? null : redacted;
+}
+
+function targetKind(selector: string): ActivityTargetKind {
+  const typed = TYPED_TARGET_SELECTOR_RE.exec(selector)?.[1]?.toLowerCase();
+  if (typed) {
+    return typed as Exclude<ActivityTargetKind, "document" | "capability">;
+  }
+  const normalized = selector.toLowerCase();
+  const segmentKinds: [string, ActivityTargetKind][] = [
+    ["/instructions/", "instruction"],
+    ["/snippets/", "snippet"],
+    ["/skills/", "skill"],
+    ["/agents/", "agent"],
+    ["/prompts/", "prompt"],
+    ["/automations/", "automation"],
+    ["/mcp/", "mcp"],
+    ["/tools/", "tool"],
+  ];
+  for (const [segment, kind] of segmentKinds) {
+    if (`/${normalized}`.includes(segment)) {
+      return kind;
+    }
+  }
+  return normalized.endsWith(".md") ? "document" : "capability";
+}
+
+function targetScope(
+  selector: string,
+  defaultScope: ActivityContext["scope"]
+): ActivityTarget["scope"] {
+  if (selector.startsWith("@project/")) {
+    return "project";
+  }
+  if (selector.startsWith("@ai/")) {
+    return "global";
+  }
+  return defaultScope;
+}
+
+function targetLabel(selector: string): string {
+  const typed = TYPED_TARGET_SELECTOR_RE.exec(selector)?.[2];
+  const parts = (typed ?? selector).split("/").filter(Boolean);
+  const last = parts.at(-1) ?? selector;
+  const name =
+    last.toLowerCase() === "skill.md" && parts.length > 1
+      ? (parts.at(-2) ?? last)
+      : last.replace(FILE_EXTENSION_RE, "");
+  return name.replaceAll(TARGET_LABEL_SEPARATOR_RE, " ").trim() || selector;
+}
+
+function activityTargets(args: {
+  signal?: CorrelatedSignal;
+  proposal?: AiProposalRecord;
+  writebacks: AiWritebackRecord[];
+  scope: ActivityContext["scope"];
+}): ActivityTarget[] {
+  const candidates = [
+    ...(args.signal?.assetRefs ?? []),
+    ...(args.proposal?.targets ?? []),
+    ...args.writebacks.flatMap((record) => [
+      record.assetRef ?? "",
+      record.suggestedDestination ?? "",
+    ]),
+    args.signal?.dispositionTarget ?? "",
+  ];
+  const targets = new Map<string, ActivityTarget>();
+  for (const candidate of candidates) {
+    const selector = safeTargetSelector(candidate);
+    if (!(selector && !targets.has(selector))) {
+      continue;
+    }
+    targets.set(selector, {
+      kind: targetKind(selector),
+      scope: targetScope(selector, args.scope),
+      selector,
+      label: targetLabel(selector),
+    });
+    if (targets.size >= MAX_TARGETS_PER_ITEM) {
+      break;
+    }
+  }
+  return [...targets.values()];
+}
+
+function safeActivityLink(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (!(parsed.protocol === "https:" || parsed.protocol === "http:")) {
+      return null;
+    }
+    if (parsed.username || parsed.password) {
+      return null;
+    }
+    if (!isPortableUrlPath(parsed.pathname)) {
+      return null;
+    }
+    // Query strings are not portable evidence: signed URLs use many
+    // provider-specific credential keys, so an allowlist would fail open.
+    if (parsed.search) {
+      return null;
+    }
+    parsed.hash = "";
+    const redacted = redactPortableActivityText(parsed.toString());
+    return redacted.includes("<redacted") ? null : redacted;
+  } catch {
+    return null;
+  }
+}
+
+function activityLinks(args: {
+  item: LoopQueueItem;
+  signal?: CorrelatedSignal;
+  review: ReconciliationReview | null;
+  writebacks: AiWritebackRecord[];
+}): ActivityLink[] {
+  const evidenceKeys = new Set(args.signal?.evidenceKeys ?? []);
+  const writebackSensitivity = new Map(
+    args.writebacks.map((record) => [
+      record.id,
+      record.capture?.sensitivity ?? "internal",
+    ])
+  );
+  const provenanceLinks =
+    args.review?.evidence
+      .filter(
+        (entry) =>
+          evidenceKeys.has(entry.dedupeKey) &&
+          entry.writebackRefs.every(
+            (id) =>
+              writebackSensitivity.has(id) &&
+              writebackSensitivity.get(id) !== "private"
+          )
+      )
+      .flatMap((entry) => entry.provenance)
+      .flatMap((provenance) => {
+        const candidates = [
+          provenance.sourceUri,
+          provenance.url,
+          provenance.htmlUrl,
+        ];
+        return candidates.filter(
+          (candidate): candidate is string => typeof candidate === "string"
+        );
+      }) ?? [];
+  const evidenceLinks = args.writebacks
+    .filter((record) => record.capture?.sensitivity !== "private")
+    .flatMap((record) => record.evidence.map((entry) => entry.ref));
+  const candidates: Array<{
+    value: string;
+    source: ActivityLink["source"];
+  }> = [
+    ...provenanceLinks.map((value) => ({ value, source: "evidence" as const })),
+    ...evidenceLinks.map((value) => ({ value, source: "evidence" as const })),
+    ...args.item.linkedWork.map((value) => ({
+      value,
+      source: "linked-work" as const,
+    })),
+  ];
+  const links = new Map<string, ActivityLink>();
+  for (const candidate of candidates) {
+    const url = safeActivityLink(candidate.value);
+    if (!(url && !links.has(url))) {
+      continue;
+    }
+    links.set(url, {
+      label: new URL(url).hostname,
+      url,
+      source: candidate.source,
+    });
+    if (links.size >= MAX_LINKS_PER_ITEM) {
+      break;
+    }
+  }
+  return [...links.values()];
 }
 
 function inferredCategory(kind: string): WritebackCategory {
@@ -408,6 +681,7 @@ export function buildActivityFeed(args: {
   proposals: AiProposalRecord[];
   snapshot?: ActivityFeed["snapshot"];
 }): ActivityFeed {
+  const project = activityProject(args.report.projectRoot);
   const writebackById = new Map(
     args.writebacks.map((record) => [record.id, record])
   );
@@ -446,6 +720,22 @@ export function buildActivityFeed(args: {
                 observations.map((entry) => entry.category)
               ) as ActivityCategory[])
             : ["signal"];
+    const context: ActivityContext = {
+      scope: args.report.scope,
+      project,
+      targets: activityTargets({
+        signal,
+        proposal,
+        writebacks,
+        scope: args.report.scope,
+      }),
+      links: activityLinks({
+        item,
+        signal,
+        review: args.review,
+        writebacks,
+      }),
+    };
     return {
       id: item.id,
       kind: item.kind,
@@ -465,6 +755,7 @@ export function buildActivityFeed(args: {
       },
       observations,
       omittedObservations: allObservations.length - observations.length,
+      context,
       decision: {
         disposition: item.disposition,
         proposalStatus: item.proposalStatus,
@@ -499,12 +790,7 @@ export function buildActivityFeed(args: {
     snapshot: args.snapshot ?? "embedded",
     generatedAt: args.report.generatedAt,
     scope: args.report.scope,
-    project: args.report.projectRoot
-      ? {
-          key: projectKey(args.report.projectRoot),
-          name: basename(args.report.projectRoot),
-        }
-      : undefined,
+    project,
     run: {
       id: args.report.runId,
       status: args.report.status,
@@ -541,6 +827,13 @@ export function buildActivityFeed(args: {
 
 function itemLines(item: ActivityItem): string[] {
   const decision = item.decision.disposition ?? item.decision.proposalStatus;
+  const targetLines = item.context?.targets.map(
+    (target) =>
+      `  Target: ${target.kind} · ${target.label} (${target.selector})`
+  );
+  const linkLines = item.context?.links.map(
+    (link) => `  Source: ${link.label} · ${link.url}`
+  );
   return [
     `- ${item.title}`,
     `  ${item.categories.join(" + ")} · ${item.state}${decision ? ` · ${decision}` : ""}`,
@@ -559,9 +852,9 @@ function itemLines(item: ActivityItem): string[] {
     ...(item.omittedObservations
       ? [`  ${item.omittedObservations} additional observations omitted`]
       : []),
-    ...(item.decision.rationale
-      ? [`  Decision: ${item.decision.rationale}`]
-      : []),
+    ...(item.decision.rationale ? [`  Why: ${item.decision.rationale}`] : []),
+    ...(targetLines ?? []),
+    ...(linkLines ?? []),
     `  Evidence: ${item.evidence.count} item${item.evidence.count === 1 ? "" : "s"}${item.sourceLabels.length ? ` from ${item.sourceLabels.join(", ")}` : ""}`,
     ...(item.linkedWork.length
       ? [`  Linked work: ${item.linkedWork.join(", ")}`]

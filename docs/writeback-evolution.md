@@ -233,9 +233,27 @@ fclt ai loop activity --project --json
 
 The versioned JSON is a portable, read-only projection for agents and UI. It
 contains source coverage, new/changed/resolved counts, correlated observations,
-decisions, linked work, approvals, verification state, and the next action. It
-does not contain absolute machine paths. Each activity snapshot is embedded in
-its loop report, so a later writeback or proposal transition cannot rewrite an
+decisions, linked work, approvals, verification state, and the next action.
+Each item also identifies its global or project context, typed capability
+targets such as an instruction, skill, prompt, or automation, the reason for
+the decision, and bounded HTTP(S) evidence links when the source supplied one.
+Private evidence, credential-bearing or query-bearing URLs, and URL fragments
+are omitted. It does not invent tracker links or contain absolute machine
+paths. Each
+plain-language item keeps the same context visible:
+
+```text
+Activity — example-service
+- Setup guidance missed the isolated test harness
+  friction · approval_needed · propose
+  Why: Repeated evidence points to one project setup gap.
+  Target: instruction · SETUP (@project/instructions/SETUP.md)
+  Source: example.com · https://example.com/reviews/123
+  Next: Review the proposed capability direction; approve, redirect, or defer it explicitly.
+```
+
+Each activity snapshot is embedded in its loop report, so a later writeback or
+proposal transition cannot rewrite an
 older run. Unchanged queue items are suppressed from change counts, while stale
 or unavailable sources remain visible. A complete empty run means configured
 coverage was checked; degraded or failed empty runs never claim that nothing is
