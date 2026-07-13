@@ -38,8 +38,8 @@ const AWS_ACCESS_KEY_RE =
   /\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/g;
 const JWT_RE =
   /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g;
-const PEM_PRIVATE_KEY_BLOCK_RE =
-  /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/g;
+const PEM_PRIVATE_KEY_RE =
+  /-----BEGIN ([^-\r\n]*PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|(?=\r?\n\r?\n|$))/g;
 const PEM_PRIVATE_KEY_MARKER_RE =
   /-----(?:BEGIN|END) [^-\r\n]*PRIVATE KEY-----/g;
 const LINE_SPLIT_RE = /\r?\n/;
@@ -76,7 +76,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 export function redactReconciliationText(value: string): string {
   return value
-    .replace(PEM_PRIVATE_KEY_BLOCK_RE, "<redacted-private-key>")
+    .replace(PEM_PRIVATE_KEY_RE, "<redacted-private-key>")
     .replace(PEM_PRIVATE_KEY_MARKER_RE, "<redacted-private-key>")
     .replace(URL_USERINFO_RE, "$1<redacted>@")
     .replace(JSON_SECRET_VALUE_RE, "$1<redacted>$2")

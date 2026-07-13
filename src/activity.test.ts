@@ -279,6 +279,13 @@ describe("activity feed", () => {
     expect(redactPortableActivityText("Authorization: Bearer abc~def")).toBe(
       "Authorization: <redacted>"
     );
+    const partialPrivateKey = [
+      "-----BEGIN PRIVATE KEY-----",
+      "c2Vuc2l0aXZlLWtleS1tYXRlcmlhbA==",
+    ].join("\n");
+    expect(
+      redactPortableActivityText(`Captured key: ${partialPrivateKey}`)
+    ).toBe("Captured key: <redacted-private-key>");
     for (const path of ["/etc/passwd", "/usr/bin", "/repo/config", "/secret"]) {
       expect(redactPortableActivityText(`Failure at ${path}`)).toBe(
         "Failure at <redacted-path>"
