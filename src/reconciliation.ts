@@ -789,6 +789,7 @@ export async function reconcileSources(args: {
   configPath?: string;
   sourceIds?: string[];
   incremental?: boolean;
+  persist?: boolean;
 }): Promise<ReconciliationReview> {
   const { config } = await loadReconciliationConfig(args);
   const enabledSources = config.sources.filter(
@@ -822,7 +823,7 @@ export async function reconcileSources(args: {
     mode: args.incremental ? "incremental" : "window",
   });
   const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
-  return await withStateLock(statePath, async () => {
+  const execute = async (): Promise<ReconciliationReview> => {
     const state = await loadState(statePath);
     const effectiveStarts = selectedConfig.sources.map((source) => {
       const priorState = state.sources[source.id];
@@ -982,22 +983,27 @@ export async function reconcileSources(args: {
       dispositionCounts: dispositionCounts(correlated.signals),
       artifactPath,
     };
-    await mkdir(reviewDir, { recursive: true });
-    const markdown = `${renderReview(review)}\n`;
-    await atomicWrite(artifactPath, markdown);
-    await atomicWrite(windowPath, `${JSON.stringify(review, null, 2)}\n`);
-    const nextState = updateState({
-      state,
-      review,
-      adapterResults,
-      config: selectedConfig,
-    });
-    if (latestReviewId(nextState) === review.reviewId) {
-      await atomicWrite(join(reviewDir, "latest.md"), markdown);
+    if (args.persist !== false) {
+      await mkdir(reviewDir, { recursive: true });
+      const markdown = `${renderReview(review)}\n`;
+      await atomicWrite(artifactPath, markdown);
+      await atomicWrite(windowPath, `${JSON.stringify(review, null, 2)}\n`);
+      const nextState = updateState({
+        state,
+        review,
+        adapterResults,
+        config: selectedConfig,
+      });
+      if (latestReviewId(nextState) === review.reviewId) {
+        await atomicWrite(join(reviewDir, "latest.md"), markdown);
+      }
+      await atomicWrite(statePath, `${JSON.stringify(nextState, null, 2)}\n`);
     }
-    await atomicWrite(statePath, `${JSON.stringify(nextState, null, 2)}\n`);
     return review;
-  });
+  };
+  return args.persist === false
+    ? await execute()
+    : await withStateLock(statePath, execute);
 }
 
 export async function reconciliationStatus(args: {

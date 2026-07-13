@@ -24,9 +24,9 @@ fclt ai evolve list
 
 For an enabled scheduled loop, inspect its durable queue and observed scheduler
 health with `fclt ai loop status --json`. Use `fclt ai loop run --dry-run
---json` for a read-only preview of the latest completed reconciliation. The
-full queue is authoritative; the notification delta intentionally suppresses
-unchanged items.
+--json` for a fresh incremental scan that does not advance cursors or write
+reconciliation or loop state. The full queue is authoritative; the notification
+delta intentionally suppresses unchanged items.
 
 2. Assess proposal readiness before mutating state:
 

@@ -700,12 +700,27 @@ describe("evolution loop", () => {
       ...project,
       now: () => new Date("2026-01-03T00:00:00.000Z"),
     });
-    await runEvolutionLoop({
+    const first = await runEvolutionLoop({
       ...project,
-      since: "2026-01-01",
-      until: "2026-01-03",
+      since: "2026-01-01T00:00:00.000Z",
+      until: "2026-01-03T00:00:00.000Z",
       now: () => new Date("2026-01-03T00:00:00.000Z"),
     });
+    await Bun.write(
+      join(project.projectRoot, "review.md"),
+      [
+        "## 2026-01-02 Capability review",
+        "",
+        "The capability review needs a durable verification loop.",
+        "",
+        "## Newly observed setup friction",
+        "",
+        "The setup instructions need a reusable recovery step.",
+        "",
+      ].join("\n")
+    );
+    const changedAt = new Date("2026-01-03T00:30:00.000Z");
+    await utimes(join(project.projectRoot, "review.md"), changedAt, changedAt);
     const statePath = facultAiEvolutionLoopStatePath(
       project.homeDir,
       project.rootDir
@@ -714,8 +729,19 @@ describe("evolution loop", () => {
       project.homeDir,
       project.rootDir
     );
+    const reconciliationStatePath = facultAiReconciliationStatePath(
+      project.homeDir,
+      project.rootDir
+    );
     const stateBefore = await readFile(statePath, "utf8");
     const auditBefore = await readFile(auditPath, "utf8");
+    const reconciliationStateBefore = await readFile(
+      reconciliationStatePath,
+      "utf8"
+    );
+    const reconciliationEntriesBefore = (
+      await readdir(dirname(reconciliationStatePath), { recursive: true })
+    ).sort();
 
     const preview = await runEvolutionLoop({
       ...project,
@@ -724,46 +750,42 @@ describe("evolution loop", () => {
     });
 
     expect(preview.status).toBe("preview");
+    expect(preview.reviewId).not.toBe(first.reviewId);
+    expect(preview.attempts).toEqual([{ attempt: 1, ok: true }]);
+    expect(preview.coverage[0]).toMatchObject({
+      sourceId: "review-notes",
+      state: "changed",
+      recordsScanned: 1,
+      watermarkAfter: changedAt.toISOString(),
+    });
+    expect(preview.coverage[0]?.signalsDiscovered).toBeGreaterThan(0);
     expect(preview.generationAfter).toBe(preview.generationBefore);
     expect(await readFile(statePath, "utf8")).toBe(stateBefore);
     expect(await readFile(auditPath, "utf8")).toBe(auditBefore);
+    expect(await readFile(reconciliationStatePath, "utf8")).toBe(
+      reconciliationStateBefore
+    );
+    expect(
+      (
+        await readdir(dirname(reconciliationStatePath), { recursive: true })
+      ).sort()
+    ).toEqual(reconciliationEntriesBefore);
+    expect(await Bun.file(`${reconciliationStatePath}.lock`).exists()).toBe(
+      false
+    );
     expect(await Bun.file(`${statePath}.lock`).exists()).toBe(false);
     expect(await Bun.file(preview.artifactPath).exists()).toBe(false);
   });
 
-  it("migrates a published review without signal-family fields during preview", async () => {
+  it("previews current signal families before the first persisted review", async () => {
     const project = await makeProject();
     await enableEvolutionLoop({ ...project });
-    await runEvolutionLoop({
-      ...project,
-      since: "2026-01-01",
-      until: "2026-01-03",
-      now: () => new Date("2026-01-03T00:00:00.000Z"),
-    });
-    const reconciliationStatePath = facultAiReconciliationStatePath(
-      project.homeDir,
-      project.rootDir
-    );
-    const reconciliationState = JSON.parse(
-      await readFile(reconciliationStatePath, "utf8")
-    );
-    const reviewId = Object.keys(reconciliationState.reviews)[0] as string;
-    const windowPath = join(
-      dirname(reconciliationStatePath),
-      "windows",
-      `${reviewId}.json`
-    );
-    const legacyReview = JSON.parse(await readFile(windowPath, "utf8"));
-    for (const signal of legacyReview.signals) {
-      signal.familyId = undefined;
-      signal.subjectKeys = undefined;
-    }
-    await Bun.write(windowPath, `${JSON.stringify(legacyReview, null, 2)}\n`);
-
     const preview = await runEvolutionLoop({
       ...project,
+      since: "2026-01-01T00:00:00.000Z",
+      until: "2026-01-03T00:00:00.000Z",
       dryRun: true,
-      now: () => new Date("2026-01-03T01:00:00.000Z"),
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
     });
     expect(preview.queue.some((item) => item.id.includes("undefined"))).toBe(
       false
@@ -771,6 +793,11 @@ describe("evolution loop", () => {
     expect(
       preview.queue.find((item) => item.kind === "signal")?.familyId
     ).toMatch(SIGNAL_FAMILY_ID_RE);
+    expect(
+      await Bun.file(
+        facultAiReconciliationStatePath(project.homeDir, project.rootDir)
+      ).exists()
+    ).toBe(false);
   });
 
   it("refuses to update a scheduler after its ownership marker is removed", async () => {

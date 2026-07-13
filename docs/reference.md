@@ -149,8 +149,9 @@ notifications, retries bounded reconciliation failures, reports scheduler
 observation separately from registration, and tracks proposal verification as
 pending, due, overdue, improved, unchanged, or regressed. `loop disable`
 pauses only the owned automation and preserves history. `loop run --dry-run`
-previews the latest completed reconciliation without writing state. Canonical
-apply and external tracker mutation are not performed by the loop.
+scans configured sources for a current incremental preview without advancing
+cursors or writing reconciliation or loop state. Canonical apply and external
+tracker mutation are not performed by the loop.
 
 ## Sources, Audit, And Updates
 

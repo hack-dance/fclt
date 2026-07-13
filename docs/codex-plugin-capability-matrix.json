@@ -6,11 +6,7 @@
     "pluginVersion": "0.1.1",
     "auditedAt": "2026-07-13T00:00:00Z"
   },
-  "dispositions": [
-    "exposed",
-    "withheld",
-    "blocked_safer_api"
-  ],
+  "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
     "read_only",
     "review_producing",
@@ -78,11 +74,7 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
-        "tools": [
-          "fclt_status",
-          "fclt_doctor",
-          "fclt_paths"
-        ]
+        "tools": ["fclt_status", "fclt_doctor", "fclt_paths"]
       },
       "risk": "read_only",
       "scope": "auto|global|project",
@@ -98,10 +90,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_capability",
-        "actions": [
-          "scan",
-          "inventory"
-        ]
+        "actions": ["scan", "inventory"]
       },
       "risk": "read_only",
       "scope": "auto|global|project|explicit_roots",
@@ -117,12 +106,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_capability",
-        "actions": [
-          "list",
-          "show",
-          "find",
-          "graph"
-        ]
+        "actions": ["list", "show", "find", "graph"]
       },
       "risk": "read_only",
       "scope": "auto|global|project",
@@ -153,10 +137,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_capability",
-        "actions": [
-          "adapters",
-          "managed_status"
-        ]
+        "actions": ["adapters", "managed_status"]
       },
       "risk": "read_only",
       "scope": "auto|global|project",
@@ -248,10 +229,7 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
-        "tools": [
-          "fclt_init_operating_model",
-          "fclt_capability"
-        ]
+        "tools": ["fclt_init_operating_model", "fclt_capability"]
       },
       "risk": "high_risk_destructive",
       "scope": "global|project",
@@ -281,10 +259,7 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
-        "tools": [
-          "fclt_writeback_review",
-          "fclt_workflow"
-        ]
+        "tools": ["fclt_writeback_review", "fclt_workflow"]
       },
       "risk": "read_only",
       "scope": "auto|global|project",
@@ -299,10 +274,7 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
-        "tools": [
-          "fclt_writeback_add",
-          "fclt_workflow"
-        ]
+        "tools": ["fclt_writeback_add", "fclt_workflow"]
       },
       "risk": "review_producing",
       "scope": "global|project",
@@ -318,10 +290,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_workflow",
-        "actions": [
-          "writeback_link",
-          "writeback_disposition"
-        ]
+        "actions": ["writeback_link", "writeback_disposition"]
       },
       "risk": "review_producing",
       "scope": "global|project",
@@ -366,10 +335,7 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
-        "tools": [
-          "fclt_evolve",
-          "fclt_workflow"
-        ]
+        "tools": ["fclt_evolve", "fclt_workflow"]
       },
       "risk": "read_only",
       "scope": "auto|global|project",
@@ -384,10 +350,7 @@
       "cliAvailability": "available",
       "mcp": {
         "disposition": "exposed",
-        "tools": [
-          "fclt_evolve",
-          "fclt_workflow"
-        ]
+        "tools": ["fclt_evolve", "fclt_workflow"]
       },
       "risk": "review_producing",
       "scope": "global|project",
@@ -403,9 +366,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_workflow",
-        "actions": [
-          "evolve_verify"
-        ]
+        "actions": ["evolve_verify"]
       },
       "risk": "review_producing",
       "scope": "global|project",
@@ -466,10 +427,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_sync",
-        "actions": [
-          "preview",
-          "status"
-        ]
+        "actions": ["preview", "status"]
       },
       "risk": "read_only",
       "scope": "global|project plus explicit tool",
@@ -545,10 +503,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_registry",
-        "actions": [
-          "reconcile_status",
-          "reconcile"
-        ],
+        "actions": ["reconcile_status", "reconcile"],
         "reason": "closed schema exposes only explicit scope, bounded window, configured source ids, and incremental mode; arbitrary config, endpoint, token, argv, and source mutation are not accepted"
       },
       "risk": "review_producing",
@@ -565,11 +520,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_registry",
-        "actions": [
-          "search",
-          "verify_source",
-          "source_list"
-        ]
+        "actions": ["search", "verify_source", "source_list"]
       },
       "risk": "read_only",
       "scope": "remote_registry",
@@ -585,10 +536,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_registry",
-        "actions": [
-          "install_preview",
-          "update_check"
-        ]
+        "actions": ["install_preview", "update_check"]
       },
       "risk": "read_only",
       "scope": "global plus exact registry item; project scope blocked until the CLI accepts an explicit project root",
@@ -740,10 +688,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_capability",
-        "actions": [
-          "snippet_list",
-          "snippet_show"
-        ]
+        "actions": ["snippet_list", "snippet_show"]
       },
       "risk": "read_only",
       "scope": "global|project",
@@ -805,15 +750,11 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_automation",
-        "actions": [
-          "loop_status",
-          "loop_activity",
-          "loop_preview"
-        ]
+        "actions": ["loop_status", "loop_activity", "loop_preview"]
       },
       "risk": "read_only",
       "scope": "global|project",
-      "preview": "loop_activity returns the embedded privacy-aware activity snapshot with project scope, typed capability targets, decision rationale, and source-owned links; loop_preview reads the latest review and returns the full technical queue plus notification delta without mutation",
+      "preview": "loop_activity returns the embedded privacy-aware activity snapshot with project scope, typed capability targets, decision rationale, and source-owned links; loop_preview performs a fresh incremental scan and returns the full technical queue plus notification delta without advancing cursors or writing state",
       "apply": "withheld; enable, disable, scheduled run, and canonical apply remain CLI-only",
       "rollback": "not_applicable",
       "verification": "typed schema, explicit scope, immutable activity snapshots, bounded targets and HTTP(S) links, no absolute paths or credential-bearing URLs in portable activity JSON, queue continuity, and zero writes during preview"
@@ -840,11 +781,7 @@
       "mcp": {
         "disposition": "exposed",
         "tool": "fclt_capability",
-        "actions": [
-          "inventory",
-          "list",
-          "show"
-        ]
+        "actions": ["inventory", "list", "show"]
       },
       "risk": "read_only",
       "scope": "auto|global|project",
