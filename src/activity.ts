@@ -421,6 +421,12 @@ function safeActivityLink(value: string): string | null {
     if (parsed.username || parsed.password) {
       return null;
     }
+    // Query strings are not portable evidence: signed URLs use many
+    // provider-specific credential keys, so an allowlist would fail open.
+    if (parsed.search) {
+      return null;
+    }
+    parsed.hash = "";
     const redacted = redactPortableActivityText(parsed.toString());
     return redacted.includes("<redacted") ? null : redacted;
   } catch {
@@ -435,9 +441,23 @@ function activityLinks(args: {
   writebacks: AiWritebackRecord[];
 }): ActivityLink[] {
   const evidenceKeys = new Set(args.signal?.evidenceKeys ?? []);
+  const writebackSensitivity = new Map(
+    args.writebacks.map((record) => [
+      record.id,
+      record.capture?.sensitivity ?? "internal",
+    ])
+  );
   const provenanceLinks =
     args.review?.evidence
-      .filter((entry) => evidenceKeys.has(entry.dedupeKey))
+      .filter(
+        (entry) =>
+          evidenceKeys.has(entry.dedupeKey) &&
+          entry.writebackRefs.every(
+            (id) =>
+              writebackSensitivity.has(id) &&
+              writebackSensitivity.get(id) !== "private"
+          )
+      )
       .flatMap((entry) => entry.provenance)
       .flatMap((provenance) => {
         const candidates = [
@@ -449,9 +469,9 @@ function activityLinks(args: {
           (candidate): candidate is string => typeof candidate === "string"
         );
       }) ?? [];
-  const evidenceLinks = args.writebacks.flatMap((record) =>
-    record.evidence.map((entry) => entry.ref)
-  );
+  const evidenceLinks = args.writebacks
+    .filter((record) => record.capture?.sensitivity !== "private")
+    .flatMap((record) => record.evidence.map((entry) => entry.ref));
   const candidates: Array<{
     value: string;
     source: ActivityLink["source"];

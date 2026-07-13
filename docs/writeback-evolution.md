@@ -237,7 +237,9 @@ decisions, linked work, approvals, verification state, and the next action.
 Each item also identifies its global or project context, typed capability
 targets such as an instruction, skill, prompt, or automation, the reason for
 the decision, and bounded HTTP(S) evidence links when the source supplied one.
-It does not invent tracker links or contain absolute machine paths. Each
+Private evidence, credential-bearing or query-bearing URLs, and URL fragments
+are omitted. It does not invent tracker links or contain absolute machine
+paths. Each
 plain-language item keeps the same context visible:
 
 ```text

@@ -220,6 +220,22 @@ describe("activity feed", () => {
           { sourceUri: "https://example.com/work/123" },
         ],
       },
+      {
+        dedupeKey: "evidence-2",
+        sourceIds: ["writebacks"],
+        sourceRecordIds: ["WB-00002"],
+        observedAt: "2026-07-13T00:00:00.000Z",
+        title: "Private source event",
+        body: "Private evidence",
+        classification: "capability-source",
+        assetRefs: [],
+        issueRefs: [],
+        writebackRefs: ["WB-00002"],
+        correlationKeys: ["asset:skill:capability-evolution"],
+        disposition: "propose",
+        isNew: true,
+        provenance: [{ sourceUri: "https://example.com/private/source-event" }],
+      },
     ];
     linkedReview.signals[0] = {
       ...linkedReview.signals[0]!,
@@ -235,13 +251,21 @@ describe("activity feed", () => {
       { type: "review", ref: "https://example.com/work/123" },
       { type: "secret", ref: "https://user:pass@example.com/private" },
       { type: "token", ref: "https://example.com/private?token=secret" },
+      {
+        type: "signed",
+        ref: "https://storage.example/object?X-Goog-Signature=credential",
+      },
       { type: "local", ref: "file:///Users/example/private/repo/report.md" },
+    ];
+    const privateWriteback = writeback("WB-00002", "private");
+    privateWriteback.evidence = [
+      { type: "private", ref: "https://example.com/private/writeback" },
     ];
 
     const feed = buildActivityFeed({
       report: report(),
       review: linkedReview,
-      writebacks: [linkedWriteback],
+      writebacks: [linkedWriteback, privateWriteback],
       proposals: [],
     });
 
@@ -271,6 +295,9 @@ describe("activity feed", () => {
     expect(portable).not.toContain("file://");
     expect(portable).not.toContain("user:pass");
     expect(portable).not.toContain("token=secret");
+    expect(portable).not.toContain("X-Goog-Signature");
+    expect(portable).not.toContain("private/source-event");
+    expect(portable).not.toContain("private/writeback");
   });
 
   it("never describes a failed empty run as checked and clear", () => {
