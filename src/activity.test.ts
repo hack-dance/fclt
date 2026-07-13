@@ -243,6 +243,8 @@ describe("activity feed", () => {
         "skill:capability-evolution",
         "@project/prompts/review.md",
         "@project/instructions/SETUP.md?token=target-secret",
+        "@project/%2FUsers%2Fexample%2Fprivate%2Fplan.md",
+        "skill:%252FUsers%252Fexample%252Fprivate",
         "/Users/example/private/repo/.ai/skills/private/SKILL.md",
         "TASK-1",
       ],
@@ -297,6 +299,8 @@ describe("activity feed", () => {
     expect(portable).not.toContain("user:pass");
     expect(portable).not.toContain("token=secret");
     expect(portable).not.toContain("target-secret");
+    expect(portable).not.toContain("%2FUsers");
+    expect(portable).not.toContain("%252FUsers");
     expect(portable).not.toContain("X-Goog-Signature");
     expect(portable).not.toContain("private/source-event");
     expect(portable).not.toContain("private/writeback");

@@ -238,6 +238,7 @@ function safeTargetSelector(value: string): string | null {
     !selector ||
     selector.length > 300 ||
     selector.includes("\\") ||
+    selector.includes("%") ||
     selector.includes("?") ||
     selector.includes("#") ||
     selector.startsWith("/") ||
