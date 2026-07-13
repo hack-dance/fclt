@@ -278,6 +278,15 @@ describe("activity feed", () => {
         "Failure at <redacted-path>"
       );
     }
+    for (const fileUrl of [
+      "file:///Users/example/private.log",
+      "file://localhost/Users/example/private.log",
+      "file://server/share/private.log",
+    ]) {
+      expect(redactPortableActivityText(`Failure at ${fileUrl}`)).toBe(
+        "Failure at file:///<redacted-path>"
+      );
+    }
     for (const url of [
       "https://example.com/docs",
       "https://example.com:8443/a/b?next=/guides/setup/install#fragment",

@@ -19,7 +19,7 @@ import type {
 } from "./reconciliation-types";
 
 const MAX_OBSERVATIONS_PER_ITEM = 10;
-const FILE_URL_PATH_RE = /\bfile:\/\/\/(?:[^\s)\]}>"'`,;]+[/]?)+/gi;
+const FILE_URL_PATH_RE = /\bfile:\/\/[^\s)\]}>"'`,;]+/gi;
 const WINDOWS_ABSOLUTE_PATH_RE =
   /\b[A-Za-z]:[\\/](?:[^\\/\s)\]}>"'`,;]+[\\/])*[^\\/\s)\]}>"'`,;]*/g;
 const UNC_ABSOLUTE_PATH_RE = /\\\\[^\\\s)\]}>"'`,;]+\\[^\s)\]}>"'`,;]+/g;
