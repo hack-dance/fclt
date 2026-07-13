@@ -1,3 +1,25 @@
+## [2.24.0](https://github.com/hack-dance/fclt/compare/v2.23.0...v2.24.0) (2026-07-13)
+
+### Features
+
+* enrich activity feed context ([d37161e](https://github.com/hack-dance/fclt/commit/d37161edf0ee672e4318f737258a98fbadee5027))
+
+### Bug Fixes
+
+* close activity privacy and release gaps ([552a310](https://github.com/hack-dance/fclt/commit/552a310824d1e4f0af63a11d5ad053d6c2353700))
+* contain private activity links ([b5d0d83](https://github.com/hack-dance/fclt/commit/b5d0d83ae31cff5f1653b43e5c2522a7ca03bc0a))
+* cover standard local roots in activity URLs ([f3e29ce](https://github.com/hack-dance/fclt/commit/f3e29ced50f60e9b0a0c3a54276e0652f1d734d1))
+* redact embedded absolute paths in activity URLs ([af2a314](https://github.com/hack-dance/fclt/commit/af2a31488231feb2b85965f358054b2d6b2554ee))
+* redact encoded local paths in activity text ([cbf6b13](https://github.com/hack-dance/fclt/commit/cbf6b13d1dcdd23bae0d08db20dfc0a3ebbb3d08))
+* redact local paths in activity text URLs ([7cc18db](https://github.com/hack-dance/fclt/commit/7cc18db706d7414a34d7c996d53abd3a7e61ad87))
+* reject bare local roots in activity URLs ([3b4e0bf](https://github.com/hack-dance/fclt/commit/3b4e0bf5877438afe6c42d356cd7e1023a6366a1))
+* reject embedded local paths in activity links ([a05d8fd](https://github.com/hack-dance/fclt/commit/a05d8fd2fcc64ea55842d28ddc282fcb6d43d593))
+* reject encoded paths in activity links ([bad9736](https://github.com/hack-dance/fclt/commit/bad973683263ef63d05f34381d6666c5ba1b3e88))
+* reject encoded target selectors ([85a08e2](https://github.com/hack-dance/fclt/commit/85a08e26f273dde5e943bdb26c8080a19be2d047))
+* reject local roots in activity links ([cfe852d](https://github.com/hack-dance/fclt/commit/cfe852d95ba81463afff1045f9a95b65744665a7))
+* reject target selector metadata ([1f31802](https://github.com/hack-dance/fclt/commit/1f3180227ffb7a16f898fcb9b750b67de6a4d6e3))
+* strip portable URL metadata ([d5b070d](https://github.com/hack-dance/fclt/commit/d5b070df660f495687b49254e4c56a246362eb96))
+
 ## [2.23.0](https://github.com/hack-dance/fclt/compare/v2.22.3...v2.23.0) (2026-07-13)
 
 ### Features
