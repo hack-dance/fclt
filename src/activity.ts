@@ -28,25 +28,7 @@ const UNC_ABSOLUTE_PATH_RE = /\\\\[^\\\s)\]}>"'`,;]+\\[^\s)\]}>"'`,;]+/g;
 const HOME_RELATIVE_PATH_RE = /(^|[\s([{:="'`])~[\\/][^\s)\]}>"'`,;]+/g;
 const POSIX_ABSOLUTE_PATH_RE = /(^|[\s([{:="'`])\/(?!\/)[^\s)\]}>"'`,;]+/g;
 const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
-const URL_METADATA_PARAM_RE = /([?&#])([^=&#]+)=([^&#]*)/g;
-const URL_LOCAL_PATH_PARAM_KEYS = new Set([
-  "file",
-  "path",
-  "root",
-  "cwd",
-  "dir",
-  "directory",
-  "workspace",
-  "repo",
-  "log",
-]);
-const LOCAL_POSIX_ROOT_RE =
-  /^\/(?:Users|home|private|var|tmp|etc|usr|opt|Volumes|mnt|root)(?:\/|$)/;
-const URL_ABSOLUTE_POSIX_PATH_RE = /^\/(?!\/)/;
-const URL_WINDOWS_PATH_RE = /^[A-Za-z]:[\\/]/;
-const URL_UNC_PATH_RE = /^\\\\/;
-const URL_HOME_PATH_RE = /^~[\\/]/;
-const URL_FILE_SCHEME_RE = /^file:\/\//i;
+const URL_METADATA_SEPARATOR_RE = /[?#]/;
 const WINDOWS_DRIVE_SELECTOR_RE = /^[A-Za-z]:\//;
 const FILE_SELECTOR_RE = /^file:/i;
 const HTTP_SELECTOR_RE = /^https?:/i;
@@ -203,62 +185,10 @@ function redactActivityPaths(value: string): string {
     );
 }
 
-function decodedUrlValue(value: string): string {
-  try {
-    return decodeURIComponent(value.replaceAll("+", "%20"));
-  } catch {
-    return value;
-  }
-}
-
-function looksLikeUrlLocalPath(value: string, knownRootsOnly = false): boolean {
-  const decoded = decodedUrlValue(value);
-  if (
-    LOCAL_POSIX_ROOT_RE.test(decoded) ||
-    URL_WINDOWS_PATH_RE.test(decoded) ||
-    URL_UNC_PATH_RE.test(decoded) ||
-    URL_HOME_PATH_RE.test(decoded) ||
-    URL_FILE_SCHEME_RE.test(decoded)
-  ) {
-    return true;
-  }
-  if (knownRootsOnly) {
-    return false;
-  }
-  return URL_ABSOLUTE_POSIX_PATH_RE.test(decoded);
-}
-
-function redactHttpUrlMetadata(value: string): string {
-  const suffixIndexCandidates = [value.indexOf("?"), value.indexOf("#")].filter(
-    (index) => index >= 0
-  );
-  if (suffixIndexCandidates.length === 0) {
-    return value;
-  }
-  const suffixIndex = Math.min(...suffixIndexCandidates);
-  const base = value.slice(0, suffixIndex);
-  let suffix = value
-    .slice(suffixIndex)
-    .replace(
-      URL_METADATA_PARAM_RE,
-      (match, prefix: string, rawKey: string, rawValue: string) => {
-        const key = decodedUrlValue(rawKey).toLowerCase();
-        const localPath = looksLikeUrlLocalPath(rawValue, true);
-        const pathParameter =
-          URL_LOCAL_PATH_PARAM_KEYS.has(key) && looksLikeUrlLocalPath(rawValue);
-        return localPath || pathParameter
-          ? `${prefix}${rawKey}=<redacted-path>`
-          : match;
-      }
-    );
-  const fragmentIndex = suffix.indexOf("#");
-  if (fragmentIndex >= 0) {
-    const fragment = suffix.slice(fragmentIndex + 1);
-    if (looksLikeUrlLocalPath(fragment, true)) {
-      suffix = `${suffix.slice(0, fragmentIndex + 1)}<redacted-path>`;
-    }
-  }
-  return base + suffix;
+function stripHttpUrlMetadata(value: string): string {
+  // Provider-specific signed URL credentials cannot be safely enumerated.
+  const metadataIndex = value.search(URL_METADATA_SEPARATOR_RE);
+  return metadataIndex >= 0 ? value.slice(0, metadataIndex) : value;
 }
 
 export function redactPortableActivityText(value: string): string {
@@ -268,7 +198,7 @@ export function redactPortableActivityText(value: string): string {
   for (const match of redactedSecrets.matchAll(HTTP_URL_RE)) {
     const index = match.index;
     output += redactActivityPaths(redactedSecrets.slice(cursor, index));
-    output += redactHttpUrlMetadata(match[0]);
+    output += stripHttpUrlMetadata(match[0]);
     cursor = index + match[0].length;
   }
   return output + redactActivityPaths(redactedSecrets.slice(cursor));

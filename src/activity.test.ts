@@ -339,6 +339,8 @@ describe("activity feed", () => {
       "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
       "signaturevalue",
     ].join(".");
+    const signedUrl =
+      "https://storage.example/object?X-Amz-Signature=signed-value&X-Amz-Expires=900";
     const unsafeReview = review();
     unsafeReview.signals[0] = {
       ...unsafeReview.signals[0]!,
@@ -346,10 +348,10 @@ describe("activity feed", () => {
       dispositionTarget: windowsPath,
     };
     const unsafeWriteback = writeback("WB-00001", "internal");
-    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}`;
+    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}`;
     unsafeWriteback.capture = {
       ...unsafeWriteback.capture!,
-      details: `Compared ${windowsPath} and ${uncPath}`,
+      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}`,
       impact: "Could not read ~/private/config",
       attemptedWorkaround: "Opened file:///Users/example/private/repo/config",
       desiredOutcome: `No path from ${unixPath}; JWT ${jwt}`,
@@ -360,15 +362,15 @@ describe("activity feed", () => {
           ...report().coverage[0]!,
           sourceId: unixPath,
           state: "unavailable",
-          unavailableReason: `Could not read ${windowsPath}`,
+          unavailableReason: `Could not read ${windowsPath}; source ${signedUrl}`,
         },
       ],
       coverageComplete: false,
       queue: [
         queueItem({
-          title: `Setup failed at ${unixPath}`,
+          title: `Setup failed at ${unixPath}; source ${signedUrl}`,
           sourceIds: [unixPath],
-          linkedWork: [uncPath],
+          linkedWork: [uncPath, signedUrl],
         }),
       ],
     });
@@ -390,6 +392,8 @@ describe("activity feed", () => {
       basicCredential,
       awsAccessKey,
       jwt,
+      "X-Amz-Signature",
+      "signed-value",
     ]) {
       expect(portable).not.toContain(secret);
     }
@@ -451,44 +455,46 @@ describe("activity feed", () => {
         "Failure at file:///<redacted-path>"
       );
     }
-    for (const url of [
-      "https://example.com/docs",
-      "https://example.com:8443/a/b?next=/guides/setup/install#fragment",
-    ]) {
+    for (const url of ["https://example.com/docs"]) {
       expect(redactPortableActivityText(`keep ${url}`)).toBe(`keep ${url}`);
     }
+    expect(
+      redactPortableActivityText(
+        "keep https://example.com:8443/a/b?next=/guides/setup/install#fragment"
+      )
+    ).toBe("keep https://example.com:8443/a/b");
     for (const [unsafeUrl, expectedUrl] of [
       [
         "https://logs.example/run?file=/Users/example/repo/.env",
-        "https://logs.example/run?file=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run?file=%2FUsers%2Fexample%2Frepo%2F.env",
-        "https://logs.example/run?file=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run?note=/Users/example/repo/.env",
-        "https://logs.example/run?note=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run?note=file:///Users/example/repo/.env",
-        "https://logs.example/run?note=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run?note=C%3A%5CUsers%5Cexample%5Crepo%5C.env",
-        "https://logs.example/run?note=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run?note=%5C%5Cserver%5Cshare%5Cprivate.log",
-        "https://logs.example/run?note=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run?note=~%2Fprivate%2Fconfig",
-        "https://logs.example/run?note=<redacted-path>",
+        "https://logs.example/run",
       ],
       [
         "https://logs.example/run#/Users/example/repo/.env",
-        "https://logs.example/run#<redacted-path>",
+        "https://logs.example/run",
       ],
     ]) {
       expect(redactPortableActivityText(`scrub ${unsafeUrl}`)).toBe(
