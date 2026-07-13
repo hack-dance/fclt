@@ -27,6 +27,9 @@ const WINDOWS_ABSOLUTE_PATH_RE =
 const UNC_ABSOLUTE_PATH_RE = /\\\\[^\\\s)\]}>"'`,;]+\\[^\s)\]}>"'`,;]+/g;
 const HOME_RELATIVE_PATH_RE = /(^|[\s([{:="'`])~[\\/][^\s)\]}>"'`,;]+/g;
 const POSIX_ABSOLUTE_PATH_RE = /(^|[\s([{:="'`])\/(?!\/)[^\s)\]}>"'`,;]+/g;
+const PATH_TOKEN_RE = /[^\s)\]}>"'`,;]+/g;
+const PERCENT_ENCODED_BYTE_RE = /%([0-9a-f]{2})/gi;
+const FILE_SCHEME_PATH_RE = /^file:\/\//i;
 const HTTP_URL_RE = /\bhttps?:\/\/[^\s)\]}>"'`,;]+/gi;
 const URL_METADATA_SEPARATOR_RE = /[?#]/;
 const ENCODED_PATH_SEPARATOR_RE = /%(?:2f|5c)/i;
@@ -174,8 +177,37 @@ function unique(values: string[]): string[] {
   );
 }
 
+function containsEncodedOrBareLocalPath(value: string): boolean {
+  let decoded = value;
+  for (let remaining = value.length; remaining > 0; remaining -= 1) {
+    const next = decoded.replace(
+      PERCENT_ENCODED_BYTE_RE,
+      (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))
+    );
+    if (next === decoded) {
+      break;
+    }
+    decoded = next;
+  }
+  const normalized = decoded.replaceAll("\\", "/");
+  if (!normalized.includes("/")) {
+    return false;
+  }
+  return (
+    normalized.startsWith("/") ||
+    normalized.startsWith("~/") ||
+    FILE_SCHEME_PATH_RE.test(normalized) ||
+    LOCAL_URL_PATH_RE.test(normalized)
+  );
+}
+
 function redactActivityPaths(value: string): string {
   return value
+    .replace(PATH_TOKEN_RE, (token) =>
+      !FILE_SCHEME_PATH_RE.test(token) && containsEncodedOrBareLocalPath(token)
+        ? "<redacted-path>"
+        : token
+    )
     .replace(FILE_URL_PATH_RE, "file:///<redacted-path>")
     .replace(WINDOWS_ABSOLUTE_PATH_RE, "<redacted-path>")
     .replace(UNC_ABSOLUTE_PATH_RE, "<redacted-path>")

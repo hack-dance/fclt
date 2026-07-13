@@ -379,6 +379,9 @@ describe("activity feed", () => {
     const encodedLocalUrl =
       "https://logs.example/%2FUsers%2Fexample%2Fprivate%2Frepo";
     const rawLocalUrl = "https://logs.example/run/Users/example/private/repo";
+    const encodedPlainPath = "%252FUsers%252Fexample%252Fprivate%252Frepo";
+    const encodedWindowsPath = "C%3A%5CUsers%5Cexample%5Cprivate%5Crepo";
+    const bareHomePath = "home/example/.ssh/id_rsa";
     const unsafeReview = review();
     unsafeReview.signals[0] = {
       ...unsafeReview.signals[0]!,
@@ -386,13 +389,13 @@ describe("activity feed", () => {
       dispositionTarget: windowsPath,
     };
     const unsafeWriteback = writeback("WB-00001", "internal");
-    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}; source ${encodedLocalUrl}`;
+    unsafeWriteback.summary = `Failure at ${unixPath} using ${awsAccessKey}; log ${signedUrl}; source ${encodedLocalUrl}; path ${encodedPlainPath}`;
     unsafeWriteback.capture = {
       ...unsafeWriteback.capture!,
-      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}; raw ${rawLocalUrl}`,
+      details: `Compared ${windowsPath} and ${uncPath}; source ${signedUrl}; raw ${rawLocalUrl}; encoded ${encodedWindowsPath}`,
       impact: "Could not read ~/private/config",
       attemptedWorkaround: "Opened file:///Users/example/private/repo/config",
-      desiredOutcome: `No path from ${unixPath}; JWT ${jwt}`,
+      desiredOutcome: `No path from ${unixPath}; JWT ${jwt}; home ${bareHomePath}`,
     };
     const unsafeReport = report({
       coverage: [
@@ -434,12 +437,24 @@ describe("activity feed", () => {
       "signed-value",
       "%2FUsers%2Fexample",
       "logs.example/run/Users/example",
+      encodedPlainPath,
+      encodedWindowsPath,
+      bareHomePath,
     ]) {
       expect(portable).not.toContain(secret);
     }
     expect(portable).toContain("<redacted-path>");
     expect(portable).toContain("<redacted-url>");
     expect(portable).toContain("<redacted>");
+    for (const unsafePath of [
+      encodedPlainPath,
+      encodedWindowsPath,
+      bareHomePath,
+    ]) {
+      expect(redactPortableActivityText(`scrub ${unsafePath}`)).toBe(
+        "scrub <redacted-path>"
+      );
+    }
     expect(redactPortableActivityText(`Authorization: Bearer ${jwt}`)).toBe(
       "Authorization: <redacted>"
     );
