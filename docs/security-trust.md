@@ -71,6 +71,13 @@ Discovery also records every probed candidate and traversed directory. Missing
 paths are anchored to the nearest existing directory identity, so a late file,
 directory, or symlink ancestor invalidates persistence before any artifact is
 created.
+Registry-declared Claude plugin installations are authoritative inputs, not
+optional discovery hints. Each declared installation must remain a real,
+non-symlink directory strictly inside Claude's plugin cache. Its entire tree is
+captured with stable no-follow reads, exact file bytes and modes, directory
+contents and identities, and conservative entry, depth, path, per-file, and
+aggregate-byte bounds. A missing, inaccessible, linked, escaped, replaced, or
+changed declared tree aborts evaluation or persistence with no report artifact.
 Skill support files under `assets/`, `references/`, and `scripts/` are
 deterministically enumerated, bounded, hashed, and rejected on symlink or
 special-file ambiguity. fclt rejects relative or traversing paths, unresolved or

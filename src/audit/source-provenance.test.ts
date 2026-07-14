@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
+  realpath,
+  rename,
+  rm,
   symlink,
   truncate,
   writeFile,
@@ -13,6 +17,24 @@ import {
   AuditSourceTracker,
   validateAuditSourceSnapshot,
 } from "./source-provenance";
+
+async function captureStrictTree(
+  root: string,
+  options?: {
+    maxAggregateBytes?: number;
+    maxDepth?: number;
+    maxEntries?: number;
+    maxFileBytes?: number;
+    maxRelativePathBytes?: number;
+  }
+) {
+  const tracker = new AuditSourceTracker();
+  await tracker.captureTree(root, {
+    ...options,
+    rejectUnsupportedEntries: true,
+  });
+  return tracker.snapshot();
+}
 
 test("Windows provenance binds directories without POSIX directory descriptors", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-provenance-win32-"));
@@ -83,4 +105,166 @@ test("absence proofs reject newly created symlink ancestors", async () => {
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "became a symlink"
   );
+});
+
+test("strict tree capture binds bytes and modes for every unselected file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-file-"));
+  const selected = join(root, "selected.json");
+  const unselected = join(root, "assets", "unselected.txt");
+  await writeFile(selected, "{}\n");
+  await mkdir(join(root, "assets"));
+  await writeFile(unselected, "before\n");
+
+  const byteSnapshot = await captureStrictTree(root);
+  expect(byteSnapshot.evaluatedFiles.map((entry) => entry.path).sort()).toEqual(
+    [await realpath(selected), await realpath(unselected)].sort()
+  );
+  await writeFile(unselected, "after!\n");
+  await expect(validateAuditSourceSnapshot(byteSnapshot)).rejects.toThrow(
+    "evaluated context changed"
+  );
+
+  await writeFile(unselected, "stable\n");
+  const modeSnapshot = await captureStrictTree(root);
+  const canonicalUnselected = await realpath(unselected);
+  const originalMode = modeSnapshot.evaluatedFiles.find(
+    (entry) => entry.path === canonicalUnselected
+  )?.mode;
+  expect(typeof originalMode).toBe("number");
+  await chmod(unselected, originalMode! % 0o1000 === 0o600 ? 0o644 : 0o600);
+  await expect(validateAuditSourceSnapshot(modeSnapshot)).rejects.toThrow(
+    "evaluated context changed"
+  );
+});
+
+test("strict tree capture rejects file type replacement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-type-"));
+  const pathValue = join(root, "payload");
+  await writeFile(pathValue, "regular\n");
+  const snapshot = await captureStrictTree(root);
+
+  await rm(pathValue);
+  await mkdir(pathValue);
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "evaluated context changed"
+  );
+});
+
+test("strict tree capture rejects additions, removals, renames, and directory mode drift", async () => {
+  for (const mutation of [
+    "add",
+    "remove",
+    "rename",
+    "directory-mode",
+  ] as const) {
+    const root = await mkdtemp(
+      join(tmpdir(), `fclt-provenance-tree-${mutation}-`)
+    );
+    const original = join(root, "original.txt");
+    await writeFile(original, "stable\n");
+    const snapshot = await captureStrictTree(root);
+
+    if (mutation === "add") {
+      await writeFile(join(root, "added.txt"), "late\n");
+    } else if (mutation === "remove") {
+      await rm(original);
+    } else if (mutation === "rename") {
+      await rename(original, join(root, "renamed.txt"));
+    } else {
+      await chmod(root, 0o755);
+    }
+
+    await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow();
+  }
+});
+
+test("strict tree capture rejects sparse and growing files", async () => {
+  const sparseRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-sparse-")
+  );
+  const sparse = join(sparseRoot, "sparse.bin");
+  await writeFile(sparse, "");
+  await truncate(sparse, 512 * 1024);
+  const sparseTracker = new AuditSourceTracker();
+  await expect(
+    sparseTracker.captureTree(sparseRoot, {
+      maxFileBytes: 1024 * 1024,
+      rejectUnsupportedEntries: true,
+    })
+  ).rejects.toThrow("is sparse");
+
+  const growthRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-growth-")
+  );
+  const growing = join(growthRoot, "growing.bin");
+  await writeFile(growing, Buffer.alloc(140_000, 1));
+  let mutated = false;
+  const growthTracker = new AuditSourceTracker({
+    beforeReadChunk: async ({ bytesRead }) => {
+      if (bytesRead > 0 && !mutated) {
+        mutated = true;
+        await appendFile(growing, "growth");
+      }
+    },
+  });
+  await expect(
+    growthTracker.captureTree(growthRoot, {
+      rejectUnsupportedEntries: true,
+    })
+  ).rejects.toThrow("changed while it was read");
+});
+
+test("strict tree capture rejects a missing declared root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-missing-"));
+  const missing = join(root, "missing-plugin");
+
+  await expect(captureStrictTree(missing)).rejects.toThrow(
+    "disappeared while it was captured"
+  );
+});
+
+test("strict tree capture enforces every resource bound", async () => {
+  const entriesRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-entries-")
+  );
+  await writeFile(join(entriesRoot, "one"), "1");
+  await writeFile(join(entriesRoot, "two"), "2");
+  await expect(
+    captureStrictTree(entriesRoot, { maxEntries: 2 })
+  ).rejects.toThrow("entry limit");
+
+  const fileRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-file-limit-")
+  );
+  await writeFile(join(fileRoot, "large"), "12345");
+  await expect(
+    captureStrictTree(fileRoot, { maxFileBytes: 4 })
+  ).rejects.toThrow("byte limit");
+
+  const aggregateRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-aggregate-")
+  );
+  await writeFile(join(aggregateRoot, "one"), "123");
+  await writeFile(join(aggregateRoot, "two"), "456");
+  await expect(
+    captureStrictTree(aggregateRoot, {
+      maxAggregateBytes: 5,
+      maxFileBytes: 4,
+    })
+  ).rejects.toThrow("byte limit");
+
+  const depthRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-depth-")
+  );
+  await mkdir(join(depthRoot, "one", "two"), { recursive: true });
+  await expect(captureStrictTree(depthRoot, { maxDepth: 1 })).rejects.toThrow(
+    "depth limit"
+  );
+
+  const pathRoot = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-path-"));
+  await writeFile(join(pathRoot, "too-long"), "x");
+  await expect(
+    captureStrictTree(pathRoot, { maxRelativePathBytes: 4 })
+  ).rejects.toThrow("relative path limit");
 });

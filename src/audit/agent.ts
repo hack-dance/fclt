@@ -552,8 +552,8 @@ function sensitiveEnvironmentValues(
     ...new Set(
       Object.entries(env)
         .filter(([name]) => SENSITIVE_ENV_NAME_RE.test(name))
-        .map(([, value]) => value?.trim() ?? "")
-        .filter((value) => value.length >= 4)
+        .map(([, value]) => value ?? "")
+        .filter((value) => value.length > 0)
     ),
   ].sort((a, b) => b.length - a.length);
 }
@@ -562,8 +562,21 @@ function sanitizeHostileChildText(
   value: string,
   sensitiveValues: readonly string[]
 ): string {
+  if (
+    sensitiveValues.some(
+      (sensitiveValue) =>
+        sensitiveValue.length <= 4 && value.includes(sensitiveValue)
+    )
+  ) {
+    // Tiny credentials are too collision-prone for substring replacement.
+    // Redact the complete child-controlled field instead of corrupting text.
+    return "<redacted>";
+  }
   let sanitized = value;
   for (const sensitiveValue of sensitiveValues) {
+    if (sensitiveValue.length <= 4) {
+      continue;
+    }
     sanitized = sanitized.replaceAll(sensitiveValue, "<redacted>");
   }
   return sanitizeEnvAssignments(redactPossibleSecrets(sanitized));

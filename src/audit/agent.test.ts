@@ -616,6 +616,143 @@ for (const tool of ["claude", "codex"] as const) {
 }
 
 for (const tool of ["claude", "codex"] as const) {
+  for (const selectedSecret of ["q", "qz", "qzx", "qzxv"] as const) {
+    test(`agent audit ${tool} redacts ${selectedSecret.length}-byte selected auth at field boundaries and persistence`, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "facult-agent-short-auth-"));
+      const home = join(dir, "audited-home");
+      const bin = join(dir, "bin");
+      const scratch = await mkdtemp(
+        join(tmpdir(), "facult-agent-short-scratch-")
+      );
+      const reportRoot = await mkdtemp(
+        join(tmpdir(), "facult-agent-short-report-")
+      );
+      const modePath = join(dir, "mode");
+      const hostileMarker = `short-secret-field:${selectedSecret}:end`;
+      await mkdir(bin, { recursive: true });
+      await writeFile(
+        join(home, ".ai", "skills", "ok-skill", "SKILL.md"),
+        "Hello\n"
+      );
+      const executable = join(bin, tool);
+      await Bun.write(
+        executable,
+        [
+          `#!${process.execPath}`,
+          `import { readFileSync, writeFileSync } from "node:fs";`,
+          "const args = process.argv.slice(2);",
+          `const tool = ${JSON.stringify(tool)};`,
+          `const mode = readFileSync(${JSON.stringify(modePath)}, "utf8").trim();`,
+          `const selected = tool === "codex" ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY;`,
+          `const outPath = tool === "codex" ? args[args.indexOf("--output-last-message") + 1] : "";`,
+          `const hostile = "short-secret-field:" + selected + ":end";`,
+          `if (mode === "nonzero") { console.log(hostile); console.error(hostile); process.exit(7); }`,
+          `if (mode === "parse") { console.error(hostile); if (tool === "codex") writeFileSync(outPath, "{invalid:" + hostile); else console.log("{invalid:" + hostile); }`,
+          `if (mode === "structured") { const output = { passed: false, findings: [{ severity: "medium", category: selected, message: hostile, recommendation: selected, location: hostile }], notes: hostile }; if (tool === "codex") writeFileSync(outPath, JSON.stringify(output)); else console.log(JSON.stringify({ structured_output: output, modelUsage: { [selected]: {} } })); }`,
+          "",
+        ].join("\n")
+      );
+      await chmod(executable, 0o755);
+
+      const previousPath = process.env.PATH;
+      const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+      const previousClaudeOauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+      process.env.PATH = `${bin}:${previousPath ?? ""}`;
+      process.env.ANTHROPIC_API_KEY =
+        tool === "claude" ? selectedSecret : undefined;
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
+      process.env.OPENAI_API_KEY =
+        tool === "codex" ? selectedSecret : undefined;
+
+      const evaluateMode = async (mode: string) => {
+        await Bun.write(modePath, mode);
+        return await evaluateAgentAudit({
+          argv: ["ok-skill", "--with", tool, "--max-items", "1"],
+          cwd: dir,
+          homeDir: home,
+          runtimeTempRoot: scratch,
+        });
+      };
+      const assertNoSelectedAuth = (value: unknown): void => {
+        const strings: string[] = [];
+        const collectStrings = (entry: unknown): void => {
+          if (typeof entry === "string") {
+            strings.push(entry);
+            return;
+          }
+          if (Array.isArray(entry)) {
+            for (const nested of entry) {
+              collectStrings(nested);
+            }
+            return;
+          }
+          if (entry && typeof entry === "object") {
+            for (const [key, nested] of Object.entries(entry)) {
+              strings.push(key);
+              collectStrings(nested);
+            }
+          }
+        };
+        collectStrings(value);
+        expect(strings).not.toContain(selectedSecret);
+        expect(strings.some((entry) => entry.includes(hostileMarker))).toBe(
+          false
+        );
+      };
+
+      try {
+        const nonzero = await evaluateMode("nonzero");
+        expect(nonzero.report.results[0]?.findings[0]?.evidence).toBe(
+          "agent-subprocess-exit"
+        );
+        assertNoSelectedAuth(nonzero);
+        expect(await readdir(scratch)).toEqual([]);
+
+        const parseFailure = await evaluateMode("parse");
+        expect(parseFailure.report.results[0]?.findings[0]?.evidence).toBe(
+          "agent-subprocess-invalid-output"
+        );
+        assertNoSelectedAuth(parseFailure);
+        expect(await readdir(scratch)).toEqual([]);
+
+        const structured = await evaluateMode("structured");
+        const finding = structured.report.results[0]?.findings[0];
+        expect(finding?.ruleId).toBe("<redacted>");
+        expect(finding?.message).toBe("<redacted>");
+        expect(finding?.evidence).toBe("<redacted>");
+        expect(finding?.location).toBe("<redacted>");
+        expect(structured.report.results[0]?.notes).toBe("<redacted>");
+        if (tool === "claude") {
+          expect(structured.report.agent.model).toBe("<redacted>");
+        } else {
+          expect(structured.report.agent.model).toBeUndefined();
+        }
+        assertNoSelectedAuth(structured);
+        expect(await readdir(scratch)).toEqual([]);
+
+        const reportPath = await persistAuditReport({
+          ...structured,
+          mode: "agent",
+          reportRoot,
+        });
+        const persistedReport = await Bun.file(reportPath).json();
+        const persistedReceipt = await Bun.file(
+          reportPath.replace(JSON_SUFFIX_RE, ".receipt.json")
+        ).json();
+        assertNoSelectedAuth(persistedReport);
+        assertNoSelectedAuth(persistedReceipt);
+      } finally {
+        process.env.PATH = previousPath;
+        process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = previousClaudeOauthToken;
+        process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      }
+    });
+  }
+}
+
+for (const tool of ["claude", "codex"] as const) {
   test(`agent audit ${tool} never exposes hostile child output or errors`, async () => {
     const dir = await mkdtemp(join(tmpdir(), "facult-agent-hostile-output-"));
     const home = join(dir, "audited-home");

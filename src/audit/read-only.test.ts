@@ -9,6 +9,7 @@ import {
   readlink,
   realpath,
   rename,
+  rm,
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,8 +22,30 @@ import { evaluateStaticAudit, runStaticAudit } from "./static";
 const JSON_SUFFIX_RE = /\.json$/;
 const SOURCE_APPEARANCE_RE =
   /appeared after evaluation|evaluated directory changed/;
+const INVALID_PLUGIN_KINDS = [
+  "missing",
+  "symlink",
+  "file",
+  "inaccessible",
+  "outside",
+  "ancestor-escape",
+] as const;
+const INVALID_PLUGIN_ERROR_RES: Record<
+  (typeof INVALID_PLUGIN_KINDS)[number],
+  RegExp
+> = {
+  "ancestor-escape": /escapes the plugin cache/,
+  file: /must be a directory/,
+  inaccessible: /EACCES|permission|inaccessible/i,
+  missing: /installPath is missing/,
+  outside: /outside the plugin cache/,
+  symlink: /must not be a symlink/,
+};
 
-async function writeFile(path: string, contents: string): Promise<void> {
+async function writeFile(
+  path: string,
+  contents: string | Uint8Array
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await Bun.write(path, contents);
 }
@@ -388,8 +411,14 @@ describe("read-only audit boundary", () => {
   });
 
   it("protects external discovered Claude plugin trees", async () => {
-    const { base, home } = await fixture();
-    const pluginRoot = join(base, "external-plugin");
+    const { home } = await fixture();
+    const pluginRoot = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "external-plugin"
+    );
     await writeFile(
       join(pluginRoot, "skills", "review", "SKILL.md"),
       "# Review\n"
@@ -425,8 +454,14 @@ describe("read-only audit boundary", () => {
       "agents",
       "skills",
     ]) {
-      const { base, home } = await fixture();
-      const pluginRoot = join(base, `external-plugin-${directoryName}`);
+      const { home } = await fixture();
+      const pluginRoot = join(
+        home,
+        ".claude",
+        "plugins",
+        "cache",
+        `external-plugin-${directoryName}`
+      );
       const unreadableDirectory = join(pluginRoot, directoryName);
       const reportRoot = await mkdtemp(
         join(tmpdir(), `fclt-audit-plugin-${directoryName}-`)
@@ -461,9 +496,55 @@ describe("read-only audit boundary", () => {
     }
   });
 
+  it("leaves no report artifacts when an external plugin exceeds tree bounds", async () => {
+    const { home } = await fixture();
+    const pluginRoot = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "oversize-plugin"
+    );
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-plugin-oversize-")
+    );
+    await writeFile(
+      join(pluginRoot, "assets", "oversize.bin"),
+      Buffer.alloc(1024 * 1024 + 1)
+    );
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+    );
+
+    await expect(
+      (async () => {
+        const evaluation = await evaluateStaticAudit({
+          argv: [],
+          cwd: home,
+          from: [home],
+          homeDir: home,
+          includeConfigFrom: false,
+        });
+        await persistAuditReport({
+          ...evaluation,
+          mode: "static",
+          reportRoot,
+        });
+      })()
+    ).rejects.toThrow("byte limit");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
   it("rejects late drift anywhere in a discovered Claude plugin tree", async () => {
-    const { base, home } = await fixture();
-    const pluginRoot = join(base, "external-plugin-drift");
+    const { home } = await fixture();
+    const pluginRoot = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "external-plugin-drift"
+    );
     const hooksPath = join(pluginRoot, "hooks", "hooks.json");
     const assetsPath = join(pluginRoot, "assets");
     const reportRoot = await mkdtemp(
@@ -487,12 +568,108 @@ describe("read-only audit boundary", () => {
       persistAuditReport({
         ...evaluation,
         beforeDescriptorCommit: async () => {
-          await writeFile(join(assetsPath, "appeared.md"), "late\n");
+          await writeFile(join(assetsPath, "context.md"), "changed\n");
         },
         mode: "static",
         reportRoot,
       })
-    ).rejects.toThrow("evaluated directory changed");
+    ).rejects.toThrow("evaluated context changed");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
+  it("fails closed for invalid authoritative Claude plugin install paths", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    for (const invalidKind of INVALID_PLUGIN_KINDS) {
+      const { base, home } = await fixture();
+      const cacheRoot = join(home, ".claude", "plugins", "cache");
+      const reportRoot = await mkdtemp(
+        join(tmpdir(), `fclt-audit-plugin-${invalidKind}-`)
+      );
+      await mkdir(cacheRoot, { recursive: true });
+      let installPath = join(cacheRoot, invalidKind);
+      let inaccessiblePath: string | null = null;
+      if (invalidKind === "symlink") {
+        const target = join(base, "symlink-target");
+        await mkdir(target);
+        await symlink(target, installPath);
+      } else if (invalidKind === "file") {
+        await writeFile(installPath, "not a directory\n");
+      } else if (invalidKind === "inaccessible") {
+        await mkdir(installPath);
+        await writeFile(join(installPath, "capability.md"), "private\n");
+        await chmod(installPath, 0o000);
+        inaccessiblePath = installPath;
+      } else if (invalidKind === "outside") {
+        installPath = join(base, "outside-cache");
+        await mkdir(installPath);
+      } else if (invalidKind === "ancestor-escape") {
+        const outside = join(base, "escaped-tree");
+        await mkdir(join(outside, "plugin"), { recursive: true });
+        await symlink(outside, join(cacheRoot, "escape"));
+        installPath = join(cacheRoot, "escape", "plugin");
+      }
+      await writeFile(
+        join(home, ".claude", "plugins", "installed_plugins.json"),
+        `${JSON.stringify({ plugins: { review: [{ installPath }] } })}\n`
+      );
+
+      try {
+        await expect(
+          (async () => {
+            const evaluation = await evaluateStaticAudit({
+              argv: [],
+              cwd: home,
+              from: [home],
+              homeDir: home,
+              includeConfigFrom: false,
+            });
+            await persistAuditReport({
+              ...evaluation,
+              mode: "static",
+              reportRoot,
+            });
+          })()
+        ).rejects.toThrow(INVALID_PLUGIN_ERROR_RES[invalidKind]);
+        expect(await readdir(reportRoot)).toEqual([]);
+      } finally {
+        if (inaccessiblePath) {
+          await chmod(inaccessiblePath, 0o700);
+        }
+      }
+    }
+  });
+
+  it("rejects an authoritative Claude plugin tree that disappears after discovery", async () => {
+    const { home } = await fixture();
+    const pluginRoot = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "disappearing-plugin"
+    );
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-plugin-disappears-")
+    );
+    await writeFile(join(pluginRoot, "assets", "context.md"), "stable\n");
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+    );
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+    await rm(pluginRoot, { force: true, recursive: true });
+
+    await expect(
+      persistAuditReport({ ...evaluation, mode: "static", reportRoot })
+    ).rejects.toThrow();
     expect(await readdir(reportRoot)).toEqual([]);
   });
 

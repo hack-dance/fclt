@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { mkdir, readdir } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   type FacultConfig,
   facultRootDir,
@@ -107,6 +107,7 @@ class ScanTrackingError extends Error {
 }
 
 const GLOB_CHARS_REGEX = /[*?[]/;
+const PATH_SEGMENT_SPLIT_RE = /[\\/]+/;
 const SECRETY_STRING_RE =
   /\b(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g;
 const FIRST_LINE_SPLIT_RE = /\r?\n/;
@@ -138,6 +139,81 @@ function firstGlobIndex(p: string): number {
 function isSafePathString(p: string): boolean {
   // Protect filesystem APIs from null-byte paths.
   return !p.includes("\0");
+}
+
+function isStrictlyContainedPath(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return (
+    rel !== "" &&
+    rel !== ".." &&
+    !rel.startsWith(`..${sep}`) &&
+    !isAbsolute(rel)
+  );
+}
+
+async function requireClaudePluginInstallRoot(
+  installPath: string,
+  home: string
+): Promise<string> {
+  if (
+    !(isSafePathString(installPath) && isAbsolute(installPath)) ||
+    installPath.split(PATH_SEGMENT_SPLIT_RE).includes("..")
+  ) {
+    throw new Error("Claude plugin registry has an unsafe installPath");
+  }
+  const allowedRoot = resolve(home, ".claude", "plugins", "cache");
+  const requested = resolve(installPath);
+  if (!isStrictlyContainedPath(allowedRoot, requested)) {
+    throw new Error(
+      "Claude plugin registry installPath is outside the plugin cache"
+    );
+  }
+
+  let allowedMetadata: Awaited<ReturnType<typeof lstat>>;
+  try {
+    allowedMetadata = await lstat(allowedRoot);
+  } catch {
+    throw new Error("Claude plugin cache is unavailable");
+  }
+  if (allowedMetadata.isSymbolicLink() || !allowedMetadata.isDirectory()) {
+    throw new Error("Claude plugin cache must be a non-symlink directory");
+  }
+
+  let installMetadata: Awaited<ReturnType<typeof lstat>>;
+  try {
+    installMetadata = await lstat(requested);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("Claude plugin registry installPath is missing");
+    }
+    throw new Error("Claude plugin registry installPath is inaccessible");
+  }
+  if (installMetadata.isSymbolicLink()) {
+    throw new Error("Claude plugin registry installPath must not be a symlink");
+  }
+  if (!installMetadata.isDirectory()) {
+    throw new Error("Claude plugin registry installPath must be a directory");
+  }
+
+  // Bind both pathname identities through audit tracking before canonical
+  // containment decides which external tree may influence discovery.
+  const [allowedStat, installStat] = await Promise.all([
+    statSafe(allowedRoot),
+    statSafe(requested),
+  ]);
+  if (!(allowedStat?.isDir && installStat?.isDir)) {
+    throw new Error("Claude plugin registry installPath became unavailable");
+  }
+  const [canonicalAllowedRoot, canonicalInstallRoot] = await Promise.all([
+    realpath(allowedRoot),
+    realpath(requested),
+  ]);
+  if (!isStrictlyContainedPath(canonicalAllowedRoot, canonicalInstallRoot)) {
+    throw new Error(
+      "Claude plugin registry installPath escapes the plugin cache"
+    );
+  }
+  return requested;
 }
 
 function globBaseDir(absPattern: string): string {
@@ -1701,11 +1777,11 @@ async function buildSourceResult(
           });
         };
 
-        for (const installPath of [...installPaths].sort()) {
-          const installRoot = await statSafe(installPath);
-          if (!installRoot?.isDir) {
-            continue;
-          }
+        for (const declaredInstallPath of [...installPaths].sort()) {
+          const installPath = await requireClaudePluginInstallRoot(
+            declaredInstallPath,
+            home
+          );
           // The registry makes the whole installed plugin tree part of
           // discovery, even though only selected capability files are emitted.
           // Traverse it strictly so an unreadable, symlinked, special, or

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
+import { lstat, open, opendir, realpath } from "node:fs/promises";
 import {
   basename,
   dirname,
@@ -21,8 +21,10 @@ export interface AuditProtectedRootIdentity {
 }
 
 export interface AuditEvaluatedFileIdentity {
+  ctimeMs: number;
   dev: number;
   ino: number;
+  mode: number;
   mtimeMs: number;
   path: string;
   sha256: string;
@@ -30,7 +32,7 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
@@ -53,15 +55,78 @@ export interface AuditDerivedContextIdentity {
 }
 
 export interface AuditEvaluatedDirectoryIdentity {
+  ctimeMs: number;
   dev: number;
   entriesSha256: string;
   ino: number;
+  mode: number;
   mtimeMs: number;
   path: string;
 }
 
+const STRICT_CAPTURE_TREE_LIMITS = Object.freeze({
+  maxAggregateBytes: 4 * 1024 * 1024,
+  maxDepth: 12,
+  maxEntries: 256,
+  maxFileBytes: 1024 * 1024,
+  maxRelativePathBytes: 512,
+  readChunkBytes: 64 * 1024,
+});
+
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function compareDirents(left: Dirent, right: Dirent): number {
+  return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+}
+
+async function readBoundedDirectoryEntries(
+  pathValue: string,
+  maxEntries: number
+): Promise<Dirent[]> {
+  const directory = await opendir(pathValue);
+  const entries: Dirent[] = [];
+  try {
+    while (true) {
+      const entry = await directory.read();
+      if (!entry) {
+        break;
+      }
+      if (entries.length >= maxEntries) {
+        throw new Error(
+          `Audit discovery tree exceeds entry limit: ${pathValue}`
+        );
+      }
+      entries.push(entry);
+    }
+  } finally {
+    try {
+      await directory.close();
+    } catch {
+      // A terminal read may already have closed the directory handle.
+    }
+  }
+  return entries.sort(compareDirents);
+}
+
+function directoryEntriesDigest(entries: Dirent[]): string {
+  return digest(
+    Buffer.from(
+      JSON.stringify(
+        entries.map((entry) => ({
+          name: entry.name,
+          type: entry.isDirectory()
+            ? "directory"
+            : entry.isFile()
+              ? "file"
+              : entry.isSymbolicLink()
+                ? "symlink"
+                : "special",
+        }))
+      )
+    )
+  );
 }
 
 function readOnlyNoFollowFlags(): number {
@@ -108,13 +173,29 @@ async function canonicalAbsentPath(
 }
 
 function sameFileMetadata(
-  left: { dev: number; ino: number; mtimeMs: number; size: number },
-  right: { dev: number; ino: number; mtimeMs: number; size: number }
+  left: {
+    ctimeMs: number;
+    dev: number;
+    ino: number;
+    mode: number;
+    mtimeMs: number;
+    size: number;
+  },
+  right: {
+    ctimeMs: number;
+    dev: number;
+    ino: number;
+    mode: number;
+    mtimeMs: number;
+    size: number;
+  }
 ): boolean {
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
+    left.mode === right.mode &&
     left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
     left.size === right.size
   );
 }
@@ -150,6 +231,13 @@ async function readStableRegularFile(
     ) {
       throw new Error(`Audit context exceeds byte limit: ${canonical}`);
     }
+    if (
+      process.platform !== "win32" &&
+      before.size > 0 &&
+      before.blocks * 512 < before.size
+    ) {
+      throw new Error(`Audit context is sparse: ${canonical}`);
+    }
     const chunks: Buffer[] = [];
     let bytesRead = 0;
     while (bytesRead < before.size) {
@@ -161,7 +249,10 @@ async function readStableRegularFile(
         );
       }
       const chunk = Buffer.allocUnsafe(
-        Math.min(64 * 1024, before.size - bytesRead)
+        Math.min(
+          STRICT_CAPTURE_TREE_LIMITS.readChunkBytes,
+          before.size - bytesRead
+        )
       );
       const result = await handle.read(chunk, 0, chunk.length, null);
       if (result.bytesRead <= 0) {
@@ -193,8 +284,10 @@ async function readStableRegularFile(
     return {
       bytes,
       identity: {
+        ctimeMs: after.ctimeMs,
         dev: after.dev,
         ino: after.ino,
+        mode: after.mode,
         mtimeMs: after.mtimeMs,
         path: canonical,
         sha256: digest(bytes),
@@ -356,7 +449,10 @@ export class AuditSourceTracker {
     }
   }
 
-  async readDirectory(pathValue: string): Promise<Dirent[] | null> {
+  async readDirectory(
+    pathValue: string,
+    options?: { maxEntries?: number }
+  ): Promise<Dirent[] | null> {
     const requested = normalize(resolve(pathValue));
     let before: Awaited<ReturnType<typeof lstat>>;
     try {
@@ -377,14 +473,13 @@ export class AuditSourceTracker {
     let canonical: string;
     let after: Awaited<ReturnType<typeof lstat>>;
     let entries: Dirent[];
+    const maxEntries = options?.maxEntries ?? 50_000;
     if (this.#platform === "win32") {
       // Windows cannot portably open directory descriptors. Persistence is
       // disabled there, but read-only evaluation still binds a before/after
       // directory identity and fails if discovery changes.
       canonical = await realpath(requested);
-      entries = (await readdir(requested, { withFileTypes: true })).sort(
-        (a, b) => a.name.localeCompare(b.name)
-      );
+      entries = await readBoundedDirectoryEntries(requested, maxEntries);
       after = await lstat(requested);
       const canonicalAfter = await realpath(requested);
       if (!sameFileMetadata(before, after) || canonicalAfter !== canonical) {
@@ -406,9 +501,7 @@ export class AuditSourceTracker {
             `Audit directory changed while it was opened: ${requested}`
           );
         }
-        entries = (await readdir(requested, { withFileTypes: true })).sort(
-          (a, b) => a.name.localeCompare(b.name)
-        );
+        entries = await readBoundedDirectoryEntries(requested, maxEntries);
         const openedAfter = await handle.stat();
         after = await lstat(requested);
         const canonicalAfter = await realpath(requested);
@@ -427,27 +520,32 @@ export class AuditSourceTracker {
         await handle.close();
       }
     }
-    const entriesSha256 = digest(
-      Buffer.from(
-        JSON.stringify(
-          entries.map((entry) => ({
-            name: entry.name,
-            type: entry.isDirectory()
-              ? "directory"
-              : entry.isFile()
-                ? "file"
-                : entry.isSymbolicLink()
-                  ? "symlink"
-                  : "special",
-          }))
-        )
-      )
+    const stableEntries = await readBoundedDirectoryEntries(
+      requested,
+      maxEntries
     );
+    const entriesSha256 = directoryEntriesDigest(entries);
+    if (directoryEntriesDigest(stableEntries) !== entriesSha256) {
+      throw new Error(
+        `Audit directory changed while it was read: ${canonical}`
+      );
+    }
+    const stableMetadata = await lstat(requested);
+    if (
+      !sameFileMetadata(after, stableMetadata) ||
+      (await realpath(requested)) !== canonical
+    ) {
+      throw new Error(
+        `Audit directory changed while it was read: ${canonical}`
+      );
+    }
     const identity = {
-      dev: after.dev,
+      ctimeMs: stableMetadata.ctimeMs,
+      dev: stableMetadata.dev,
       entriesSha256,
-      ino: after.ino,
-      mtimeMs: after.mtimeMs,
+      ino: stableMetadata.ino,
+      mode: stableMetadata.mode,
+      mtimeMs: stableMetadata.mtimeMs,
       path: canonical,
     };
     const existing = this.#evaluatedDirectories.get(canonical);
@@ -455,7 +553,9 @@ export class AuditSourceTracker {
       existing &&
       (existing.dev !== identity.dev ||
         existing.ino !== identity.ino ||
+        existing.mode !== identity.mode ||
         existing.mtimeMs !== identity.mtimeMs ||
+        existing.ctimeMs !== identity.ctimeMs ||
         existing.entriesSha256 !== entriesSha256)
     ) {
       throw new Error(`Audit directory changed between reads: ${canonical}`);
@@ -467,21 +567,50 @@ export class AuditSourceTracker {
   async captureTree(
     pathValue: string,
     options?: {
+      maxAggregateBytes?: number;
+      maxDepth?: number;
       maxEntries?: number;
+      maxFileBytes?: number;
+      maxRelativePathBytes?: number;
       rejectUnsupportedEntries?: boolean;
     }
   ): Promise<void> {
-    const maxEntries = options?.maxEntries ?? 50_000;
-    let visited = 0;
-    const stack = [normalize(resolve(pathValue))];
-    while (stack.length > 0) {
-      const directory = stack.pop();
-      if (!directory) {
-        continue;
+    const strict = options?.rejectUnsupportedEntries === true;
+    const maxEntries =
+      options?.maxEntries ??
+      (strict ? STRICT_CAPTURE_TREE_LIMITS.maxEntries : 50_000);
+    const maxAggregateBytes =
+      options?.maxAggregateBytes ??
+      STRICT_CAPTURE_TREE_LIMITS.maxAggregateBytes;
+    const maxDepth = options?.maxDepth ?? STRICT_CAPTURE_TREE_LIMITS.maxDepth;
+    const maxFileBytes =
+      options?.maxFileBytes ?? STRICT_CAPTURE_TREE_LIMITS.maxFileBytes;
+    const maxRelativePathBytes =
+      options?.maxRelativePathBytes ??
+      STRICT_CAPTURE_TREE_LIMITS.maxRelativePathBytes;
+    const root = normalize(resolve(pathValue));
+    let aggregateBytes = 0;
+    let visited = 1;
+
+    const visit = async (
+      directory: string,
+      relativeDirectory: string,
+      depth: number
+    ): Promise<void> => {
+      if (depth > maxDepth) {
+        throw new Error(`Audit discovery tree exceeds depth limit: ${root}`);
       }
-      const entries = await this.readDirectory(directory);
+      const remainingEntries = Math.max(maxEntries - visited + 1, 1);
+      const entries = await this.readDirectory(directory, {
+        maxEntries: remainingEntries,
+      });
       if (entries === null) {
-        continue;
+        if (strict) {
+          throw new Error(
+            `Audit discovery tree disappeared while it was captured: ${directory}`
+          );
+        }
+        return;
       }
       for (const entry of entries) {
         visited += 1;
@@ -490,20 +619,62 @@ export class AuditSourceTracker {
             `Audit discovery tree exceeds entry limit: ${pathValue}`
           );
         }
-        if (entry.isDirectory() && !entry.isSymbolicLink()) {
-          stack.push(join(directory, entry.name));
-          continue;
-        }
         if (
-          options?.rejectUnsupportedEntries &&
-          (entry.isSymbolicLink() || !entry.isFile())
+          !entry.name ||
+          entry.name === "." ||
+          entry.name === ".." ||
+          entry.name.includes("/") ||
+          entry.name.includes("\\")
         ) {
           throw new Error(
-            `Audit discovery tree has an unsupported entry: ${join(directory, entry.name)}`
+            `Audit discovery tree has an unsafe entry name: ${root}`
           );
         }
+        const relativePath = relativeDirectory
+          ? `${relativeDirectory}/${entry.name}`
+          : entry.name;
+        if (Buffer.byteLength(relativePath, "utf8") > maxRelativePathBytes) {
+          throw new Error(
+            `Audit discovery tree exceeds relative path limit: ${root}`
+          );
+        }
+        const entryPath = join(directory, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          await visit(entryPath, relativePath, depth + 1);
+          continue;
+        }
+        if (entry.isSymbolicLink() || !entry.isFile()) {
+          if (!strict) {
+            continue;
+          }
+          throw new Error(
+            `Audit discovery tree has an unsupported entry: ${entryPath}`
+          );
+        }
+        if (strict) {
+          const remainingBytes = maxAggregateBytes - aggregateBytes;
+          if (remainingBytes < 0) {
+            throw new Error(
+              `Audit discovery tree exceeds aggregate byte limit: ${root}`
+            );
+          }
+          const bytes = await this.read(entryPath, {
+            maxBytes: Math.min(maxFileBytes, remainingBytes),
+          });
+          aggregateBytes += bytes.byteLength;
+          if (aggregateBytes > maxAggregateBytes) {
+            throw new Error(
+              `Audit discovery tree exceeds aggregate byte limit: ${root}`
+            );
+          }
+        }
       }
+    };
+
+    if (visited > maxEntries) {
+      throw new Error(`Audit discovery tree exceeds entry limit: ${root}`);
     }
+    await visit(root, "", 0);
   }
 
   recordGitPathExposure(pathValue: string, value: unknown): void {
@@ -517,7 +688,7 @@ export class AuditSourceTracker {
 
   snapshot(): AuditSourceSnapshot {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         a.path.localeCompare(b.path)
       ),
@@ -552,7 +723,7 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot> | null;
   if (
     !snapshot ||
-    snapshot.schemaVersion !== 2 ||
+    snapshot.schemaVersion !== 3 ||
     !Array.isArray(snapshot.protectedRoots) ||
     !Array.isArray(snapshot.evaluatedFiles) ||
     !Array.isArray(snapshot.evaluatedDirectories) ||
@@ -575,8 +746,10 @@ export function assertAuditSourceSnapshot(
           entry &&
           typeof entry === "object" &&
           isAbsolute(entry.path) &&
+          Number.isFinite(entry.ctimeMs) &&
           Number.isFinite(entry.dev) &&
           Number.isFinite(entry.ino) &&
+          Number.isFinite(entry.mode) &&
           Number.isFinite(entry.mtimeMs) &&
           Number.isFinite(entry.size) &&
           SHA256_RE.test(entry.sha256)
@@ -588,8 +761,10 @@ export function assertAuditSourceSnapshot(
           entry &&
           typeof entry === "object" &&
           isAbsolute(entry.path) &&
+          Number.isFinite(entry.ctimeMs) &&
           Number.isFinite(entry.dev) &&
           Number.isFinite(entry.ino) &&
+          Number.isFinite(entry.mode) &&
           Number.isFinite(entry.mtimeMs) &&
           SHA256_RE.test(entry.entriesSha256)
         )
@@ -724,8 +899,10 @@ export async function validateAuditSourceSnapshot(
     if (
       !(entries && actual) ||
       actual.path !== expected.path ||
+      actual.ctimeMs !== expected.ctimeMs ||
       actual.dev !== expected.dev ||
       actual.ino !== expected.ino ||
+      actual.mode !== expected.mode ||
       actual.mtimeMs !== expected.mtimeMs ||
       actual.entriesSha256 !== expected.entriesSha256
     ) {
