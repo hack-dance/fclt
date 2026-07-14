@@ -7,7 +7,9 @@ import {
   isAbsolute,
   join,
   normalize,
+  relative,
   resolve,
+  sep,
 } from "node:path";
 import { getGitPathExposure } from "../util/git";
 
@@ -32,12 +34,25 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 3;
+  schemaVersion: 4;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
+  capturedTrees: AuditCapturedTreeIdentity[];
   derivedContexts: AuditDerivedContextIdentity[];
   absentPaths: AuditAbsentPathIdentity[];
+}
+
+export interface AuditCapturedTreeIdentity {
+  directoryPaths: string[];
+  filePaths: string[];
+  maxAggregateBytes: number;
+  maxDepth: number;
+  maxEntries: number;
+  maxFileBytes: number;
+  maxRelativePathBytes: number;
+  rejectUnsupportedEntries: true;
+  root: string;
 }
 
 export interface AuditAbsentPathIdentity {
@@ -60,6 +75,7 @@ export interface AuditEvaluatedDirectoryIdentity {
   entriesSha256: string;
   ino: number;
   mode: number;
+  maxEntries: number;
   mtimeMs: number;
   path: string;
 }
@@ -76,6 +92,52 @@ const STRICT_CAPTURE_TREE_LIMITS = Object.freeze({
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
+
+function isNonNegativeSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function isContainedPath(root: string, candidate: string): boolean {
+  const relativePath = relative(root, candidate);
+  return (
+    relativePath === "" ||
+    (relativePath !== ".." &&
+      !relativePath.startsWith(`..${sep}`) &&
+      !isAbsolute(relativePath))
+  );
+}
+
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+}
+
+function isSortedUniqueStringArray(value: unknown[]): value is string[] {
+  return value.every(
+    (entry, index) =>
+      typeof entry === "string" &&
+      (index === 0 || entry > (value[index - 1] as string))
+  );
+}
+
+const CAPTURED_TREE_KEYS = [
+  "directoryPaths",
+  "filePaths",
+  "maxAggregateBytes",
+  "maxDepth",
+  "maxEntries",
+  "maxFileBytes",
+  "maxRelativePathBytes",
+  "rejectUnsupportedEntries",
+  "root",
+] as const;
 
 function compareDirents(left: Dirent, right: Dirent): number {
   return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
@@ -200,6 +262,19 @@ function sameFileMetadata(
   );
 }
 
+function sameDirectoryMetadata(
+  left: AuditEvaluatedDirectoryIdentity,
+  right: AuditEvaluatedDirectoryIdentity
+): boolean {
+  return (
+    left.ctimeMs === right.ctimeMs &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.mtimeMs === right.mtimeMs
+  );
+}
+
 async function readStableRegularFile(
   pathValue: string,
   options?: {
@@ -301,6 +376,7 @@ async function readStableRegularFile(
 
 export class AuditSourceTracker {
   readonly #absentPaths = new Map<string, AuditAbsentPathIdentity>();
+  readonly #capturedTrees = new Map<string, AuditCapturedTreeIdentity>();
   readonly #evaluatedFiles = new Map<string, AuditEvaluatedFileIdentity>();
   readonly #evaluatedDirectories = new Map<
     string,
@@ -473,7 +549,18 @@ export class AuditSourceTracker {
     let canonical: string;
     let after: Awaited<ReturnType<typeof lstat>>;
     let entries: Dirent[];
-    const maxEntries = options?.maxEntries ?? 50_000;
+    const requestedMaxEntries = options?.maxEntries ?? 50_000;
+    if (!isNonNegativeSafeInteger(requestedMaxEntries)) {
+      throw new Error(
+        `Audit directory has an invalid entry limit: ${requested}`
+      );
+    }
+    const existingCanonical = await realpath(requested);
+    const priorIdentity = this.#evaluatedDirectories.get(existingCanonical);
+    const maxEntries = Math.min(
+      requestedMaxEntries,
+      priorIdentity?.maxEntries ?? requestedMaxEntries
+    );
     if (this.#platform === "win32") {
       // Windows cannot portably open directory descriptors. Persistence is
       // disabled there, but read-only evaluation still binds a before/after
@@ -544,6 +631,7 @@ export class AuditSourceTracker {
       dev: stableMetadata.dev,
       entriesSha256,
       ino: stableMetadata.ino,
+      maxEntries,
       mode: stableMetadata.mode,
       mtimeMs: stableMetadata.mtimeMs,
       path: canonical,
@@ -588,7 +676,28 @@ export class AuditSourceTracker {
     const maxRelativePathBytes =
       options?.maxRelativePathBytes ??
       STRICT_CAPTURE_TREE_LIMITS.maxRelativePathBytes;
+    const limitsAreValid =
+      isPositiveSafeInteger(maxEntries) &&
+      isNonNegativeSafeInteger(maxAggregateBytes) &&
+      isNonNegativeSafeInteger(maxDepth) &&
+      isNonNegativeSafeInteger(maxFileBytes) &&
+      isPositiveSafeInteger(maxRelativePathBytes);
+    const strictLimitsAreConservative =
+      !strict ||
+      (maxEntries <= STRICT_CAPTURE_TREE_LIMITS.maxEntries &&
+        maxAggregateBytes <= STRICT_CAPTURE_TREE_LIMITS.maxAggregateBytes &&
+        maxDepth <= STRICT_CAPTURE_TREE_LIMITS.maxDepth &&
+        maxFileBytes <= STRICT_CAPTURE_TREE_LIMITS.maxFileBytes &&
+        maxRelativePathBytes <=
+          STRICT_CAPTURE_TREE_LIMITS.maxRelativePathBytes);
+    if (!(limitsAreValid && strictLimitsAreConservative)) {
+      throw new Error(
+        `Audit discovery tree has invalid resource limits: ${pathValue}`
+      );
+    }
     const root = normalize(resolve(pathValue));
+    const directoryPaths = new Set<string>();
+    const filePaths = new Set<string>();
     let aggregateBytes = 0;
     let visited = 1;
 
@@ -600,7 +709,7 @@ export class AuditSourceTracker {
       if (depth > maxDepth) {
         throw new Error(`Audit discovery tree exceeds depth limit: ${root}`);
       }
-      const remainingEntries = Math.max(maxEntries - visited + 1, 1);
+      const remainingEntries = maxEntries - visited;
       const entries = await this.readDirectory(directory, {
         maxEntries: remainingEntries,
       });
@@ -611,6 +720,9 @@ export class AuditSourceTracker {
           );
         }
         return;
+      }
+      if (strict) {
+        directoryPaths.add(await realpath(directory));
       }
       for (const entry of entries) {
         visited += 1;
@@ -661,6 +773,7 @@ export class AuditSourceTracker {
           const bytes = await this.read(entryPath, {
             maxBytes: Math.min(maxFileBytes, remainingBytes),
           });
+          filePaths.add(await realpath(entryPath));
           aggregateBytes += bytes.byteLength;
           if (aggregateBytes > maxAggregateBytes) {
             throw new Error(
@@ -675,6 +788,32 @@ export class AuditSourceTracker {
       throw new Error(`Audit discovery tree exceeds entry limit: ${root}`);
     }
     await visit(root, "", 0);
+    if (!strict) {
+      return;
+    }
+    const canonicalRoot = await realpath(root);
+    const treeIdentity: AuditCapturedTreeIdentity = {
+      directoryPaths: [...directoryPaths].sort(),
+      filePaths: [...filePaths].sort(),
+      maxAggregateBytes,
+      maxDepth,
+      maxEntries,
+      maxFileBytes,
+      maxRelativePathBytes,
+      rejectUnsupportedEntries: true,
+      root: canonicalRoot,
+    };
+    this.#capturedTrees.set(
+      [
+        canonicalRoot,
+        maxEntries,
+        maxAggregateBytes,
+        maxDepth,
+        maxFileBytes,
+        maxRelativePathBytes,
+      ].join("\0"),
+      treeIdentity
+    );
   }
 
   recordGitPathExposure(pathValue: string, value: unknown): void {
@@ -688,13 +827,16 @@ export class AuditSourceTracker {
 
   snapshot(): AuditSourceSnapshot {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         a.path.localeCompare(b.path)
       ),
       // Preserve first-read order: this is the order in which bytes entered evaluation.
       evaluatedFiles: [...this.#evaluatedFiles.values()],
       evaluatedDirectories: [...this.#evaluatedDirectories.values()],
+      capturedTrees: [...this.#capturedTrees.values()].sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right))
+      ),
       derivedContexts: [...this.#derivedContexts.values()].sort((a, b) =>
         a.path.localeCompare(b.path)
       ),
@@ -723,10 +865,11 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot> | null;
   if (
     !snapshot ||
-    snapshot.schemaVersion !== 3 ||
+    snapshot.schemaVersion !== 4 ||
     !Array.isArray(snapshot.protectedRoots) ||
     !Array.isArray(snapshot.evaluatedFiles) ||
     !Array.isArray(snapshot.evaluatedDirectories) ||
+    !Array.isArray(snapshot.capturedTrees) ||
     !Array.isArray(snapshot.derivedContexts) ||
     !Array.isArray(snapshot.absentPaths) ||
     snapshot.protectedRoots.some(
@@ -764,10 +907,18 @@ export function assertAuditSourceSnapshot(
           Number.isFinite(entry.ctimeMs) &&
           Number.isFinite(entry.dev) &&
           Number.isFinite(entry.ino) &&
+          isNonNegativeSafeInteger(entry.maxEntries) &&
           Number.isFinite(entry.mode) &&
           Number.isFinite(entry.mtimeMs) &&
           SHA256_RE.test(entry.entriesSha256)
         )
+    ) ||
+    snapshot.capturedTrees.some((entry) =>
+      isInvalidCapturedTreeIdentity(
+        entry,
+        snapshot.evaluatedFiles as AuditEvaluatedFileIdentity[],
+        snapshot.evaluatedDirectories as AuditEvaluatedDirectoryIdentity[]
+      )
     ) ||
     snapshot.derivedContexts.some(
       (entry) =>
@@ -780,6 +931,93 @@ export function assertAuditSourceSnapshot(
   ) {
     throw new Error("Audit source snapshot schema is unsupported");
   }
+}
+
+function isInvalidCapturedTreeIdentity(
+  value: unknown,
+  evaluatedFiles: AuditEvaluatedFileIdentity[],
+  evaluatedDirectories: AuditEvaluatedDirectoryIdentity[]
+): boolean {
+  if (
+    !(
+      value &&
+      typeof value === "object" &&
+      hasExactKeys(value, CAPTURED_TREE_KEYS)
+    )
+  ) {
+    return true;
+  }
+  const entry = value as Partial<AuditCapturedTreeIdentity>;
+  if (
+    typeof entry.root !== "string" ||
+    !isAbsolute(entry.root) ||
+    entry.rejectUnsupportedEntries !== true ||
+    !Array.isArray(entry.filePaths) ||
+    !Array.isArray(entry.directoryPaths) ||
+    !isPositiveSafeInteger(entry.maxEntries ?? Number.NaN) ||
+    !isNonNegativeSafeInteger(entry.maxAggregateBytes ?? Number.NaN) ||
+    !isNonNegativeSafeInteger(entry.maxDepth ?? Number.NaN) ||
+    !isNonNegativeSafeInteger(entry.maxFileBytes ?? Number.NaN) ||
+    !isPositiveSafeInteger(entry.maxRelativePathBytes ?? Number.NaN) ||
+    entry.maxEntries! > STRICT_CAPTURE_TREE_LIMITS.maxEntries ||
+    entry.maxAggregateBytes! > STRICT_CAPTURE_TREE_LIMITS.maxAggregateBytes ||
+    entry.maxDepth! > STRICT_CAPTURE_TREE_LIMITS.maxDepth ||
+    entry.maxFileBytes! > STRICT_CAPTURE_TREE_LIMITS.maxFileBytes ||
+    entry.maxRelativePathBytes! >
+      STRICT_CAPTURE_TREE_LIMITS.maxRelativePathBytes
+  ) {
+    return true;
+  }
+  const contract = entry as AuditCapturedTreeIdentity;
+  const fileIdentities = new Map(
+    evaluatedFiles.map((identity) => [identity.path, identity])
+  );
+  const directoryPaths = new Set(
+    evaluatedDirectories.map((identity) => identity.path)
+  );
+  const allPaths = [...contract.directoryPaths, ...contract.filePaths];
+  if (
+    contract.directoryPaths.length + contract.filePaths.length >
+      contract.maxEntries ||
+    !contract.directoryPaths.includes(contract.root) ||
+    new Set(allPaths).size !== allPaths.length ||
+    !isSortedUniqueStringArray(contract.directoryPaths) ||
+    !isSortedUniqueStringArray(contract.filePaths) ||
+    contract.directoryPaths.some((path) => !directoryPaths.has(path)) ||
+    contract.filePaths.some((path) => !fileIdentities.has(path))
+  ) {
+    return true;
+  }
+  let aggregateBytes = 0;
+  for (const path of allPaths) {
+    if (!(isAbsolute(path) && isContainedPath(contract.root, path))) {
+      return true;
+    }
+    const relativePath = relative(contract.root, path);
+    if (
+      Buffer.byteLength(relativePath, "utf8") > contract.maxRelativePathBytes
+    ) {
+      return true;
+    }
+    const segments = relativePath ? relativePath.split(sep) : [];
+    const depth = fileIdentities.has(path)
+      ? Math.max(segments.length - 1, 0)
+      : segments.length;
+    if (depth > contract.maxDepth) {
+      return true;
+    }
+    const file = fileIdentities.get(path);
+    if (file) {
+      if (file.size > contract.maxFileBytes) {
+        return true;
+      }
+      aggregateBytes += file.size;
+      if (aggregateBytes > contract.maxAggregateBytes) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function isValidAbsentPathIdentity(
@@ -875,7 +1113,72 @@ export async function validateAuditSourceSnapshot(
       await handle.close();
     }
   }
+  const expectedFiles = new Map(
+    snapshot.evaluatedFiles.map((identity) => [identity.path, identity])
+  );
+  const expectedDirectories = new Map(
+    snapshot.evaluatedDirectories.map((identity) => [identity.path, identity])
+  );
+  const validatedFiles = new Set<string>();
+  const validatedDirectories = new Set<string>();
+  for (const expected of snapshot.capturedTrees) {
+    const tracker = new AuditSourceTracker({ platform });
+    await tracker.captureTree(expected.root, {
+      maxAggregateBytes: expected.maxAggregateBytes,
+      maxDepth: expected.maxDepth,
+      maxEntries: expected.maxEntries,
+      maxFileBytes: expected.maxFileBytes,
+      maxRelativePathBytes: expected.maxRelativePathBytes,
+      rejectUnsupportedEntries: expected.rejectUnsupportedEntries,
+    });
+    const actualSnapshot = tracker.snapshot();
+    const actualTree = actualSnapshot.capturedTrees[0];
+    if (
+      !actualTree ||
+      JSON.stringify(actualTree) !== JSON.stringify(expected)
+    ) {
+      throw new Error(`Audit captured tree changed: ${expected.root}`);
+    }
+    const actualFiles = new Map(
+      actualSnapshot.evaluatedFiles.map((identity) => [identity.path, identity])
+    );
+    const actualDirectories = new Map(
+      actualSnapshot.evaluatedDirectories.map((identity) => [
+        identity.path,
+        identity,
+      ])
+    );
+    for (const path of expected.filePaths) {
+      const expectedIdentity = expectedFiles.get(path);
+      const actualIdentity = actualFiles.get(path);
+      const identityMatches =
+        expectedIdentity &&
+        actualIdentity &&
+        sameFileMetadata(expectedIdentity, actualIdentity) &&
+        expectedIdentity.sha256 === actualIdentity.sha256;
+      if (!identityMatches) {
+        throw new Error(`Audit captured tree changed: ${expected.root}`);
+      }
+      validatedFiles.add(path);
+    }
+    for (const path of expected.directoryPaths) {
+      const expectedIdentity = expectedDirectories.get(path);
+      const actualIdentity = actualDirectories.get(path);
+      const identityMatches =
+        expectedIdentity &&
+        actualIdentity &&
+        sameDirectoryMetadata(expectedIdentity, actualIdentity) &&
+        expectedIdentity.entriesSha256 === actualIdentity.entriesSha256;
+      if (!identityMatches) {
+        throw new Error(`Audit captured tree changed: ${expected.root}`);
+      }
+      validatedDirectories.add(path);
+    }
+  }
   for (const expected of snapshot.evaluatedFiles) {
+    if (validatedFiles.has(expected.path)) {
+      continue;
+    }
     const { identity } = await readStableRegularFile(expected.path, {
       maxBytes: Math.max(expected.size, 1),
     }).catch(() => ({
@@ -891,9 +1194,12 @@ export async function validateAuditSourceSnapshot(
     }
   }
   for (const expected of snapshot.evaluatedDirectories) {
+    if (validatedDirectories.has(expected.path)) {
+      continue;
+    }
     const tracker = new AuditSourceTracker({ platform });
     const entries = await tracker
-      .readDirectory(expected.path)
+      .readDirectory(expected.path, { maxEntries: expected.maxEntries })
       .catch(() => null);
     const actual = tracker.snapshot().evaluatedDirectories[0];
     if (

@@ -536,6 +536,49 @@ describe("read-only audit boundary", () => {
     expect(await readdir(reportRoot)).toEqual([]);
   });
 
+  it("revalidates the strict aggregate entry budget before report commit", async () => {
+    const { home } = await fixture();
+    const pluginRoot = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "entry-budget-plugin"
+    );
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-plugin-entry-budget-")
+    );
+    await mkdir(pluginRoot, { recursive: true });
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+    );
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          for (let index = 0; index < 300; index += 1) {
+            await Bun.write(
+              join(pluginRoot, `late-${index.toString().padStart(4, "0")}`),
+              ""
+            );
+          }
+        },
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow("entry limit");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
   it("rejects late drift anywhere in a discovered Claude plugin tree", async () => {
     const { home } = await fixture();
     const pluginRoot = join(
@@ -573,7 +616,7 @@ describe("read-only audit boundary", () => {
         mode: "static",
         reportRoot,
       })
-    ).rejects.toThrow("evaluated context changed");
+    ).rejects.toThrow("captured tree changed");
     expect(await readdir(reportRoot)).toEqual([]);
   });
 

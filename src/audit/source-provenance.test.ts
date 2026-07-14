@@ -36,6 +36,19 @@ async function captureStrictTree(
   return tracker.snapshot();
 }
 
+async function writeEmptyFiles(
+  root: string,
+  count: number,
+  prefix = "entry"
+): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await writeFile(
+      join(root, `${prefix}-${index.toString().padStart(4, "0")}`),
+      ""
+    );
+  }
+}
+
 test("Windows provenance binds directories without POSIX directory descriptors", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-provenance-win32-"));
   await mkdir(join(root, "skills"));
@@ -121,7 +134,7 @@ test("strict tree capture binds bytes and modes for every unselected file", asyn
   );
   await writeFile(unselected, "after!\n");
   await expect(validateAuditSourceSnapshot(byteSnapshot)).rejects.toThrow(
-    "evaluated context changed"
+    "captured tree changed"
   );
 
   await writeFile(unselected, "stable\n");
@@ -133,7 +146,7 @@ test("strict tree capture binds bytes and modes for every unselected file", asyn
   expect(typeof originalMode).toBe("number");
   await chmod(unselected, originalMode! % 0o1000 === 0o600 ? 0o644 : 0o600);
   await expect(validateAuditSourceSnapshot(modeSnapshot)).rejects.toThrow(
-    "evaluated context changed"
+    "captured tree changed"
   );
 });
 
@@ -147,7 +160,7 @@ test("strict tree capture rejects file type replacement", async () => {
   await mkdir(pathValue);
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
-    "evaluated context changed"
+    "captured tree changed"
   );
 });
 
@@ -164,6 +177,12 @@ test("strict tree capture rejects additions, removals, renames, and directory mo
     const original = join(root, "original.txt");
     await writeFile(original, "stable\n");
     const snapshot = await captureStrictTree(root);
+    await expect(
+      validateAuditSourceSnapshot(snapshot)
+    ).resolves.toBeUndefined();
+    await expect(
+      validateAuditSourceSnapshot(snapshot)
+    ).resolves.toBeUndefined();
 
     if (mutation === "add") {
       await writeFile(join(root, "added.txt"), "late\n");
@@ -177,6 +196,82 @@ test("strict tree capture rejects additions, removals, renames, and directory mo
 
     await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow();
   }
+});
+
+test("strict tree validation reuses the exact aggregate entry budget", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-revalidate-")
+  );
+  const snapshot = await captureStrictTree(root);
+
+  expect(snapshot.capturedTrees).toHaveLength(1);
+  expect(snapshot.capturedTrees[0]?.maxEntries).toBe(256);
+  expect(snapshot.evaluatedDirectories[0]?.maxEntries).toBe(255);
+  await writeEmptyFiles(root, 300);
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
+  const directTracker = new AuditSourceTracker();
+  await expect(
+    directTracker.readDirectory(root, { maxEntries: 256 })
+  ).rejects.toThrow("entry limit");
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
+});
+
+test("strict tree validation enforces nested aggregate entries across directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-nested-"));
+  await mkdir(join(root, "a"));
+  await mkdir(join(root, "b"));
+  const snapshot = await captureStrictTree(root, { maxEntries: 6 });
+
+  await writeEmptyFiles(join(root, "a"), 2, "a");
+  await writeEmptyFiles(join(root, "b"), 2, "b");
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
+});
+
+test("strict tree validation enforces aggregate entries across many directories", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-many-dirs-"));
+  for (let index = 0; index < 20; index += 1) {
+    await mkdir(join(root, `dir-${index.toString().padStart(2, "0")}`));
+  }
+  const snapshot = await captureStrictTree(root, { maxEntries: 32 });
+  for (let index = 0; index < 20; index += 1) {
+    await writeFile(
+      join(root, `dir-${index.toString().padStart(2, "0")}`, "late"),
+      ""
+    );
+  }
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
+});
+
+test("strict tree snapshot rejects missing or expanded validation contracts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-schema-"));
+  const snapshot = await captureStrictTree(root);
+  const missingContract = { ...snapshot } as Record<string, unknown>;
+  missingContract.capturedTrees = undefined;
+  await expect(
+    validateAuditSourceSnapshot(missingContract as never)
+  ).rejects.toThrow("schema is unsupported");
+  await expect(
+    validateAuditSourceSnapshot({
+      ...snapshot,
+      capturedTrees: [
+        {
+          ...snapshot.capturedTrees[0]!,
+          maxEntries: 50_000,
+        },
+      ],
+    })
+  ).rejects.toThrow("schema is unsupported");
 });
 
 test("strict tree capture rejects sparse and growing files", async () => {
