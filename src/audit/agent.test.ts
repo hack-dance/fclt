@@ -16,7 +16,6 @@ import { dirname, join } from "node:path";
 import { evaluateAgentAudit, runAgentAudit } from "./agent";
 import { persistAuditReport } from "./report-persistence";
 
-const JSON_SUFFIX_RE = /\.json$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const SOURCE_DRIFT_RE =
   /source discovery changed during evaluation|directory changed between reads/;
@@ -223,13 +222,13 @@ test("agent audit binds deterministic supporting-file bytes and rejects long-cal
     mode: "agent",
     reportRoot,
   });
-  const receipt = (await Bun.file(
-    reportPath.replace(JSON_SUFFIX_RE, ".receipt.json")
-  ).json()) as {
-    sourceSnapshot: { evaluatedFiles: { path: string; sha256: string }[] };
+  const envelope = (await Bun.file(reportPath).json()) as {
+    receipt: {
+      sourceSnapshot: { evaluatedFiles: { path: string; sha256: string }[] };
+    };
   };
   expect(
-    receipt.sourceSnapshot.evaluatedFiles.find(
+    envelope.receipt.sourceSnapshot.evaluatedFiles.find(
       (entry) => entry.path === supportA || entry.path === canonicalSupportA
     )?.sha256
   ).toMatch(SHA256_RE);
@@ -736,12 +735,8 @@ for (const tool of ["claude", "codex"] as const) {
           mode: "agent",
           reportRoot,
         });
-        const persistedReport = await Bun.file(reportPath).json();
-        const persistedReceipt = await Bun.file(
-          reportPath.replace(JSON_SUFFIX_RE, ".receipt.json")
-        ).json();
-        assertNoSelectedAuth(persistedReport);
-        assertNoSelectedAuth(persistedReceipt);
+        const persistedEnvelope = await Bun.file(reportPath).json();
+        assertNoSelectedAuth(persistedEnvelope);
       } finally {
         process.env.PATH = previousPath;
         process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;

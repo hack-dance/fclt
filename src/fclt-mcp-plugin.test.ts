@@ -1187,16 +1187,20 @@ describe("bundled fclt MCP plugin", () => {
     await mkdir(join(home, ".ai"), { recursive: true });
 
     const pluginRoot = facultBuiltinCodexPluginRoot();
-    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
-      cwd: pluginRoot,
-      env: {
-        ...process.env,
-        FCLT_BIN: stub,
-        HOME: home,
-        PWD: workspace,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FCLT_BIN: stub,
+          HOME: home,
+          PWD: workspace,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
 
     try {
       child.stdin.write(
@@ -1235,16 +1239,20 @@ describe("bundled fclt MCP plugin", () => {
     await mkdir(join(home, ".ai"), { recursive: true });
 
     const pluginRoot = facultBuiltinCodexPluginRoot();
-    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
-      cwd: pluginRoot,
-      env: {
-        ...process.env,
-        FCLT_BIN: stub,
-        HOME: home,
-        PWD: workspace,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FCLT_BIN: stub,
+          HOME: home,
+          PWD: workspace,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
 
     try {
       child.stdin.write(
@@ -1282,17 +1290,21 @@ describe("bundled fclt MCP plugin", () => {
     await chmod(stub, 0o755);
 
     const pluginRoot = facultBuiltinCodexPluginRoot();
-    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
-      cwd: pluginRoot,
-      env: {
-        ...process.env,
-        FCLT_BIN: stub,
-        HOME: home,
-        FCLT_MCP_WORKSPACE_CWD: join(home, "deleted-workspace"),
-        PWD: workspace,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FCLT_BIN: stub,
+          HOME: home,
+          FCLT_MCP_WORKSPACE_CWD: join(home, "deleted-workspace"),
+          PWD: workspace,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
 
     try {
       child.stdin.write(
@@ -1324,15 +1336,19 @@ describe("bundled fclt MCP plugin", () => {
 
   it("rejects project-scoped calls without a usable workspace cwd", async () => {
     const pluginRoot = facultBuiltinCodexPluginRoot();
-    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
-      cwd: pluginRoot,
-      env: {
-        ...process.env,
-        FCLT_BIN: "fclt",
-        PWD: pluginRoot,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FCLT_BIN: "fclt",
+          PWD: pluginRoot,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
 
     try {
       child.stdin.write(
@@ -1359,16 +1375,20 @@ describe("bundled fclt MCP plugin", () => {
   it("rejects home as an inferred project workspace cwd", async () => {
     const home = await mkdtemp(join(tmpdir(), "facult-mcp-home-"));
     const pluginRoot = facultBuiltinCodexPluginRoot();
-    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
-      cwd: pluginRoot,
-      env: {
-        ...process.env,
-        FCLT_BIN: "fclt",
-        HOME: home,
-        PWD: home,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FCLT_BIN: "fclt",
+          HOME: home,
+          PWD: home,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
 
     try {
       child.stdin.write(
@@ -1399,16 +1419,20 @@ describe("bundled fclt MCP plugin", () => {
     await chmod(stub, 0o755);
 
     const pluginRoot = facultBuiltinCodexPluginRoot();
-    const child = spawn("node", [join(pluginRoot, "scripts", "fclt-mcp.cjs")], {
-      cwd: pluginRoot,
-      env: {
-        ...process.env,
-        FCLT_BIN: stub,
-        HOME: home,
-        PWD: pluginRoot,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FCLT_BIN: stub,
+          HOME: home,
+          PWD: pluginRoot,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
 
     try {
       child.stdin.write(

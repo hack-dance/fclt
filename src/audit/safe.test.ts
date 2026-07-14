@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAuditReport } from "./agent";
@@ -145,12 +145,13 @@ describe("audit safe", () => {
 
     const missingReceiptPath = join(reportRoot, "static-missing.json");
     await Bun.write(missingReceiptPath, `${JSON.stringify(report)}\n`);
+    await chmod(missingReceiptPath, 0o600);
     await expect(
       runAuditSafe({
         argv: ["--all", "--report", missingReceiptPath, "--yes"],
         homeDir: tempHome,
       })
-    ).rejects.toThrow("receipt is missing");
+    ).rejects.toThrow("schema or revision is unsupported");
   });
 
   it("records a suppression from the latest static audit report", async () => {

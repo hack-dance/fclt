@@ -768,7 +768,7 @@ Usage:
 
 Notes:
   - Currently fixes inline MCP secrets by moving them into a local canonical overlay.
-  - Requires a fresh, content-hashed report and matching receipt created by --report-root.
+  - Requires a fresh, content-hashed report-and-receipt envelope created by --report-root.
   - Legacy static-latest.json and agent-latest.json files never authorize mutation.
   - Tracked canonical MCP config is scrubbed and managed tool MCP configs are re-synced.
   - Managed tool copies continue to work, but the canonical secret now lives in *.local.json.

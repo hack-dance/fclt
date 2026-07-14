@@ -4,7 +4,9 @@ import {
   link,
   mkdir,
   mkdtemp,
+  realpath,
   rename,
+  rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -131,7 +133,7 @@ test("cross-family hardlink aliases reject while exact canonical references are 
   await expect(validateAuditSourceSnapshot(snapshot)).resolves.toBeUndefined();
 });
 
-test("absence proofs canonicalize an ancestor alias without duplicate records", async () => {
+test("absence proofs bind each lexical ancestor alias independently", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-provenance-absence-alias-"));
   const targetDirectory = join(root, "target");
   const aliasDirectory = join(root, "alias");
@@ -141,7 +143,10 @@ test("absence proofs canonicalize an ancestor alias without duplicate records", 
 
   await tracker.capture(join(targetDirectory, "missing.json"));
   await tracker.capture(join(aliasDirectory, "missing.json"));
-  expect(tracker.snapshot().absentPaths).toHaveLength(1);
+  expect(tracker.snapshot().absentPaths).toHaveLength(2);
+  await expect(
+    validateAuditSourceSnapshot(tracker.snapshot())
+  ).resolves.toBeUndefined();
 
   const distinct = new AuditSourceTracker();
   await distinct.capture(join(targetDirectory, "missing-a.json"));
@@ -184,6 +189,119 @@ test("derived context validation rejects a same-content path replacement", async
   await writeFile(target, "{}\n");
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
-    "derived context changed"
+    "requested path changed"
   );
+});
+
+test("one requested lexical path cannot retarget across evaluated and protected families", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-request-retarget-")
+  );
+  const firstDirectory = join(root, "a");
+  const secondDirectory = join(root, "b");
+  const aliasDirectory = join(root, "selected");
+  const first = join(firstDirectory, "config.json");
+  const second = join(secondDirectory, "config.json");
+  const requested = join(aliasDirectory, "config.json");
+  await mkdir(firstDirectory);
+  await mkdir(secondDirectory);
+  await writeFile(first, "same-content\n");
+  await writeFile(second, "same-content\n");
+  await symlink(firstDirectory, aliasDirectory, "dir");
+  const tracker = new AuditSourceTracker();
+
+  await tracker.read(requested);
+  expect(tracker.snapshot().evaluatedFiles[0]?.path).toBe(
+    await realpath(first)
+  );
+  await rm(aliasDirectory);
+  await symlink(secondDirectory, aliasDirectory, "dir");
+
+  await expect(tracker.protect([requested])).rejects.toThrow();
+  expect(tracker.snapshot().protectedRoots).toHaveLength(0);
+});
+
+test("recomputed contract cannot combine one lexical request bound to two physical targets", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-request-contract-retarget-")
+  );
+  const firstDirectory = join(root, "a");
+  const secondDirectory = join(root, "b");
+  const aliasDirectory = join(root, "selected");
+  const first = join(firstDirectory, "config.json");
+  const second = join(secondDirectory, "config.json");
+  const requested = join(aliasDirectory, "config.json");
+  await mkdir(firstDirectory);
+  await mkdir(secondDirectory);
+  await writeFile(first, "same-content\n");
+  await writeFile(second, "same-content\n");
+  await symlink(firstDirectory, aliasDirectory, "dir");
+
+  const evaluatedTracker = new AuditSourceTracker();
+  await evaluatedTracker.read(requested);
+  const evaluatedSnapshot = evaluatedTracker.snapshot();
+  await rm(aliasDirectory);
+  await symlink(secondDirectory, aliasDirectory, "dir");
+  const protectedTracker = new AuditSourceTracker();
+  await protectedTracker.protect([requested]);
+  const protectedSnapshot = protectedTracker.snapshot();
+
+  evaluatedSnapshot.protectedRoots = protectedSnapshot.protectedRoots;
+  evaluatedSnapshot.requestedPaths.push(...protectedSnapshot.requestedPaths);
+  evaluatedSnapshot.requestedPaths.sort((left, right) =>
+    left.requestedPath.localeCompare(right.requestedPath)
+  );
+  recomputeValidationContract(evaluatedSnapshot);
+  expect(() => assertAuditSourceSnapshot(evaluatedSnapshot)).toThrow(
+    "schema is unsupported"
+  );
+  await expect(validateAuditSourceSnapshot(evaluatedSnapshot)).rejects.toThrow(
+    "schema is unsupported"
+  );
+});
+
+test("recomputed contract rejects an unreferenced requested-path binding", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-unreferenced-"));
+  const firstPath = join(root, "first.txt");
+  const secondPath = join(root, "second.txt");
+  await writeFile(firstPath, "first\n");
+  await writeFile(secondPath, "second\n");
+
+  const firstTracker = new AuditSourceTracker();
+  await firstTracker.read(firstPath);
+  const snapshot = firstTracker.snapshot();
+  const secondTracker = new AuditSourceTracker();
+  await secondTracker.read(secondPath);
+  snapshot.requestedPaths.push(secondTracker.snapshot().requestedPaths[0]!);
+  snapshot.requestedPaths.sort((left, right) =>
+    left.requestedPath.localeCompare(right.requestedPath)
+  );
+  recomputeValidationContract(snapshot);
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "schema is unsupported"
+  );
+});
+
+test("absence proof validation binds the original lexical request across ancestor retargets", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-absence-retarget-")
+  );
+  const absentDirectory = join(root, "a");
+  const existingDirectory = join(root, "b");
+  const aliasDirectory = join(root, "selected");
+  const requested = join(aliasDirectory, "config.json");
+  await mkdir(absentDirectory);
+  await mkdir(existingDirectory);
+  await writeFile(join(existingDirectory, "config.json"), "exists\n");
+  await symlink(absentDirectory, aliasDirectory, "dir");
+  const tracker = new AuditSourceTracker();
+  await tracker.capture(requested);
+  const snapshot = tracker.snapshot();
+  expect(snapshot.absentPaths).toHaveLength(1);
+
+  await rm(aliasDirectory);
+  await symlink(existingDirectory, aliasDirectory, "dir");
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow();
 });

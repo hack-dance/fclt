@@ -60,11 +60,18 @@ mkdir -p /absolute/isolated/audit-reports
 fclt audit --non-interactive --report-root /absolute/isolated/audit-reports --json
 ```
 
-The report is committed as content-addressed `static-<sha256>.json` or
-`agent-<sha256>.json` plus a matching `.receipt.json`. Descriptor-relative,
-exclusive creation retains the validated output-directory inode across the
-commit. The receipt contains the evaluation-time identities and hashes of the
-exact files and derived context used by the report. fclt revalidates that
+The report is committed as one content-addressed `static-<sha256>.json` or
+`agent-<sha256>.json` authorization envelope. The envelope contains the report
+payload and its receipt, so there is no separately committed sidecar or partial
+two-file state. Descriptor-relative, exclusive creation retains the validated
+output-directory inode through the single atomic link. Report roots must be
+owned by the current account and cannot be group- or world-writable. fclt
+preflights directory sync support, treats the atomic link as the irrevocable
+commit point, and attempts to sync the directory entry before returning. A
+post-link sync error is treated as an already committed outcome and cannot
+trigger unsafe pathname rollback. The receipt contains the
+evaluation-time identities and hashes of the exact files and derived context
+used by the report. fclt revalidates that
 snapshot after evaluation and again before committing, so a source change
 during a long agent call cannot be certified as the bytes that were reviewed.
 Discovery also records every probed candidate and traversed directory. Missing
@@ -77,10 +84,18 @@ non-symlink directory strictly inside Claude's plugin cache. Its entire tree is
 captured with stable no-follow reads, exact file bytes and modes, directory
 contents and identities, and conservative entry, depth, path, per-file, and
 aggregate-byte bounds. The provenance receipt stores each strict tree's exact
-limits and canonical membership. Snapshot schema v6 rejects extra, missing,
+limits and canonical membership. Snapshot schema v7 rejects extra, missing,
 duplicate, reordered, aliased, overlapping, or conflicting records and binds a
-canonical validation-contract digest; report revision 7 makes older receipts
-fail closed. Each directory's replay budget is derived from that one tree
+canonical validation-contract digest. It also binds every lexical requested
+path to the same physical identity from first observation through final
+validation, including absence proofs across ancestor retargets. Requested-path
+membership is exact: an extra, stale, missing, or conflicting binding is
+rejected even if a contract digest is recomputed. Report revision 9 and receipt
+schema v4 make detached or older authorization fail closed. Final-name
+collisions are opened without following links and accepted only when the
+private, singly linked regular file has exactly the canonical envelope bytes;
+symlinks, hardlinks, special files, permission ambiguity, and conflicting
+content fail closed. Each directory's replay budget is derived from that one tree
 contract, and the complete current-directory manifest is reserved against the
 single aggregate entry budget before any child is opened or traversed. A missing,
 inaccessible, linked, escaped, replaced, or
@@ -93,6 +108,10 @@ equals, contains, or is contained by an evaluated root, skill/plugin tree,
 MCP config, hook, or asset path. Generated
 `index.json` annotations are also withheld unless `--update-index` is supplied
 as a separate explicit mutation.
+
+Verified-envelope loading is descriptor-bound and bounded before allocation.
+Oversize, sparse, growing, multiply linked, non-private, or identity-changing
+envelopes fail closed before they can authorize `audit fix` or `audit safe`.
 
 Persistence currently requires native descriptor-relative `openat`/`linkat`
 support (macOS or Linux). Other platforms fail closed rather than falling back

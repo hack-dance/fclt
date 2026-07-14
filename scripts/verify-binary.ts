@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { auditPersistenceContract } from "./verify-binary-audit-contract";
 
-const JSON_SUFFIX_RE = /\.json$/;
-
 const repoRoot = resolve(import.meta.dir, "..");
 const defaultBinary =
   process.platform === "win32" ? "dist/fclt.exe" : "dist/fclt";
@@ -144,21 +142,26 @@ if (auditPersistenceContract(process.platform) === "fail-closed") {
 } else {
   const persistedAuditText = await run(persistenceArgs);
   const reportNames = (await readdir(auditReportRoot)).sort();
-  const reportName = reportNames.find(
-    (name) => name.startsWith("static-") && !name.endsWith(".receipt.json")
-  );
+  const reportName = reportNames.find((name) => name.startsWith("static-"));
+  const envelope = reportName
+    ? ((await Bun.file(join(auditReportRoot, reportName)).json()) as {
+        receipt?: { reportRevision?: number; schemaVersion?: number };
+        report?: unknown;
+        schemaVersion?: number;
+      })
+    : null;
   if (
     !reportName ||
-    reportNames.length !== 2 ||
-    !reportNames.includes(
-      reportName.replace(JSON_SUFFIX_RE, ".receipt.json")
-    ) ||
-    (await Bun.file(join(auditReportRoot, reportName)).text()) !==
-      `${JSON.stringify(JSON.parse(persistedAuditText), null, 2)}\n` ||
+    reportNames.length !== 1 ||
+    envelope?.schemaVersion !== 1 ||
+    envelope.receipt?.schemaVersion !== 4 ||
+    envelope.receipt.reportRevision !== 9 ||
+    JSON.stringify(envelope.report) !==
+      JSON.stringify(JSON.parse(persistedAuditText)) ||
     (await Bun.file(auditSkill).text()) !== auditSourceBefore
   ) {
     throw new Error(
-      "Compiled explicit audit persistence did not produce an isolated report and receipt"
+      "Compiled explicit audit persistence did not produce one isolated authorization envelope"
     );
   }
 }

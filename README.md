@@ -496,10 +496,12 @@ an existing absolute directory outside every audited root. Use
 `--update-index` only when an explicit canonical generated-state mutation is
 intended.
 
-Persisted reports are content-addressed and accompanied by a receipt binding
-the report bytes, evaluated source revisions, and finding identities. `audit
-fix` and `audit safe` require the exact fresh report path and `--yes`; legacy
-`*-latest.json` files cannot authorize mutation.
+Persisted reports are content-addressed authorization envelopes containing the
+report payload and a receipt that binds its bytes, evaluated source revisions,
+and finding identities in one atomic file. `audit fix` and `audit safe` require
+the exact fresh envelope path and `--yes`; legacy `*-latest.json` files and
+pre-revision-9 detached report/receipt pairs cannot authorize mutation. Rerun
+`fclt audit --report-root ...` to migrate an older explicit report.
 
 Keep tracked MCP config secret-free. Use local overlays such as `mcp/servers.local.json` for machine-specific secrets.
 

@@ -18,8 +18,8 @@ Usage:
 
 Safety:
   - Audit evaluation is read-only by default and writes no report or index state.
-  - --report-root writes content-addressed <mode>-<sha256>.json plus a receipt outside every audited source.
-  - fix/safe require that exact fresh report and receipt; legacy *-latest.json never authorizes mutation.
+  - --report-root writes one content-addressed <mode>-<sha256>.json report-and-receipt envelope outside every audited source.
+  - fix/safe require that exact fresh envelope; legacy *-latest.json and detached older pairs never authorize mutation.
   - --update-index is a separate explicit mutation of canonical generated state.
   - Report roots that overlap, traverse, alias, or symlink are rejected.
 

@@ -513,7 +513,7 @@ Usage:
   fclt audit safe --dry-run ...
 
 Notes:
-  - Requires a fresh, content-hashed report and matching receipt created by --report-root.
+  - Requires a fresh, content-hashed report-and-receipt envelope created by --report-root.
   - Legacy static-latest.json and agent-latest.json files never authorize mutation.
   - Matching is non-interactive and agent-safe.
   - Combined review suppressions also match future raw static/agent findings.

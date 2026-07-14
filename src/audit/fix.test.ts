@@ -68,6 +68,13 @@ describe("audit fix", () => {
 
     await manageTool("codex", { homeDir: tempHome, rootDir });
 
+    const legacyPath = join(
+      facultStateDir(tempHome),
+      "audit",
+      "static-latest.json"
+    );
+    await writeJson(legacyPath, { legacy: true });
+
     const evaluation = await evaluateStaticAudit({
       argv: [],
       homeDir: tempHome,
@@ -86,12 +93,6 @@ describe("audit fix", () => {
         (finding) => finding.ruleId === "mcp-env-inline-secret"
       )
     ).toBe(true);
-    const legacyPath = join(
-      facultStateDir(tempHome),
-      "audit",
-      "static-latest.json"
-    );
-    await writeJson(legacyPath, { legacy: true });
     tempReportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-fix-report-"));
     const reportPath = await persistAuditReport({
       ...evaluation,

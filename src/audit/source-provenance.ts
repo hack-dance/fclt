@@ -34,13 +34,14 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 6;
+  schemaVersion: 7;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
   capturedTrees: AuditCapturedTreeIdentity[];
   derivedContexts: AuditDerivedContextIdentity[];
   absentPaths: AuditAbsentPathIdentity[];
+  requestedPaths: AuditRequestedPathIdentity[];
   validationContractSha256: string;
 }
 
@@ -62,6 +63,15 @@ export interface AuditAbsentPathIdentity {
   ancestorPath: string;
   path: string;
   relativeSegments: string[];
+  requestedPath: string;
+}
+
+export interface AuditRequestedPathIdentity {
+  canonicalPath: string;
+  dev: number;
+  ino: number;
+  kind: "directory" | "file";
+  requestedPath: string;
 }
 
 export interface AuditDerivedContextIdentity {
@@ -179,6 +189,14 @@ const ABSENT_PATH_KEYS = [
   "ancestorPath",
   "path",
   "relativeSegments",
+  "requestedPath",
+] as const;
+const REQUESTED_PATH_KEYS = [
+  "canonicalPath",
+  "dev",
+  "ino",
+  "kind",
+  "requestedPath",
 ] as const;
 const DERIVED_CONTEXT_KEYS = [
   "ctimeMs",
@@ -220,6 +238,7 @@ const SNAPSHOT_KEYS = [
   "evaluatedDirectories",
   "evaluatedFiles",
   "protectedRoots",
+  "requestedPaths",
   "schemaVersion",
   "validationContractSha256",
 ] as const;
@@ -239,7 +258,7 @@ function canonicalSnapshotContract(
   snapshot: AuditSourceSnapshotContract
 ): AuditSourceSnapshotContract {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     protectedRoots: snapshot.protectedRoots.map((entry) => ({
       dev: entry.dev,
       ino: entry.ino,
@@ -295,7 +314,25 @@ function canonicalSnapshotContract(
       ancestorPath: entry.ancestorPath,
       path: entry.path,
       relativeSegments: [...entry.relativeSegments],
+      requestedPath: entry.requestedPath,
     })),
+    requestedPaths: snapshot.requestedPaths.map((entry) => ({
+      canonicalPath: entry.canonicalPath,
+      dev: entry.dev,
+      ino: entry.ino,
+      kind: entry.kind,
+      requestedPath: entry.requestedPath,
+    })),
+  };
+}
+
+export function canonicalAuditSourceSnapshot(
+  snapshot: AuditSourceSnapshot
+): AuditSourceSnapshot {
+  assertAuditSourceSnapshot(snapshot);
+  return {
+    ...canonicalSnapshotContract(snapshot),
+    validationContractSha256: snapshot.validationContractSha256,
   };
 }
 
@@ -377,6 +414,7 @@ async function canonicalAbsentPath(
         ancestorPath: canonicalAncestor,
         path: normalize(join(canonicalAncestor, ...relativeSegments)),
         relativeSegments,
+        requestedPath: requested,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -635,7 +673,8 @@ export class AuditSourceTracker {
   readonly #protectedRoots = new Map<string, AuditProtectedRootIdentity>();
   readonly #physicalIdentityToPath = new Map<string, string>();
   readonly #physicalPathToIdentity = new Map<string, string>();
-  readonly #requestedPaths = new Map<string, string>();
+  readonly #canonicalRequests = new Map<string, string>();
+  readonly #requestedPaths = new Map<string, AuditRequestedPathIdentity>();
 
   readonly #platform: NodeJS.Platform;
 
@@ -691,13 +730,26 @@ export class AuditSourceTracker {
     }
     if (args.requestedPath !== undefined) {
       const requested = normalize(resolve(args.requestedPath));
-      const priorRequest = this.#requestedPaths.get(args.path);
-      if (priorRequest !== undefined && priorRequest !== requested) {
+      const binding: AuditRequestedPathIdentity = {
+        canonicalPath: args.path,
+        dev: args.dev,
+        ino: args.ino,
+        kind: args.kind,
+        requestedPath: requested,
+      };
+      const priorBinding = this.#requestedPaths.get(requested);
+      const priorRequest = this.#canonicalRequests.get(args.path);
+      if (
+        (priorBinding !== undefined &&
+          JSON.stringify(priorBinding) !== JSON.stringify(binding)) ||
+        (priorRequest !== undefined && priorRequest !== requested)
+      ) {
         throw new Error(
-          `Audit context has a physical path alias: ${requested}`
+          `Audit requested path changed physical identity: ${requested}`
         );
       }
-      this.#requestedPaths.set(args.path, requested);
+      this.#requestedPaths.set(requested, binding);
+      this.#canonicalRequests.set(args.path, requested);
     }
     this.#physicalIdentityToPath.set(physicalIdentity, args.path);
     this.#physicalPathToIdentity.set(args.path, pathIdentity);
@@ -1206,21 +1258,31 @@ export class AuditSourceTracker {
   }
 
   #recordAbsentProof(
-    _requestedPath: string,
+    requestedPath: string,
     proof: AuditAbsentPathIdentity
   ): void {
+    const requested = normalize(resolve(requestedPath));
+    const priorProof = this.#absentPaths.get(requested);
+    if (
+      priorProof !== undefined &&
+      JSON.stringify(priorProof) !== JSON.stringify(proof)
+    ) {
+      throw new Error(
+        `Audit absent requested path changed physical identity: ${requested}`
+      );
+    }
     this.#registerPhysicalIdentity({
       dev: proof.ancestorDev,
       ino: proof.ancestorIno,
       kind: "directory",
       path: proof.ancestorPath,
     });
-    this.#absentPaths.set(proof.path, proof);
+    this.#absentPaths.set(requested, proof);
   }
 
   snapshot(): AuditSourceSnapshot {
     const contract: AuditSourceSnapshotContract = {
-      schemaVersion: 6,
+      schemaVersion: 7,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         compareStrings(a.path, b.path)
       ),
@@ -1237,7 +1299,10 @@ export class AuditSourceTracker {
         compareStrings(`${a.kind}\0${a.path}`, `${b.kind}\0${b.path}`)
       ),
       absentPaths: [...this.#absentPaths.values()].sort((a, b) =>
-        compareStrings(a.path, b.path)
+        compareStrings(a.requestedPath, b.requestedPath)
+      ),
+      requestedPaths: [...this.#requestedPaths.values()].sort((a, b) =>
+        compareStrings(a.requestedPath, b.requestedPath)
       ),
     };
     const canonicalContract = canonicalSnapshotContract(contract);
@@ -1269,7 +1334,7 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot>;
   const shapeIsValid =
     hasExactKeys(value, SNAPSHOT_KEYS) &&
-    snapshot.schemaVersion === 6 &&
+    snapshot.schemaVersion === 7 &&
     typeof snapshot.validationContractSha256 === "string" &&
     SHA256_RE.test(snapshot.validationContractSha256) &&
     Array.isArray(snapshot.protectedRoots) &&
@@ -1278,12 +1343,14 @@ export function assertAuditSourceSnapshot(
     Array.isArray(snapshot.capturedTrees) &&
     Array.isArray(snapshot.derivedContexts) &&
     Array.isArray(snapshot.absentPaths) &&
+    Array.isArray(snapshot.requestedPaths) &&
     snapshot.protectedRoots.every(isValidProtectedRootIdentity) &&
     snapshot.evaluatedFiles.every(isValidFileIdentity) &&
     snapshot.evaluatedDirectories.every(isValidDirectoryIdentity) &&
     snapshot.capturedTrees.every(isValidCapturedTreeIdentity) &&
     snapshot.derivedContexts.every(isValidDerivedContextIdentity) &&
-    snapshot.absentPaths.every(isValidAbsentPathIdentity);
+    snapshot.absentPaths.every(isValidAbsentPathIdentity) &&
+    snapshot.requestedPaths.every(isValidRequestedPathIdentity);
   if (!shapeIsValid) {
     throw new Error("Audit source snapshot schema is unsupported");
   }
@@ -1302,7 +1369,14 @@ export function assertAuditSourceSnapshot(
         exactSnapshot.derivedContexts,
         (entry) => `${entry.kind}\0${entry.path}`
       ) &&
-      isSortedUniqueBy(exactSnapshot.absentPaths, (entry) => entry.path)
+      isSortedUniqueBy(
+        exactSnapshot.absentPaths,
+        (entry) => entry.requestedPath
+      ) &&
+      isSortedUniqueBy(
+        exactSnapshot.requestedPaths,
+        (entry) => entry.requestedPath
+      )
     )
   ) {
     throw new Error("Audit source snapshot schema is unsupported");
@@ -1316,6 +1390,61 @@ export function assertAuditSourceSnapshot(
     throw new Error("Audit source snapshot schema is unsupported");
   }
   if (!hasCoherentPhysicalIdentities(exactSnapshot)) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+
+  const requestedByCanonicalPath = new Map(
+    exactSnapshot.requestedPaths.map((entry) => [entry.canonicalPath, entry])
+  );
+  if (requestedByCanonicalPath.size !== exactSnapshot.requestedPaths.length) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+  const presentRequestedPaths = new Set(
+    exactSnapshot.requestedPaths.map((entry) => entry.requestedPath)
+  );
+  if (
+    exactSnapshot.absentPaths.some((entry) =>
+      presentRequestedPaths.has(entry.requestedPath)
+    )
+  ) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+  const hasRequestedBinding = (args: {
+    dev: number;
+    ino: number;
+    kind: "directory" | "file";
+    path: string;
+  }): boolean => {
+    const binding = requestedByCanonicalPath.get(args.path);
+    return Boolean(
+      binding &&
+        binding.dev === args.dev &&
+        binding.ino === args.ino &&
+        binding.kind === args.kind
+    );
+  };
+  const referencedCanonicalPaths = new Set([
+    ...exactSnapshot.protectedRoots.map((entry) => entry.path),
+    ...exactSnapshot.evaluatedFiles.map((entry) => entry.path),
+    ...exactSnapshot.evaluatedDirectories.map((entry) => entry.path),
+    ...exactSnapshot.derivedContexts.map((entry) => entry.path),
+  ]);
+  if (
+    requestedByCanonicalPath.size !== referencedCanonicalPaths.size ||
+    [...requestedByCanonicalPath.keys()].some(
+      (path) => !referencedCanonicalPaths.has(path)
+    ) ||
+    exactSnapshot.protectedRoots.some((entry) => !hasRequestedBinding(entry)) ||
+    exactSnapshot.evaluatedFiles.some(
+      (entry) => !hasRequestedBinding({ ...entry, kind: "file" })
+    ) ||
+    exactSnapshot.evaluatedDirectories.some(
+      (entry) => !hasRequestedBinding({ ...entry, kind: "directory" })
+    ) ||
+    exactSnapshot.derivedContexts.some(
+      (entry) => !hasRequestedBinding({ ...entry, kind: entry.pathKind })
+    )
+  ) {
     throw new Error("Audit source snapshot schema is unsupported");
   }
 
@@ -1636,7 +1765,8 @@ function isValidAbsentPathIdentity(
         entry.ancestorDev ?? Number.NaN,
         entry.ancestorIno ?? Number.NaN
       ) &&
-      Array.isArray(entry.relativeSegments)
+      Array.isArray(entry.relativeSegments) &&
+      isCanonicalAbsolutePath(entry.requestedPath)
     ) ||
     entry.relativeSegments.length === 0
   ) {
@@ -1658,6 +1788,25 @@ function isValidAbsentPathIdentity(
   return (
     normalize(join(entry.ancestorPath, ...entry.relativeSegments)) ===
       entry.path && isContainedPath(entry.ancestorPath, entry.path)
+  );
+}
+
+function isValidRequestedPathIdentity(
+  value: unknown
+): value is AuditRequestedPathIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
+  }
+  const entry = value as Partial<AuditRequestedPathIdentity>;
+  return (
+    hasExactKeys(value, REQUESTED_PATH_KEYS) &&
+    isCanonicalAbsolutePath(entry.canonicalPath) &&
+    hasUsablePhysicalIdentity(
+      entry.dev ?? Number.NaN,
+      entry.ino ?? Number.NaN
+    ) &&
+    (entry.kind === "directory" || entry.kind === "file") &&
+    isCanonicalAbsolutePath(entry.requestedPath)
   );
 }
 
@@ -1717,6 +1866,18 @@ function hasCoherentPhysicalIdentities(snapshot: AuditSourceSnapshot): boolean {
       return false;
     }
   }
+  for (const binding of snapshot.requestedPaths) {
+    if (
+      !register({
+        dev: binding.dev,
+        ino: binding.ino,
+        kind: binding.kind,
+        path: binding.canonicalPath,
+      })
+    ) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -1726,6 +1887,40 @@ export async function validateAuditSourceSnapshot(
 ): Promise<void> {
   assertAuditSourceSnapshot(snapshot);
   const platform = options?.platform ?? process.platform;
+  const capturedMemberPaths = new Set(
+    snapshot.capturedTrees.flatMap((tree) => [
+      ...tree.directoryPaths,
+      ...tree.filePaths,
+    ])
+  );
+  const validateRequestedBinding = async (
+    expected: AuditRequestedPathIdentity
+  ): Promise<void> => {
+    const actual = await captureStablePhysicalPathIdentity(
+      expected.requestedPath,
+      platform
+    ).catch(() => null);
+    if (
+      !actual ||
+      actual.path !== expected.canonicalPath ||
+      actual.dev !== expected.dev ||
+      actual.ino !== expected.ino ||
+      actual.kind !== expected.kind
+    ) {
+      throw new Error(
+        `Audit requested path changed: ${expected.requestedPath}`
+      );
+    }
+  };
+  const validateRequestedBindings = async (): Promise<void> => {
+    for (const expected of snapshot.requestedPaths) {
+      if (capturedMemberPaths.has(expected.canonicalPath)) {
+        continue;
+      }
+      await validateRequestedBinding(expected);
+    }
+  };
+  await validateRequestedBindings();
   for (const root of snapshot.protectedRoots) {
     const canonical = await realpath(root.path).catch(() => null);
     const pathMetadata = await lstat(root.path).catch(() => null);
@@ -1800,6 +1995,14 @@ export async function validateAuditSourceSnapshot(
       JSON.stringify(actualTree) !== JSON.stringify(expected)
     ) {
       throw new Error(`Audit captured tree changed: ${expected.root}`);
+    }
+    for (const binding of snapshot.requestedPaths) {
+      if (
+        expected.directoryPaths.includes(binding.canonicalPath) ||
+        expected.filePaths.includes(binding.canonicalPath)
+      ) {
+        await validateRequestedBinding(binding);
+      }
     }
     const actualFiles = new Map(
       actualSnapshot.evaluatedFiles.map((identity) => [identity.path, identity])
@@ -1908,6 +2111,17 @@ export async function validateAuditSourceSnapshot(
     }
   }
   for (const proof of snapshot.absentPaths) {
+    const currentProof = await canonicalAbsentPath(proof.requestedPath).catch(
+      () => null
+    );
+    if (
+      !currentProof ||
+      JSON.stringify(currentProof) !== JSON.stringify(proof)
+    ) {
+      throw new Error(
+        `Audit absent requested path changed: ${proof.requestedPath}`
+      );
+    }
     const ancestor = await lstat(proof.ancestorPath).catch(() => null);
     const ancestorCanonical = await realpath(proof.ancestorPath).catch(
       () => null
@@ -1976,5 +2190,14 @@ export async function validateAuditSourceSnapshot(
         `Audit context absent ancestor changed: ${proof.ancestorPath}`
       );
     }
+    const finalProof = await canonicalAbsentPath(proof.requestedPath).catch(
+      () => null
+    );
+    if (!finalProof || JSON.stringify(finalProof) !== JSON.stringify(proof)) {
+      throw new Error(
+        `Audit absent requested path changed: ${proof.requestedPath}`
+      );
+    }
   }
+  await validateRequestedBindings();
 }

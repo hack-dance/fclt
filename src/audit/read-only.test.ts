@@ -14,12 +14,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
-import { auditPathsOverlap, persistAuditReport } from "./report-persistence";
+import {
+  auditPathsOverlap,
+  loadVerifiedAuditReport,
+  persistAuditReport,
+} from "./report-persistence";
 import { auditReportPersistenceSupported } from "./safe-openat";
 import { AuditSourceTracker } from "./source-provenance";
 import { evaluateStaticAudit, runStaticAudit } from "./static";
 
-const JSON_SUFFIX_RE = /\.json$/;
 const SOURCE_APPEARANCE_RE =
   /appeared after evaluation|evaluated directory changed/;
 const INVALID_PLUGIN_KINDS = [
@@ -209,14 +212,13 @@ describe("read-only audit boundary", () => {
     expect(cli.exitCode).toBe(0);
     const report = JSON.parse(cli.stdout);
     const reportPath = await exactReportPath(reportRoot);
-    expect(await readFile(reportPath, "utf8")).toBe(
-      `${JSON.stringify(report, null, 2)}\n`
+    const envelope = JSON.parse(await readFile(reportPath, "utf8"));
+    expect(envelope.report).toEqual(report);
+    expect(envelope.receipt.reportRevision).toBe(9);
+    await expect(loadVerifiedAuditReport({ reportPath })).resolves.toEqual(
+      report
     );
-    expect(
-      await Bun.file(
-        reportPath.replace(JSON_SUFFIX_RE, ".receipt.json")
-      ).exists()
-    ).toBe(true);
+    expect(await readdir(reportRoot)).toHaveLength(1);
     expect(await snapshotTree(home)).toEqual(before);
   });
 
@@ -331,10 +333,12 @@ describe("read-only audit boundary", () => {
       )
     );
 
-    expect(
-      JSON.parse(await readFile(await exactReportPath(reportRoot), "utf8"))
-    ).toEqual(evaluation.report);
-    expect(await readdir(reportRoot)).toHaveLength(2);
+    await expect(
+      loadVerifiedAuditReport({
+        reportPath: await exactReportPath(reportRoot),
+      })
+    ).resolves.toEqual(evaluation.report);
+    expect(await readdir(reportRoot)).toHaveLength(1);
   });
 
   it("rejects static source drift between evaluation and persistence", async () => {
@@ -446,7 +450,7 @@ describe("read-only audit boundary", () => {
         reportRoot,
         sourceSnapshot: tracker.snapshot(),
       })
-    ).rejects.toThrow("became a symlink");
+    ).rejects.toThrow("absent requested path changed");
     expect(await readdir(reportRoot)).toEqual([]);
   });
 
@@ -855,9 +859,9 @@ describe("read-only audit boundary", () => {
         mode: "static",
         reportRoot,
       })
-    ).rejects.toThrow("changed during descriptor-relative commit");
+    ).rejects.toThrow("changed before descriptor-relative commit");
     expect(await readdir(reportRoot)).toEqual([]);
-    expect(await readdir(movedRoot)).toHaveLength(2);
+    expect(await readdir(movedRoot)).toEqual([]);
   });
 
   it("leaves no report artifacts when persistence is interrupted before commit", async () => {

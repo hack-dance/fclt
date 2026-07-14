@@ -1,5 +1,10 @@
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { randomUUID } from "node:crypto";
+import { constants, fstatSync } from "node:fs";
+
+function permissionBits(mode: number): number {
+  return mode % 0o1000;
+}
 
 function platformConfiguration(): {
   createExclusive: number;
@@ -64,6 +69,83 @@ export function writeExclusiveAt(args: {
       returns: FFIType.i64,
     },
   });
+  const verifyExisting = (): void => {
+    const expected = Buffer.from(args.contents);
+    const existingFd = libc.symbols.openat(
+      args.directoryFd,
+      ptr(Buffer.from(`${args.fileName}\0`)),
+      safeExistingOpenFlags(),
+      0
+    );
+    if (existingFd < 0) {
+      throw new Error(
+        `Descriptor-relative report commit failed closed: ${args.fileName}`
+      );
+    }
+    try {
+      let before = fstatSync(existingFd);
+      for (let attempt = 0; before.nlink > 1 && attempt < 50; attempt += 1) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+        before = fstatSync(existingFd);
+      }
+      const expectedOwner = process.getuid?.();
+      if (
+        !before.isFile() ||
+        before.size !== expected.byteLength ||
+        before.nlink !== 1 ||
+        permissionBits(before.mode) !== 0o600 ||
+        (expectedOwner !== undefined && before.uid !== expectedOwner)
+      ) {
+        throw new Error(
+          `Audit report content-address collision: ${args.fileName}`
+        );
+      }
+      let readOffset = 0;
+      while (readOffset < expected.byteLength) {
+        const chunk = Buffer.allocUnsafe(
+          Math.min(64 * 1024, expected.byteLength - readOffset)
+        );
+        const count = Number(
+          libc.symbols.read(existingFd, ptr(chunk), chunk.byteLength)
+        );
+        if (count <= 0) {
+          throw new Error(`Could not verify existing report: ${args.fileName}`);
+        }
+        if (
+          !chunk
+            .subarray(0, count)
+            .equals(expected.subarray(readOffset, readOffset + count))
+        ) {
+          throw new Error(
+            `Audit report content-address collision: ${args.fileName}`
+          );
+        }
+        readOffset += count;
+      }
+      const trailing = Buffer.allocUnsafe(1);
+      if (Number(libc.symbols.read(existingFd, ptr(trailing), 1)) !== 0) {
+        throw new Error(
+          `Audit report content-address collision: ${args.fileName}`
+        );
+      }
+      const after = fstatSync(existingFd);
+      if (
+        !after.isFile() ||
+        after.dev !== before.dev ||
+        after.ino !== before.ino ||
+        after.size !== before.size ||
+        after.nlink !== 1 ||
+        permissionBits(after.mode) !== 0o600 ||
+        (expectedOwner !== undefined && after.uid !== expectedOwner)
+      ) {
+        throw new Error(
+          `Descriptor-relative report identity changed: ${args.fileName}`
+        );
+      }
+    } finally {
+      libc.symbols.close(existingFd);
+    }
+  };
   const finalName = Buffer.from(`${args.fileName}\0`);
   const temporaryName = Buffer.from(`.${args.fileName}.${randomUUID()}.tmp\0`);
   let fd = libc.symbols.openat(
@@ -92,6 +174,18 @@ export function writeExclusiveAt(args: {
     if (libc.symbols.fsync(fd) !== 0) {
       throw new Error(`Could not sync audit report: ${args.fileName}`);
     }
+    const temporaryMetadata = fstatSync(fd);
+    const expectedOwner = process.getuid?.();
+    if (
+      !temporaryMetadata.isFile() ||
+      temporaryMetadata.nlink !== 1 ||
+      permissionBits(temporaryMetadata.mode) !== 0o600 ||
+      (expectedOwner !== undefined && temporaryMetadata.uid !== expectedOwner)
+    ) {
+      throw new Error(
+        `Descriptor-relative temporary report is not regular: ${args.fileName}`
+      );
+    }
     libc.symbols.close(fd);
     fd = -1;
 
@@ -105,30 +199,7 @@ export function writeExclusiveAt(args: {
     if (linked === 0) {
       return;
     }
-
-    fd = libc.symbols.openat(args.directoryFd, ptr(finalName), 0, 0);
-    if (fd < 0) {
-      throw new Error(
-        `Descriptor-relative report commit failed closed: ${args.fileName}`
-      );
-    }
-    const chunks: Buffer[] = [];
-    while (true) {
-      const chunk = Buffer.allocUnsafe(64 * 1024);
-      const count = Number(libc.symbols.read(fd, ptr(chunk), chunk.length));
-      if (count < 0) {
-        throw new Error(`Could not verify existing report: ${args.fileName}`);
-      }
-      if (count === 0) {
-        break;
-      }
-      chunks.push(chunk.subarray(0, count));
-    }
-    if (Buffer.concat(chunks).toString("utf8") !== args.contents) {
-      throw new Error(
-        `Audit report content-address collision: ${args.fileName}`
-      );
-    }
+    verifyExisting();
   } finally {
     if (fd >= 0) {
       libc.symbols.close(fd);
@@ -136,4 +207,13 @@ export function writeExclusiveAt(args: {
     libc.symbols.unlinkat(args.directoryFd, ptr(temporaryName), 0);
     libc.close();
   }
+}
+
+function safeExistingOpenFlags(): number {
+  if (!(constants.O_NOFOLLOW && constants.O_NONBLOCK !== undefined)) {
+    throw new Error(
+      "Descriptor-relative no-follow report verification is unsupported"
+    );
+  }
+  return constants.O_RDONLY + constants.O_NOFOLLOW + constants.O_NONBLOCK;
 }

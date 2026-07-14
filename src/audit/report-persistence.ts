@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, open, realpath, stat } from "node:fs/promises";
+import { access, lstat, open, realpath } from "node:fs/promises";
 import {
+  basename,
   dirname,
   isAbsolute,
   join,
@@ -19,6 +20,7 @@ import {
 import {
   type AuditSourceSnapshot,
   assertAuditSourceSnapshot,
+  canonicalAuditSourceSnapshot,
   validateAuditSourceSnapshot,
 } from "./source-provenance";
 import type { AuditFinding, AuditItemResult } from "./types";
@@ -32,12 +34,44 @@ export interface AuditEvaluation<TReport> {
 }
 
 export const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
-export const AUDIT_REPORT_REVISION = 7;
+export const AUDIT_REPORT_REVISION = 9;
 export const AUDIT_REPORT_MAX_AGE_MS = 15 * 60 * 1000;
+export const AUDIT_REPORT_MAX_ENVELOPE_BYTES = 16 * 1024 * 1024;
 
 const PATH_SEGMENT_SPLIT_RE = /[\\/]+/;
-const JSON_SUFFIX_RE = /\.json$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
+const RECEIPT_KEYS = [
+  "schemaVersion",
+  "capability",
+  "reportRevision",
+  "mode",
+  "persistedAt",
+  "reportTimestamp",
+  "reportSha256",
+  "sourceIdentitySha256",
+  "sourceSnapshot",
+  "findingIdentities",
+] as const;
+
+function permissionBits(mode: number): number {
+  return mode % 0o1000;
+}
+
+export function auditReportRootPermissionsAreSafe(
+  metadata: { mode: number; uid: number },
+  expectedOwner: number | undefined = process.getuid?.()
+): boolean {
+  const permissions = permissionBits(metadata.mode);
+  const groupPermissions = Math.floor(permissions / 0o10) % 0o10;
+  const otherPermissions = permissions % 0o10;
+  const includesWrite = (value: number) => value % 0o4 >= 0o2;
+  return (
+    expectedOwner !== undefined &&
+    metadata.uid === expectedOwner &&
+    !includesWrite(groupPermissions) &&
+    !includesWrite(otherPermissions)
+  );
+}
 
 interface PathSemantics {
   parse?(path: string): { root: string };
@@ -46,7 +80,7 @@ interface PathSemantics {
 }
 
 export interface AuditReportReceipt {
-  schemaVersion: 2;
+  schemaVersion: 4;
   capability: typeof AUDIT_READ_ONLY_CAPABILITY;
   reportRevision: typeof AUDIT_REPORT_REVISION;
   mode: AuditReportMode;
@@ -56,6 +90,12 @@ export interface AuditReportReceipt {
   sourceIdentitySha256: string;
   sourceSnapshot: AuditSourceSnapshot;
   findingIdentities: string[];
+}
+
+interface PersistedAuditEnvelope {
+  schemaVersion: 1;
+  receipt: AuditReportReceipt;
+  report: unknown;
 }
 
 function sha256(value: string | Uint8Array): string {
@@ -201,12 +241,12 @@ export function parseReportRootFlag(argv: string[]): string | null {
   return null;
 }
 
-function receiptPath(reportPath: string): string {
-  return reportPath.replace(JSON_SUFFIX_RE, ".receipt.json");
-}
-
 function readOnlyNoFollowFlags(): number {
-  return constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0);
+  return (
+    constants.O_RDONLY +
+    (constants.O_NOFOLLOW ?? 0) +
+    (constants.O_NONBLOCK ?? 0)
+  );
 }
 
 export async function persistAuditReport(args: {
@@ -244,6 +284,11 @@ export async function persistAuditReport(args: {
   if (!requestedMetadata.isDirectory()) {
     throw new Error(
       `Audit report root must be an existing directory: ${args.reportRoot}`
+    );
+  }
+  if (!auditReportRootPermissionsAreSafe(requestedMetadata)) {
+    throw new Error(
+      `Audit report root ownership or permissions are ambiguous: ${args.reportRoot}`
     );
   }
   try {
@@ -287,8 +332,8 @@ export async function persistAuditReport(args: {
     );
   }
 
-  const contents = `${JSON.stringify(args.report, null, 2)}\n`;
-  const reportSha256 = sha256(contents);
+  const reportContents = `${JSON.stringify(args.report, null, 2)}\n`;
+  const reportSha256 = sha256(reportContents);
   const reportFileName = `${args.mode}-${reportSha256}.json`;
   const reportPath = join(reportRoot, reportFileName);
   const reportTimestamp =
@@ -297,25 +342,45 @@ export async function persistAuditReport(args: {
     typeof (args.report as { timestamp?: unknown }).timestamp === "string"
       ? (args.report as { timestamp: string }).timestamp
       : "";
-  if (!(reportTimestamp && Number.isFinite(Date.parse(reportTimestamp)))) {
+  const parsedReportTimestamp = Date.parse(reportTimestamp);
+  if (
+    !(
+      reportTimestamp &&
+      Number.isFinite(parsedReportTimestamp) &&
+      new Date(parsedReportTimestamp).toISOString() === reportTimestamp
+    )
+  ) {
     throw new Error(
       "Audit report has no valid timestamp for receipt provenance"
     );
   }
 
+  const canonicalSourceSnapshot = canonicalAuditSourceSnapshot(
+    args.sourceSnapshot
+  );
   const receipt: AuditReportReceipt = {
-    schemaVersion: 2,
+    schemaVersion: 4,
     capability: AUDIT_READ_ONLY_CAPABILITY,
     reportRevision: AUDIT_REPORT_REVISION,
     mode: args.mode,
     persistedAt: reportTimestamp,
     reportTimestamp,
     reportSha256,
-    sourceIdentitySha256: sha256(stableJson(args.sourceSnapshot)),
-    sourceSnapshot: args.sourceSnapshot,
+    sourceIdentitySha256: sha256(stableJson(canonicalSourceSnapshot)),
+    sourceSnapshot: canonicalSourceSnapshot,
     findingIdentities: findingIdentities(args.report),
   };
-  const receiptContents = `${JSON.stringify(receipt, null, 2)}\n`;
+  const envelope: PersistedAuditEnvelope = {
+    schemaVersion: 1,
+    receipt,
+    report: args.report,
+  };
+  const envelopeContents = `${JSON.stringify(envelope, null, 2)}\n`;
+  if (Buffer.byteLength(envelopeContents) > AUDIT_REPORT_MAX_ENVELOPE_BYTES) {
+    throw new Error(
+      `Audit report envelope exceeds ${AUDIT_REPORT_MAX_ENVELOPE_BYTES} bytes`
+    );
+  }
 
   const directoryHandle = await open(requestedRoot, constants.O_RDONLY);
   try {
@@ -323,38 +388,45 @@ export async function persistAuditReport(args: {
     if (
       !openedMetadata.isDirectory() ||
       openedMetadata.dev !== requestedMetadata.dev ||
-      openedMetadata.ino !== requestedMetadata.ino
+      openedMetadata.ino !== requestedMetadata.ino ||
+      openedMetadata.uid !== requestedMetadata.uid ||
+      openedMetadata.mode !== requestedMetadata.mode ||
+      !auditReportRootPermissionsAreSafe(openedMetadata)
     ) {
       throw new Error(
         "Audit report root changed before it could be safely opened"
       );
     }
+    await directoryHandle.sync();
     await validateAuditSourceSnapshot(args.sourceSnapshot);
     await args.beforeDescriptorCommit?.();
     await validateAuditSourceSnapshot(args.sourceSnapshot);
-    await writeExclusiveAt({
-      contents,
-      directoryFd: directoryHandle.fd,
-      fileName: reportFileName,
-    });
-    await writeExclusiveAt({
-      contents: receiptContents,
-      directoryFd: directoryHandle.fd,
-      fileName: receiptPath(reportFileName),
-    });
-    await directoryHandle.sync();
-    const finalMetadata = await stat(requestedRoot).catch(() => null);
+    const finalMetadata = await lstat(requestedRoot).catch(() => null);
     const finalCanonical = await realpath(requestedRoot).catch(() => null);
     if (
       !finalMetadata?.isDirectory() ||
+      finalMetadata.isSymbolicLink() ||
       finalMetadata.dev !== openedMetadata.dev ||
       finalMetadata.ino !== openedMetadata.ino ||
+      finalMetadata.uid !== openedMetadata.uid ||
+      finalMetadata.mode !== openedMetadata.mode ||
+      !auditReportRootPermissionsAreSafe(finalMetadata) ||
       finalCanonical !== reportRoot
     ) {
       throw new Error(
-        "Audit report root changed during descriptor-relative commit"
+        "Audit report root changed before descriptor-relative commit"
       );
     }
+    writeExclusiveAt({
+      contents: envelopeContents,
+      directoryFd: directoryHandle.fd,
+      fileName: reportFileName,
+    });
+    // The atomic link is the irrevocable commit point. A pre-commit directory
+    // sync above proves support; this post-link sync normally makes the entry
+    // durable. It cannot be reported as a failed transaction after commit
+    // because pathname rollback would reintroduce the races this boundary avoids.
+    await directoryHandle.sync().catch(() => undefined);
   } finally {
     await directoryHandle.close().catch(() => undefined);
   }
@@ -365,7 +437,8 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
   const receipt = value as Partial<AuditReportReceipt> | null;
   if (
     !receipt ||
-    receipt.schemaVersion !== 2 ||
+    Object.keys(receipt).join("\0") !== RECEIPT_KEYS.join("\0") ||
+    receipt.schemaVersion !== 4 ||
     receipt.capability !== AUDIT_READ_ONLY_CAPABILITY ||
     receipt.reportRevision !== AUDIT_REPORT_REVISION ||
     (receipt.mode !== "static" && receipt.mode !== "agent") ||
@@ -381,7 +454,59 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
   ) {
     throw new Error("Audit report receipt schema or revision is unsupported");
   }
+  const persistedTime = Date.parse(receipt.persistedAt!);
+  const reportTime = Date.parse(receipt.reportTimestamp!);
+  if (
+    !(Number.isFinite(persistedTime) && Number.isFinite(reportTime)) ||
+    new Date(persistedTime).toISOString() !== receipt.persistedAt ||
+    new Date(reportTime).toISOString() !== receipt.reportTimestamp ||
+    receipt.findingIdentities!.some(
+      (identity, index) =>
+        index > 0 && identity <= receipt.findingIdentities![index - 1]!
+    )
+  ) {
+    throw new Error("Audit report receipt schema or revision is unsupported");
+  }
   assertAuditSourceSnapshot(receipt.sourceSnapshot);
+}
+
+function canonicalReceipt(receipt: AuditReportReceipt): AuditReportReceipt {
+  return {
+    schemaVersion: 4,
+    capability: receipt.capability,
+    reportRevision: receipt.reportRevision,
+    mode: receipt.mode,
+    persistedAt: receipt.persistedAt,
+    reportTimestamp: receipt.reportTimestamp,
+    reportSha256: receipt.reportSha256,
+    sourceIdentitySha256: receipt.sourceIdentitySha256,
+    sourceSnapshot: canonicalAuditSourceSnapshot(receipt.sourceSnapshot),
+    findingIdentities: [...receipt.findingIdentities],
+  };
+}
+
+function assertEnvelope(
+  value: unknown
+): asserts value is PersistedAuditEnvelope {
+  const envelope = value as Partial<PersistedAuditEnvelope> | null;
+  if (
+    !envelope ||
+    Object.keys(envelope).join("\0") !== "schemaVersion\0receipt\0report" ||
+    envelope.schemaVersion !== 1 ||
+    !("report" in envelope)
+  ) {
+    throw new Error("Audit report receipt schema or revision is unsupported");
+  }
+  assertReceipt(envelope.receipt);
+}
+
+function canonicalEnvelopeContents(envelope: PersistedAuditEnvelope): string {
+  const canonical: PersistedAuditEnvelope = {
+    schemaVersion: 1,
+    receipt: canonicalReceipt(envelope.receipt),
+    report: envelope.report,
+  };
+  return `${JSON.stringify(canonical, null, 2)}\n`;
 }
 
 export async function loadVerifiedAuditReport<
@@ -391,6 +516,8 @@ export async function loadVerifiedAuditReport<
     results: AuditItemResult[];
   },
 >(args: {
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeEnvelopeReadChunk?: (bytesRead: number) => Promise<void>;
   expectedMode?: AuditReportMode;
   now?: number;
   reportPath: string;
@@ -401,52 +528,98 @@ export async function loadVerifiedAuditReport<
     );
   }
   const exactPath = normalize(args.reportPath);
-  const exactReceiptPath = receiptPath(exactPath);
   const reportHandle = await open(exactPath, readOnlyNoFollowFlags()).catch(
     () => null
   );
   if (!reportHandle) {
     throw new Error(`Exact audit report is missing or unsafe: ${exactPath}`);
   }
-  const receiptHandle = await open(
-    exactReceiptPath,
-    readOnlyNoFollowFlags()
-  ).catch(() => null);
-  if (!receiptHandle) {
-    await reportHandle.close();
-    throw new Error(
-      `Exact audit report receipt is missing or unsafe: ${exactReceiptPath}`
-    );
-  }
   let contents: string;
-  let receiptContents: string;
   try {
-    const [reportMetadata, receiptMetadata] = await Promise.all([
-      reportHandle.stat(),
-      receiptHandle.stat(),
-    ]);
-    if (!(reportMetadata.isFile() && receiptMetadata.isFile())) {
-      throw new Error("Exact audit report and receipt must be regular files");
+    const metadata = await reportHandle.stat();
+    const expectedOwner = process.getuid?.();
+    const allocatedBlocks = metadata.blocks * 512;
+    if (
+      !metadata.isFile() ||
+      metadata.nlink !== 1 ||
+      permissionBits(metadata.mode) !== 0o600 ||
+      (expectedOwner !== undefined && metadata.uid !== expectedOwner) ||
+      !Number.isSafeInteger(metadata.size) ||
+      metadata.size <= 0 ||
+      metadata.size > AUDIT_REPORT_MAX_ENVELOPE_BYTES ||
+      (metadata.size > 4096 && allocatedBlocks < metadata.size)
+    ) {
+      throw new Error(
+        "Exact audit report envelope must be a private, singly linked regular file"
+      );
     }
-    [contents, receiptContents] = await Promise.all([
-      reportHandle.readFile("utf8"),
-      receiptHandle.readFile("utf8"),
-    ]);
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      await args.beforeEnvelopeReadChunk?.(offset);
+      const { bytesRead } = await reportHandle.read(
+        bytes,
+        offset,
+        Math.min(64 * 1024, bytes.length - offset),
+        offset
+      );
+      if (bytesRead <= 0) {
+        throw new Error("Exact audit report envelope ended while reading");
+      }
+      offset += bytesRead;
+    }
+    const trailing = Buffer.alloc(1);
+    const { bytesRead: trailingBytes } = await reportHandle.read(
+      trailing,
+      0,
+      1,
+      offset
+    );
+    if (trailingBytes !== 0) {
+      throw new Error("Exact audit report envelope grew while reading");
+    }
+    contents = bytes.toString("utf8");
+    const after = await reportHandle.stat();
+    if (
+      !after.isFile() ||
+      after.dev !== metadata.dev ||
+      after.ino !== metadata.ino ||
+      after.size !== metadata.size ||
+      after.ctimeMs !== metadata.ctimeMs ||
+      after.mtimeMs !== metadata.mtimeMs ||
+      after.nlink !== 1 ||
+      permissionBits(after.mode) !== 0o600 ||
+      (expectedOwner !== undefined && after.uid !== expectedOwner)
+    ) {
+      throw new Error("Exact audit report envelope changed while reading");
+    }
   } finally {
-    await Promise.all([reportHandle.close(), receiptHandle.close()]);
+    await reportHandle.close();
   }
-  const receiptValue = JSON.parse(receiptContents) as unknown;
-  assertReceipt(receiptValue);
-  const receipt = receiptValue;
-  if (sha256(contents) !== receipt.reportSha256) {
+  let envelopeValue: unknown;
+  try {
+    envelopeValue = JSON.parse(contents) as unknown;
+    assertEnvelope(envelopeValue);
+  } catch {
+    throw new Error("Audit report receipt schema or revision is unsupported");
+  }
+  if (canonicalEnvelopeContents(envelopeValue) !== contents) {
+    throw new Error("Audit report receipt schema or revision is unsupported");
+  }
+  const receipt = envelopeValue.receipt;
+  const report = envelopeValue.report as TReport;
+  const canonicalReportContents = `${JSON.stringify(report, null, 2)}\n`;
+  if (sha256(canonicalReportContents) !== receipt.reportSha256) {
     throw new Error("Audit report content hash does not match its receipt");
+  }
+  if (basename(exactPath) !== `${receipt.mode}-${receipt.reportSha256}.json`) {
+    throw new Error("Audit report path does not match its content identity");
   }
   if (args.expectedMode && receipt.mode !== args.expectedMode) {
     throw new Error(
       `Expected a ${args.expectedMode} audit report, received ${receipt.mode}`
     );
   }
-  const report = JSON.parse(contents) as TReport;
   if (
     report.mode !== receipt.mode ||
     report.timestamp !== receipt.reportTimestamp ||

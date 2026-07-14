@@ -163,7 +163,7 @@ test("absence proofs reject newly created symlink ancestors", async () => {
   await symlink(reportRoot, join(root, "future", "nested"));
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
-    "became a symlink"
+    "absent requested path changed"
   );
 });
 
@@ -385,6 +385,16 @@ test("source snapshot rejects duplicate-first, duplicate-last, and conflicting i
     maxEntries: snapshot.capturedTrees[0]!.maxEntries + 1,
   });
   await assertSchemaRejected(conflictingTree);
+
+  const duplicateRequestedPath = structuredClone(snapshot);
+  duplicateRequestedPath.requestedPaths.push({
+    ...snapshot.requestedPaths[0]!,
+  });
+  await assertSchemaRejected(duplicateRequestedPath);
+
+  const missingRequestedPath = structuredClone(snapshot);
+  missingRequestedPath.requestedPaths.shift();
+  await assertSchemaRejected(missingRequestedPath);
 });
 
 test("source snapshot requires canonical ordering for every set-like list", async () => {
@@ -396,6 +406,7 @@ test("source snapshot requires canonical ordering for every set-like list", asyn
     "capturedTrees",
     "derivedContexts",
     "absentPaths",
+    "requestedPaths",
   ] as const;
 
   for (const key of topLevelLists) {
@@ -441,6 +452,10 @@ test("source snapshot enforces exact keys on the snapshot and every nested recor
     {
       key: "relativeSegments",
       select: (value: typeof snapshot) => value.absentPaths[0]!,
+    },
+    {
+      key: "canonicalPath",
+      select: (value: typeof snapshot) => value.requestedPaths[0]!,
     },
   ];
 

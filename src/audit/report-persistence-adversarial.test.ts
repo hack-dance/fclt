@@ -1,0 +1,552 @@
+import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import {
+  appendFile,
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  AUDIT_REPORT_MAX_ENVELOPE_BYTES,
+  auditReportRootPermissionsAreSafe,
+  loadVerifiedAuditReport,
+  persistAuditReport,
+} from "./report-persistence";
+import { AuditSourceTracker } from "./source-provenance";
+
+const PERSISTENCE_COLLISION_RE =
+  /collision|commit failed closed|symlink|unsafe/i;
+const READ_DRIFT_RE = /grew|changed while reading/;
+const TIMESTAMP_SCHEMA_RE = /timestamp|provenance|schema/i;
+
+async function fixture() {
+  const sourceRoot = await mkdtemp(
+    join(tmpdir(), "fclt-report-adversarial-source-")
+  );
+  const tracker = new AuditSourceTracker();
+  await tracker.protect([sourceRoot]);
+  const timestamp = new Date(
+    Math.floor(Date.now() / 1000) * 1000
+  ).toISOString();
+  const report = { mode: "static" as const, results: [], timestamp };
+  const reportContents = `${JSON.stringify(report, null, 2)}\n`;
+  const reportFileName = `static-${createHash("sha256")
+    .update(reportContents)
+    .digest("hex")}.json`;
+  return {
+    evaluation: {
+      auditedRoots: [sourceRoot],
+      report,
+      sourceSnapshot: tracker.snapshot(),
+    },
+    reportFileName,
+    sourceRoot,
+    timestamp,
+  };
+}
+
+async function writePrivateJson(path: string, value: unknown): Promise<void> {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+  await chmod(path, 0o600);
+}
+
+describe("adversarial audit report persistence", () => {
+  test("final-name symlinks, directories, and fifos fail closed", async () => {
+    const { evaluation, reportFileName } = await fixture();
+    const seedRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-seed-")
+    );
+    const seedReport = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      reportRoot: seedRoot,
+    });
+    const envelopeBytes = await readFile(seedReport);
+
+    const symlinkRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-symlink-")
+    );
+    const externalRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-external-")
+    );
+    const external = join(externalRoot, "matching-bytes");
+    await writeFile(external, envelopeBytes);
+    await symlink(external, join(symlinkRoot, reportFileName));
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        reportRoot: symlinkRoot,
+      })
+    ).rejects.toThrow(PERSISTENCE_COLLISION_RE);
+    expect(
+      (await lstat(join(symlinkRoot, reportFileName))).isSymbolicLink()
+    ).toBe(true);
+    expect(await readFile(external)).toEqual(envelopeBytes);
+
+    const directoryRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-directory-")
+    );
+    await mkdir(join(directoryRoot, reportFileName));
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        reportRoot: directoryRoot,
+      })
+    ).rejects.toThrow(PERSISTENCE_COLLISION_RE);
+    expect(
+      (await lstat(join(directoryRoot, reportFileName))).isDirectory()
+    ).toBe(true);
+
+    const fifoRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-fifo-")
+    );
+    const fifoPath = join(fifoRoot, reportFileName);
+    const proc = Bun.spawn(["mkfifo", fifoPath], {
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(await proc.exited).toBe(0);
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        reportRoot: fifoRoot,
+      })
+    ).rejects.toThrow(PERSISTENCE_COLLISION_RE);
+    expect((await lstat(fifoPath)).isFIFO()).toBe(true);
+  });
+
+  test("matching hardlinks and permission-ambiguous files never authorize reuse", async () => {
+    const { evaluation, reportFileName } = await fixture();
+    const seedRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-hardlink-seed-")
+    );
+    const seedPath = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      reportRoot: seedRoot,
+    });
+    const envelopeBytes = await readFile(seedPath);
+
+    for (const mode of [0o600, 0o644]) {
+      const reportRoot = await mkdtemp(
+        join(tmpdir(), "fclt-report-adversarial-hardlink-")
+      );
+      const external = join(
+        await mkdtemp(
+          join(tmpdir(), "fclt-report-adversarial-hardlink-external-")
+        ),
+        "envelope"
+      );
+      await writeFile(external, envelopeBytes);
+      await chmod(external, mode);
+      await link(external, join(reportRoot, reportFileName));
+      await expect(
+        persistAuditReport({
+          ...evaluation,
+          mode: "static",
+          reportRoot,
+        })
+      ).rejects.toThrow(PERSISTENCE_COLLISION_RE);
+      expect((await lstat(external)).nlink).toBe(2);
+    }
+
+    const modeRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-mode-")
+    );
+    const modePath = join(modeRoot, reportFileName);
+    await writeFile(modePath, envelopeBytes);
+    await chmod(modePath, 0o644);
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        reportRoot: modeRoot,
+      })
+    ).rejects.toThrow(PERSISTENCE_COLLISION_RE);
+    expect((await lstat(modePath)).mode % 0o1000).toBe(0o644);
+  });
+
+  test("permission-ambiguous report roots fail before artifact creation", async () => {
+    const { evaluation } = await fixture();
+    for (const mode of [0o770, 0o777]) {
+      const reportRoot = await mkdtemp(
+        join(tmpdir(), "fclt-report-adversarial-root-mode-")
+      );
+      await chmod(reportRoot, mode);
+      await expect(
+        persistAuditReport({
+          ...evaluation,
+          mode: "static",
+          reportRoot,
+        })
+      ).rejects.toThrow("ownership or permissions are ambiguous");
+      expect(await readdir(reportRoot)).toEqual([]);
+    }
+    expect(
+      auditReportRootPermissionsAreSafe({ mode: 0o700, uid: 42 }, 41)
+    ).toBe(false);
+    expect(
+      auditReportRootPermissionsAreSafe({ mode: 0o755, uid: 42 }, 42)
+    ).toBe(true);
+  });
+
+  test("report-root rebinding and pre-commit faults create no artifact", async () => {
+    const { evaluation } = await fixture();
+    const parent = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-root-swap-")
+    );
+    const reportRoot = join(parent, "reports");
+    const movedRoot = join(parent, "reports-moved");
+    await mkdir(reportRoot);
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          await rename(reportRoot, movedRoot);
+          await mkdir(reportRoot);
+        },
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow("changed before descriptor-relative commit");
+    expect(await readdir(reportRoot)).toEqual([]);
+    expect(await readdir(movedRoot)).toEqual([]);
+
+    const faultRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-precommit-fault-")
+    );
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: () =>
+          Promise.reject(new Error("pre-commit fault")),
+        mode: "static",
+        reportRoot: faultRoot,
+      })
+    ).rejects.toThrow("pre-commit fault");
+    expect(await readdir(faultRoot)).toEqual([]);
+  });
+
+  test("concurrent adoption cannot be invalidated by a faulting creator", async () => {
+    const { evaluation } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-concurrent-")
+    );
+    let releaseFault!: () => void;
+    let announceHook!: () => void;
+    const hookReached = new Promise<void>((resolve) => {
+      announceHook = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseFault = resolve;
+    });
+    const faulting = persistAuditReport({
+      ...evaluation,
+      beforeDescriptorCommit: async () => {
+        announceHook();
+        await release;
+        throw new Error("creator fault");
+      },
+      mode: "static",
+      reportRoot,
+    });
+    await hookReached;
+    const adoptedPath = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      reportRoot,
+    });
+    releaseFault();
+    await expect(faulting).rejects.toThrow("creator fault");
+    expect(await readdir(reportRoot)).toEqual([adoptedPath.split("/").at(-1)!]);
+    await expect(
+      loadVerifiedAuditReport({ reportPath: adoptedPath })
+    ).resolves.toEqual(evaluation.report);
+  });
+
+  test("same-content concurrency is idempotent and source conflicts preserve the winner", async () => {
+    const { evaluation } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-idempotent-")
+    );
+    const paths = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        persistAuditReport({
+          ...evaluation,
+          mode: "static",
+          reportRoot,
+        })
+      )
+    );
+    expect(new Set(paths).size).toBe(1);
+    expect(await readdir(reportRoot)).toHaveLength(1);
+
+    const other = await fixture();
+    await expect(
+      persistAuditReport({
+        ...other.evaluation,
+        mode: "static",
+        report: evaluation.report,
+        reportRoot,
+      })
+    ).rejects.toThrow("collision");
+    await expect(
+      loadVerifiedAuditReport({ reportPath: paths[0]! })
+    ).resolves.toEqual(evaluation.report);
+  });
+
+  test("envelope validation rejects non-exact receipt contracts", async () => {
+    const { evaluation } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-receipt-schema-")
+    );
+    const reportPath = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      reportRoot,
+    });
+    const validEnvelope = JSON.parse(
+      await readFile(reportPath, "utf8")
+    ) as Record<string, unknown>;
+    const validReceipt = validEnvelope.receipt as Record<string, unknown>;
+    const validSnapshot = validReceipt.sourceSnapshot as Record<
+      string,
+      unknown
+    >;
+    const protectedRoots = validSnapshot.protectedRoots as Record<
+      string,
+      unknown
+    >[];
+    const missingEnvelopeReport = { ...validEnvelope };
+    Reflect.deleteProperty(missingEnvelopeReport, "report");
+    const missingReceiptHash = { ...validReceipt };
+    Reflect.deleteProperty(missingReceiptHash, "reportSha256");
+
+    const mutations: Record<string, unknown>[] = [
+      { ...validEnvelope, unexpected: true },
+      missingEnvelopeReport,
+      { ...validEnvelope, schemaVersion: 0 },
+      { ...validEnvelope, receipt: { ...validReceipt, unexpected: true } },
+      { ...validEnvelope, receipt: missingReceiptHash },
+      {
+        ...validEnvelope,
+        receipt: {
+          ...validReceipt,
+          reportRevision: Number(validReceipt.reportRevision) - 1,
+        },
+      },
+      {
+        ...validEnvelope,
+        receipt: {
+          ...validReceipt,
+          schemaVersion: Number(validReceipt.schemaVersion) - 1,
+        },
+      },
+      {
+        ...validEnvelope,
+        receipt: Object.fromEntries(Object.entries(validReceipt).reverse()),
+      },
+      {
+        ...validEnvelope,
+        receipt: {
+          ...validReceipt,
+          sourceSnapshot: Object.fromEntries(
+            Object.entries(validSnapshot).reverse()
+          ),
+        },
+      },
+      {
+        ...validEnvelope,
+        receipt: {
+          ...validReceipt,
+          sourceSnapshot: {
+            ...validSnapshot,
+            protectedRoots: [
+              Object.fromEntries(Object.entries(protectedRoots[0]!).reverse()),
+            ],
+          },
+        },
+      },
+    ];
+
+    for (const mutation of mutations) {
+      await writePrivateJson(reportPath, mutation);
+      await expect(loadVerifiedAuditReport({ reportPath })).rejects.toThrow(
+        "schema or revision is unsupported"
+      );
+    }
+
+    const duplicateReceiptKey = `${JSON.stringify(
+      validEnvelope,
+      null,
+      2
+    ).replace(
+      '"receipt": {\n    "schemaVersion": 4,',
+      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 4,'
+    )}\n`;
+    await writeFile(reportPath, duplicateReceiptKey);
+    await chmod(reportPath, 0o600);
+    await expect(loadVerifiedAuditReport({ reportPath })).rejects.toThrow(
+      "schema or revision is unsupported"
+    );
+  });
+
+  test("envelope loading rejects oversize, sparse, and growing files with bounded reads", async () => {
+    const first = await fixture();
+    const oversizeRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-envelope-oversize-")
+    );
+    const oversizePath = await persistAuditReport({
+      ...first.evaluation,
+      mode: "static",
+      reportRoot: oversizeRoot,
+    });
+    await truncate(oversizePath, AUDIT_REPORT_MAX_ENVELOPE_BYTES + 1);
+    await expect(
+      loadVerifiedAuditReport({ reportPath: oversizePath })
+    ).rejects.toThrow("private, singly linked regular file");
+
+    const sparse = await fixture();
+    const sparseRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-envelope-sparse-")
+    );
+    const sparsePath = await persistAuditReport({
+      ...sparse.evaluation,
+      mode: "static",
+      reportRoot: sparseRoot,
+    });
+    await truncate(sparsePath, 1024 * 1024);
+    await expect(
+      loadVerifiedAuditReport({ reportPath: sparsePath })
+    ).rejects.toThrow("private, singly linked regular file");
+
+    const growing = await fixture();
+    const growingRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-envelope-growing-")
+    );
+    const growingPath = await persistAuditReport({
+      ...growing.evaluation,
+      mode: "static",
+      reportRoot: growingRoot,
+    });
+    let appended = false;
+    await expect(
+      loadVerifiedAuditReport({
+        beforeEnvelopeReadChunk: async () => {
+          if (!appended) {
+            appended = true;
+            await appendFile(growingPath, " ");
+          }
+        },
+        reportPath: growingPath,
+      })
+    ).rejects.toThrow(READ_DRIFT_RE);
+  });
+
+  test("persistence and loading share the exact envelope byte boundary", async () => {
+    const { evaluation } = await fixture();
+    const seedRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-envelope-boundary-seed-")
+    );
+    const seedPath = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      reportRoot: seedRoot,
+    });
+    const seedEnvelope = JSON.parse(await readFile(seedPath, "utf8")) as {
+      receipt: Record<string, unknown>;
+      report: typeof evaluation.report & { padding?: string };
+      schemaVersion: number;
+    };
+    const envelopeForPadding = (padding: string) => {
+      const report = { ...seedEnvelope.report, padding };
+      const reportContents = `${JSON.stringify(report, null, 2)}\n`;
+      return {
+        contents: `${JSON.stringify(
+          {
+            schemaVersion: seedEnvelope.schemaVersion,
+            receipt: {
+              ...seedEnvelope.receipt,
+              reportSha256: createHash("sha256")
+                .update(reportContents)
+                .digest("hex"),
+            },
+            report,
+          },
+          null,
+          2
+        )}\n`,
+        report,
+      };
+    };
+    const empty = envelopeForPadding("");
+    const paddingLength =
+      AUDIT_REPORT_MAX_ENVELOPE_BYTES - Buffer.byteLength(empty.contents);
+    expect(paddingLength).toBeGreaterThan(0);
+    const exact = envelopeForPadding("x".repeat(paddingLength));
+    expect(Buffer.byteLength(exact.contents)).toBe(
+      AUDIT_REPORT_MAX_ENVELOPE_BYTES
+    );
+
+    const exactRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-envelope-boundary-exact-")
+    );
+    const exactPath = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      report: exact.report,
+      reportRoot: exactRoot,
+    });
+    expect((await lstat(exactPath)).size).toBe(AUDIT_REPORT_MAX_ENVELOPE_BYTES);
+    await expect(
+      loadVerifiedAuditReport({ reportPath: exactPath })
+    ).resolves.toEqual(exact.report);
+
+    const overRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-envelope-boundary-over-")
+    );
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        report: envelopeForPadding("x".repeat(paddingLength + 1)).report,
+        reportRoot: overRoot,
+      })
+    ).rejects.toThrow("envelope exceeds");
+    expect(await readdir(overRoot)).toEqual([]);
+  });
+
+  test("persistence rejects a parseable but noncanonical report timestamp", async () => {
+    const { evaluation, timestamp } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-report-timestamp-")
+    );
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        report: {
+          ...evaluation.report,
+          timestamp: new Date(timestamp).toUTCString(),
+        },
+        reportRoot,
+      })
+    ).rejects.toThrow(TIMESTAMP_SCHEMA_RE);
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+});
