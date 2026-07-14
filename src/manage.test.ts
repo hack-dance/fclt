@@ -46,6 +46,44 @@ async function writeJson(p: string, data: unknown) {
   await Bun.write(p, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+async function writeCodexPluginStub(args: {
+  codexBin: string;
+  enabled?: boolean;
+  home: string;
+  listedVersion?: string;
+  selectedVersion: string;
+}): Promise<void> {
+  await mkdir(dirname(args.codexBin), { recursive: true });
+  await Bun.write(
+    args.codexBin,
+    [
+      `#!${process.execPath}`,
+      `import { appendFileSync, cpSync, mkdirSync, rmSync } from "node:fs";`,
+      `import { dirname, join } from "node:path";`,
+      `const home = ${JSON.stringify(args.home)};`,
+      `const selectedVersion = ${JSON.stringify(args.selectedVersion)};`,
+      `const listedVersion = ${JSON.stringify(
+        args.listedVersion ?? args.selectedVersion
+      )};`,
+      `const installedPath = join(home, ".codex", "plugins", "cache", "local", "fclt", selectedVersion);`,
+      "const argv = process.argv.slice(2);",
+      `appendFileSync(join(home, "codex-args.txt"), argv.join("\\n") + "\\n--\\n");`,
+      `if (argv[0] === "plugin" && argv[1] === "add") {`,
+      "  rmSync(installedPath, { force: true, recursive: true });",
+      "  mkdirSync(dirname(installedPath), { recursive: true });",
+      `  cpSync(join(home, "plugins", "fclt"), installedPath, { recursive: true });`,
+      `  console.log(JSON.stringify({ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: selectedVersion, installedPath, authPolicy: "ON_INSTALL" }));`,
+      `} else if (argv[0] === "plugin" && argv[1] === "list") {`,
+      `  console.log(JSON.stringify({ installed: [{ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: listedVersion, installed: true, enabled: ${args.enabled !== false} }], available: [] }));`,
+      "} else {",
+      "  process.exitCode = 64;",
+      "}",
+      "",
+    ].join("\n")
+  );
+  await chmod(args.codexBin, 0o755);
+}
+
 async function snapshotTree(root: string): Promise<Record<string, string>> {
   const snapshot: Record<string, string> = {};
 
@@ -2997,15 +3035,11 @@ describe("syncManagedTools", () => {
   it("installs from the preserved Codex marketplace name", async () => {
     const home = await createTempDir();
     const codexBin = join(home, "bin", "codex");
-    await mkdir(dirname(codexBin), { recursive: true });
-    await Bun.write(
+    await writeCodexPluginStub({
       codexBin,
-      `#!/bin/sh
-printf '%s\n' "$@" > codex-args.txt
-printf '{"ok":true}\n'
-`
-    );
-    await chmod(codexBin, 0o755);
+      home,
+      selectedVersion: "0.1.2",
+    });
     await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
       name: "local",
       interface: { displayName: "Local Plugins" },
@@ -3026,8 +3060,125 @@ printf '{"ok":true}\n'
       "fclt@local",
       "--json",
     ]);
+    expect(result.codexInstall.verificationCommand).toEqual([
+      codexBin,
+      "plugin",
+      "list",
+      "--marketplace",
+      "local",
+      "--json",
+    ]);
     expect(await readFile(join(home, "codex-args.txt"), "utf8")).toBe(
-      "plugin\nadd\nfclt@local\n--json\n"
+      "plugin\nadd\nfclt@local\n--json\n--\nplugin\nlist\n--marketplace\nlocal\n--json\n--\n"
+    );
+  });
+
+  it("fails closed when Codex retains the pre-fix cached wrapper", async () => {
+    const home = await createTempDir();
+    const oldCache = join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "local",
+      "fclt",
+      "0.1.1"
+    );
+    await mkdir(oldCache, { recursive: true });
+    await Bun.write(join(oldCache, "selected.txt"), "legacy-wrapper\n");
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "local",
+      interface: { displayName: "Local Plugins" },
+      plugins: [],
+    });
+    const codexBin = join(home, "bin", "codex");
+    await writeCodexPluginStub({
+      codexBin,
+      home,
+      listedVersion: "0.1.1",
+      selectedVersion: "0.1.2",
+    });
+
+    const result = await setupCodexPlugin({ homeDir: home, codexBin });
+
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.stderr).toContain(
+      "expected fclt@local version 0.1.2 to be installed and enabled"
+    );
+    expect(result.codexInstall.verificationCommand).toEqual([
+      codexBin,
+      "plugin",
+      "list",
+      "--marketplace",
+      "local",
+      "--json",
+    ]);
+    expect(await Bun.file(join(oldCache, "selected.txt")).text()).toBe(
+      "legacy-wrapper\n"
+    );
+    expect(
+      await Bun.file(
+        join(
+          home,
+          ".codex",
+          "plugins",
+          "cache",
+          "local",
+          "fclt",
+          "0.1.2",
+          "selected.txt"
+        )
+      ).exists()
+    ).toBe(false);
+  });
+
+  it("verifies the current selected plugin payload with an old cache present", async () => {
+    const home = await createTempDir();
+    const oldCache = join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "local",
+      "fclt",
+      "0.1.1"
+    );
+    await mkdir(oldCache, { recursive: true });
+    await Bun.write(join(oldCache, "selected.txt"), "legacy-wrapper\n");
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "local",
+      interface: { displayName: "Local Plugins" },
+      plugins: [],
+    });
+    const codexBin = join(home, "bin", "codex");
+    await writeCodexPluginStub({
+      codexBin,
+      home,
+      selectedVersion: "0.1.2",
+    });
+
+    const result = await setupCodexPlugin({ homeDir: home, codexBin });
+    const installedPath = join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "local",
+      "fclt",
+      "0.1.2"
+    );
+
+    expect(result.codexInstall.status).toBe("succeeded");
+    expect(
+      (await Bun.file(
+        join(installedPath, ".codex-plugin", "plugin.json")
+      ).json()) as { version: string }
+    ).toMatchObject({ version: "0.1.2" });
+    expect(
+      await Bun.file(join(installedPath, "scripts", "fclt-mcp.cjs")).text()
+    ).toContain("audit-read-only-v1");
+    expect(await Bun.file(join(oldCache, "selected.txt")).text()).toBe(
+      "legacy-wrapper\n"
     );
   });
 

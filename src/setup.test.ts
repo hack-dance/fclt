@@ -449,12 +449,28 @@ describe("zero-config setup", () => {
     await mkdir(dirname(codexBin), { recursive: true });
     await Bun.write(
       codexBin,
-      `#!/bin/sh
-set -eu
-mkdir -p "$HOME/.codex"
-printf '[plugins."fclt@hack-local"]\nenabled = true\n' > "$HOME/.codex/config.toml"
-printf '{"ok":true}\n'
-`
+      [
+        `#!${process.execPath}`,
+        'import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";',
+        'import { dirname, join } from "node:path";',
+        "const argv = process.argv.slice(2);",
+        'const pluginId = "fclt@hack-local";',
+        'const version = "0.1.2";',
+        'const installedPath = join(process.env.HOME, ".codex", "plugins", "cache", "hack-local", "fclt", version);',
+        'mkdirSync(join(process.env.HOME, ".codex"), { recursive: true });',
+        'writeFileSync(join(process.env.HOME, ".codex", "config.toml"), `[plugins."` + pluginId + `"]\nenabled = true\n`);',
+        'if (argv[0] === "plugin" && argv[1] === "add") {',
+        "  rmSync(installedPath, { recursive: true, force: true });",
+        "  mkdirSync(dirname(installedPath), { recursive: true });",
+        '  cpSync(join(process.env.HOME, "plugins", "fclt"), installedPath, { recursive: true });',
+        "  console.log(JSON.stringify({ pluginId, name: 'fclt', marketplaceName: 'hack-local', version, installedPath }));",
+        '} else if (argv[0] === "plugin" && argv[1] === "list") {',
+        "  console.log(JSON.stringify({ installed: [{ pluginId, name: 'fclt', marketplaceName: 'hack-local', version, installed: true, enabled: true }] }));",
+        "} else {",
+        "  process.exitCode = 64;",
+        "}",
+        "",
+      ].join("\n")
     );
     await chmod(codexBin, 0o755);
 

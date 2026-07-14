@@ -3,8 +3,8 @@
   "matrixVersion": 1,
   "generatedFrom": {
     "packageVersion": "2.25.0",
-    "pluginVersion": "0.1.1",
-    "auditedAt": "2026-07-13T00:00:00Z"
+    "pluginVersion": "0.1.2",
+    "auditedAt": "2026-07-14T00:00:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [

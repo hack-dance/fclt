@@ -12,7 +12,15 @@ import {
   sep,
 } from "node:path";
 import type { ScanResult } from "../scan";
-import { writeExclusiveAt } from "./safe-openat";
+import {
+  auditReportPersistenceSupported,
+  writeExclusiveAt,
+} from "./safe-openat";
+import {
+  type AuditSourceSnapshot,
+  assertAuditSourceSnapshot,
+  validateAuditSourceSnapshot,
+} from "./source-provenance";
 import type { AuditFinding, AuditItemResult } from "./types";
 
 export type AuditReportMode = "agent" | "static";
@@ -20,10 +28,11 @@ export type AuditReportMode = "agent" | "static";
 export interface AuditEvaluation<TReport> {
   auditedRoots: string[];
   report: TReport;
+  sourceSnapshot: AuditSourceSnapshot;
 }
 
 export const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
-export const AUDIT_REPORT_REVISION = 1;
+export const AUDIT_REPORT_REVISION = 2;
 export const AUDIT_REPORT_MAX_AGE_MS = 15 * 60 * 1000;
 
 const PATH_SEGMENT_SPLIT_RE = /[\\/]+/;
@@ -36,18 +45,8 @@ interface PathSemantics {
   sep: string;
 }
 
-interface ProtectedSourceIdentity {
-  dev: number;
-  ino: number;
-  kind: "directory" | "file";
-  mtimeMs: number;
-  path: string;
-  sha256?: string;
-  size: number;
-}
-
 export interface AuditReportReceipt {
-  schemaVersion: 1;
+  schemaVersion: 2;
   capability: typeof AUDIT_READ_ONLY_CAPABILITY;
   reportRevision: typeof AUDIT_REPORT_REVISION;
   mode: AuditReportMode;
@@ -55,7 +54,7 @@ export interface AuditReportReceipt {
   reportTimestamp: string;
   reportSha256: string;
   sourceIdentitySha256: string;
-  protectedSources: ProtectedSourceIdentity[];
+  sourceSnapshot: AuditSourceSnapshot;
   findingIdentities: string[];
 }
 
@@ -210,35 +209,6 @@ function readOnlyNoFollowFlags(): number {
   return constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0);
 }
 
-async function protectedSourceIdentities(
-  roots: string[]
-): Promise<ProtectedSourceIdentity[]> {
-  const canonical = await Promise.all(
-    roots.map((root) => canonicalExistingPath(root, "Audited source path"))
-  );
-  const unique = [...new Set(canonical)].sort();
-  return await Promise.all(
-    unique.map(async (path) => {
-      const handle = await open(path, readOnlyNoFollowFlags());
-      const metadata = await handle.stat();
-      const kind = metadata.isFile() ? "file" : "directory";
-      try {
-        return {
-          dev: metadata.dev,
-          ino: metadata.ino,
-          kind,
-          mtimeMs: metadata.mtimeMs,
-          path,
-          sha256: kind === "file" ? sha256(await handle.readFile()) : undefined,
-          size: metadata.size,
-        };
-      } finally {
-        await handle.close();
-      }
-    })
-  );
-}
-
 export async function persistAuditReport(args: {
   auditedRoots: string[];
   /** @internal Adversarial test hook; production callers must not set this. */
@@ -246,7 +216,13 @@ export async function persistAuditReport(args: {
   mode: AuditReportMode;
   report: unknown;
   reportRoot: string;
+  sourceSnapshot: AuditSourceSnapshot;
 }): Promise<string> {
+  if (!auditReportPersistenceSupported()) {
+    throw new Error(
+      `Audit report persistence is unavailable on ${process.platform}: safe descriptor-relative creation is unsupported`
+    );
+  }
   if (!isAbsolute(args.reportRoot) || hasTraversalSegment(args.reportRoot)) {
     throw new Error(
       "Audit report root must be an absolute path without traversal segments"
@@ -282,10 +258,29 @@ export async function persistAuditReport(args: {
     requestedRoot,
     "Audit report root"
   );
-  const protectedSources = await protectedSourceIdentities(args.auditedRoots);
-  const overlap = protectedSources.find((source) =>
-    auditPathsOverlap(source.path, reportRoot)
+  assertAuditSourceSnapshot(args.sourceSnapshot);
+  const canonicalAuditedRoots = await Promise.all(
+    args.auditedRoots.map((root) =>
+      canonicalExistingPath(root, "Audited source path")
+    )
   );
+  const protectedRootPaths = new Set(
+    args.sourceSnapshot.protectedRoots.map((source) => source.path)
+  );
+  const unboundRoot = canonicalAuditedRoots.find(
+    (root) => !protectedRootPaths.has(root)
+  );
+  if (unboundRoot) {
+    throw new Error(
+      `Audit source snapshot does not bind protected root: ${unboundRoot}`
+    );
+  }
+  const overlap = [
+    ...args.sourceSnapshot.protectedRoots,
+    ...args.sourceSnapshot.evaluatedFiles,
+    ...args.sourceSnapshot.evaluatedDirectories,
+    ...args.sourceSnapshot.absentPaths.map((path) => ({ path })),
+  ].find((source) => auditPathsOverlap(source.path, reportRoot));
   if (overlap) {
     throw new Error(
       `Audit report root overlaps audited source: ${reportRoot} <-> ${overlap.path}`
@@ -309,15 +304,15 @@ export async function persistAuditReport(args: {
   }
 
   const receipt: AuditReportReceipt = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     capability: AUDIT_READ_ONLY_CAPABILITY,
     reportRevision: AUDIT_REPORT_REVISION,
     mode: args.mode,
     persistedAt: reportTimestamp,
     reportTimestamp,
     reportSha256,
-    sourceIdentitySha256: sha256(stableJson(protectedSources)),
-    protectedSources,
+    sourceIdentitySha256: sha256(stableJson(args.sourceSnapshot)),
+    sourceSnapshot: args.sourceSnapshot,
     findingIdentities: findingIdentities(args.report),
   };
   const receiptContents = `${JSON.stringify(receipt, null, 2)}\n`;
@@ -334,7 +329,9 @@ export async function persistAuditReport(args: {
         "Audit report root changed before it could be safely opened"
       );
     }
+    await validateAuditSourceSnapshot(args.sourceSnapshot);
     await args.beforeDescriptorCommit?.();
+    await validateAuditSourceSnapshot(args.sourceSnapshot);
     await writeExclusiveAt({
       contents,
       directoryFd: directoryHandle.fd,
@@ -368,7 +365,7 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
   const receipt = value as Partial<AuditReportReceipt> | null;
   if (
     !receipt ||
-    receipt.schemaVersion !== 1 ||
+    receipt.schemaVersion !== 2 ||
     receipt.capability !== AUDIT_READ_ONLY_CAPABILITY ||
     receipt.reportRevision !== AUDIT_REPORT_REVISION ||
     (receipt.mode !== "static" && receipt.mode !== "agent") ||
@@ -376,19 +373,7 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
     typeof receipt.reportTimestamp !== "string" ||
     !SHA256_RE.test(receipt.reportSha256 ?? "") ||
     !SHA256_RE.test(receipt.sourceIdentitySha256 ?? "") ||
-    !Array.isArray(receipt.protectedSources) ||
-    receipt.protectedSources.some(
-      (source) =>
-        !(source && typeof source === "object") ||
-        typeof source.path !== "string" ||
-        !isAbsolute(source.path) ||
-        !Number.isFinite(source.dev) ||
-        !Number.isFinite(source.ino) ||
-        !Number.isFinite(source.mtimeMs) ||
-        !Number.isFinite(source.size) ||
-        (source.kind !== "file" && source.kind !== "directory") ||
-        (source.kind === "file" && !SHA256_RE.test(source.sha256 ?? ""))
-    ) ||
+    !receipt.sourceSnapshot ||
     !Array.isArray(receipt.findingIdentities) ||
     receipt.findingIdentities.some(
       (identity) => typeof identity !== "string" || !SHA256_RE.test(identity)
@@ -396,6 +381,7 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
   ) {
     throw new Error("Audit report receipt schema or revision is unsupported");
   }
+  assertAuditSourceSnapshot(receipt.sourceSnapshot);
 }
 
 export async function loadVerifiedAuditReport<
@@ -483,36 +469,11 @@ export async function loadVerifiedAuditReport<
     );
   }
   if (
-    sha256(stableJson(receipt.protectedSources)) !==
-    receipt.sourceIdentitySha256
+    sha256(stableJson(receipt.sourceSnapshot)) !== receipt.sourceIdentitySha256
   ) {
     throw new Error("Audit report source-root identity hash is invalid");
   }
-  for (const source of receipt.protectedSources) {
-    const canonical = await canonicalExistingPath(
-      source.path,
-      "Receipt source path"
-    );
-    const handle = await open(canonical, readOnlyNoFollowFlags());
-    try {
-      const metadata = await handle.stat();
-      if (
-        canonical !== source.path ||
-        metadata.dev !== source.dev ||
-        metadata.ino !== source.ino ||
-        metadata.mtimeMs !== source.mtimeMs ||
-        metadata.size !== source.size ||
-        (source.kind === "file" &&
-          sha256(await handle.readFile()) !== source.sha256)
-      ) {
-        throw new Error(
-          `Audit report source-root identity changed: ${source.path}`
-        );
-      }
-    } finally {
-      await handle.close();
-    }
-  }
+  await validateAuditSourceSnapshot(receipt.sourceSnapshot);
   if (
     stableJson(findingIdentities(report)) !==
     stableJson(receipt.findingIdentities)
@@ -524,8 +485,17 @@ export async function loadVerifiedAuditReport<
     "Audit report directory"
   );
   if (
-    receipt.protectedSources.some((source) =>
+    receipt.sourceSnapshot.protectedRoots.some((source) =>
       auditPathsOverlap(source.path, outputRoot)
+    ) ||
+    receipt.sourceSnapshot.evaluatedFiles.some((source) =>
+      auditPathsOverlap(source.path, outputRoot)
+    ) ||
+    receipt.sourceSnapshot.evaluatedDirectories.some((source) =>
+      auditPathsOverlap(source.path, outputRoot)
+    ) ||
+    receipt.sourceSnapshot.absentPaths.some((path) =>
+      auditPathsOverlap(path, outputRoot)
     )
   ) {
     throw new Error("Audit report directory now overlaps an audited source");

@@ -6,12 +6,14 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
   rename,
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import { auditPathsOverlap, persistAuditReport } from "./report-persistence";
+import { auditReportPersistenceSupported } from "./safe-openat";
 import { evaluateStaticAudit, runStaticAudit } from "./static";
 
 const JSON_SUFFIX_RE = /\.json$/;
@@ -97,6 +99,9 @@ async function exactReportPath(
 
 describe("read-only audit boundary", () => {
   it("classifies Windows-shaped overlap without prefix false positives", () => {
+    expect(auditReportPersistenceSupported("darwin")).toBe(true);
+    expect(auditReportPersistenceSupported("linux")).toBe(true);
+    expect(auditReportPersistenceSupported("win32")).toBe(false);
     expect(
       auditPathsOverlap("C:\\capability", "C:\\capability\\reports", win32)
     ).toBe(true);
@@ -294,6 +299,25 @@ describe("read-only audit boundary", () => {
     expect(await readdir(reportRoot)).toHaveLength(2);
   });
 
+  it("rejects static source drift between evaluation and persistence", async () => {
+    const { home } = await fixture();
+    const reportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-drift-"));
+    const skillPath = join(home, ".ai", "skills", "review", "SKILL.md");
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+    await Bun.write(skillPath, "Review loudly.\n");
+
+    await expect(
+      persistAuditReport({ ...evaluation, mode: "static", reportRoot })
+    ).rejects.toThrow("evaluated context changed");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
   it("protects external discovered Claude plugin trees", async () => {
     const { base, home } = await fixture();
     const pluginRoot = join(base, "external-plugin");
@@ -319,6 +343,40 @@ describe("read-only audit boundary", () => {
     await expect(
       persistAuditReport({ ...evaluation, mode: "static", reportRoot })
     ).rejects.toThrow("overlaps audited source");
+  });
+
+  it("rejects persistence above a source path proven absent during evaluation", async () => {
+    const { home } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-absent-overlap-")
+    );
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+    const absentSourcePath = join(
+      await realpath(reportRoot),
+      "source-that-was-absent"
+    );
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        mode: "static",
+        reportRoot,
+        sourceSnapshot: {
+          ...evaluation.sourceSnapshot,
+          absentPaths: [
+            ...evaluation.sourceSnapshot.absentPaths,
+            absentSourcePath,
+          ].sort(),
+        },
+      })
+    ).rejects.toThrow("overlaps audited source");
+    expect(await readdir(reportRoot)).toEqual([]);
   });
 
   it("anchors commits to the opened directory inode during ancestor swaps", async () => {

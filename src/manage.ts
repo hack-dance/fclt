@@ -13,7 +13,14 @@ import {
   symlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+} from "node:path";
 import { getAdapter } from "./adapters";
 import { renderCanonicalText } from "./agents";
 import { ensureAiIndexPath } from "./ai-state";
@@ -188,6 +195,7 @@ export interface SetupCodexPluginResult {
   codexInstall: {
     status: "skipped" | "succeeded" | "failed";
     command?: string[];
+    verificationCommand?: string[];
     stdout?: string;
     stderr?: string;
     code?: number | null;
@@ -770,18 +778,23 @@ export async function inspectManagedStateRecords(
 
 export async function loadManagedState(
   home: string = homedir(),
-  rootDir?: string
+  rootDir?: string,
+  options?: { readOptionalText?: (path: string) => Promise<string | null> }
 ): Promise<ManagedState> {
   const candidates = [
     managedStatePathForRoot(home, rootDir),
     legacyManagedStatePathForRoot(home, rootDir),
   ];
   for (const p of candidates) {
-    if (!(await fileExists(p))) {
+    const txt = options?.readOptionalText
+      ? await options.readOptionalText(p)
+      : (await fileExists(p))
+        ? await Bun.file(p).text()
+        : null;
+    if (txt === null) {
       continue;
     }
     try {
-      const txt = await Bun.file(p).text();
       const data = JSON.parse(txt) as Partial<ManagedState> | null;
       if (data?.version === MANAGED_VERSION && data.tools) {
         return { version: MANAGED_VERSION, tools: data.tools };
@@ -5036,6 +5049,8 @@ async function planCodexPluginFileChanges(args: {
 async function runCodexPluginAdd(args: {
   codexBin: string;
   cwd: string;
+  expectedHash: string;
+  expectedVersion: string;
   homeDir: string;
   marketplaceName: string;
 }): Promise<SetupCodexPluginResult["codexInstall"]> {
@@ -5046,39 +5061,152 @@ async function runCodexPluginAdd(args: {
     `fclt@${args.marketplaceName}`,
     "--json",
   ];
-  return await new Promise((resolve) => {
-    const child = spawn(args.codexBin, command.slice(1), {
-      cwd: args.cwd,
-      env: { ...process.env, HOME: args.homeDir },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => {
-      resolve({
-        status: "failed",
-        command,
-        stdout,
-        stderr: error.message,
-        code: null,
+  const run = async (command: string[]) =>
+    await new Promise<{
+      code: number | null;
+      stderr: string;
+      stdout: string;
+    }>((complete) => {
+      const child = spawn(args.codexBin, command.slice(1), {
+        cwd: args.cwd,
+        env: {
+          ...process.env,
+          CODEX_HOME: join(args.homeDir, ".codex"),
+          HOME: args.homeDir,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => {
+        complete({ stdout, stderr: error.message, code: null });
+      });
+      child.on("close", (code) => {
+        complete({ stdout, stderr, code });
       });
     });
-    child.on("close", (code) => {
-      resolve({
-        status: code === 0 ? "succeeded" : "failed",
-        command,
-        stdout,
-        stderr,
-        code,
-      });
-    });
-  });
+
+  const added = await run(command);
+  if (added.code !== 0) {
+    return { status: "failed", command, ...added };
+  }
+
+  let addOutput: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(added.stdout) as unknown;
+    if (!isPlainObject(parsed)) {
+      throw new Error("result is not an object");
+    }
+    addOutput = parsed;
+  } catch (error) {
+    return {
+      status: "failed",
+      command,
+      ...added,
+      stderr: `Codex plugin install returned invalid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const pluginId = `${FCLT_CODEX_PLUGIN_NAME}@${args.marketplaceName}`;
+  const expectedInstalledPath = join(
+    args.homeDir,
+    ".codex",
+    "plugins",
+    "cache",
+    args.marketplaceName,
+    FCLT_CODEX_PLUGIN_NAME,
+    args.expectedVersion
+  );
+  const addIdentityMatches =
+    addOutput.pluginId === pluginId &&
+    addOutput.name === FCLT_CODEX_PLUGIN_NAME &&
+    addOutput.marketplaceName === args.marketplaceName &&
+    addOutput.version === args.expectedVersion &&
+    typeof addOutput.installedPath === "string" &&
+    resolve(addOutput.installedPath) === resolve(expectedInstalledPath);
+  if (!addIdentityMatches) {
+    return {
+      status: "failed",
+      command,
+      ...added,
+      stderr: `Codex selected an unexpected plugin after install; expected ${pluginId} version ${args.expectedVersion} at ${expectedInstalledPath}.`,
+    };
+  }
+
+  const installedHash = await hashDirectoryTree(expectedInstalledPath);
+  if (installedHash !== args.expectedHash) {
+    return {
+      status: "failed",
+      command,
+      ...added,
+      stderr: `Codex installed payload for ${pluginId} does not match the bundled ${args.expectedVersion} payload.`,
+    };
+  }
+
+  const verificationCommand = [
+    args.codexBin,
+    "plugin",
+    "list",
+    "--marketplace",
+    args.marketplaceName,
+    "--json",
+  ];
+  const listed = await run(verificationCommand);
+  if (listed.code !== 0) {
+    return {
+      status: "failed",
+      command,
+      verificationCommand,
+      ...listed,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(listed.stdout) as unknown;
+    const installed = isPlainObject(parsed) ? parsed.installed : null;
+    const selected = Array.isArray(installed)
+      ? installed.find(
+          (entry) => isPlainObject(entry) && entry.pluginId === pluginId
+        )
+      : null;
+    if (
+      !isPlainObject(selected) ||
+      selected.name !== FCLT_CODEX_PLUGIN_NAME ||
+      selected.marketplaceName !== args.marketplaceName ||
+      selected.version !== args.expectedVersion ||
+      selected.installed !== true ||
+      selected.enabled !== true
+    ) {
+      throw new Error(
+        `expected ${pluginId} version ${args.expectedVersion} to be installed and enabled`
+      );
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      command,
+      verificationCommand,
+      ...listed,
+      stderr: `Codex plugin selection verification failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  return {
+    status: "succeeded",
+    command,
+    verificationCommand,
+    ...added,
+  };
 }
 
 export async function setupCodexPlugin(
@@ -5143,17 +5271,34 @@ export async function setupCodexPlugin(
     if (installInCodex) {
       const codexBin =
         opts.codexBin === undefined ? Bun.which("codex") : opts.codexBin;
-      codexInstall = codexBin
-        ? await runCodexPluginAdd({
-            codexBin,
-            cwd: home,
-            homeDir: home,
-            marketplaceName,
-          })
-        : {
-            status: "skipped",
-            reason: "codex command not found",
-          };
+      if (codexBin) {
+        const manifest = (await Bun.file(
+          join(pluginTargetDir, ".codex-plugin", "plugin.json")
+        ).json()) as unknown;
+        const expectedVersion = isPlainObject(manifest)
+          ? manifest.version
+          : null;
+        const expectedHash = await hashDirectoryTree(pluginTargetDir);
+        if (typeof expectedVersion !== "string" || !expectedVersion.trim()) {
+          throw new Error("Bundled Codex plugin manifest has no version.");
+        }
+        if (!expectedHash) {
+          throw new Error("Bundled Codex plugin payload could not be hashed.");
+        }
+        codexInstall = await runCodexPluginAdd({
+          codexBin,
+          cwd: home,
+          expectedHash,
+          expectedVersion,
+          homeDir: home,
+          marketplaceName,
+        });
+      } else {
+        codexInstall = {
+          status: "skipped",
+          reason: "codex command not found",
+        };
+      }
     }
   }
 

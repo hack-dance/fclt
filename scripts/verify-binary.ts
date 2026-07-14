@@ -13,6 +13,7 @@ const binaryPath = resolve(repoRoot, process.argv[2] ?? defaultBinary);
 const tempHome = await mkdtemp(join(tmpdir(), "fclt-binary-verify-"));
 const tempProcessTmp = join(tempHome, "tmp");
 const legacyManagedMutationFlag = "--allow-legacy-managed-mutation";
+await mkdir(tempProcessTmp, { recursive: true });
 
 async function execute(args: string[]): Promise<{
   code: number;
@@ -116,7 +117,7 @@ if (
     "Compiled default audit did not preserve its read-only boundary"
   );
 }
-const persistedAuditText = await run([
+const persistenceArgs = [
   "audit",
   "--non-interactive",
   "--no-config-from",
@@ -125,22 +126,40 @@ const persistedAuditText = await run([
   "--report-root",
   auditReportRoot,
   "--json",
-]);
-const reportNames = (await readdir(auditReportRoot)).sort();
-const reportName = reportNames.find(
-  (name) => name.startsWith("static-") && !name.endsWith(".receipt.json")
-);
-if (
-  !reportName ||
-  reportNames.length !== 2 ||
-  !reportNames.includes(reportName.replace(JSON_SUFFIX_RE, ".receipt.json")) ||
-  (await Bun.file(join(auditReportRoot, reportName)).text()) !==
-    `${JSON.stringify(JSON.parse(persistedAuditText), null, 2)}\n` ||
-  (await Bun.file(auditSkill).text()) !== auditSourceBefore
-) {
-  throw new Error(
-    "Compiled explicit audit persistence did not produce an isolated report and receipt"
+];
+if (process.platform === "win32") {
+  const blockedPersistence = await runBlocked(persistenceArgs);
+  if (
+    !blockedPersistence.includes(
+      "Audit report persistence is unavailable on win32"
+    ) ||
+    (await readdir(auditReportRoot)).length !== 0 ||
+    (await Bun.file(auditSkill).text()) !== auditSourceBefore
+  ) {
+    throw new Error(
+      "Compiled Windows audit persistence did not fail closed without source mutation"
+    );
+  }
+} else {
+  const persistedAuditText = await run(persistenceArgs);
+  const reportNames = (await readdir(auditReportRoot)).sort();
+  const reportName = reportNames.find(
+    (name) => name.startsWith("static-") && !name.endsWith(".receipt.json")
   );
+  if (
+    !reportName ||
+    reportNames.length !== 2 ||
+    !reportNames.includes(
+      reportName.replace(JSON_SUFFIX_RE, ".receipt.json")
+    ) ||
+    (await Bun.file(join(auditReportRoot, reportName)).text()) !==
+      `${JSON.stringify(JSON.parse(persistedAuditText), null, 2)}\n` ||
+    (await Bun.file(auditSkill).text()) !== auditSourceBefore
+  ) {
+    throw new Error(
+      "Compiled explicit audit persistence did not produce an isolated report and receipt"
+    );
+  }
 }
 
 const setup = JSON.parse(

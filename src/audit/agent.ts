@@ -1,9 +1,14 @@
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
-import { facultRootDir, readFacultConfig } from "../paths";
+import { basename, join } from "node:path";
+import {
+  facultConfigPath,
+  facultRootDir,
+  legacyExternalFacultStateDir,
+  parseFacultConfigText,
+} from "../paths";
 import type { AssetFile, ScanResult } from "../scan";
-import { scan } from "../scan";
+import { scan, scanDiscoveryIdentity } from "../scan";
 import {
   extractCodexTomlMcpServerBlocks,
   sanitizeCodexTomlMcpText,
@@ -16,6 +21,10 @@ import {
   parseReportRootFlag,
   persistAuditReport,
 } from "./report-persistence";
+import {
+  AuditSourceTracker,
+  validateAuditSourceSnapshot,
+} from "./source-provenance";
 import {
   applyAuditSuppressionsToAgentReport,
   loadAuditSuppressions,
@@ -324,56 +333,81 @@ function selectPreferredSkillInstance(
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function readSkillBundle(skillDir: string): Promise<string> {
+const SUPPORT_ROOTS = ["assets", "references", "scripts"] as const;
+const MAX_SUPPORT_DEPTH = 8;
+const MAX_SUPPORT_ENTRIES = 2048;
+const MAX_SUPPORT_FILES = 12;
+const MAX_SUPPORT_FILE_BYTES = 50_000;
+
+async function readSkillBundle(
+  skillDir: string,
+  sourceTracker: AuditSourceTracker
+): Promise<string> {
   const skillMd = join(skillDir, "SKILL.md");
-  const file = Bun.file(skillMd);
-  if (!(await file.exists())) {
+  const skillText = await sourceTracker.readOptionalText(skillMd);
+  if (skillText === null) {
     return "";
   }
-
-  let text = await file.text();
+  let text = skillText;
   text = sanitizeEnvAssignments(redactPossibleSecrets(text));
 
-  // Optionally include small supporting scripts/references; keep bounded.
+  await sourceTracker.readDirectory(skillDir);
+  const candidates: { path: string; rel: string }[] = [];
+  let visited = 0;
+  const visit = async (
+    directory: string,
+    relativeParts: string[]
+  ): Promise<void> => {
+    if (relativeParts.length > MAX_SUPPORT_DEPTH) {
+      throw new Error(`Skill supporting files exceed depth limit: ${skillDir}`);
+    }
+    const entries = await sourceTracker.readDirectory(directory);
+    if (entries === null) {
+      return;
+    }
+    for (const entry of entries) {
+      visited += 1;
+      if (visited > MAX_SUPPORT_ENTRIES) {
+        throw new Error(
+          `Skill supporting files exceed entry limit: ${skillDir}`
+        );
+      }
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+      const parts = [...relativeParts, entry.name];
+      const absolute = join(directory, entry.name);
+      if (entry.isSymbolicLink() || !(entry.isDirectory() || entry.isFile())) {
+        throw new Error(
+          `Skill supporting path must be a regular file or directory: ${absolute}`
+        );
+      }
+      if (entry.isDirectory()) {
+        await visit(absolute, parts);
+        continue;
+      }
+      candidates.push({ path: absolute, rel: parts.join("/") });
+    }
+  };
+  for (const root of SUPPORT_ROOTS) {
+    await visit(join(skillDir, root), [root]);
+  }
+
   const included: { rel: string; content: string }[] = [];
-  const glob = new Bun.Glob("**/*");
-  for await (const rel of glob.scan({ cwd: skillDir, onlyFiles: true })) {
-    const parts = rel.split(sep);
-    if (parts.includes("node_modules") || parts.includes(".git")) {
-      continue;
+  for (const candidate of candidates
+    .sort((a, b) => a.rel.localeCompare(b.rel))
+    .slice(0, MAX_SUPPORT_FILES)) {
+    const rawBytes = await sourceTracker.read(candidate.path);
+    if (rawBytes.byteLength > MAX_SUPPORT_FILE_BYTES) {
+      throw new Error(
+        `Skill supporting file exceeds byte limit: ${candidate.path}`
+      );
     }
-    // Always include SKILL.md only once.
-    if (rel === "SKILL.md") {
-      continue;
-    }
-    // Prefer common subdirs. Skip other files to avoid sending huge bundles.
-    const root = parts[0] ?? "";
-    if (root !== "scripts" && root !== "references" && root !== "assets") {
-      continue;
-    }
-    const abs = join(skillDir, rel);
-    const st = await Bun.file(abs)
-      .stat()
-      .catch(() => null);
-    if (!st?.isFile()) {
-      continue;
-    }
-    if (st.size > 50_000) {
-      continue;
-    }
-    const raw = await Bun.file(abs)
-      .text()
-      .catch(() => "");
-    if (!raw) {
-      continue;
-    }
+    const raw = rawBytes.toString("utf8");
     included.push({
-      rel,
+      rel: candidate.rel,
       content: sanitizeEnvAssignments(redactPossibleSecrets(raw)),
     });
-    if (included.length >= 12) {
-      break;
-    }
   }
 
   let bundle = `SKILL.md:\n${text}\n`;
@@ -390,12 +424,15 @@ async function readSkillBundle(skillDir: string): Promise<string> {
   return bundle;
 }
 
-async function readAssetBundle(asset: AssetFile): Promise<string> {
-  const file = Bun.file(asset.path);
-  if (!(await file.exists())) {
+async function readAssetBundle(
+  asset: AssetFile,
+  sourceTracker: AuditSourceTracker
+): Promise<string> {
+  const trackedText = await sourceTracker.readOptionalText(asset.path);
+  if (trackedText === null) {
     return "";
   }
-  let text = await file.text();
+  let text = trackedText;
   if (text.length > 200_000) {
     text = text.slice(0, 200_000);
   }
@@ -461,6 +498,71 @@ const PER_ITEM_SCHEMA = {
   required: ["passed", "findings", "notes"],
 } as const;
 
+const AUTH_FAILURE_RE =
+  /(?:not logged in|authentication (?:failed|required)|unauthorized|login required|please (?:log|sign) in|missing (?:api key|credentials)|invalid (?:api key|credentials|token))/i;
+
+const AUTH_ENV_BY_TOOL = {
+  claude: ["ANTHROPIC_API_KEY"],
+  codex: ["OPENAI_API_KEY"],
+} as const satisfies Record<AgentTool, readonly string[]>;
+
+class AgentAuditPreconditionError extends Error {}
+
+function profileCredentialPath(
+  tool: AgentTool,
+  homeDir: string,
+  honorEnvironmentOverrides: boolean
+): string {
+  if (tool === "codex") {
+    const codexHome =
+      (honorEnvironmentOverrides ? process.env.CODEX_HOME?.trim() : "") ||
+      join(homeDir, ".codex");
+    return join(codexHome, "auth.json");
+  }
+  const claudeConfig =
+    (honorEnvironmentOverrides ? process.env.CLAUDE_CONFIG_DIR?.trim() : "") ||
+    join(homeDir, ".claude");
+  return join(claudeConfig, ".credentials.json");
+}
+
+function hasEnvironmentAuthentication(tool: AgentTool): boolean {
+  return AUTH_ENV_BY_TOOL[tool].some(
+    (name) => typeof process.env[name] === "string" && process.env[name]!.trim()
+  );
+}
+
+async function assertSupportedAuthenticationMode(args: {
+  homeDir: string;
+  honorEnvironmentOverrides: boolean;
+  tool: AgentTool;
+}): Promise<void> {
+  // Environment credentials do not require any profile access. Native credential
+  // services remain available to the child process despite its isolated HOME.
+  if (hasEnvironmentAuthentication(args.tool)) {
+    return;
+  }
+
+  const sourcePath = profileCredentialPath(
+    args.tool,
+    args.homeDir,
+    args.honorEnvironmentOverrides
+  );
+  const profileEntry = await lstat(sourcePath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw new AgentAuditPreconditionError(
+      `Agent audit ${args.tool} profile authentication cannot be used safely in isolated non-persisting mode`
+    );
+  });
+  if (!profileEntry) {
+    return;
+  }
+  throw new AgentAuditPreconditionError(
+    `Agent audit ${args.tool} file-backed profile authentication is unsupported in isolated non-persisting mode; use ${AUTH_ENV_BY_TOOL[args.tool].join(" or ")} or native authentication`
+  );
+}
+
 function isolatedAgentEnvironment(runtimeDir: string): NodeJS.ProcessEnv {
   const home = join(runtimeDir, "home");
   return {
@@ -488,11 +590,18 @@ async function makeAgentRuntimeDir(tempRoot?: string): Promise<string> {
 
 async function runClaude(
   prompt: string,
+  profileHome: string,
+  honorEnvironmentOverrides: boolean,
   tempRoot?: string,
   signal?: AbortSignal
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const runtimeDir = await makeAgentRuntimeDir(tempRoot);
   try {
+    await assertSupportedAuthenticationMode({
+      homeDir: profileHome,
+      honorEnvironmentOverrides,
+      tool: "claude",
+    });
     const proc = Bun.spawn({
       cmd: [
         "claude",
@@ -517,6 +626,11 @@ async function runClaude(
     const stderr = await new Response(proc.stderr).text();
     const code = await proc.exited;
     if (code !== 0) {
+      if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
+        throw new AgentAuditPreconditionError(
+          "Agent audit Claude authentication is unavailable in isolated non-persisting mode"
+        );
+      }
       throw new Error(`claude exited with code ${code}: ${stderr || stdout}`);
     }
 
@@ -540,6 +654,8 @@ async function runClaude(
 
 async function runCodex(
   prompt: string,
+  profileHome: string,
+  honorEnvironmentOverrides: boolean,
   tempRoot?: string,
   signal?: AbortSignal
 ): Promise<{ output: PerItemOutput; model?: string }> {
@@ -547,6 +663,11 @@ async function runCodex(
   const schemaPath = join(dir, "schema.json");
   const outPath = join(dir, "last-message.txt");
   try {
+    await assertSupportedAuthenticationMode({
+      homeDir: profileHome,
+      honorEnvironmentOverrides,
+      tool: "codex",
+    });
     await Bun.write(
       schemaPath,
       `${JSON.stringify(PER_ITEM_SCHEMA, null, 2)}\n`
@@ -578,6 +699,11 @@ async function runCodex(
     const stderr = await new Response(proc.stderr).text();
     const code = await proc.exited;
     if (code !== 0) {
+      if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
+        throw new AgentAuditPreconditionError(
+          "Agent audit Codex authentication is unavailable in isolated non-persisting mode"
+        );
+      }
       throw new Error(`codex exited with code ${code}: ${stderr || stdout}`);
     }
 
@@ -656,15 +782,30 @@ export async function evaluateAgentAudit(opts?: {
   const argv = opts?.argv ?? [];
   const home = opts?.homeDir ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
+  const sourceTracker = new AuditSourceTracker();
 
   const includeConfigFrom =
     opts?.includeConfigFrom ?? !argv.includes("--no-config-from");
   let from = opts?.from ?? parseFromFlags(argv);
-  if (includeConfigFrom && from.length === 0) {
-    const cfg = readFacultConfig(home);
-    if (!(cfg?.scanFrom && cfg.scanFrom.length > 0)) {
-      from = ["~"];
-    }
+  const preferredConfigText = await sourceTracker.readOptionalText(
+    facultConfigPath(home)
+  );
+  const legacyConfigText = await sourceTracker.readOptionalText(
+    join(legacyExternalFacultStateDir(home), "config.json")
+  );
+  const exactConfig =
+    (preferredConfigText === null
+      ? null
+      : parseFacultConfigText(preferredConfigText)) ??
+    (legacyConfigText === null
+      ? null
+      : parseFacultConfigText(legacyConfigText));
+  if (
+    includeConfigFrom &&
+    from.length === 0 &&
+    !(exactConfig?.scanFrom && exactConfig.scanFrom.length > 0)
+  ) {
+    from = ["~"];
   }
   const requested = opts?.requested ?? requestedNameFromArgv(argv);
   const tool =
@@ -679,16 +820,31 @@ export async function evaluateAgentAudit(opts?: {
 
   const maxItems = opts?.maxItems ?? parseMaxItemsFlag(argv) ?? 50;
 
-  const scanRes: ScanResult = await scan(argv, {
+  const canonicalRoot = facultRootDir(home, exactConfig);
+  const scanOptions: NonNullable<Parameters<typeof scan>[1]> = {
     homeDir: home,
     cwd,
     includeConfigFrom,
+    configFrom: exactConfig,
+    canonicalRoot,
     includeGitHooks:
       opts?.includeGitHooks ?? argv.includes("--include-git-hooks"),
     from,
-  });
-  const canonicalRoot = facultRootDir(home);
+    readText: (path) => sourceTracker.readText(path),
+  };
+  const scanRes: ScanResult = await scan(argv, scanOptions);
+  const discoveryIdentity = scanDiscoveryIdentity(scanRes);
   const auditedRoots = auditedRootsFromScan(scanRes);
+  await sourceTracker.protect(auditedRoots);
+  for (const source of scanRes.sources) {
+    for (const pathValue of [
+      ...source.evidence,
+      ...source.skills.roots,
+      ...source.skills.entries,
+    ]) {
+      await sourceTracker.capture(pathValue);
+    }
+  }
   const runtimeTempRoot = await realpath(
     opts?.runtimeTempRoot ?? tmpdir()
   ).catch(() => null);
@@ -741,7 +897,7 @@ export async function evaluateAgentAudit(opts?: {
       if (cfg.format === "toml" || cfg.path.endsWith(".toml")) {
         let txt: string;
         try {
-          txt = await Bun.file(cfg.path).text();
+          txt = await sourceTracker.readText(cfg.path);
         } catch {
           continue;
         }
@@ -777,7 +933,7 @@ export async function evaluateAgentAudit(opts?: {
       }
       let parsed: unknown;
       try {
-        const txt = await Bun.file(cfg.path).text();
+        const txt = await sourceTracker.readText(cfg.path);
         parsed = parseJsonLenient(txt);
       } catch {
         continue;
@@ -852,7 +1008,7 @@ export async function evaluateAgentAudit(opts?: {
       if (requestedParsed && requestedParsed.name !== s.name) {
         continue;
       }
-      const content = await readSkillBundle(s.path);
+      const content = await readSkillBundle(s.path, sourceTracker);
       if (!content) {
         continue;
       }
@@ -888,7 +1044,7 @@ export async function evaluateAgentAudit(opts?: {
     for (const a of assets.sort(
       (x, y) => x.item.localeCompare(y.item) || x.path.localeCompare(y.path)
     )) {
-      const content = await readAssetBundle(a.file);
+      const content = await readAssetBundle(a.file, sourceTracker);
       if (!content) {
         continue;
       }
@@ -908,9 +1064,21 @@ export async function evaluateAgentAudit(opts?: {
     opts?.runner ??
     (async (t: AgentTool, prompt: string) => {
       if (t === "claude") {
-        return await runClaude(prompt, runtimeTempRoot, opts?.signal);
+        return await runClaude(
+          prompt,
+          home,
+          opts?.homeDir === undefined,
+          runtimeTempRoot,
+          opts?.signal
+        );
       }
-      return await runCodex(prompt, runtimeTempRoot, opts?.signal);
+      return await runCodex(
+        prompt,
+        home,
+        opts?.homeDir === undefined,
+        runtimeTempRoot,
+        opts?.signal
+      );
     });
 
   const results: AuditItemResult[] = [];
@@ -940,6 +1108,9 @@ export async function evaluateAgentAudit(opts?: {
       out = res.output;
       model = model ?? res.model;
     } catch (e: unknown) {
+      if (e instanceof AgentAuditPreconditionError || opts?.signal?.aborted) {
+        throw e;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       results.push({
         item: it.item,
@@ -1068,10 +1239,18 @@ export async function evaluateAgentAudit(opts?: {
 
   report = applyAuditSuppressionsToAgentReport(
     report,
-    await loadAuditSuppressions(home)
+    await loadAuditSuppressions(home, (path) =>
+      sourceTracker.readOptionalText(path)
+    )
   );
 
-  return { auditedRoots, report };
+  const finalScan = await scan(argv, scanOptions);
+  if (scanDiscoveryIdentity(finalScan) !== discoveryIdentity) {
+    throw new Error("Audit source discovery changed during evaluation");
+  }
+  const sourceSnapshot = sourceTracker.snapshot();
+  await validateAuditSourceSnapshot(sourceSnapshot);
+  return { auditedRoots, report, sourceSnapshot };
 }
 
 export async function runAgentAudit(
@@ -1153,6 +1332,7 @@ export async function agentAuditCommand(argv: string[]) {
         mode: "agent",
         report: evaluation.report,
         reportRoot,
+        sourceSnapshot: evaluation.sourceSnapshot,
       });
     }
   } catch (err) {

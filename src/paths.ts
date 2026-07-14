@@ -607,6 +607,65 @@ export function facultConfigPath(home: string = defaultHomeDir()): string {
   return join(preferredGlobalFacultStateDir(home), "config.json");
 }
 
+export function parseFacultConfigText(txt: string): FacultConfig | null {
+  try {
+    const parsed = parseJsonLenient(txt) as unknown;
+    if (!isPlainObject(parsed)) {
+      return null;
+    }
+    const rootDir =
+      typeof parsed.rootDir === "string" ? parsed.rootDir : undefined;
+
+    const scanFromRaw = parsed.scanFrom;
+    const scanFrom = Array.isArray(scanFromRaw)
+      ? scanFromRaw
+          .filter((v) => typeof v === "string")
+          .map((v) => v.trim())
+          .filter(Boolean)
+      : undefined;
+
+    const scanFromIgnoreRaw = parsed.scanFromIgnore;
+    const scanFromIgnore = Array.isArray(scanFromIgnoreRaw)
+      ? scanFromIgnoreRaw
+          .filter((v) => typeof v === "string")
+          .map((v) => v.trim())
+          .filter(Boolean)
+      : undefined;
+
+    const scanFromNoDefaultIgnore =
+      typeof parsed.scanFromNoDefaultIgnore === "boolean"
+        ? parsed.scanFromNoDefaultIgnore
+        : undefined;
+
+    const scanFromMaxVisitsRaw = parsed.scanFromMaxVisits;
+    const scanFromMaxVisits =
+      typeof scanFromMaxVisitsRaw === "number" &&
+      Number.isFinite(scanFromMaxVisitsRaw) &&
+      scanFromMaxVisitsRaw > 0
+        ? Math.floor(scanFromMaxVisitsRaw)
+        : undefined;
+
+    const scanFromMaxResultsRaw = parsed.scanFromMaxResults;
+    const scanFromMaxResults =
+      typeof scanFromMaxResultsRaw === "number" &&
+      Number.isFinite(scanFromMaxResultsRaw) &&
+      scanFromMaxResultsRaw > 0
+        ? Math.floor(scanFromMaxResultsRaw)
+        : undefined;
+
+    return {
+      rootDir,
+      scanFrom,
+      scanFromIgnore,
+      scanFromNoDefaultIgnore,
+      scanFromMaxVisits,
+      scanFromMaxResults,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function readFacultConfig(
   home: string = defaultHomeDir()
 ): FacultConfig | null {
@@ -622,63 +681,10 @@ export function readFacultConfig(
 
     try {
       const txt = readFileSync(p, "utf8");
-      const parsed = parseJsonLenient(txt) as unknown;
-      if (!isPlainObject(parsed)) {
-        continue;
+      const parsed = parseFacultConfigText(txt);
+      if (parsed) {
+        return parsed;
       }
-      const rootDir =
-        typeof parsed.rootDir === "string" ? parsed.rootDir : undefined;
-
-      const scanFromRaw = (parsed as Record<string, unknown>).scanFrom;
-      const scanFrom = Array.isArray(scanFromRaw)
-        ? scanFromRaw
-            .filter((v) => typeof v === "string")
-            .map((v) => v.trim())
-            .filter(Boolean)
-        : undefined;
-
-      const scanFromIgnoreRaw = (parsed as Record<string, unknown>)
-        .scanFromIgnore;
-      const scanFromIgnore = Array.isArray(scanFromIgnoreRaw)
-        ? scanFromIgnoreRaw
-            .filter((v) => typeof v === "string")
-            .map((v) => v.trim())
-            .filter(Boolean)
-        : undefined;
-
-      const scanFromNoDefaultIgnore =
-        typeof (parsed as Record<string, unknown>).scanFromNoDefaultIgnore ===
-        "boolean"
-          ? ((parsed as Record<string, unknown>)
-              .scanFromNoDefaultIgnore as boolean)
-          : undefined;
-
-      const scanFromMaxVisitsRaw = (parsed as Record<string, unknown>)
-        .scanFromMaxVisits;
-      const scanFromMaxVisits =
-        typeof scanFromMaxVisitsRaw === "number" &&
-        Number.isFinite(scanFromMaxVisitsRaw) &&
-        scanFromMaxVisitsRaw > 0
-          ? Math.floor(scanFromMaxVisitsRaw)
-          : undefined;
-
-      const scanFromMaxResultsRaw = (parsed as Record<string, unknown>)
-        .scanFromMaxResults;
-      const scanFromMaxResults =
-        typeof scanFromMaxResultsRaw === "number" &&
-        Number.isFinite(scanFromMaxResultsRaw) &&
-        scanFromMaxResultsRaw > 0
-          ? Math.floor(scanFromMaxResultsRaw)
-          : undefined;
-
-      return {
-        rootDir,
-        scanFrom,
-        scanFromIgnore,
-        scanFromNoDefaultIgnore,
-        scanFromMaxVisits,
-        scanFromMaxResults,
-      };
     } catch {
       // Ignore invalid config files and continue to the next fallback path.
     }
@@ -698,7 +704,10 @@ export function readFacultConfig(
  * 5) a legacy store under `~/agents/` (if it looks like a store)
  * 6) default: `~/.ai`
  */
-export function facultRootDir(home: string = defaultHomeDir()): string {
+export function facultRootDir(
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
+): string {
   const envRoot = process.env.FACULT_ROOT_DIR?.trim();
   const preferred = join(home, ".ai");
 
@@ -707,7 +716,7 @@ export function facultRootDir(home: string = defaultHomeDir()): string {
     return isSafePathString(resolved) ? resolved : preferred;
   }
 
-  const cfg = readFacultConfig(home);
+  const cfg = config === undefined ? readFacultConfig(home) : config;
   const cfgRoot = cfg?.rootDir?.trim();
   if (cfgRoot) {
     const resolved = resolvePath(cfgRoot, home);
@@ -763,6 +772,7 @@ export function findNearestProjectAiRoot(
 export function facultContextRootDir(args?: {
   home?: string;
   cwd?: string;
+  config?: FacultConfig | null;
 }): string {
   const home = args?.home ?? defaultHomeDir();
   const envRoot = process.env.FACULT_ROOT_DIR?.trim();
@@ -777,5 +787,8 @@ export function facultContextRootDir(args?: {
     return projectRoot;
   }
 
-  return facultRootDir(home);
+  return facultRootDir(
+    home,
+    args && "config" in args ? args.config : undefined
+  );
 }

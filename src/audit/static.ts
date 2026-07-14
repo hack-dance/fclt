@@ -4,13 +4,15 @@ import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
 import { isInlineMcpSecretValue } from "../mcp-config";
 import {
+  facultConfigPath,
   facultContextRootDir,
   facultRootDir,
   facultStateDir,
-  readFacultConfig,
+  legacyExternalFacultStateDir,
+  parseFacultConfigText,
 } from "../paths";
 import type { ScanResult } from "../scan";
-import { scan } from "../scan";
+import { scan, scanDiscoveryIdentity } from "../scan";
 import {
   extractCodexTomlMcpServerBlocks,
   sanitizeCodexTomlMcpText,
@@ -23,6 +25,10 @@ import {
   parseReportRootFlag,
   persistAuditReport,
 } from "./report-persistence";
+import {
+  AuditSourceTracker,
+  validateAuditSourceSnapshot,
+} from "./source-provenance";
 import {
   applyAuditSuppressionsToStaticReport,
   loadAuditSuppressions,
@@ -334,14 +340,12 @@ function mergeRules(base: AuditRule[], overrides: AuditRule[]): AuditRule[] {
   return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
 }
 
-async function loadRuleOverrides(path: string): Promise<AuditRule[]> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
+function loadRuleOverrides(text: string | null): AuditRule[] {
+  if (text === null) {
     return [];
   }
 
-  const txt = await file.text();
-  const parsed = parseYaml(txt) as unknown;
+  const parsed = parseYaml(text) as unknown;
   if (!isPlainObject(parsed)) {
     return [];
   }
@@ -753,27 +757,63 @@ export async function evaluateStaticAudit(opts?: {
   const home = opts?.homeDir ?? homedir();
   const rulesPath =
     opts?.rulesPath ?? join(facultStateDir(home), "audit-rules.yaml");
+  const sourceTracker = new AuditSourceTracker();
+  const rulesText = await sourceTracker.readOptionalText(rulesPath);
 
-  const overrides = await loadRuleOverrides(rulesPath);
+  const overrides = loadRuleOverrides(rulesText);
   const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));
 
   const includeConfigFrom =
     opts?.includeConfigFrom ?? !argv.includes("--no-config-from");
   let from = opts?.from ?? parseFromFlags(argv);
-  if (includeConfigFrom && from.length === 0) {
-    const cfg = readFacultConfig(home);
-    if (!(cfg?.scanFrom && cfg.scanFrom.length > 0)) {
-      from = ["~"];
-    }
+  const preferredConfigText = await sourceTracker.readOptionalText(
+    facultConfigPath(home)
+  );
+  const legacyConfigText = await sourceTracker.readOptionalText(
+    join(legacyExternalFacultStateDir(home), "config.json")
+  );
+  const exactConfig =
+    (preferredConfigText === null
+      ? null
+      : parseFacultConfigText(preferredConfigText)) ??
+    (legacyConfigText === null
+      ? null
+      : parseFacultConfigText(legacyConfigText));
+  if (
+    includeConfigFrom &&
+    from.length === 0 &&
+    !(exactConfig?.scanFrom && exactConfig.scanFrom.length > 0)
+  ) {
+    from = ["~"];
   }
-  const res: ScanResult = await scan(argv, {
+  const canonicalRoot = facultRootDir(home, exactConfig);
+  const scanOptions: NonNullable<Parameters<typeof scan>[1]> = {
     homeDir: home,
     cwd: opts?.cwd,
     includeConfigFrom,
+    configFrom: exactConfig,
+    canonicalRoot,
     includeGitHooks:
       opts?.includeGitHooks ?? argv.includes("--include-git-hooks"),
     from,
-  });
+    readText: (path) => sourceTracker.readText(path),
+  };
+  const res: ScanResult = await scan(argv, scanOptions);
+  const discoveryIdentity = scanDiscoveryIdentity(res);
+  const auditedRoots = auditedRootsFromScan(res);
+  if (rulesText !== null) {
+    auditedRoots.push(rulesPath, dirname(rulesPath));
+  }
+  await sourceTracker.protect(Array.from(new Set(auditedRoots)).sort());
+  for (const source of res.sources) {
+    for (const pathValue of [
+      ...source.evidence,
+      ...source.skills.roots,
+      ...source.skills.entries,
+    ]) {
+      await sourceTracker.capture(pathValue);
+    }
+  }
 
   const skillInstances: { name: string; path: string; sourceId: string }[] = [];
   for (const src of res.sources) {
@@ -817,12 +857,14 @@ export async function evaluateStaticAudit(opts?: {
       : { kind: "skill", name: nameArg }
     : null;
   const managedRoots = uniqueSorted([
-    facultRootDir(home),
-    facultContextRootDir({ home, cwd: opts?.cwd }),
+    canonicalRoot,
+    facultContextRootDir({ home, cwd: opts?.cwd, config: exactConfig }),
   ]);
   const managedStates = await Promise.all(
     managedRoots.map((rootDir) =>
-      loadManagedState(home, rootDir).catch(() => null)
+      loadManagedState(home, rootDir, {
+        readOptionalText: (path) => sourceTracker.readOptionalText(path),
+      })
     )
   );
   const managedMcpConfigPaths = new Set(
@@ -845,11 +887,10 @@ export async function evaluateStaticAudit(opts?: {
       continue;
     }
     const skillMdPath = join(skill.path, "SKILL.md");
-    const file = Bun.file(skillMdPath);
-    if (!(await file.exists())) {
+    const text = await sourceTracker.readOptionalText(skillMdPath);
+    if (text === null) {
       continue;
     }
-    const text = await file.text();
     const findings = applyRulesToText({
       rules,
       target: "skill",
@@ -929,14 +970,13 @@ export async function evaluateStaticAudit(opts?: {
     for (const asset of Array.from(uniqAssets.values()).sort(
       (a, b) => a.item.localeCompare(b.item) || a.path.localeCompare(b.path)
     )) {
-      const file = Bun.file(asset.path);
-      if (!(await file.exists())) {
-        continue;
-      }
-
       let text: string;
       try {
-        text = await file.text();
+        const trackedText = await sourceTracker.readOptionalText(asset.path);
+        if (trackedText === null) {
+          continue;
+        }
+        text = trackedText;
       } catch {
         continue;
       }
@@ -979,13 +1019,14 @@ export async function evaluateStaticAudit(opts?: {
     a.path.localeCompare(b.path)
   )) {
     const exposure = await getGitPathExposure(cfg.path);
+    sourceTracker.recordGitPathExposure(cfg.path, exposure);
     const isManagedOutput = managedMcpConfigPaths.has(cfg.path);
     const isToml = cfg.format === "toml" || cfg.path.endsWith(".toml");
 
     if (isToml) {
       let txt: string;
       try {
-        txt = await Bun.file(cfg.path).text();
+        txt = await sourceTracker.readText(cfg.path);
       } catch (e: unknown) {
         const err = e as { message?: string } | null;
         results.push({
@@ -1046,7 +1087,7 @@ export async function evaluateStaticAudit(opts?: {
     // Default: JSON config file parsing.
     let parsed: unknown;
     try {
-      const txt = await Bun.file(cfg.path).text();
+      const txt = await sourceTracker.readText(cfg.path);
       parsed = parseJsonLenient(txt);
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
@@ -1132,7 +1173,7 @@ export async function evaluateStaticAudit(opts?: {
     timestamp: new Date().toISOString(),
     mode: "static",
     minSeverity,
-    rulesPath: (await Bun.file(rulesPath).exists()) ? rulesPath : null,
+    rulesPath: rulesText === null ? null : rulesPath,
     results,
     summary: {
       totalItems: results.length,
@@ -1155,14 +1196,22 @@ export async function evaluateStaticAudit(opts?: {
 
   report = applyAuditSuppressionsToStaticReport(
     report,
-    await loadAuditSuppressions(home)
+    await loadAuditSuppressions(home, (path) =>
+      sourceTracker.readOptionalText(path)
+    )
   );
 
-  const auditedRoots = auditedRootsFromScan(res);
-  if (await Bun.file(rulesPath).exists()) {
-    auditedRoots.push(rulesPath, dirname(rulesPath));
+  const finalScan = await scan(argv, scanOptions);
+  if (scanDiscoveryIdentity(finalScan) !== discoveryIdentity) {
+    throw new Error("Audit source discovery changed during evaluation");
   }
-  return { auditedRoots: Array.from(new Set(auditedRoots)).sort(), report };
+  const sourceSnapshot = sourceTracker.snapshot();
+  await validateAuditSourceSnapshot(sourceSnapshot);
+  return {
+    auditedRoots: Array.from(new Set(auditedRoots)).sort(),
+    report,
+    sourceSnapshot,
+  };
 }
 
 export async function runStaticAudit(
@@ -1241,6 +1290,7 @@ export async function staticAuditCommand(argv: string[]) {
         mode: "static",
         report: evaluation.report,
         reportRoot,
+        sourceSnapshot: evaluation.sourceSnapshot,
       });
     }
   } catch (err) {

@@ -63,7 +63,13 @@ fclt audit --non-interactive --report-root /absolute/isolated/audit-reports --js
 The report is committed as content-addressed `static-<sha256>.json` or
 `agent-<sha256>.json` plus a matching `.receipt.json`. Descriptor-relative,
 exclusive creation retains the validated output-directory inode across the
-commit. fclt rejects relative or traversing paths, unresolved or
+commit. The receipt contains the evaluation-time identities and hashes of the
+exact files and derived context used by the report. fclt revalidates that
+snapshot after evaluation and again before committing, so a source change
+during a long agent call cannot be certified as the bytes that were reviewed.
+Skill support files under `assets/`, `references/`, and `scripts/` are
+deterministically enumerated, bounded, hashed, and rejected on symlink or
+special-file ambiguity. fclt rejects relative or traversing paths, unresolved or
 ambiguous destinations, symlink destinations, and any destination that
 equals, contains, or is contained by an evaluated root, skill/plugin tree,
 MCP config, hook, or asset path. Generated
@@ -73,6 +79,18 @@ as a separate explicit mutation.
 Persistence currently requires native descriptor-relative `openat`/`linkat`
 support (macOS or Linux). Other platforms fail closed rather than falling back
 to a pathname validate-then-rename sequence; read-only audit remains available.
+The compiled release verifier asserts persistence success on macOS/Linux and
+the explicit no-artifact failure contract on Windows.
+
+Agent audit subprocesses use temporary HOME, config, state, cache, and working
+directories with session persistence disabled. Profile credential files are
+never copied: supported environment authentication is passed through, and OS
+native credential services remain available without exposing the normal
+profile tree. A file-backed-only profile is rejected as a command-level
+precondition; use the tool's supported API-key environment variable or native
+authentication. Settings, hooks, sessions, and history are not copied.
+Authentication failures are command-level precondition failures, so they
+cannot become misleading per-item findings or persisted partial reports.
 
 Compatibility note: older releases refreshed
 `.ai/.facult/audit/*-latest.json` and generated index audit annotations during

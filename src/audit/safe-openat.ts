@@ -19,6 +19,12 @@ function platformConfiguration(): {
   );
 }
 
+export function auditReportPersistenceSupported(
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  return platform === "darwin" || platform === "linux";
+}
+
 export function writeExclusiveAt(args: {
   contents: string;
   directoryFd: number;

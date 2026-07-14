@@ -55,6 +55,35 @@ test("scan includeConfigFrom reads scanFrom roots from ~/.ai/.facult/config.json
   ).toBe(true);
 });
 
+test("scan uses an exact supplied config without rereading the on-disk config", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-scan-exact-config-"));
+  const home = join(dir, "home");
+  const diskRepo = join(home, "disk-projects", "repo");
+  const suppliedRepo = join(home, "supplied-projects", "repo");
+  await mkdir(join(diskRepo, ".git"), { recursive: true });
+  await mkdir(join(suppliedRepo, ".git"), { recursive: true });
+  await Bun.write(join(diskRepo, "AGENTS.md"), "disk\n");
+  await Bun.write(join(suppliedRepo, "AGENTS.md"), "supplied\n");
+  await mkdir(join(home, ".ai", ".facult"), { recursive: true });
+  await Bun.write(
+    join(home, ".ai", ".facult", "config.json"),
+    JSON.stringify({ scanFrom: ["~/disk-projects"] })
+  );
+
+  const result = await scan([], {
+    canonicalRoot: join(home, ".ai"),
+    configFrom: { scanFrom: ["~/supplied-projects"] },
+    cwd: dir,
+    homeDir: home,
+    includeConfigFrom: true,
+  });
+  const fromAssets = result.sources
+    .filter((source) => source.id.startsWith("from-"))
+    .flatMap((source) => source.assets.files.map((asset) => asset.path));
+  expect(fromAssets).toContain(join(suppliedRepo, "AGENTS.md"));
+  expect(fromAssets).not.toContain(join(diskRepo, "AGENTS.md"));
+});
+
 test("scan --json does not persist global scan state unless requested", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-scan-json-"));
   const home = join(dir, "home");

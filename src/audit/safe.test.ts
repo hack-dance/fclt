@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AgentAuditReport } from "./agent";
 import { persistAuditReport } from "./report-persistence";
 import { auditSafeCommand, runAuditSafe } from "./safe";
+import { captureAuditSourceSnapshot } from "./source-provenance";
 import { loadAuditSuppressions } from "./suppressions";
 import type { StaticAuditReport } from "./types";
 
@@ -33,6 +34,9 @@ async function writeExactReports(args: {
   );
   await mkdir(reportRoot);
   const paths: string[] = [];
+  const sourceSnapshot = await captureAuditSourceSnapshot({
+    protectedRoots: [args.homeDir],
+  });
   if (args.staticReport) {
     args.staticReport.timestamp = new Date().toISOString();
     paths.push(
@@ -41,6 +45,7 @@ async function writeExactReports(args: {
         mode: "static",
         report: args.staticReport,
         reportRoot,
+        sourceSnapshot,
       })
     );
   }
@@ -52,6 +57,7 @@ async function writeExactReports(args: {
         mode: "agent",
         report: args.agentReport,
         reportRoot,
+        sourceSnapshot,
       })
     );
   }
@@ -106,6 +112,10 @@ describe("audit safe", () => {
       mode: "static",
       report,
       reportRoot,
+      sourceSnapshot: await captureAuditSourceSnapshot({
+        evaluatedFiles: [sourcePath],
+        protectedRoots: [sourcePath],
+      }),
     });
     await expect(
       runAuditSafe({
@@ -120,6 +130,10 @@ describe("audit safe", () => {
       mode: "static",
       report,
       reportRoot,
+      sourceSnapshot: await captureAuditSourceSnapshot({
+        evaluatedFiles: [sourcePath],
+        protectedRoots: [sourcePath],
+      }),
     });
     await Bun.write(sourcePath, "# Changed\n");
     await expect(
@@ -127,7 +141,7 @@ describe("audit safe", () => {
         argv: ["--all", "--report", freshPath, "--yes"],
         homeDir: tempHome,
       })
-    ).rejects.toThrow("source-root identity changed");
+    ).rejects.toThrow("evaluated context changed");
 
     const missingReceiptPath = join(reportRoot, "static-missing.json");
     await Bun.write(missingReceiptPath, `${JSON.stringify(report)}\n`);

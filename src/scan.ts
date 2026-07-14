@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { facultRootDir, facultStateDir, readFacultConfig } from "./paths";
+import {
+  type FacultConfig,
+  facultRootDir,
+  facultStateDir,
+  readFacultConfig,
+} from "./paths";
 import {
   extractCodexTomlMcpServerBlocks,
   extractCodexTomlMcpServerNames,
@@ -20,6 +25,12 @@ export interface ScanResult {
   scannedAt: string;
   cwd: string;
   sources: SourceResult[];
+}
+
+export function scanDiscoveryIdentity(result: ScanResult): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ cwd: result.cwd, sources: result.sources }))
+    .digest("hex");
 }
 
 export interface AssetFile {
@@ -69,6 +80,8 @@ interface SourceSpec {
   configFiles?: string[];
   assets?: { kind: string; patterns: string[] }[];
 }
+
+type ScanReadText = (path: string) => Promise<string>;
 
 const GLOB_CHARS_REGEX = /[*?[]/;
 const SECRETY_STRING_RE =
@@ -164,9 +177,11 @@ async function statSafe(
   }
 }
 
-async function readJsonSafe(p: string): Promise<unknown> {
-  const f = Bun.file(p);
-  const txt = await f.text();
+async function readJsonSafe(
+  p: string,
+  readText?: ScanReadText
+): Promise<unknown> {
+  const txt = readText ? await readText(p) : await Bun.file(p).text();
   return parseJsonLenient(txt);
 }
 
@@ -205,7 +220,10 @@ async function listSkillEntries(skillRoot: string): Promise<string[]> {
   return uniqueSorted(out);
 }
 
-async function discoverMcpConfig(p: string): Promise<McpConfig | null> {
+async function discoverMcpConfig(
+  p: string,
+  readText?: ScanReadText
+): Promise<McpConfig | null> {
   const st = await statSafe(p);
   if (!st?.isFile) {
     return null;
@@ -216,7 +234,7 @@ async function discoverMcpConfig(p: string): Promise<McpConfig | null> {
   if (p.endsWith(".json")) {
     cfg.format = "json";
     try {
-      const parsed = await readJsonSafe(p);
+      const parsed = await readJsonSafe(p, readText);
       const serversObj = extractMcpServersObject(parsed);
       if (serversObj) {
         cfg.servers = uniqueSorted(Object.keys(serversObj));
@@ -230,7 +248,7 @@ async function discoverMcpConfig(p: string): Promise<McpConfig | null> {
   if (p.endsWith(".toml")) {
     cfg.format = "toml";
     try {
-      const txt = await Bun.file(p).text();
+      const txt = readText ? await readText(p) : await Bun.file(p).text();
       cfg.servers = extractCodexTomlMcpServerNames(txt);
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
@@ -266,7 +284,10 @@ function detectAssetFormat(p: string): AssetFile["format"] {
   return "unknown";
 }
 
-async function discoverAssetFile(p: string): Promise<AssetFile | null> {
+async function discoverAssetFile(
+  p: string,
+  readText?: ScanReadText
+): Promise<AssetFile | null> {
   const st = await statSafe(p);
   if (!st?.isFile) {
     return null;
@@ -277,7 +298,7 @@ async function discoverAssetFile(p: string): Promise<AssetFile | null> {
 
   if (format === "json") {
     try {
-      const parsed = await readJsonSafe(p);
+      const parsed = await readJsonSafe(p, readText);
       // Summary is derived later once we know "kind" (see discoverAssetsFromSpecs).
       // Avoid storing parsed content here to prevent persisting secrets.
       asset.summary = isPlainObject(parsed)
@@ -464,7 +485,8 @@ function uniqueSortedAssets(files: AssetFile[]): AssetFile[] {
 
 async function discoverAssetsFromSpecs(
   assets: SourceSpec["assets"],
-  home: string
+  home: string,
+  readText?: ScanReadText
 ): Promise<AssetFile[]> {
   if (!assets || assets.length === 0) {
     return [];
@@ -478,13 +500,13 @@ async function discoverAssetsFromSpecs(
       if (spec.kind === "git-hook" && p.endsWith(".sample")) {
         continue;
       }
-      const asset = await discoverAssetFile(p);
+      const asset = await discoverAssetFile(p, readText);
       if (asset) {
         // Re-parse (leniently) for known kinds so we can emit a safe summary.
         let summary: Record<string, unknown> | undefined;
         if (asset.format === "json" && !asset.error) {
           try {
-            const parsed = await readJsonSafe(p);
+            const parsed = await readJsonSafe(p, readText);
             summary = summarizeAsset(spec.kind, parsed);
           } catch {
             // ignore summary errors; keep the file listed.
@@ -504,9 +526,9 @@ async function discoverAssetsFromSpecs(
 function defaultSourceSpecs(
   cwd: string,
   home: string,
-  opts?: { includeGitHooks?: boolean }
+  opts?: { canonicalRoot?: string; includeGitHooks?: boolean }
 ): SourceSpec[] {
-  const canonicalRoot = facultRootDir(home);
+  const canonicalRoot = opts?.canonicalRoot ?? facultRootDir(home);
   const includeGitHooks = opts?.includeGitHooks ?? false;
 
   const specs: SourceSpec[] = [
@@ -928,6 +950,7 @@ async function buildFromRootResult(args: {
   root: string;
   home: string;
   opts: FromScanOptions;
+  readText?: ScanReadText;
 }): Promise<SourceResult> {
   const expanded = expandTilde(args.root, args.home);
   const abs = expanded.startsWith("/") ? expanded : resolve(expanded);
@@ -1087,7 +1110,9 @@ async function buildFromRootResult(args: {
 
     let txt = "";
     try {
-      txt = await Bun.file(gitFile).text();
+      txt = args.readText
+        ? await args.readText(gitFile)
+        : await Bun.file(gitFile).text();
     } catch {
       return;
     }
@@ -1120,7 +1145,9 @@ async function buildFromRootResult(args: {
     if (cs?.isFile) {
       let commonTxt = "";
       try {
-        commonTxt = await Bun.file(commonDirFile).text();
+        commonTxt = args.readText
+          ? await args.readText(commonDirFile)
+          : await Bun.file(commonDirFile).text();
       } catch {
         return;
       }
@@ -1405,7 +1432,7 @@ async function buildFromRootResult(args: {
 
   const mcpConfigs: McpConfig[] = [];
   for (const p of uniqueSorted([...mcpConfigPaths])) {
-    const cfg = await discoverMcpConfig(p);
+    const cfg = await discoverMcpConfig(p, args.readText);
     if (cfg) {
       mcpConfigs.push(cfg);
     }
@@ -1413,7 +1440,7 @@ async function buildFromRootResult(args: {
 
   const discoveredAssets: AssetFile[] = [];
   for (const a of assetPaths) {
-    const asset = await discoverAssetFile(a.path);
+    const asset = await discoverAssetFile(a.path, args.readText);
     if (!asset) {
       continue;
     }
@@ -1421,7 +1448,7 @@ async function buildFromRootResult(args: {
     let summary: Record<string, unknown> | undefined;
     if (asset.format === "json" && !asset.error) {
       try {
-        const parsed = await readJsonSafe(a.path);
+        const parsed = await readJsonSafe(a.path, args.readText);
         summary = summarizeAsset(a.kind, parsed);
       } catch {
         // ignore summary errors; keep the file listed.
@@ -1501,7 +1528,8 @@ const COMMON_MCP_FILENAMES = [
 ];
 
 async function discoverMcpConfigsFromRoots(
-  roots: string[]
+  roots: string[],
+  readText?: ScanReadText
 ): Promise<McpConfig[]> {
   const configs: McpConfig[] = [];
   for (const r of roots) {
@@ -1510,7 +1538,7 @@ async function discoverMcpConfigsFromRoots(
       continue;
     }
     for (const name of COMMON_MCP_FILENAMES) {
-      const cfg = await discoverMcpConfig(join(r, name));
+      const cfg = await discoverMcpConfig(join(r, name), readText);
       if (cfg) {
         configs.push(cfg);
       }
@@ -1521,26 +1549,29 @@ async function discoverMcpConfigsFromRoots(
 
 async function buildSourceResult(
   spec: SourceSpec,
-  home: string
+  home: string,
+  readText?: ScanReadText
 ): Promise<SourceResult> {
   const { roots, evidence } = await discoverRootsAndEvidence(
     spec.candidates,
     home
   );
   const skills = await discoverSkillsFromDirs(spec.skillDirs ?? [], home);
-  const assets = await discoverAssetsFromSpecs(spec.assets, home);
+  const assets = await discoverAssetsFromSpecs(spec.assets, home, readText);
 
   const configs: McpConfig[] = [];
   const configPaths = await expandPathPatterns(spec.configFiles ?? [], home);
   for (const p of configPaths) {
-    const cfg = await discoverMcpConfig(p);
+    const cfg = await discoverMcpConfig(p, readText);
     if (cfg) {
       configs.push(cfg);
     }
   }
 
   // Also opportunistically detect common MCP filenames under any discovered roots.
-  configs.push(...(await discoverMcpConfigsFromRoots(uniqueSorted(roots))));
+  configs.push(
+    ...(await discoverMcpConfigsFromRoots(uniqueSorted(roots), readText))
+  );
 
   // Claude plugins are stored under ~/.claude/plugins/cache/... and can include skills and hooks.
   // To avoid scanning the whole cache, use installed_plugins.json to find active install paths.
@@ -1554,7 +1585,7 @@ async function buildSourceResult(
     const st = await statSafe(installedPath);
     if (st?.isFile) {
       try {
-        const parsed = await readJsonSafe(installedPath);
+        const parsed = await readJsonSafe(installedPath, readText);
         const plugins = isPlainObject(parsed)
           ? ((parsed as Record<string, unknown>).plugins as unknown)
           : null;
@@ -1581,14 +1612,14 @@ async function buildSourceResult(
         const extraAssets: AssetFile[] = [];
 
         const addAsset = async (kind: string, p: string) => {
-          const asset = await discoverAssetFile(p);
+          const asset = await discoverAssetFile(p, readText);
           if (!asset) {
             return;
           }
           let summary: Record<string, unknown> | undefined;
           if (asset.format === "json" && !asset.error) {
             try {
-              const parsed = await readJsonSafe(p);
+              const parsed = await readJsonSafe(p, readText);
               summary = summarizeAsset(kind, parsed);
             } catch {
               // ignore summary errors
@@ -2199,6 +2230,10 @@ export async function scan(
     homeDir?: string;
     /** Include scan defaults from `~/.ai/.facult/config.json` (scanFrom*). */
     includeConfigFrom?: boolean;
+    /** Exact already-read config used by audit to avoid an untracked re-read. */
+    configFrom?: FacultConfig | null;
+    /** Exact canonical root derived from the already-read audit config. */
+    canonicalRoot?: string;
     /** Include git hooks + Husky hooks in results (can be noisy). Default: false. */
     includeGitHooks?: boolean;
     from?: string[];
@@ -2212,13 +2247,19 @@ export async function scan(
       /** Override max discovered paths per `--from` root. */
       maxResults?: number;
     };
+    /** Stable reader used by audit evaluation to bind every discovery byte. */
+    readText?: ScanReadText;
   }
 ): Promise<ScanResult> {
   const cwd = opts?.cwd ?? process.cwd();
   const home = opts?.homeDir ?? homedir();
   const includeGitHooks = opts?.includeGitHooks ?? false;
 
-  const cfg = opts?.includeConfigFrom ? readFacultConfig(home) : null;
+  const cfg = opts?.includeConfigFrom
+    ? opts && "configFrom" in opts
+      ? (opts.configFrom ?? null)
+      : readFacultConfig(home)
+    : null;
 
   const noDefaultIgnore =
     opts?.fromOptions?.noDefaultIgnore ?? cfg?.scanFromNoDefaultIgnore ?? false;
@@ -2247,10 +2288,15 @@ export async function scan(
     includeGitHooks,
   };
 
-  const specs = [...defaultSourceSpecs(cwd, home, { includeGitHooks })];
+  const specs = [
+    ...defaultSourceSpecs(cwd, home, {
+      canonicalRoot: opts?.canonicalRoot,
+      includeGitHooks,
+    }),
+  ];
   const sources: SourceResult[] = [];
   for (const spec of specs) {
-    sources.push(await buildSourceResult(spec, home));
+    sources.push(await buildSourceResult(spec, home, opts?.readText));
   }
 
   const fromRootsInput = [...(cfg?.scanFrom ?? []), ...(opts?.from ?? [])];
@@ -2279,6 +2325,7 @@ export async function scan(
         root,
         home,
         opts: fromOpts,
+        readText: opts?.readText,
       })
     );
   }

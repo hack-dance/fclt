@@ -88,11 +88,16 @@ export function createAuditSuppressionEntry(args: {
 }
 
 async function loadAuditSuppressionStore(
-  homeDir: string
+  homeDir: string,
+  readOptionalText?: (path: string) => Promise<string | null>
 ): Promise<AuditSuppressionStore> {
   const path = suppressionsPath(homeDir);
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
+  const text = readOptionalText
+    ? await readOptionalText(path)
+    : (await Bun.file(path).exists())
+      ? await Bun.file(path).text()
+      : null;
+  if (text === null) {
     return {
       version: 1,
       updatedAt: new Date(0).toISOString(),
@@ -100,7 +105,7 @@ async function loadAuditSuppressionStore(
     };
   }
   try {
-    const parsed = (await file.json()) as Partial<AuditSuppressionStore>;
+    const parsed = JSON.parse(text) as Partial<AuditSuppressionStore>;
     return {
       version: 1,
       updatedAt:
@@ -135,9 +140,10 @@ async function writeAuditSuppressionStore(
 }
 
 export async function loadAuditSuppressions(
-  homeDir = homedir()
+  homeDir = homedir(),
+  readOptionalText?: (path: string) => Promise<string | null>
 ): Promise<AuditSuppressionEntry[]> {
-  return (await loadAuditSuppressionStore(homeDir)).entries;
+  return (await loadAuditSuppressionStore(homeDir, readOptionalText)).entries;
 }
 
 export async function recordAuditSuppressions(args: {
