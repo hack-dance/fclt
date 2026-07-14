@@ -10,7 +10,11 @@ import {
 } from "./activity";
 import type { AiWritebackRecord } from "./ai";
 import type { EvolutionLoopReport, LoopQueueItem } from "./evolution-loop";
-import { facultAiEvolutionLoopStatePath, facultLocalStateRoot } from "./paths";
+import {
+  facultAiEvolutionLoopReportDir,
+  facultAiEvolutionLoopStatePath,
+  facultLocalStateRoot,
+} from "./paths";
 import type { ReconciliationReview } from "./reconciliation-types";
 
 function queueItem(overrides?: Partial<LoopQueueItem>): LoopQueueItem {
@@ -167,8 +171,11 @@ describe("activity feed", () => {
         writebacks: [],
         proposals: [],
       });
-      const globalReportPath = join(homeDir, "global-report.json");
-      await mkdir(globalRootDir, { recursive: true });
+      const globalReportPath = join(
+        facultAiEvolutionLoopReportDir(homeDir, globalRootDir),
+        "LR-global.json"
+      );
+      await mkdir(join(globalReportPath, ".."), { recursive: true });
       await Bun.write(globalReportPath, JSON.stringify(globalReport));
       const globalStatePath = facultAiEvolutionLoopStatePath(
         homeDir,
@@ -412,6 +419,28 @@ describe("activity feed", () => {
         "LR-project-isolation",
       ]);
 
+      const externalReportPath = join(homeDir, "outside-loop-reports.json");
+      const externalGlobalReport = report({
+        runId: "LR-global-external",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      externalGlobalReport.activity = buildActivityFeed({
+        report: externalGlobalReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await Bun.write(externalReportPath, JSON.stringify(externalGlobalReport));
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({ lastReportPath: externalReportPath })
+      );
+      const external = await latestActivitySet({ homeDir, globalRootDir });
+      expect(external.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+
       const malformedGlobalReport = report({
         runId: "LR-global-malformed",
         scope: "global",
@@ -421,7 +450,11 @@ describe("activity feed", () => {
         version: 1,
         scope: "global",
       };
-      const globalReportPath = join(homeDir, "global-malformed.json");
+      const globalReportPath = join(
+        facultAiEvolutionLoopReportDir(homeDir, globalRootDir),
+        "LR-global-malformed.json"
+      );
+      await mkdir(join(globalReportPath, ".."), { recursive: true });
       await Bun.write(globalReportPath, JSON.stringify(malformedGlobalReport));
       await Bun.write(
         globalStatePath,
@@ -442,6 +475,27 @@ describe("activity feed", () => {
         complete: false,
       });
       expect(malformed.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+
+      await Bun.write(
+        globalReportPath,
+        JSON.stringify({
+          ...malformedGlobalReport,
+          padding: "x".repeat(2_000_001),
+        })
+      );
+      expect((await Bun.file(globalReportPath).stat()).size).toBeGreaterThan(
+        2_000_000
+      );
+      const oversized = await latestActivitySet({ homeDir, globalRootDir });
+      expect(oversized.coverage).toMatchObject({
+        configuredScopes: 2,
+        reportingScopes: 1,
+        unavailableScopes: 1,
+        complete: false,
+      });
+      expect(oversized.feeds.map((entry) => entry.feed.run.id)).toEqual([
         "LR-project-isolation",
       ]);
     } finally {
@@ -473,13 +527,16 @@ describe("activity feed", () => {
         state: "checked" as const,
       }));
       (activity as unknown as Record<string, unknown>).padding = Array.from(
-        { length: 2000 },
-        (_, index) => `${"Bounded portable context ".repeat(50)}${index}`
+        { length: 1800 },
+        (_, index) => `${"x".repeat(900)}${index}`
       );
       globalReport.activity = activity;
 
-      const globalReportPath = join(homeDir, "global-budget.json");
-      await mkdir(globalRootDir, { recursive: true });
+      const globalReportPath = join(
+        facultAiEvolutionLoopReportDir(homeDir, globalRootDir),
+        "LR-global-budget.json"
+      );
+      await mkdir(join(globalReportPath, ".."), { recursive: true });
       await Bun.write(globalReportPath, JSON.stringify(globalReport));
       const globalStatePath = facultAiEvolutionLoopStatePath(
         homeDir,

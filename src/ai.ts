@@ -3046,9 +3046,9 @@ async function loopCommand(argv: string[]) {
         renderActivityFeed,
         renderActivitySet,
       } = await import("./activity");
-      const allScopes =
-        commandArgs.includes("--all") || parsed.scope === "merged";
-      if (commandArgs.includes("--all") && parsed.scope !== "merged") {
+      const explicitAllScopes = commandArgs.includes("--all");
+      const allScopes = explicitAllScopes || parsed.scope === "merged";
+      if (explicitAllScopes && parsed.scope !== "merged") {
         throw new Error("Conflicting scope flags");
       }
       if (allScopes) {
@@ -3058,7 +3058,10 @@ async function loopCommand(argv: string[]) {
           rootArg: parsed.rootArg,
           scope: "global",
         });
-        if (projectRootFromAiRoot(globalRootDir, homeDir)) {
+        if (
+          !explicitAllScopes &&
+          projectRootFromAiRoot(globalRootDir, homeDir)
+        ) {
           throw new Error(
             "All-scope activity accepts only a global --root; use --project for one project"
           );

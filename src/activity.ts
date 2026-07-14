@@ -13,7 +13,12 @@ import {
   type LoopQueueItem,
   latestEvolutionLoopReport,
 } from "./evolution-loop";
-import { facultLocalStateRoot } from "./paths";
+import {
+  facultAiEvolutionLoopReportDir,
+  facultAiEvolutionLoopStatePath,
+  facultLocalStateRoot,
+  withFacultRootScope,
+} from "./paths";
 import { reconciliationReviewById } from "./reconciliation";
 import { redactReconciliationText } from "./reconciliation-adapters";
 import type {
@@ -1158,11 +1163,14 @@ function boundedAggregateFeed(feed: ActivityFeed): {
   };
 }
 
-function activityFeedFromReport(value: unknown): ActivityFeed | null {
+function activityFeedFromReport(
+  value: unknown,
+  expectedScope: "global" | "project"
+): ActivityFeed | null {
   if (
     !isRecord(value) ||
     value.version !== 1 ||
-    value.scope !== "project" ||
+    value.scope !== expectedScope ||
     typeof value.generatedAt !== "string" ||
     !Array.isArray(value.queue) ||
     !Array.isArray(value.coverage)
@@ -1170,8 +1178,16 @@ function activityFeedFromReport(value: unknown): ActivityFeed | null {
     return null;
   }
   const report = value as unknown as EvolutionLoopReport;
-  if (isActivityFeed(report.activity) && report.activity.scope === "project") {
-    return boundedAggregateFeed(report.activity).feed;
+  if (report.activity !== undefined) {
+    if (
+      isActivityFeed(report.activity) &&
+      report.activity.scope === expectedScope
+    ) {
+      return boundedAggregateFeed(report.activity).feed;
+    }
+    if (expectedScope === "global") {
+      return null;
+    }
   }
   try {
     return boundedAggregateFeed(
@@ -1196,11 +1212,13 @@ async function readBoundedJson(pathValue: string, maxBytes: number) {
   return JSON.parse(await readFile(pathValue, "utf8")) as unknown;
 }
 
-async function latestProjectActivityFromLoopDir(
-  loopDir: string
-): Promise<ActivityFeed | null> {
+async function latestActivityFromLoopFiles(args: {
+  statePath: string;
+  reportDir: string;
+  scope: "global" | "project";
+}): Promise<ActivityFeed | null> {
   try {
-    const state = await readBoundedJson(join(loopDir, "state.json"), 100_000);
+    const state = await readBoundedJson(args.statePath, 100_000);
     if (!isRecord(state) || typeof state.lastReportPath !== "string") {
       return null;
     }
@@ -1210,15 +1228,41 @@ async function latestProjectActivityFromLoopDir(
     }
     return activityFeedFromReport(
       await readBoundedJson(
-        join(loopDir, "reports", reportName),
+        join(args.reportDir, reportName),
         MAX_ACTIVITY_REPORT_BYTES
-      )
+      ),
+      args.scope
     );
   } catch {
-    // A malformed or missing latest report makes only this project unavailable;
+    // A malformed or missing latest report makes only this scope unavailable;
     // other scopes must remain visible in the aggregate read model.
     return null;
   }
+}
+
+async function latestProjectActivityFromLoopDir(
+  loopDir: string
+): Promise<ActivityFeed | null> {
+  return await latestActivityFromLoopFiles({
+    statePath: join(loopDir, "state.json"),
+    reportDir: join(loopDir, "reports"),
+    scope: "project",
+  });
+}
+
+async function latestGlobalActivity(args: {
+  homeDir: string;
+  rootDir: string;
+}): Promise<ActivityFeed | null> {
+  return await withFacultRootScope(
+    { rootDir: args.rootDir, scope: "global" },
+    async () =>
+      await latestActivityFromLoopFiles({
+        statePath: facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir),
+        reportDir: facultAiEvolutionLoopReportDir(args.homeDir, args.rootDir),
+        scope: "global",
+      })
+  );
 }
 
 function projectScopeId(machineKey: string): string {
@@ -1312,20 +1356,10 @@ export async function latestActivitySet(args: {
   globalRootDir: string;
 }): Promise<ActivitySet> {
   const [globalFeed, discovery] = await Promise.all([
-    (async () => {
-      try {
-        const feed = await latestActivityFeed({
-          homeDir: args.homeDir,
-          rootDir: args.globalRootDir,
-          scope: "global",
-        });
-        return feed && isActivityFeed(feed)
-          ? boundedAggregateFeed(feed).feed
-          : null;
-      } catch {
-        return null;
-      }
-    })(),
+    latestGlobalActivity({
+      homeDir: args.homeDir,
+      rootDir: args.globalRootDir,
+    }),
     configuredProjectActivity({ homeDir: args.homeDir }),
   ]);
   const feeds: ActivitySet["feeds"] = [
