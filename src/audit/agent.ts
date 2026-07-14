@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
-import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
+import { facultRootDir, readFacultConfig } from "../paths";
 import type { AssetFile, ScanResult } from "../scan";
 import { scan } from "../scan";
 import {
@@ -9,6 +9,12 @@ import {
   sanitizeCodexTomlMcpText,
 } from "../util/codex-toml";
 import { parseJsonLenient } from "../util/json";
+import {
+  type AuditEvaluation,
+  auditedRootsFromScan,
+  parseReportRootFlag,
+  persistAuditReport,
+} from "./report-persistence";
 import {
   applyAuditSuppressionsToAgentReport,
   loadAuditSuppressions,
@@ -71,18 +77,24 @@ function requestedNameFromArgv(argv: string[]): string | null {
     if (!arg) {
       continue;
     }
-    if (arg === "--with" || arg === "--from" || arg === "--max-items") {
+    if (
+      arg === "--with" ||
+      arg === "--from" ||
+      arg === "--max-items" ||
+      arg === "--report-root"
+    ) {
       i += 1;
       continue;
     }
     if (
       arg.startsWith("--with=") ||
       arg.startsWith("--from=") ||
-      arg.startsWith("--max-items=")
+      arg.startsWith("--max-items=") ||
+      arg.startsWith("--report-root=")
     ) {
       continue;
     }
-    if (arg === "--json") {
+    if (arg === "--json" || arg === "--update-index") {
       continue;
     }
     if (arg.startsWith("-")) {
@@ -561,7 +573,7 @@ ${args.content}
 `;
 }
 
-export async function runAgentAudit(opts?: {
+export async function evaluateAgentAudit(opts?: {
   argv?: string[];
   homeDir?: string;
   cwd?: string;
@@ -584,7 +596,7 @@ export async function runAgentAudit(opts?: {
     item: string;
     path: string;
   }) => void;
-}): Promise<AgentAuditReport> {
+}): Promise<AuditEvaluation<AgentAuditReport>> {
   const argv = opts?.argv ?? [];
   const home = opts?.homeDir ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
@@ -980,17 +992,16 @@ export async function runAgentAudit(opts?: {
     await loadAuditSuppressions(home)
   );
 
-  const auditDir = join(facultStateDir(home), "audit");
-  await mkdir(auditDir, { recursive: true });
-  await Bun.write(
-    join(auditDir, "agent-latest.json"),
-    `${JSON.stringify(report, null, 2)}\n`
-  );
-
-  return report;
+  return { auditedRoots: auditedRootsFromScan(scanRes), report };
 }
 
-function printHuman(report: AgentAuditReport) {
+export async function runAgentAudit(
+  opts?: Parameters<typeof evaluateAgentAudit>[0]
+) {
+  return (await evaluateAgentAudit(opts)).report;
+}
+
+function printHuman(report: AgentAuditReport, reportPath?: string) {
   console.log("Agent Security Audit");
   console.log("====================");
   console.log("");
@@ -1042,32 +1053,47 @@ function printHuman(report: AgentAuditReport) {
     `By severity: critical=${report.summary.bySeverity.critical}, high=${report.summary.bySeverity.high}, medium=${report.summary.bySeverity.medium}, low=${report.summary.bySeverity.low}`
   );
   console.log(
-    `Wrote ${join(facultStateDir(homedir()), "audit", "agent-latest.json")}`
+    reportPath
+      ? `Wrote ${reportPath}`
+      : "Read-only: no report or index state written."
   );
 }
 
 export async function agentAuditCommand(argv: string[]) {
   const json = argv.includes("--json");
+  const reportRoot = parseReportRootFlag(argv);
+  const updateIndex = argv.includes("--update-index");
 
-  let report: AgentAuditReport;
+  let evaluation: AuditEvaluation<AgentAuditReport>;
+  let reportPath: string | undefined;
   try {
-    report = await runAgentAudit({ argv });
+    evaluation = await evaluateAgentAudit({ argv });
+    if (reportRoot) {
+      reportPath = await persistAuditReport({
+        auditedRoots: evaluation.auditedRoots,
+        mode: "agent",
+        report: evaluation.report,
+        reportRoot,
+      });
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return;
   }
 
-  // Best-effort: update index.json auditStatus/lastAuditAt for canonical items.
-  await updateIndexFromAuditReport({
-    timestamp: report.timestamp,
-    results: report.results,
-  });
+  const report = evaluation.report;
+  if (updateIndex) {
+    await updateIndexFromAuditReport({
+      timestamp: report.timestamp,
+      results: report.results,
+    });
+  }
 
   if (json) {
     console.log(JSON.stringify(report, null, 2));
     return;
   }
 
-  printHuman(report);
+  printHuman(report, reportPath);
 }

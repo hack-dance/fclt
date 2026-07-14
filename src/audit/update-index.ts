@@ -1,5 +1,4 @@
 import { homedir } from "node:os";
-import { ensureAiIndexPath } from "../ai-state";
 import type { FacultIndex } from "../index-builder";
 import { facultAiIndexPath, facultRootDir } from "../paths";
 import { computeStoredAuditStatus } from "./status";
@@ -23,11 +22,7 @@ function ensureIndexStructure(index: FacultIndex): FacultIndex {
 }
 
 async function loadIndex(homeDir: string): Promise<FacultIndex | null> {
-  const { path: indexPath } = await ensureAiIndexPath({
-    homeDir,
-    rootDir: facultRootDir(homeDir),
-    repair: true,
-  });
+  const indexPath = facultAiIndexPath(homeDir, facultRootDir(homeDir));
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     return null;

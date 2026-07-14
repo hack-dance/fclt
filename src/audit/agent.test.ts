@@ -61,7 +61,7 @@ test("agent audit runs over discovered skills and MCP servers (with injected run
   ).toBe(true);
 
   const outPath = join(home, ".ai", ".facult", "audit", "agent-latest.json");
-  expect(await Bun.file(outPath).exists()).toBe(true);
+  expect(await Bun.file(outPath).exists()).toBe(false);
 });
 
 test("agent audit respects requested skill filter (does not audit MCP servers)", async () => {

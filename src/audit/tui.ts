@@ -714,13 +714,11 @@ export async function auditTuiCommand(argv: string[]) {
 
   if (reports.static) {
     log.info(
-      `Static report saved to ${join(facultStateDir(homedir()), "audit", "static-latest.json")}`
+      "Static audit is read-only; no report or index state was written."
     );
   }
   if (reports.agent) {
-    log.info(
-      `Agent report saved to ${join(facultStateDir(homedir()), "audit", "agent-latest.json")}`
-    );
+    log.info("Agent audit is read-only; no report or index state was written.");
   }
 
   let review: "static" | "agent" | "combined" = reports.agent

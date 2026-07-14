@@ -12,7 +12,15 @@ Usage:
   fclt audit fix <item> [--path <path>] [--source <static|agent|combined>]
   fclt audit safe <item> [--rule <id>] [--location <text>] [--message <text>]
   fclt audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
+  fclt audit --non-interactive ... --report-root <absolute-existing-directory>
+  fclt audit --non-interactive ... --update-index
   fclt audit --non-interactive [name|mcp:<name>] --with <claude|codex> [--from <path>] [--max-items <n|all>] [--json]
+
+Safety:
+  - Audit evaluation is read-only by default and writes no report or index state.
+  - --report-root atomically writes <mode>-latest.json outside every audited root.
+  - --update-index is a separate explicit mutation of canonical generated state.
+  - Report roots that overlap, traverse, alias, or symlink are rejected.
 
 Legacy (still supported; prefer --non-interactive):
   fclt audit static ...

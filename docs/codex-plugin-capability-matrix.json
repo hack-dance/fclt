@@ -602,9 +602,9 @@
       "risk": "read_only",
       "scope": "explicit asset or roots",
       "preview": "not_applicable",
-      "apply": "not_applicable",
+      "apply": "report and index persistence deliberately omitted",
       "rollback": "not_applicable",
-      "verification": "static findings are redacted and source locations stay within allowed roots"
+      "verification": "static findings are redacted, source locations stay within allowed roots, and byte snapshots prove zero audited-root mutation"
     },
     {
       "id": "audit.fix_safe",

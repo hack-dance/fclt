@@ -1,8 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { facultBuiltinCodexPluginRoot } from "./builtin";
 
 const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
@@ -26,6 +35,34 @@ function compatibleStubScript(): string {
     "}",
     "",
   ].join("\n");
+}
+
+async function writeFile(path: string, contents: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await Bun.write(path, contents);
+}
+
+async function snapshotTree(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  async function visit(directory: string, prefix: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolute = join(directory, entry.name);
+      const relative = prefix ? join(prefix, entry.name) : entry.name;
+      if (entry.isDirectory()) {
+        snapshot[relative] = "directory";
+        await visit(absolute, relative);
+      } else if (entry.isSymbolicLink()) {
+        snapshot[relative] = `symlink:${await readlink(absolute)}`;
+      } else {
+        snapshot[relative] = `file:${createHash("sha256")
+          .update(await readFile(absolute))
+          .digest("hex")}`;
+      }
+    }
+  }
+  await visit(root, "");
+  return snapshot;
 }
 
 function readFrame(stream: NodeJS.ReadableStream): Promise<unknown> {
@@ -679,6 +716,77 @@ describe("bundled fclt MCP plugin", () => {
       expect(
         automation?.inputSchema?.oneOf?.[0]?.properties?.scope
       ).toMatchObject({ default: "all" });
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("keeps the typed audit entry byte-for-byte read-only", async () => {
+    const base = await mkdtemp(join(tmpdir(), "facult-mcp-audit-"));
+    const home = join(base, "home");
+    const wrapper = join(base, "fclt-wrapper.cjs");
+    await writeFile(
+      join(home, ".ai", "skills", "review", "SKILL.md"),
+      "Review safely.\n"
+    );
+    await writeFile(
+      join(home, ".ai", ".facult", "audit", "static-latest.json"),
+      "protected report bytes\n"
+    );
+    await writeFile(
+      join(home, ".ai", ".facult", "ai", "index.json"),
+      `${JSON.stringify({ version: 1, updatedAt: "protected", skills: {} })}\n`
+    );
+    await Bun.write(
+      wrapper,
+      [
+        `#!${process.execPath}`,
+        `import { spawnSync } from "node:child_process";`,
+        `const result = spawnSync(process.execPath, [${JSON.stringify(join(import.meta.dir, "index.ts"))}, ...process.argv.slice(2)], { env: process.env, stdio: "inherit" });`,
+        "process.exit(result.status ?? 1);",
+        "",
+      ].join("\n")
+    );
+    await chmod(wrapper, 0o755);
+
+    const before = await snapshotTree(home);
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawn(
+      process.execPath,
+      [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          FACULT_ROOT_DIR: join(home, ".ai"),
+          FCLT_BIN: wrapper,
+          HOME: home,
+          PWD: home,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
+
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_audit",
+            arguments: { action: "scan", cwd: home, severity: "high" },
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(response.result?.isError).toBe(false);
+      const payload = toolPayload(response);
+      expect(payload.result.exitCode).toBe(0);
+      expect(payload.result.stdout).toMatchObject({ mode: "static" });
+      expect(await snapshotTree(home)).toEqual(before);
     } finally {
       child.kill();
     }

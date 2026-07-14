@@ -49,6 +49,37 @@ fclt audit --non-interactive --severity high
 fclt audit --non-interactive mcp:github --severity medium --json
 ```
 
+These commands are literally read-only: library evaluation, the interactive
+initial scan, the non-interactive CLI, and the typed `fclt_audit` MCP operation
+do not write latest-report files or generated index annotations.
+
+Persist a report only to an isolated root that already exists:
+
+```bash
+mkdir -p /absolute/isolated/audit-reports
+fclt audit --non-interactive --report-root /absolute/isolated/audit-reports --json
+```
+
+The report is written atomically as `static-latest.json` or
+`agent-latest.json`. fclt rejects relative or traversing paths, unresolved or
+ambiguous destinations, symlink destinations, and any destination that
+equals, contains, or is contained by an audited source root. Generated
+`index.json` annotations are also withheld unless `--update-index` is supplied
+as a separate explicit mutation.
+
+Compatibility note: older releases refreshed
+`.ai/.facult/audit/*-latest.json` and generated index audit annotations during
+every audit. Those implicit writes are removed. Existing saved reports remain
+available to the explicit `audit safe` and `audit fix` workflows, but a new
+read-only audit does not silently replace them.
+
+Root cause of the old behavior: the static and agent library runners wrote
+their latest reports before returning; both non-interactive CLI wrappers then
+updated the canonical generated index; the interactive audit called those same
+runners; and the typed MCP audit routed to the non-interactive CLI. Read-only
+entry points therefore shared persistence code instead of merely evaluating
+the scanned source.
+
 Suppress or fix reviewed findings:
 
 ```bash

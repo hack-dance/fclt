@@ -80,6 +80,10 @@ describe("audit fix", () => {
         (finding) => finding.ruleId === "mcp-env-inline-secret"
       )
     ).toBe(true);
+    await writeJson(
+      join(facultStateDir(tempHome), "audit", "static-latest.json"),
+      before
+    );
 
     process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
     await expect(

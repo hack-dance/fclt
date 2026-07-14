@@ -228,7 +228,7 @@ const tools = [
   {
     name: "fclt_audit",
     description:
-      "Run a structured, redacted, non-interactive fclt security audit.",
+      "Run a structured, redacted, non-interactive fclt security audit with no report or index writes.",
     inputSchema: {
       type: "object",
       properties: {
