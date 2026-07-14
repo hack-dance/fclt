@@ -1311,17 +1311,23 @@ export async function latestActivitySet(args: {
   homeDir: string;
   globalRootDir: string;
 }): Promise<ActivitySet> {
-  const [rawGlobalFeed, discovery] = await Promise.all([
-    latestActivityFeed({
-      homeDir: args.homeDir,
-      rootDir: args.globalRootDir,
-      scope: "global",
-    }),
+  const [globalFeed, discovery] = await Promise.all([
+    (async () => {
+      try {
+        const feed = await latestActivityFeed({
+          homeDir: args.homeDir,
+          rootDir: args.globalRootDir,
+          scope: "global",
+        });
+        return feed && isActivityFeed(feed)
+          ? boundedAggregateFeed(feed).feed
+          : null;
+      } catch {
+        return null;
+      }
+    })(),
     configuredProjectActivity({ homeDir: args.homeDir }),
   ]);
-  const globalFeed = rawGlobalFeed
-    ? boundedAggregateFeed(rawGlobalFeed).feed
-    : null;
   const feeds: ActivitySet["feeds"] = [
     ...(globalFeed ? [{ scopeId: "global", feed: globalFeed }] : []),
     ...discovery.projects.flatMap((project) =>
@@ -1429,18 +1435,78 @@ export async function latestActivitySet(args: {
       discoveryTruncated: discovery.discoveryTruncated,
     },
   };
+  const omittedScopeIds = new Set(
+    result.scopes
+      .filter((scope) => scope.state === "omitted")
+      .map((scope) => scope.id)
+  );
   while (Buffer.byteLength(JSON.stringify(result)) > MAX_ACTIVITY_SET_BYTES) {
-    const entry = [...result.feeds]
+    const itemEntry = [...result.feeds]
       .reverse()
       .find((candidate) => candidate.feed.items.length > 0);
-    if (!entry) {
-      break;
+    if (itemEntry) {
+      itemEntry.feed.items.pop();
+      omittedItems += 1;
+      result.truncation.omittedItems = omittedItems;
+      result.truncation.truncated = true;
+      result.coverage.complete = false;
+      continue;
     }
-    entry.feed.items.pop();
-    omittedItems += 1;
-    result.truncation.omittedItems = omittedItems;
-    result.truncation.truncated = true;
+
+    const sourceEntry = [...result.feeds]
+      .reverse()
+      .find((candidate) => candidate.feed.coverage.sources.length > 0);
+    if (sourceEntry) {
+      sourceEntry.feed.coverage.sources.pop();
+      sourceEntry.feed.coverage.complete = false;
+      result.truncation.omittedSources += 1;
+      result.truncation.truncated = true;
+      result.coverage.complete = false;
+      continue;
+    }
+
+    const feedEntry = result.feeds.pop();
+    if (feedEntry) {
+      const scopeIndex = result.scopes.findIndex(
+        (scope) => scope.id === feedEntry.scopeId
+      );
+      if (scopeIndex >= 0) {
+        const scope = result.scopes[scopeIndex];
+        if (scope) {
+          result.scopes[scopeIndex] = {
+            id: scope.id,
+            scope: scope.scope,
+            state: "omitted",
+          };
+          omittedScopeIds.add(scope.id);
+        }
+      }
+      result.coverage.reportingScopes = result.feeds.length;
+      result.truncation.omittedScopes = omittedScopeIds.size;
+      result.truncation.truncated = true;
+      result.coverage.complete = false;
+      continue;
+    }
+
+    const scope = result.scopes.pop();
+    if (scope) {
+      omittedScopeIds.add(scope.id);
+      result.truncation.omittedScopes = omittedScopeIds.size;
+      result.truncation.truncated = true;
+      result.coverage.complete = false;
+      continue;
+    }
+
+    break;
+  }
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_ACTIVITY_SET_BYTES) {
+    result.generatedAt = null;
     result.coverage.complete = false;
+    result.coverage.reportingScopes = 0;
+    result.scopes = [];
+    result.feeds = [];
+    result.truncation.omittedScopes = result.coverage.configuredScopes;
+    result.truncation.truncated = true;
   }
   return result;
 }

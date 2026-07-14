@@ -355,6 +355,174 @@ describe("activity feed", () => {
     }
   });
 
+  it("isolates malformed or unreadable Global activity while project scopes keep reporting", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-isolation-"));
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const globalStatePath = facultAiEvolutionLoopStatePath(
+        homeDir,
+        globalRootDir
+      );
+      await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(globalStatePath, "{not-json");
+
+      const projectLoopDir = join(
+        facultLocalStateRoot(homeDir),
+        "projects",
+        "generic-project",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const projectReport = report({ runId: "LR-project-isolation" });
+      projectReport.activity = buildActivityFeed({
+        report: projectReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await mkdir(join(projectLoopDir, "reports"), { recursive: true });
+      await Bun.write(
+        join(projectLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(projectLoopDir, "state.json"),
+        JSON.stringify({ lastReportPath: "LR-project-isolation.json" })
+      );
+      await Bun.write(
+        join(projectLoopDir, "reports", "LR-project-isolation.json"),
+        JSON.stringify(projectReport)
+      );
+
+      const unreadable = await latestActivitySet({ homeDir, globalRootDir });
+      expect(unreadable.coverage).toMatchObject({
+        configuredScopes: 2,
+        reportingScopes: 1,
+        unavailableScopes: 1,
+        complete: false,
+      });
+      expect(unreadable.scopes.find((scope) => scope.id === "global")).toEqual({
+        id: "global",
+        scope: "global",
+        state: "unavailable",
+      });
+      expect(unreadable.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+
+      const malformedGlobalReport = report({
+        runId: "LR-global-malformed",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      (malformedGlobalReport as unknown as { activity: unknown }).activity = {
+        version: 1,
+        scope: "global",
+      };
+      const globalReportPath = join(homeDir, "global-malformed.json");
+      await Bun.write(globalReportPath, JSON.stringify(malformedGlobalReport));
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: globalReportPath,
+        })
+      );
+
+      const malformed = await latestActivitySet({ homeDir, globalRootDir });
+      expect(malformed.coverage).toMatchObject({
+        configuredScopes: 2,
+        reportingScopes: 1,
+        unavailableScopes: 1,
+        complete: false,
+      });
+      expect(malformed.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces the aggregate byte budget after items are exhausted", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-budget-"));
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const globalReport = report({
+        runId: "LR-global-budget",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      const activity = buildActivityFeed({
+        report: globalReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      activity.items = [];
+      activity.counts.total = 0;
+      activity.coverage.checked = 25;
+      activity.coverage.sources = Array.from({ length: 25 }, (_, index) => ({
+        id: `source-${index}`,
+        label: `Source ${index}`,
+        state: "checked" as const,
+      }));
+      (activity as unknown as Record<string, unknown>).padding = Array.from(
+        { length: 2000 },
+        (_, index) => `${"Bounded portable context ".repeat(50)}${index}`
+      );
+      globalReport.activity = activity;
+
+      const globalReportPath = join(homeDir, "global-budget.json");
+      await mkdir(globalRootDir, { recursive: true });
+      await Bun.write(globalReportPath, JSON.stringify(globalReport));
+      const globalStatePath = facultAiEvolutionLoopStatePath(
+        homeDir,
+        globalRootDir
+      );
+      await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: globalReportPath,
+        })
+      );
+
+      const set = await latestActivitySet({ homeDir, globalRootDir });
+
+      expect(Buffer.byteLength(JSON.stringify(set))).toBeLessThanOrEqual(
+        1_500_000
+      );
+      expect(set.coverage).toMatchObject({
+        configuredScopes: 1,
+        reportingScopes: 0,
+        complete: false,
+      });
+      expect(set.truncation).toEqual({
+        truncated: true,
+        omittedScopes: 1,
+        omittedItems: 0,
+        omittedSources: 25,
+        discoveryTruncated: false,
+      });
+      expect(set.scopes).toEqual([
+        { id: "global", scope: "global", state: "omitted" },
+      ]);
+      expect(set.feeds).toEqual([]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("produces a deterministic portable snapshot with bounded privacy-aware observations", () => {
     const feed = buildActivityFeed({
       report: report(),
