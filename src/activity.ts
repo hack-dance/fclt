@@ -1,4 +1,7 @@
-import { basename } from "node:path";
+import { createHash } from "node:crypto";
+import type { Dirent } from "node:fs";
+import { lstat, readdir, readFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type {
   AiProposalRecord,
   AiWritebackRecord,
@@ -10,6 +13,7 @@ import {
   type LoopQueueItem,
   latestEvolutionLoopReport,
 } from "./evolution-loop";
+import { facultLocalStateRoot } from "./paths";
 import { reconciliationReviewById } from "./reconciliation";
 import { redactReconciliationText } from "./reconciliation-adapters";
 import type {
@@ -21,6 +25,13 @@ import type {
 const MAX_OBSERVATIONS_PER_ITEM = 10;
 const MAX_TARGETS_PER_ITEM = 5;
 const MAX_LINKS_PER_ITEM = 5;
+const MAX_ACTIVITY_REPORT_BYTES = 2_000_000;
+const MAX_ACTIVITY_SET_BYTES = 1_500_000;
+const MAX_ACTIVITY_SET_ITEMS = 250;
+const MAX_ACTIVITY_SET_PROJECTS = 50;
+const MAX_ACTIVITY_SET_SOURCES_PER_FEED = 25;
+const MAX_DISCOVERED_PROJECT_STATE_DIRS = 1000;
+const MAX_PORTABLE_AGGREGATE_STRING_LENGTH = 1000;
 const FILE_URL_PATH_RE = /\bfile:\/\/[^\s)\]}>"'`,;]+/gi;
 const WINDOWS_ABSOLUTE_PATH_RE =
   /\b[A-Za-z]:[\\/](?:[^\\/\s)\]}>"'`,;]+[\\/])*[^\\/\s)\]}>"'`,;]*/g;
@@ -170,6 +181,40 @@ export interface ActivityFeed {
     unchangedSuppressed: number;
   };
   items: ActivityItem[];
+}
+
+export interface ActivitySet {
+  version: 2;
+  kind: "activity-set";
+  mode: "latest";
+  scope: "all";
+  generatedAt: string | null;
+  coverage: {
+    complete: boolean;
+    configuredScopes: number;
+    reportingScopes: number;
+    unavailableScopes: number;
+    checkedSources: number;
+    degradedSources: number;
+  };
+  counts: ActivityFeed["counts"];
+  scopes: Array<{
+    id: string;
+    scope: "global" | "project";
+    state: "reporting" | "unavailable" | "omitted";
+    project?: ActivityFeed["project"];
+  }>;
+  feeds: Array<{
+    scopeId: string;
+    feed: ActivityFeed;
+  }>;
+  truncation: {
+    truncated: boolean;
+    omittedScopes: number;
+    omittedItems: number;
+    omittedSources: number;
+    discoveryTruncated: boolean;
+  };
 }
 
 function unique(values: string[]): string[] {
@@ -932,4 +977,500 @@ export async function latestActivityFeed(args: {
     proposals: [],
     snapshot: "legacy-derived",
   });
+}
+
+function emptyActivityCounts(): ActivityFeed["counts"] {
+  return {
+    total: 0,
+    needsAttention: 0,
+    new: 0,
+    changed: 0,
+    resolved: 0,
+    unchangedSuppressed: 0,
+  };
+}
+
+function addActivityCounts(
+  left: ActivityFeed["counts"],
+  right: ActivityFeed["counts"]
+): ActivityFeed["counts"] {
+  return {
+    total: left.total + right.total,
+    needsAttention: left.needsAttention + right.needsAttention,
+    new: left.new + right.new,
+    changed: left.changed + right.changed,
+    resolved: left.resolved + right.resolved,
+    unchangedSuppressed: left.unchangedSuppressed + right.unchangedSuppressed,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === "string")
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function isActivityItem(value: unknown): value is ActivityItem {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    typeof value.id !== "string" ||
+    typeof value.kind !== "string" ||
+    !Array.isArray(value.categories) ||
+    !value.categories.every((entry) => typeof entry === "string") ||
+    typeof value.title !== "string" ||
+    typeof value.state !== "string" ||
+    typeof value.change !== "string" ||
+    typeof value.firstSeenAt !== "string" ||
+    typeof value.lastChangedAt !== "string" ||
+    !isStringArray(value.sourceLabels) ||
+    !isRecord(value.evidence) ||
+    !isNonNegativeInteger(value.evidence.count) ||
+    !isStringArray(value.evidence.types) ||
+    !isStringArray(value.evidence.writebackIds) ||
+    !Array.isArray(value.observations) ||
+    !value.observations.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.writebackId === "string" &&
+        typeof entry.category === "string" &&
+        typeof entry.sensitivity === "string" &&
+        typeof entry.summary === "string" &&
+        typeof entry.contextOmitted === "boolean"
+    ) ||
+    !isNonNegativeInteger(value.omittedObservations) ||
+    !isRecord(value.decision) ||
+    !isStringArray(value.linkedWork) ||
+    typeof value.approvalRequired !== "boolean" ||
+    typeof value.nextAction !== "string" ||
+    !isRecord(value.technical) ||
+    typeof value.technical.queueId !== "string"
+  ) {
+    return false;
+  }
+  if (
+    value.context !== undefined &&
+    (!isRecord(value.context) ||
+      (value.context.scope !== "global" && value.context.scope !== "project") ||
+      !Array.isArray(value.context.targets) ||
+      !value.context.targets.every(
+        (entry) =>
+          isRecord(entry) &&
+          typeof entry.kind === "string" &&
+          typeof entry.scope === "string" &&
+          typeof entry.selector === "string" &&
+          typeof entry.label === "string"
+      ) ||
+      !Array.isArray(value.context.links) ||
+      !value.context.links.every(
+        (entry) =>
+          isRecord(entry) &&
+          typeof entry.label === "string" &&
+          typeof entry.url === "string" &&
+          typeof entry.source === "string"
+      ))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isActivityFeed(value: unknown): value is ActivityFeed {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    value.mode === "latest" &&
+    (value.snapshot === "embedded" || value.snapshot === "legacy-derived") &&
+    typeof value.generatedAt === "string" &&
+    (value.scope === "global" || value.scope === "project") &&
+    isRecord(value.run) &&
+    typeof value.run.id === "string" &&
+    typeof value.run.status === "string" &&
+    isRecord(value.coverage) &&
+    typeof value.coverage.complete === "boolean" &&
+    isNonNegativeInteger(value.coverage.checked) &&
+    isNonNegativeInteger(value.coverage.degraded) &&
+    Array.isArray(value.coverage.sources) &&
+    value.coverage.sources.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.id === "string" &&
+        typeof entry.label === "string" &&
+        typeof entry.state === "string"
+    ) &&
+    isRecord(value.counts) &&
+    isNonNegativeInteger(value.counts.total) &&
+    isNonNegativeInteger(value.counts.needsAttention) &&
+    isNonNegativeInteger(value.counts.new) &&
+    isNonNegativeInteger(value.counts.changed) &&
+    isNonNegativeInteger(value.counts.resolved) &&
+    isNonNegativeInteger(value.counts.unchangedSuppressed) &&
+    Array.isArray(value.items) &&
+    value.items.every(isActivityItem)
+  );
+}
+
+function redactPortableAggregateValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactPortableActivityText(value).slice(
+      0,
+      MAX_PORTABLE_AGGREGATE_STRING_LENGTH
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactPortableAggregateValue);
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        redactPortableAggregateValue(entry),
+      ])
+    );
+  }
+  return value;
+}
+
+function boundedAggregateFeed(feed: ActivityFeed): {
+  feed: ActivityFeed;
+  omittedSources: number;
+} {
+  const redacted = redactPortableAggregateValue(feed) as ActivityFeed;
+  const sources = redacted.coverage.sources.slice(
+    0,
+    MAX_ACTIVITY_SET_SOURCES_PER_FEED
+  );
+  return {
+    feed: {
+      ...redacted,
+      coverage: { ...redacted.coverage, sources },
+    },
+    omittedSources: redacted.coverage.sources.length - sources.length,
+  };
+}
+
+function activityFeedFromReport(value: unknown): ActivityFeed | null {
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    value.scope !== "project" ||
+    typeof value.generatedAt !== "string" ||
+    !Array.isArray(value.queue) ||
+    !Array.isArray(value.coverage)
+  ) {
+    return null;
+  }
+  const report = value as unknown as EvolutionLoopReport;
+  if (isActivityFeed(report.activity) && report.activity.scope === "project") {
+    return boundedAggregateFeed(report.activity).feed;
+  }
+  try {
+    return boundedAggregateFeed(
+      buildActivityFeed({
+        report,
+        review: null,
+        writebacks: [],
+        proposals: [],
+        snapshot: "legacy-derived",
+      })
+    ).feed;
+  } catch {
+    return null;
+  }
+}
+
+async function readBoundedJson(pathValue: string, maxBytes: number) {
+  const info = await lstat(pathValue);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > maxBytes) {
+    throw new Error("Activity state is not a bounded regular file");
+  }
+  return JSON.parse(await readFile(pathValue, "utf8")) as unknown;
+}
+
+async function latestProjectActivityFromLoopDir(
+  loopDir: string
+): Promise<ActivityFeed | null> {
+  try {
+    const state = await readBoundedJson(join(loopDir, "state.json"), 100_000);
+    if (!isRecord(state) || typeof state.lastReportPath !== "string") {
+      return null;
+    }
+    const reportName = basename(state.lastReportPath);
+    if (!reportName.endsWith(".json")) {
+      return null;
+    }
+    return activityFeedFromReport(
+      await readBoundedJson(
+        join(loopDir, "reports", reportName),
+        MAX_ACTIVITY_REPORT_BYTES
+      )
+    );
+  } catch {
+    // A malformed or missing latest report makes only this project unavailable;
+    // other scopes must remain visible in the aggregate read model.
+    return null;
+  }
+}
+
+function projectScopeId(machineKey: string): string {
+  return `project:${createHash("sha256").update(machineKey).digest("hex").slice(0, 16)}`;
+}
+
+async function mapConcurrent<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const value = values[index];
+        if (value !== undefined) {
+          results[index] = await mapper(value, index);
+        }
+      }
+    })
+  );
+  return results;
+}
+
+async function configuredProjectActivity(args: { homeDir: string }): Promise<{
+  projects: Array<{ id: string; feed: ActivityFeed | null; omitted: boolean }>;
+  discoveryTruncated: boolean;
+}> {
+  const projectsDir = join(facultLocalStateRoot(args.homeDir), "projects");
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(projectsDir, { withFileTypes: true });
+  } catch {
+    return { projects: [], discoveryTruncated: false };
+  }
+  const directories = entries
+    .filter((candidate) => candidate.isDirectory())
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const discoveryTruncated =
+    directories.length > MAX_DISCOVERED_PROJECT_STATE_DIRS;
+  const candidates = directories.slice(0, MAX_DISCOVERED_PROJECT_STATE_DIRS);
+  const configured = (
+    await mapConcurrent(candidates, 8, async (entry) => {
+      const loopDir = join(
+        projectsDir,
+        entry.name,
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      try {
+        const config = await readBoundedJson(
+          join(loopDir, "config.json"),
+          100_000
+        );
+        return isRecord(config) && config.scope === "project"
+          ? { entry, loopDir }
+          : null;
+      } catch {
+        return null;
+      }
+    })
+  ).filter(
+    (value): value is { entry: Dirent<string>; loopDir: string } =>
+      value !== null
+  );
+  const projects = await mapConcurrent(
+    configured,
+    8,
+    async (project, index) => {
+      const omitted = index >= MAX_ACTIVITY_SET_PROJECTS;
+      return {
+        id: projectScopeId(project.entry.name),
+        feed: omitted
+          ? null
+          : await latestProjectActivityFromLoopDir(project.loopDir),
+        omitted,
+      };
+    }
+  );
+  return { projects, discoveryTruncated };
+}
+
+export async function latestActivitySet(args: {
+  homeDir: string;
+  globalRootDir: string;
+}): Promise<ActivitySet> {
+  const [rawGlobalFeed, discovery] = await Promise.all([
+    latestActivityFeed({
+      homeDir: args.homeDir,
+      rootDir: args.globalRootDir,
+      scope: "global",
+    }),
+    configuredProjectActivity({ homeDir: args.homeDir }),
+  ]);
+  const globalFeed = rawGlobalFeed
+    ? boundedAggregateFeed(rawGlobalFeed).feed
+    : null;
+  const feeds: ActivitySet["feeds"] = [
+    ...(globalFeed ? [{ scopeId: "global", feed: globalFeed }] : []),
+    ...discovery.projects.flatMap((project) =>
+      project.feed ? [{ scopeId: project.id, feed: project.feed }] : []
+    ),
+  ];
+  const scopes: ActivitySet["scopes"] = [
+    {
+      id: "global",
+      scope: "global",
+      state: globalFeed ? "reporting" : "unavailable",
+    },
+    ...discovery.projects.map((project) => ({
+      id: project.id,
+      scope: "project" as const,
+      state: project.omitted
+        ? ("omitted" as const)
+        : project.feed
+          ? ("reporting" as const)
+          : ("unavailable" as const),
+      ...(project.feed?.project ? { project: project.feed.project } : {}),
+    })),
+  ];
+  const unavailableScopes = scopes.filter(
+    (scope) => scope.state === "unavailable"
+  ).length;
+  const omittedScopes = scopes.filter(
+    (scope) => scope.state === "omitted"
+  ).length;
+  const generatedAt = feeds.reduce<string | null>(
+    (latest, entry) =>
+      !latest || Date.parse(entry.feed.generatedAt) > Date.parse(latest)
+        ? entry.feed.generatedAt
+        : latest,
+    null
+  );
+  const allFeeds = feeds.map((entry) => entry.feed);
+  const omittedSources = allFeeds.reduce(
+    (total, feed) =>
+      total +
+      Math.max(
+        0,
+        feed.coverage.checked +
+          feed.coverage.degraded -
+          feed.coverage.sources.length
+      ),
+    0
+  );
+  const fullItemCount = allFeeds.reduce(
+    (total, feed) => total + feed.items.length,
+    0
+  );
+  let remainingItems = MAX_ACTIVITY_SET_ITEMS;
+  for (const entry of feeds) {
+    const items = entry.feed.items.slice(0, remainingItems);
+    remainingItems -= items.length;
+    entry.feed = { ...entry.feed, items };
+  }
+  let omittedItems =
+    fullItemCount -
+    feeds.reduce((total, entry) => total + entry.feed.items.length, 0);
+
+  const result: ActivitySet = {
+    version: 2,
+    kind: "activity-set",
+    mode: "latest",
+    scope: "all",
+    generatedAt,
+    coverage: {
+      complete:
+        unavailableScopes === 0 &&
+        omittedScopes === 0 &&
+        !discovery.discoveryTruncated &&
+        omittedItems === 0 &&
+        omittedSources === 0 &&
+        feeds.length === scopes.length &&
+        feeds.every((entry) => entry.feed.coverage.complete),
+      configuredScopes: scopes.length,
+      reportingScopes: feeds.length,
+      unavailableScopes,
+      checkedSources: feeds.reduce(
+        (total, entry) => total + entry.feed.coverage.checked,
+        0
+      ),
+      degradedSources: feeds.reduce(
+        (total, entry) => total + entry.feed.coverage.degraded,
+        0
+      ),
+    },
+    counts: allFeeds.reduce(
+      (counts, feed) => addActivityCounts(counts, feed.counts),
+      emptyActivityCounts()
+    ),
+    scopes,
+    feeds,
+    truncation: {
+      truncated:
+        omittedScopes > 0 ||
+        omittedItems > 0 ||
+        omittedSources > 0 ||
+        discovery.discoveryTruncated,
+      omittedScopes,
+      omittedItems,
+      omittedSources,
+      discoveryTruncated: discovery.discoveryTruncated,
+    },
+  };
+  while (Buffer.byteLength(JSON.stringify(result)) > MAX_ACTIVITY_SET_BYTES) {
+    const entry = [...result.feeds]
+      .reverse()
+      .find((candidate) => candidate.feed.items.length > 0);
+    if (!entry) {
+      break;
+    }
+    entry.feed.items.pop();
+    omittedItems += 1;
+    result.truncation.omittedItems = omittedItems;
+    result.truncation.truncated = true;
+    result.coverage.complete = false;
+  }
+  return result;
+}
+
+export function renderActivitySet(set: ActivitySet): string {
+  const unavailable = set.scopes.filter(
+    (scope) => scope.state === "unavailable"
+  );
+  return [
+    "Activity — All scopes",
+    `Latest review: ${set.generatedAt ?? "not reported"}`,
+    `Scopes: ${set.coverage.reportingScopes}/${set.coverage.configuredScopes} reporting${set.coverage.complete ? "" : " · incomplete"}`,
+    `Changes: ${set.counts.new} new · ${set.counts.changed} changed · ${set.counts.resolved} resolved · ${set.counts.unchangedSuppressed} unchanged suppressed`,
+    ...(unavailable.length
+      ? [
+          "",
+          "Scope problems",
+          ...unavailable.map((scope) =>
+            scope.scope === "global"
+              ? "- Global activity is unavailable"
+              : "- A configured project activity feed is unavailable"
+          ),
+        ]
+      : []),
+    ...(set.truncation.truncated
+      ? [
+          "",
+          `Bounded response: ${set.truncation.omittedScopes} scopes, ${set.truncation.omittedItems} items, and ${set.truncation.omittedSources} sources omitted`,
+        ]
+      : []),
+    ...set.feeds.flatMap((entry) => ["", renderActivityFeed(entry.feed)]),
+  ].join("\n");
 }

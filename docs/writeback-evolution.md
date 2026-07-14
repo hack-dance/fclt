@@ -227,13 +227,20 @@ underlying friction or reusable success rather than creating one writeback per t
 Read the latest completed loop in plain language:
 
 ```bash
-fclt ai loop activity --project
+fclt ai loop activity
+fclt ai loop activity --json
 fclt ai loop activity --project --json
 ```
 
-The versioned JSON is a portable, read-only projection for agents and UI. It
-contains source coverage, new/changed/resolved counts, correlated observations,
-decisions, linked work, approvals, verification state, and the next action.
+The default versioned JSON is a portable, read-only activity set across Global
+and every configured project loop. It includes aggregate counts and scope
+health, then keeps the per-scope feeds intact for filtering and origin labels.
+Use `--global` or `--project` for a single feed. It contains source coverage,
+new/changed/resolved counts, correlated observations, decisions, linked work,
+approvals, verification state, and the next action.
+The aggregate is contract version 2 and joins each version 1 feed to a stable
+opaque scope id. Check its `truncation` object before treating the returned item
+list as exhaustive.
 Each item also identifies its global or project context, typed capability
 targets such as an instruction, skill, prompt, or automation, the reason for
 the decision, and bounded HTTP(S) evidence links when the source supplied one.

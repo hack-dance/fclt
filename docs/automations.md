@@ -41,7 +41,7 @@ history, and audit records:
 fclt ai loop enable --project
 fclt ai loop status --project --json
 fclt ai loop run --project --json
-fclt ai loop activity --project
+fclt ai loop activity --json
 fclt ai loop disable --project
 ```
 
@@ -84,8 +84,9 @@ items so repeated schedules do not spam unchanged findings.
 Each run embeds a portable activity snapshot that explains captured friction,
 opportunities, reusable success, source degradation, decisions, linked work,
 and next actions without absolute machine paths. Use `fclt ai loop activity
---project --json` as the downstream UI contract; use the technical loop report
-only for diagnostics.
+--json` as the default downstream UI contract across Global and every
+configured project, or add `--global`/`--project` to inspect one scope. Use the
+technical loop report only for diagnostics.
 
 ## Suggested Cadence
 

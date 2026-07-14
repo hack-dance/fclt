@@ -195,6 +195,23 @@ describe("ai CLI", () => {
     });
     expect(activityText).not.toContain(tempHome);
 
+    const allActivityOut = await captureConsole(async () => {
+      await aiCommand(["loop", "activity", "--json"]);
+    });
+    expect(allActivityOut.errors).toEqual([]);
+    expect(JSON.parse(allActivityOut.logs.join("\n"))).toMatchObject({
+      version: 2,
+      kind: "activity-set",
+      mode: "latest",
+      scope: "all",
+      coverage: {
+        configuredScopes: 1,
+        reportingScopes: 1,
+        unavailableScopes: 0,
+      },
+      feeds: [{ scopeId: "global", feed: { scope: "global" } }],
+    });
+
     const readableActivity = await captureConsole(async () => {
       await aiCommand(["loop", "activity", "--global"]);
     });
@@ -237,6 +254,21 @@ describe("ai CLI", () => {
     ).toContain(
       `fclt ai loop run --global --root '${rootDir}' --scheduled --json`
     );
+    await aiCommand(["loop", "run", "--global", "--root", rootDir, "--json"]);
+    const allActivityOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "activity",
+        "--all",
+        "--root",
+        rootDir,
+        "--json",
+      ]);
+    });
+    expect(JSON.parse(allActivityOut.logs.join("\n"))).toMatchObject({
+      version: 2,
+      feeds: [{ scopeId: "global", feed: { scope: "global" } }],
+    });
     const automationPath = join(enabled.automationPath, "automation.toml");
     await Bun.write(
       automationPath,

@@ -2821,7 +2821,7 @@ Usage:
   fclt ai loop disable [--dry-run] [--json]
   fclt ai loop status [--json]
   fclt ai loop report [--json]
-  fclt ai loop activity [--json]
+  fclt ai loop activity [--all|--global|--project] [--json]
   fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
 
 The loop keeps a full machine-local review queue and emits a delta for
@@ -3040,9 +3040,38 @@ async function loopCommand(argv: string[]) {
       return;
     }
     if (sub === "activity") {
-      const { latestActivityFeed, renderActivityFeed } = await import(
-        "./activity"
-      );
+      const {
+        latestActivityFeed,
+        latestActivitySet,
+        renderActivityFeed,
+        renderActivitySet,
+      } = await import("./activity");
+      const allScopes =
+        commandArgs.includes("--all") || parsed.scope === "merged";
+      if (commandArgs.includes("--all") && parsed.scope !== "merged") {
+        throw new Error("Conflicting scope flags");
+      }
+      if (allScopes) {
+        const globalRootDir = resolveCliContextRoot({
+          homeDir,
+          cwd: process.cwd(),
+          rootArg: parsed.rootArg,
+          scope: "global",
+        });
+        if (projectRootFromAiRoot(globalRootDir, homeDir)) {
+          throw new Error(
+            "All-scope activity accepts only a global --root; use --project for one project"
+          );
+        }
+        const result = await latestActivitySet({
+          homeDir,
+          globalRootDir,
+        });
+        console.log(
+          json ? JSON.stringify(result, null, 2) : renderActivitySet(result)
+        );
+        return;
+      }
       const result = await latestActivityFeed({
         homeDir,
         rootDir,

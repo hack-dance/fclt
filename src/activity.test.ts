@@ -1,11 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildActivityFeed,
+  latestActivitySet,
   redactPortableActivityText,
   renderActivityFeed,
 } from "./activity";
 import type { AiWritebackRecord } from "./ai";
 import type { EvolutionLoopReport, LoopQueueItem } from "./evolution-loop";
+import { facultAiEvolutionLoopStatePath, facultLocalStateRoot } from "./paths";
 import type { ReconciliationReview } from "./reconciliation-types";
 
 function queueItem(overrides?: Partial<LoopQueueItem>): LoopQueueItem {
@@ -147,6 +152,209 @@ function writeback(
 }
 
 describe("activity feed", () => {
+  it("aggregates Global and configured project reports without exposing project roots", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-set-"));
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const globalReport = report({
+        runId: "LR-global",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      globalReport.activity = buildActivityFeed({
+        report: globalReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      const globalReportPath = join(homeDir, "global-report.json");
+      await mkdir(globalRootDir, { recursive: true });
+      await Bun.write(globalReportPath, JSON.stringify(globalReport));
+      const globalStatePath = facultAiEvolutionLoopStatePath(
+        homeDir,
+        globalRootDir
+      );
+      await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: globalReportPath,
+        })
+      );
+
+      const projectsDir = join(facultLocalStateRoot(homeDir), "projects");
+      const reportingLoopDir = join(
+        projectsDir,
+        "example-one",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const unavailableLoopDir = join(
+        projectsDir,
+        "example-two",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const projectReport = report({ runId: "LR-project" });
+      projectReport.activity = buildActivityFeed({
+        report: projectReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await mkdir(join(reportingLoopDir, "reports"), { recursive: true });
+      await mkdir(unavailableLoopDir, { recursive: true });
+      await Bun.write(
+        join(reportingLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(reportingLoopDir, "reports", "LR-project.json"),
+        JSON.stringify(projectReport)
+      );
+      await Bun.write(
+        join(reportingLoopDir, "state.json"),
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: "/private/machine/path/LR-project.json",
+        })
+      );
+      await Bun.write(
+        join(unavailableLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+
+      const set = await latestActivitySet({ homeDir, globalRootDir });
+
+      expect(set).toMatchObject({
+        version: 2,
+        kind: "activity-set",
+        scope: "all",
+        coverage: {
+          complete: false,
+          configuredScopes: 3,
+          reportingScopes: 2,
+          unavailableScopes: 1,
+        },
+      });
+      expect(set.feeds.map((entry) => entry.feed.scope)).toEqual([
+        "global",
+        "project",
+      ]);
+      expect(set.feeds.map((entry) => entry.scopeId)).toEqual(
+        set.scopes
+          .filter((scope) => scope.state === "reporting")
+          .map((scope) => scope.id)
+      );
+      expect(set.scopes.map((scope) => scope.state)).toEqual([
+        "reporting",
+        "reporting",
+        "unavailable",
+      ]);
+      expect(JSON.stringify(set)).not.toContain("/Users/example/private");
+      expect(JSON.stringify(set)).not.toContain("example-one");
+      expect(JSON.stringify(set)).not.toContain("example-two");
+
+      const originalProjectScopeId = set.feeds.find(
+        (entry) => entry.feed.run.id === "LR-project"
+      )?.scopeId;
+      const earlierLoopDir = join(
+        projectsDir,
+        "aaa-earlier",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      await mkdir(earlierLoopDir, { recursive: true });
+      await Bun.write(
+        join(earlierLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      const malformedLoopDir = join(
+        projectsDir,
+        "malformed-embedded",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const malformedReport = report({
+        runId: "LR-malformed",
+        projectRoot: "/Users/example/private/malformed",
+      });
+      (malformedReport as unknown as { activity: unknown }).activity = {
+        version: 1,
+        scope: "project",
+        title: "/Users/example/private/not-portable",
+      };
+      await mkdir(join(malformedLoopDir, "reports"), { recursive: true });
+      await Bun.write(
+        join(malformedLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(malformedLoopDir, "state.json"),
+        JSON.stringify({ lastReportPath: "LR-malformed.json" })
+      );
+      await Bun.write(
+        join(malformedLoopDir, "reports", "LR-malformed.json"),
+        JSON.stringify(malformedReport)
+      );
+      const reordered = await latestActivitySet({ homeDir, globalRootDir });
+      expect(
+        reordered.feeds.find((entry) => entry.feed.run.id === "LR-project")
+          ?.scopeId
+      ).toBe(originalProjectScopeId);
+      expect(
+        reordered.feeds.find((entry) => entry.feed.run.id === "LR-malformed")
+          ?.feed.snapshot
+      ).toBe("legacy-derived");
+      expect(JSON.stringify(reordered)).not.toContain("/Users/example/private");
+
+      const projectActivity = projectReport.activity;
+      if (!projectActivity) {
+        throw new Error("Expected embedded project activity");
+      }
+      const firstItem = projectActivity.items[0];
+      if (!firstItem) {
+        throw new Error("Expected project activity item");
+      }
+      projectActivity.items = Array.from({ length: 300 }, (_, index) => ({
+        ...firstItem,
+        id: `item-${index}`,
+        title: `${"Long portable activity ".repeat(100)}${index}`,
+        technical: { ...firstItem.technical, queueId: `item-${index}` },
+      }));
+      projectActivity.counts.total = projectActivity.items.length;
+      await Bun.write(
+        join(reportingLoopDir, "reports", "LR-project.json"),
+        JSON.stringify(projectReport)
+      );
+      const bounded = await latestActivitySet({ homeDir, globalRootDir });
+      expect(bounded.truncation).toMatchObject({
+        truncated: true,
+        omittedItems: 52,
+      });
+      expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(
+        1_500_000
+      );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("produces a deterministic portable snapshot with bounded privacy-aware observations", () => {
     const feed = buildActivityFeed({
       report: report(),

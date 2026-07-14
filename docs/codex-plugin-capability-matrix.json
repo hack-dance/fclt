@@ -753,11 +753,11 @@
         "actions": ["loop_status", "loop_activity", "loop_preview"]
       },
       "risk": "read_only",
-      "scope": "global|project",
-      "preview": "loop_activity returns the embedded privacy-aware activity snapshot with project scope, typed capability targets, decision rationale, and source-owned links; loop_preview performs a fresh incremental scan and returns the full technical queue plus notification delta without advancing cursors or writing state",
+      "scope": "loop_activity defaults to all configured scopes and accepts all|global|project; other loop actions remain global|project",
+      "preview": "loop_activity returns one privacy-aware activity set across Global and every configured project by default, with per-scope feeds, typed capability targets, decision rationale, source-owned links, and explicit unavailable scope counts; loop_preview performs a fresh incremental scan for one explicit scope and returns the full technical queue plus notification delta without advancing cursors or writing state",
       "apply": "withheld; enable, disable, scheduled run, and canonical apply remain CLI-only",
       "rollback": "not_applicable",
-      "verification": "typed schema, explicit scope, immutable activity snapshots, bounded targets and HTTP(S) links, no absolute paths or credential-bearing URLs in portable activity JSON, queue continuity, and zero writes during preview"
+      "verification": "typed schema, aggregate default plus explicit filters, immutable activity snapshots, bounded targets and HTTP(S) links, no absolute paths, machine state keys, or credential-bearing URLs in portable activity JSON, queue continuity, and zero writes during preview"
     },
     {
       "id": "autosync.mutation",

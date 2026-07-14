@@ -377,6 +377,49 @@ describe("bundled fclt MCP plugin", () => {
       child.stdin.write(
         frame({
           jsonrpc: "2.0",
+          id: 331,
+          method: "tools/call",
+          params: {
+            name: "fclt_automation",
+            arguments: {
+              action: "loop_activity",
+            },
+          },
+        })
+      );
+      const allActivityResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(allActivityResponse)).toMatchObject({
+        operation: { preview: false, risk: "read_only", scope: "all" },
+        result: {
+          stdout: {
+            argv: ["ai", "loop", "--all", "activity", "--json"],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 332,
+          method: "tools/call",
+          params: {
+            name: "fclt_automation",
+            arguments: { action: "loop_status" },
+          },
+        })
+      );
+      const unscopedStatusResponse = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(unscopedStatusResponse.error?.message).toContain(
+        "loop_status requires global or project scope"
+      );
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
           id: 34,
           method: "tools/call",
           params: {
@@ -617,13 +660,25 @@ describe("bundled fclt MCP plugin", () => {
       ) as
         | {
             inputSchema?: {
-              properties?: { action?: { enum?: string[] } };
+              properties?: {
+                action?: { enum?: string[] };
+                scope?: { enum?: string[] };
+              };
+              oneOf?: Array<{
+                properties?: { scope?: { default?: string } };
+              }>;
             };
           }
         | undefined;
       expect(automation?.inputSchema?.properties?.action?.enum).toEqual(
         expect.arrayContaining(["loop_status", "loop_activity", "loop_preview"])
       );
+      expect(automation?.inputSchema?.properties?.scope).toMatchObject({
+        enum: ["all", "global", "project"],
+      });
+      expect(
+        automation?.inputSchema?.oneOf?.[0]?.properties?.scope
+      ).toMatchObject({ default: "all" });
     } finally {
       child.kill();
     }
