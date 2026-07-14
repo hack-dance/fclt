@@ -98,6 +98,17 @@ precondition; use the tool's supported API-key environment variable or native
 authentication. Settings, hooks, sessions, and history are not copied.
 Authentication failures are command-level precondition failures, so they
 cannot become misleading per-item findings or persisted partial reports.
+Raw child stdout, stderr, spawn errors, and parser errors never enter audit
+findings or saved reports. Failures use fixed diagnostic codes, while accepted
+structured output is schema-checked and redacted against selected credentials
+before report construction. Codex last-message reads are descriptor-stable and
+bounded; subprocess streams are drained concurrently with bounded capture.
+
+Codex plugin installation verification also treats the installed payload as
+untrusted executable input. It uses bounded no-follow descriptor reads and
+rejects excess entries, depth, path length, per-file bytes, aggregate bytes,
+sparse or growing files, links, special entries, unreadable subtrees, and any
+directory identity change.
 
 Compatibility note: older releases refreshed
 `.ai/.facult/audit/*-latest.json` and generated index audit annotations during

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
@@ -411,6 +412,88 @@ describe("read-only audit boundary", () => {
     await expect(
       persistAuditReport({ ...evaluation, mode: "static", reportRoot })
     ).rejects.toThrow("overlaps audited source");
+  });
+
+  it("fails closed when any discovered Claude plugin subtree is unreadable", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    for (const directoryName of [
+      "hooks",
+      "assets",
+      "commands",
+      "agents",
+      "skills",
+    ]) {
+      const { base, home } = await fixture();
+      const pluginRoot = join(base, `external-plugin-${directoryName}`);
+      const unreadableDirectory = join(pluginRoot, directoryName);
+      const reportRoot = await mkdtemp(
+        join(tmpdir(), `fclt-audit-plugin-${directoryName}-`)
+      );
+      await writeFile(join(unreadableDirectory, "capability.md"), "private\n");
+      await writeFile(
+        join(home, ".claude", "plugins", "installed_plugins.json"),
+        `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+      );
+      await chmod(unreadableDirectory, 0o000);
+      try {
+        await expect(
+          (async () => {
+            const evaluation = await evaluateStaticAudit({
+              argv: [],
+              cwd: home,
+              from: [home],
+              homeDir: home,
+              includeConfigFrom: false,
+            });
+            await persistAuditReport({
+              ...evaluation,
+              mode: "static",
+              reportRoot,
+            });
+          })()
+        ).rejects.toThrow();
+        expect(await readdir(reportRoot)).toEqual([]);
+      } finally {
+        await chmod(unreadableDirectory, 0o700);
+      }
+    }
+  });
+
+  it("rejects late drift anywhere in a discovered Claude plugin tree", async () => {
+    const { base, home } = await fixture();
+    const pluginRoot = join(base, "external-plugin-drift");
+    const hooksPath = join(pluginRoot, "hooks", "hooks.json");
+    const assetsPath = join(pluginRoot, "assets");
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-plugin-drift-")
+    );
+    await writeFile(hooksPath, "{}\n");
+    await writeFile(join(assetsPath, "context.md"), "stable\n");
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+    );
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          await writeFile(join(assetsPath, "appeared.md"), "late\n");
+        },
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow("evaluated directory changed");
+    expect(await readdir(reportRoot)).toEqual([]);
   });
 
   it("rejects persistence above a source path proven absent during evaluation", async () => {

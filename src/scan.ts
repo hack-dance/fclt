@@ -86,7 +86,10 @@ type ScanReadText = (path: string) => Promise<string>;
 
 interface ScanTracking {
   capturePath?: (path: string) => Promise<void>;
-  captureTree?: (path: string) => Promise<void>;
+  captureTree?: (
+    path: string,
+    options?: { rejectUnsupportedEntries?: boolean }
+  ) => Promise<void>;
   readDirectory?: (path: string) => Promise<import("node:fs").Dirent[] | null>;
 }
 
@@ -270,8 +273,9 @@ async function discoverMcpConfig(
 
   if (p.endsWith(".json")) {
     cfg.format = "json";
+    const text = readText ? await readText(p) : await Bun.file(p).text();
     try {
-      const parsed = await readJsonSafe(p, readText);
+      const parsed = parseJsonLenient(text);
       const serversObj = extractMcpServersObject(parsed);
       if (serversObj) {
         cfg.servers = uniqueSorted(Object.keys(serversObj));
@@ -284,9 +288,9 @@ async function discoverMcpConfig(
 
   if (p.endsWith(".toml")) {
     cfg.format = "toml";
+    const text = readText ? await readText(p) : await Bun.file(p).text();
     try {
-      const txt = readText ? await readText(p) : await Bun.file(p).text();
-      cfg.servers = extractCodexTomlMcpServerNames(txt);
+      cfg.servers = extractCodexTomlMcpServerNames(text);
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
       cfg.error = String(err?.message ?? e);
@@ -334,8 +338,9 @@ async function discoverAssetFile(
   const asset: AssetFile = { kind: "unknown", path: p, format };
 
   if (format === "json") {
+    const text = readText ? await readText(p) : await Bun.file(p).text();
     try {
-      const parsed = await readJsonSafe(p, readText);
+      const parsed = parseJsonLenient(text);
       // Summary is derived later once we know "kind" (see discoverAssetsFromSpecs).
       // Avoid storing parsed content here to prevent persisting secrets.
       asset.summary = isPlainObject(parsed)
@@ -542,8 +547,9 @@ async function discoverAssetsFromSpecs(
         // Re-parse (leniently) for known kinds so we can emit a safe summary.
         let summary: Record<string, unknown> | undefined;
         if (asset.format === "json" && !asset.error) {
+          const text = readText ? await readText(p) : await Bun.file(p).text();
           try {
-            const parsed = await readJsonSafe(p, readText);
+            const parsed = parseJsonLenient(text);
             summary = summarizeAsset(spec.kind, parsed);
           } catch {
             // ignore summary errors; keep the file listed.
@@ -1633,8 +1639,19 @@ async function buildSourceResult(
     );
     const st = await statSafe(installedPath);
     if (st?.isFile) {
+      const installedText = readText
+        ? await readText(installedPath)
+        : await Bun.file(installedPath).text();
+      let parsed: unknown;
       try {
-        const parsed = await readJsonSafe(installedPath, readText);
+        parsed = parseJsonLenient(installedText);
+      } catch {
+        // Malformed optional registry metadata is already exposed on the
+        // installed_plugins.json asset. Only parse failures are optional;
+        // provenance and filesystem failures above must abort the audit.
+        parsed = null;
+      }
+      if (parsed !== null) {
         const plugins = isPlainObject(parsed)
           ? ((parsed as Record<string, unknown>).plugins as unknown)
           : null;
@@ -1667,9 +1684,12 @@ async function buildSourceResult(
           }
           let summary: Record<string, unknown> | undefined;
           if (asset.format === "json" && !asset.error) {
+            const text = readText
+              ? await readText(p)
+              : await Bun.file(p).text();
             try {
-              const parsed = await readJsonSafe(p, readText);
-              summary = summarizeAsset(kind, parsed);
+              const parsedAsset = parseJsonLenient(text);
+              summary = summarizeAsset(kind, parsedAsset);
             } catch {
               // ignore summary errors
             }
@@ -1682,6 +1702,17 @@ async function buildSourceResult(
         };
 
         for (const installPath of [...installPaths].sort()) {
+          const installRoot = await statSafe(installPath);
+          if (!installRoot?.isDir) {
+            continue;
+          }
+          // The registry makes the whole installed plugin tree part of
+          // discovery, even though only selected capability files are emitted.
+          // Traverse it strictly so an unreadable, symlinked, special, or
+          // changing subtree cannot be silently omitted from provenance.
+          await scanTracking.getStore()?.captureTree?.(installPath, {
+            rejectUnsupportedEntries: true,
+          });
           const skillsDir = join(installPath, "skills");
           if ((await statSafe(skillsDir))?.isDir) {
             extraSkillRoots.push(skillsDir);
@@ -1716,8 +1747,6 @@ async function buildSourceResult(
         skills.roots.push(...extraSkillRoots);
         skills.entries.push(...extraSkillEntries);
         assets.push(...extraAssets);
-      } catch {
-        // ignore parse errors; installed_plugins.json is already listed as an asset for inspection.
       }
     }
   }

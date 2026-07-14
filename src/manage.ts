@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
+import { constants, type Dirent, type Stats } from "node:fs";
 import {
   appendFile,
   cp,
   lstat,
   mkdir,
   open,
+  opendir,
   readdir,
   readFile,
   readlink,
@@ -1457,12 +1458,23 @@ interface StrictDirectoryTreeHash {
   hash: string;
 }
 
+const CODEX_PLUGIN_TREE_LIMITS = Object.freeze({
+  maxAggregateBytes: 4 * 1024 * 1024,
+  maxDepth: 12,
+  maxEntries: 256,
+  maxFileBytes: 1024 * 1024,
+  maxRelativePathBytes: 512,
+  readChunkBytes: 64 * 1024,
+});
+
 function sameFileIdentity(left: Stats, right: Stats): boolean {
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
     left.mode === right.mode &&
-    left.size === right.size
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
   );
 }
 
@@ -1493,35 +1505,67 @@ async function hashStrictDirectoryTree(
 
   const hash = createHash("sha256");
   let entryCount = 0;
+  let aggregateBytes = 0;
 
-  const addEntry = (
+  const addEntryMetadata = (
     relativePath: string,
     type: "directory" | "file",
     mode: number,
-    bytes?: Uint8Array
+    size: number
   ) => {
+    if (entryCount >= CODEX_PLUGIN_TREE_LIMITS.maxEntries) {
+      throw new Error(
+        `plugin payload exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxEntries} entries`
+      );
+    }
     updateTreeHashField(hash, relativePath);
     updateTreeHashField(hash, type);
     updateTreeHashField(hash, (mode % 0o1_0000).toString(8));
-    if (bytes) {
-      updateTreeHashField(hash, String(bytes.byteLength));
-      hash.update(bytes);
-    } else {
-      updateTreeHashField(hash, "0");
-    }
+    updateTreeHashField(hash, String(size));
     entryCount += 1;
   };
+
+  async function readBoundedDirectoryEntries(pathValue: string) {
+    const directory = await opendir(pathValue);
+    const entries: Dirent[] = [];
+    try {
+      while (true) {
+        const entry = await directory.read();
+        if (!entry) {
+          break;
+        }
+        if (entries.length >= CODEX_PLUGIN_TREE_LIMITS.maxEntries) {
+          throw new Error(
+            `plugin payload directory exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxEntries} entries`
+          );
+        }
+        entries.push(entry);
+      }
+    } finally {
+      try {
+        await directory.close();
+      } catch {
+        // The directory may already be closed after a terminal read.
+      }
+    }
+    return entries.sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    );
+  }
 
   async function visitDirectory(
     currentPath: string,
     relativePath: string,
-    expectedStat: Stats
+    expectedStat: Stats,
+    depth: number
   ): Promise<void> {
-    addEntry(relativePath || ".", "directory", expectedStat.mode);
-    const entries = await readdir(currentPath, { withFileTypes: true });
-    entries.sort((left, right) =>
-      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
-    );
+    if (depth > CODEX_PLUGIN_TREE_LIMITS.maxDepth) {
+      throw new Error(
+        `plugin payload exceeds depth ${CODEX_PLUGIN_TREE_LIMITS.maxDepth}`
+      );
+    }
+    addEntryMetadata(relativePath || ".", "directory", expectedStat.mode, 0);
+    const entries = await readBoundedDirectoryEntries(currentPath);
     const initialNames = entries.map((entry) => entry.name);
 
     for (const entry of entries) {
@@ -1537,6 +1581,14 @@ async function hashStrictDirectoryTree(
       const childRelativePath = relativePath
         ? `${relativePath}/${entry.name}`
         : entry.name;
+      if (
+        Buffer.byteLength(childRelativePath, "utf8") >
+        CODEX_PLUGIN_TREE_LIMITS.maxRelativePathBytes
+      ) {
+        throw new Error(
+          `plugin payload relative path exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxRelativePathBytes} bytes`
+        );
+      }
       const childPath = join(currentPath, entry.name);
       const lexicalRelative = relative(rootPath, childPath);
       if (
@@ -1567,7 +1619,12 @@ async function hashStrictDirectoryTree(
             `plugin payload entry changed type at ${childRelativePath}`
           );
         }
-        await visitDirectory(childPath, childRelativePath, childStat);
+        await visitDirectory(
+          childPath,
+          childRelativePath,
+          childStat,
+          depth + 1
+        );
         continue;
       }
       if (!(childStat.isFile() && entry.isFile())) {
@@ -1576,7 +1633,9 @@ async function hashStrictDirectoryTree(
         );
       }
 
-      const handle = await open(childPath, "r");
+      const noFollowFlag =
+        process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+      const handle = await open(childPath, constants.O_RDONLY + noFollowFlag);
       try {
         const beforeRead = await handle.stat();
         if (!(beforeRead.isFile() && sameFileIdentity(childStat, beforeRead))) {
@@ -1584,25 +1643,93 @@ async function hashStrictDirectoryTree(
             `plugin payload file changed before read at ${childRelativePath}`
           );
         }
-        const bytes = await handle.readFile();
+        if (!(Number.isSafeInteger(beforeRead.size) && beforeRead.size >= 0)) {
+          throw new Error(
+            `plugin payload file has an invalid size at ${childRelativePath}`
+          );
+        }
+        if (beforeRead.size > CODEX_PLUGIN_TREE_LIMITS.maxFileBytes) {
+          throw new Error(
+            `plugin payload file exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxFileBytes} bytes at ${childRelativePath}`
+          );
+        }
+        if (
+          aggregateBytes + beforeRead.size >
+          CODEX_PLUGIN_TREE_LIMITS.maxAggregateBytes
+        ) {
+          throw new Error(
+            `plugin payload exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxAggregateBytes} aggregate bytes`
+          );
+        }
+        if (
+          process.platform !== "win32" &&
+          beforeRead.size > 0 &&
+          beforeRead.blocks * 512 < beforeRead.size
+        ) {
+          throw new Error(
+            `plugin payload contains a sparse file at ${childRelativePath}`
+          );
+        }
+
+        aggregateBytes += beforeRead.size;
+        addEntryMetadata(
+          childRelativePath,
+          "file",
+          beforeRead.mode,
+          beforeRead.size
+        );
+        let offset = 0;
+        while (offset < beforeRead.size) {
+          const chunk = Buffer.allocUnsafe(
+            Math.min(
+              CODEX_PLUGIN_TREE_LIMITS.readChunkBytes,
+              beforeRead.size - offset
+            )
+          );
+          const { bytesRead } = await handle.read(
+            chunk,
+            0,
+            chunk.byteLength,
+            offset
+          );
+          if (bytesRead !== chunk.byteLength) {
+            throw new Error(
+              `plugin payload file changed during read at ${childRelativePath}`
+            );
+          }
+          hash.update(chunk);
+          offset += bytesRead;
+          if (!sameFileIdentity(beforeRead, await handle.stat())) {
+            throw new Error(
+              `plugin payload file changed during read at ${childRelativePath}`
+            );
+          }
+        }
+        const sentinel = Buffer.allocUnsafe(1);
+        if ((await handle.read(sentinel, 0, 1, beforeRead.size)).bytesRead) {
+          throw new Error(
+            `plugin payload file grew during read at ${childRelativePath}`
+          );
+        }
         const afterRead = await handle.stat();
+        const finalPathStat = await lstat(childPath);
         if (
           !sameFileIdentity(beforeRead, afterRead) ||
-          bytes.byteLength !== afterRead.size
+          finalPathStat.isSymbolicLink() ||
+          !sameFileIdentity(afterRead, finalPathStat)
         ) {
           throw new Error(
             `plugin payload file changed during read at ${childRelativePath}`
           );
         }
-        addEntry(childRelativePath, "file", afterRead.mode, bytes);
       } finally {
         await handle.close();
       }
     }
 
-    const finalNames = (await readdir(currentPath, { withFileTypes: true }))
-      .map((entry) => entry.name)
-      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    const finalNames = (await readBoundedDirectoryEntries(currentPath)).map(
+      (entry) => entry.name
+    );
     if (JSON.stringify(initialNames) !== JSON.stringify(finalNames)) {
       throw new Error(
         `plugin payload directory changed during verification at ${relativePath || "."}`
@@ -1618,7 +1745,7 @@ async function hashStrictDirectoryTree(
     }
   }
 
-  await visitDirectory(rootPath, "", initialRoot);
+  await visitDirectory(rootPath, "", initialRoot, 0);
   const finalRoot = await lstat(rootPath);
   if (
     !sameFileIdentity(initialRoot, finalRoot) ||

@@ -1,4 +1,5 @@
-import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -523,6 +524,101 @@ const AGENT_SUBPROCESS_TIMEOUT_MS = 10 * 60 * 1000;
 
 class AgentAuditPreconditionError extends Error {}
 
+type AgentAuditRunnerFailureCode =
+  | "agent-subprocess-exit"
+  | "agent-subprocess-failed"
+  | "agent-subprocess-interrupted"
+  | "agent-subprocess-invalid-output"
+  | "agent-subprocess-output-limit"
+  | "agent-subprocess-timeout";
+
+class AgentAuditRunnerError extends Error {
+  readonly code: AgentAuditRunnerFailureCode;
+
+  constructor(code: AgentAuditRunnerFailureCode) {
+    super(`Agent audit runner failed (${code}).`);
+    this.name = "AgentAuditRunnerError";
+    this.code = code;
+  }
+}
+
+const SENSITIVE_ENV_NAME_RE =
+  /(?:AUTH|BEARER|COOKIE|CREDENTIAL|DATABASE_URL|DSN|KEY|PASS|SECRET|TOKEN)/i;
+
+function sensitiveEnvironmentValues(
+  env: NodeJS.ProcessEnv = process.env
+): string[] {
+  return [
+    ...new Set(
+      Object.entries(env)
+        .filter(([name]) => SENSITIVE_ENV_NAME_RE.test(name))
+        .map(([, value]) => value?.trim() ?? "")
+        .filter((value) => value.length >= 4)
+    ),
+  ].sort((a, b) => b.length - a.length);
+}
+
+function sanitizeHostileChildText(
+  value: string,
+  sensitiveValues: readonly string[]
+): string {
+  let sanitized = value;
+  for (const sensitiveValue of sensitiveValues) {
+    sanitized = sanitized.replaceAll(sensitiveValue, "<redacted>");
+  }
+  return sanitizeEnvAssignments(redactPossibleSecrets(sanitized));
+}
+
+function normalizePerItemOutput(
+  value: unknown,
+  sensitiveValues: readonly string[]
+): PerItemOutput {
+  if (!isPlainObject(value) || typeof value.passed !== "boolean") {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  if (!Array.isArray(value.findings) || value.findings.length > 500) {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  const findings: PerItemOutput["findings"] = value.findings.map((finding) => {
+    if (
+      !isPlainObject(finding) ||
+      typeof finding.severity !== "string" ||
+      !parseSeverity(finding.severity) ||
+      typeof finding.category !== "string" ||
+      typeof finding.message !== "string" ||
+      (finding.recommendation !== undefined &&
+        typeof finding.recommendation !== "string") ||
+      (finding.location !== undefined && typeof finding.location !== "string")
+    ) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    return {
+      severity: finding.severity as Severity,
+      category: sanitizeHostileChildText(finding.category, sensitiveValues),
+      message: sanitizeHostileChildText(finding.message, sensitiveValues),
+      recommendation:
+        typeof finding.recommendation === "string"
+          ? sanitizeHostileChildText(finding.recommendation, sensitiveValues)
+          : undefined,
+      location:
+        typeof finding.location === "string"
+          ? sanitizeHostileChildText(finding.location, sensitiveValues)
+          : undefined,
+    };
+  });
+  if (value.notes !== undefined && typeof value.notes !== "string") {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  return {
+    passed: value.passed,
+    findings,
+    notes:
+      typeof value.notes === "string"
+        ? sanitizeHostileChildText(value.notes, sensitiveValues)
+        : undefined,
+  };
+}
+
 function profileCredentialPath(
   tool: AgentTool,
   homeDir: string,
@@ -668,9 +764,7 @@ async function collectProcessOutput(proc: {
       proc.exited,
     ]);
     if (stdout.truncated || stderr.truncated) {
-      throw new Error(
-        `agent subprocess output exceeded ${MAX_SUBPROCESS_OUTPUT_BYTES} byte limit`
-      );
+      throw new AgentAuditRunnerError("agent-subprocess-output-limit");
     }
     return { code, stderr: stderr.text, stdout: stdout.text };
   } catch (error) {
@@ -682,6 +776,101 @@ async function collectProcessOutput(proc: {
     await Promise.allSettled([stdoutPromise, stderrPromise, proc.exited]);
     throw error;
   }
+}
+
+async function readBoundedChildOutput(path: string): Promise<string> {
+  const pathBefore = await lstat(path);
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile()) {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  const handle = await open(
+    path,
+    constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0)
+  );
+  try {
+    const before = await handle.stat();
+    if (
+      !before.isFile() ||
+      before.dev !== pathBefore.dev ||
+      before.ino !== pathBefore.ino ||
+      before.mode !== pathBefore.mode ||
+      before.size !== pathBefore.size
+    ) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    if (before.size > MAX_SUBPROCESS_OUTPUT_BYTES) {
+      throw new AgentAuditRunnerError("agent-subprocess-output-limit");
+    }
+    const buffer = Buffer.alloc(before.size + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.byteLength) {
+      const result = await handle.read(
+        buffer,
+        bytesRead,
+        buffer.byteLength - bytesRead,
+        null
+      );
+      if (result.bytesRead === 0) {
+        break;
+      }
+      bytesRead += result.bytesRead;
+    }
+    const after = await handle.stat();
+    const pathAfter = await lstat(path);
+    if (
+      !after.isFile() ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.ctimeMs !== before.ctimeMs ||
+      pathAfter.isSymbolicLink() ||
+      !pathAfter.isFile() ||
+      pathAfter.dev !== after.dev ||
+      pathAfter.ino !== after.ino ||
+      pathAfter.mode !== after.mode ||
+      pathAfter.size !== after.size ||
+      pathAfter.mtimeMs !== after.mtimeMs ||
+      pathAfter.ctimeMs !== after.ctimeMs ||
+      bytesRead !== before.size
+    ) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    if (bytesRead > MAX_SUBPROCESS_OUTPUT_BYTES) {
+      throw new AgentAuditRunnerError("agent-subprocess-output-limit");
+    }
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function runnerSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+}
+
+function normalizeRunnerError(args: {
+  error: unknown;
+  externalSignal?: AbortSignal;
+  subprocessSignal: AbortSignal;
+}): never {
+  if (args.error instanceof AgentAuditPreconditionError) {
+    throw args.error;
+  }
+  if (args.externalSignal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
+  if (args.subprocessSignal.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-timeout");
+  }
+  if (args.error instanceof AgentAuditRunnerError) {
+    throw args.error;
+  }
+  throw new AgentAuditRunnerError("agent-subprocess-failed");
 }
 
 async function makeAgentRuntimeDir(tempRoot?: string): Promise<string> {
@@ -701,21 +890,19 @@ async function runClaude(
   profileHome: string,
   honorEnvironmentOverrides: boolean,
   tempRoot?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs = AGENT_SUBPROCESS_TIMEOUT_MS
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const runtimeDir = await makeAgentRuntimeDir(tempRoot);
-  const subprocessSignal = signal
-    ? AbortSignal.any([
-        signal,
-        AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS),
-      ])
-    : AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS);
+  const subprocessSignal = runnerSignal(signal, timeoutMs);
   try {
     await assertSupportedAuthenticationMode({
       homeDir: profileHome,
       honorEnvironmentOverrides,
       tool: "claude",
     });
+    const childEnvironment = isolatedAgentEnvironment("claude", runtimeDir);
+    const childSensitiveValues = sensitiveEnvironmentValues(childEnvironment);
     const proc = Bun.spawn({
       cmd: [
         "claude",
@@ -729,7 +916,7 @@ async function runClaude(
         "",
       ],
       cwd: runtimeDir,
-      env: isolatedAgentEnvironment("claude", runtimeDir),
+      env: childEnvironment,
       signal: subprocessSignal,
       stdin: new Blob([prompt]),
       stdout: "pipe",
@@ -743,22 +930,36 @@ async function runClaude(
           "Agent audit Claude authentication is unavailable in isolated non-persisting mode"
         );
       }
-      throw new Error(`claude exited with code ${code}: ${stderr || stdout}`);
+      throw new AgentAuditRunnerError("agent-subprocess-exit");
     }
 
-    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(stdout) as Record<string, unknown>;
+    } catch {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
     const structured = parsed.structured_output as unknown;
     if (!structured || typeof structured !== "object") {
-      throw new Error("claude did not return structured_output");
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
     }
     const modelUsage = parsed.modelUsage;
     return {
-      output: structured as PerItemOutput,
+      output: normalizePerItemOutput(structured, childSensitiveValues),
       model:
         modelUsage && typeof modelUsage === "object"
-          ? Object.keys(modelUsage)[0]
+          ? sanitizeHostileChildText(
+              Object.keys(modelUsage)[0] ?? "",
+              childSensitiveValues
+            ) || undefined
           : undefined,
     };
+  } catch (error) {
+    normalizeRunnerError({
+      error,
+      externalSignal: signal,
+      subprocessSignal,
+    });
   } finally {
     await rm(runtimeDir, { recursive: true, force: true });
   }
@@ -769,15 +970,11 @@ async function runCodex(
   profileHome: string,
   honorEnvironmentOverrides: boolean,
   tempRoot?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs = AGENT_SUBPROCESS_TIMEOUT_MS
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const dir = await makeAgentRuntimeDir(tempRoot);
-  const subprocessSignal = signal
-    ? AbortSignal.any([
-        signal,
-        AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS),
-      ])
-    : AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS);
+  const subprocessSignal = runnerSignal(signal, timeoutMs);
   const schemaPath = join(dir, "schema.json");
   const outPath = join(dir, "last-message.txt");
   try {
@@ -791,6 +988,8 @@ async function runCodex(
       `${JSON.stringify(PER_ITEM_SCHEMA, null, 2)}\n`
     );
 
+    const childEnvironment = isolatedAgentEnvironment("codex", dir);
+    const childSensitiveValues = sensitiveEnvironmentValues(childEnvironment);
     const proc = Bun.spawn({
       cmd: [
         "codex",
@@ -806,7 +1005,7 @@ async function runCodex(
         "-",
       ],
       cwd: dir,
-      env: isolatedAgentEnvironment("codex", dir),
+      env: childEnvironment,
       signal: subprocessSignal,
       stdin: new Blob([prompt]),
       stdout: "pipe",
@@ -820,20 +1019,33 @@ async function runCodex(
           "Agent audit Codex authentication is unavailable in isolated non-persisting mode"
         );
       }
-      throw new Error(`codex exited with code ${code}: ${stderr || stdout}`);
+      throw new AgentAuditRunnerError("agent-subprocess-exit");
     }
 
-    const raw = await Bun.file(outPath).text();
+    const raw = await readBoundedChildOutput(outPath);
     const trimmed = raw.trim();
     const jsonStart = trimmed.indexOf("{");
     const jsonEnd = trimmed.lastIndexOf("}");
     if (jsonStart < 0 || jsonEnd < 0 || jsonEnd <= jsonStart) {
-      throw new Error("codex output did not contain JSON object");
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
     }
-    const parsed = JSON.parse(
-      trimmed.slice(jsonStart, jsonEnd + 1)
-    ) as PerItemOutput;
-    return { output: parsed };
+    let parsed: PerItemOutput;
+    try {
+      parsed = JSON.parse(
+        trimmed.slice(jsonStart, jsonEnd + 1)
+      ) as PerItemOutput;
+    } catch {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    return {
+      output: normalizePerItemOutput(parsed, childSensitiveValues),
+    };
+  } catch (error) {
+    normalizeRunnerError({
+      error,
+      externalSignal: signal,
+      subprocessSignal,
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -881,6 +1093,7 @@ export async function evaluateAgentAudit(opts?: {
   maxItems?: number;
   runtimeTempRoot?: string;
   signal?: AbortSignal;
+  subprocessTimeoutMs?: number;
   // Test hook: inject a runner by tool name.
   runner?: (
     tool: AgentTool,
@@ -896,6 +1109,7 @@ export async function evaluateAgentAudit(opts?: {
   }) => void;
 }): Promise<AuditEvaluation<AgentAuditReport>> {
   const argv = opts?.argv ?? [];
+  const evaluationSensitiveValues = sensitiveEnvironmentValues();
   const home = opts?.homeDir ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
   const sourceTracker = new AuditSourceTracker();
@@ -949,7 +1163,7 @@ export async function evaluateAgentAudit(opts?: {
     readText: (path) => sourceTracker.readText(path),
     tracking: {
       capturePath: (path) => sourceTracker.capture(path),
-      captureTree: (path) => sourceTracker.captureTree(path),
+      captureTree: (path, options) => sourceTracker.captureTree(path, options),
       readDirectory: (path) => sourceTracker.readDirectory(path),
     },
   };
@@ -1190,7 +1404,8 @@ export async function evaluateAgentAudit(opts?: {
           home,
           opts?.homeDir === undefined,
           runtimeTempRoot,
-          opts?.signal
+          opts?.signal,
+          opts?.subprocessTimeoutMs
         );
       }
       return await runCodex(
@@ -1198,7 +1413,8 @@ export async function evaluateAgentAudit(opts?: {
         home,
         opts?.homeDir === undefined,
         runtimeTempRoot,
-        opts?.signal
+        opts?.signal,
+        opts?.subprocessTimeoutMs
       );
     });
 
@@ -1226,13 +1442,21 @@ export async function evaluateAgentAudit(opts?: {
     let out: PerItemOutput | null = null;
     try {
       const res = await runner(tool, prompt);
-      out = res.output;
-      model = model ?? res.model;
+      out = normalizePerItemOutput(res.output, evaluationSensitiveValues);
+      model =
+        model ??
+        (typeof res.model === "string"
+          ? sanitizeHostileChildText(res.model, evaluationSensitiveValues)
+          : undefined);
     } catch (e: unknown) {
-      if (e instanceof AgentAuditPreconditionError || opts?.signal?.aborted) {
+      if (e instanceof AgentAuditPreconditionError) {
         throw e;
       }
-      const msg = e instanceof Error ? e.message : String(e);
+      if (opts?.signal?.aborted) {
+        throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+      }
+      const failureCode =
+        e instanceof AgentAuditRunnerError ? e.code : "agent-subprocess-failed";
       results.push({
         item: it.item,
         type: it.type,
@@ -1245,7 +1469,7 @@ export async function evaluateAgentAudit(opts?: {
             ruleId: "agent-error",
             message: "Agent audit failed; review manually.",
             location: it.path,
-            evidence: redactPossibleSecrets(msg),
+            evidence: failureCode,
           },
         ],
       });

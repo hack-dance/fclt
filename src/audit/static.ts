@@ -799,7 +799,7 @@ export async function evaluateStaticAudit(opts?: {
     readText: (path) => sourceTracker.readText(path),
     tracking: {
       capturePath: (path) => sourceTracker.capture(path),
-      captureTree: (path) => sourceTracker.captureTree(path),
+      captureTree: (path, options) => sourceTracker.captureTree(path, options),
       readDirectory: (path) => sourceTracker.readDirectory(path),
     },
   };

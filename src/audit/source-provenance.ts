@@ -466,7 +466,10 @@ export class AuditSourceTracker {
 
   async captureTree(
     pathValue: string,
-    options?: { maxEntries?: number }
+    options?: {
+      maxEntries?: number;
+      rejectUnsupportedEntries?: boolean;
+    }
   ): Promise<void> {
     const maxEntries = options?.maxEntries ?? 50_000;
     let visited = 0;
@@ -489,6 +492,15 @@ export class AuditSourceTracker {
         }
         if (entry.isDirectory() && !entry.isSymbolicLink()) {
           stack.push(join(directory, entry.name));
+          continue;
+        }
+        if (
+          options?.rejectUnsupportedEntries &&
+          (entry.isSymbolicLink() || !entry.isFile())
+        ) {
+          throw new Error(
+            `Audit discovery tree has an unsupported entry: ${join(directory, entry.name)}`
+          );
         }
       }
     }

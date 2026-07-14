@@ -50,7 +50,16 @@ async function writeCodexPluginStub(args: {
   codexBin: string;
   enabled?: boolean;
   home: string;
-  installedMutation?: "symlink" | "unreadable-subtree";
+  installedMutation?:
+    | "aggregate-oversize"
+    | "growing-file"
+    | "oversize-file"
+    | "path-too-long"
+    | "sparse-file"
+    | "symlink"
+    | "too-deep"
+    | "too-many-entries"
+    | "unreadable-subtree";
   listedVersion?: string;
   selectedVersion: string;
 }): Promise<void> {
@@ -59,7 +68,8 @@ async function writeCodexPluginStub(args: {
     args.codexBin,
     [
       `#!${process.execPath}`,
-      `import { appendFileSync, chmodSync, cpSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
+      `import { spawn } from "node:child_process";`,
+      `import { appendFileSync, chmodSync, closeSync, cpSync, existsSync, ftruncateSync, mkdirSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
       `import { dirname, join } from "node:path";`,
       `const home = ${JSON.stringify(args.home)};`,
       `const selectedVersion = ${JSON.stringify(args.selectedVersion)};`,
@@ -81,9 +91,40 @@ async function writeCodexPluginStub(args: {
       "    mkdirSync(unreadable);",
       `    writeFileSync(join(unreadable, "hidden.txt"), "not-part-of-the-bundled-payload\\n");`,
       "    chmodSync(unreadable, 0);",
+      `  } else if (installedMutation === "too-many-entries") {`,
+      `    const crowded = join(installedPath, "unexpected-crowded");`,
+      "    mkdirSync(crowded);",
+      `    for (let index = 0; index < 260; index += 1) writeFileSync(join(crowded, String(index)), "");`,
+      `  } else if (installedMutation === "oversize-file") {`,
+      `    writeFileSync(join(installedPath, "unexpected-large"), Buffer.alloc(1_048_577));`,
+      `  } else if (installedMutation === "aggregate-oversize") {`,
+      `    for (let index = 0; index < 5; index += 1) writeFileSync(join(installedPath, "unexpected-aggregate-" + index), Buffer.alloc(900_000));`,
+      `  } else if (installedMutation === "too-deep") {`,
+      "    let deep = installedPath;",
+      `    for (let index = 0; index < 13; index += 1) { deep = join(deep, "d" + index); mkdirSync(deep); }`,
+      `  } else if (installedMutation === "path-too-long") {`,
+      "    let longPath = installedPath;",
+      `    for (let index = 0; index < 3; index += 1) { longPath = join(longPath, String(index).padEnd(180, "x")); mkdirSync(longPath); }`,
+      `  } else if (installedMutation === "sparse-file") {`,
+      `    const sparse = openSync(join(installedPath, "unexpected-sparse"), "w");`,
+      "    ftruncateSync(sparse, 524_288);",
+      "    closeSync(sparse);",
+      `  } else if (installedMutation === "growing-file") {`,
+      `    writeFileSync(join(installedPath, "unexpected-growing"), Buffer.alloc(131_072));`,
       "  }",
       `  console.log(JSON.stringify({ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: selectedVersion, installedPath, authPolicy: "ON_INSTALL" }));`,
       `} else if (argv[0] === "plugin" && argv[1] === "list") {`,
+      `  if (installedMutation === "growing-file") {`,
+      `    const target = join(installedPath, "unexpected-growing");`,
+      `    const ready = join(home, "growth-ready");`,
+      `    const stop = join(home, "growth-stop");`,
+      `    const script = 'const { appendFileSync, existsSync, writeFileSync } = require("node:fs"); const [target, ready, stop] = process.argv.slice(1); writeFileSync(ready, ""); const deadline = Date.now() + 2000; while (Date.now() < deadline && !existsSync(stop)) appendFileSync(target, Buffer.from([1]));';`,
+      `    const mutator = spawn(process.execPath, ["-e", script, target, ready, stop], { detached: true, stdio: "ignore" });`,
+      "    mutator.unref();",
+      "    const readyDeadline = Date.now() + 1000;",
+      "    while (!existsSync(ready) && Date.now() < readyDeadline) {}",
+      "    if (!existsSync(ready)) process.exit(70);",
+      "  }",
       `  console.log(JSON.stringify({ installed: [{ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: listedVersion, installed: true, enabled: ${args.enabled !== false} }], available: [] }));`,
       "} else {",
       "  process.exitCode = 64;",
@@ -92,6 +133,30 @@ async function writeCodexPluginStub(args: {
     ].join("\n")
   );
   await chmod(args.codexBin, 0o755);
+}
+
+type InstalledPluginMutation = NonNullable<
+  Parameters<typeof writeCodexPluginStub>[0]["installedMutation"]
+>;
+
+async function setupMutatedCodexPlugin(mutation: InstalledPluginMutation) {
+  const home = await createTempDir();
+  await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+    name: "local",
+    interface: { displayName: "Local Plugins" },
+    plugins: [],
+  });
+  const codexBin = join(home, "bin", "codex");
+  await writeCodexPluginStub({
+    codexBin,
+    home,
+    installedMutation: mutation,
+    selectedVersion: "0.1.2",
+  });
+  return {
+    home,
+    result: await setupCodexPlugin({ homeDir: home, codexBin }),
+  };
 }
 
 async function snapshotTree(root: string): Promise<Record<string, string>> {
@@ -3256,6 +3321,40 @@ describe("syncManagedTools", () => {
       ),
       0o700
     );
+  });
+
+  it("enforces every installed plugin tree resource limit", async () => {
+    const cases: [InstalledPluginMutation, string][] = [
+      ["too-many-entries", "exceeds 256 entries"],
+      ["oversize-file", "file exceeds 1048576 bytes"],
+      ["aggregate-oversize", "exceeds 4194304 aggregate bytes"],
+      ["too-deep", "exceeds depth 12"],
+      ["path-too-long", "relative path exceeds 512 bytes"],
+    ];
+
+    for (const [mutation, expectedError] of cases) {
+      const { result } = await setupMutatedCodexPlugin(mutation);
+      expect(result.codexInstall.status).toBe("failed");
+      expect(result.codexInstall.stderr).toContain(expectedError);
+    }
+  });
+
+  it("rejects a sparse installed plugin file before allocating its logical size", async () => {
+    const { result } = await setupMutatedCodexPlugin("sparse-file");
+
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.stderr).toContain(
+      "plugin payload contains a sparse file at unexpected-sparse"
+    );
+  });
+
+  it("rejects an installed plugin file that grows around bounded reads", async () => {
+    const { home, result } = await setupMutatedCodexPlugin("growing-file");
+    await Bun.write(join(home, "growth-stop"), "stop\n");
+
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.stderr).toContain("unexpected-growing");
+    expect(result.codexInstall.stderr).toContain("file changed");
   });
 
   it("dry-runs bundled codex plugin setup without writing files", async () => {
