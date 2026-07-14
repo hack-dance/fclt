@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { facultStateDir } from "../paths";
+import { type FacultConfig, facultStateDir } from "../paths";
 import type { AgentAuditReport } from "./agent";
 import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
 import type {
@@ -55,8 +55,16 @@ function normalizedFindingSignature(args: {
   });
 }
 
-function suppressionsPath(homeDir: string): string {
-  return join(facultStateDir(homeDir), "audit", "suppressions.json");
+function suppressionsPath(
+  homeDir: string,
+  rootDir?: string,
+  config?: FacultConfig | null
+): string {
+  return join(
+    facultStateDir(homeDir, rootDir, config),
+    "audit",
+    "suppressions.json"
+  );
 }
 
 export function createAuditSuppressionEntry(args: {
@@ -89,9 +97,11 @@ export function createAuditSuppressionEntry(args: {
 
 async function loadAuditSuppressionStore(
   homeDir: string,
-  readOptionalText?: (path: string) => Promise<string | null>
+  readOptionalText?: (path: string) => Promise<string | null>,
+  rootDir?: string,
+  config?: FacultConfig | null
 ): Promise<AuditSuppressionStore> {
-  const path = suppressionsPath(homeDir);
+  const path = suppressionsPath(homeDir, rootDir, config);
   const text = readOptionalText
     ? await readOptionalText(path)
     : (await Bun.file(path).exists())
@@ -141,9 +151,13 @@ async function writeAuditSuppressionStore(
 
 export async function loadAuditSuppressions(
   homeDir = homedir(),
-  readOptionalText?: (path: string) => Promise<string | null>
+  readOptionalText?: (path: string) => Promise<string | null>,
+  rootDir?: string,
+  config?: FacultConfig | null
 ): Promise<AuditSuppressionEntry[]> {
-  return (await loadAuditSuppressionStore(homeDir, readOptionalText)).entries;
+  return (
+    await loadAuditSuppressionStore(homeDir, readOptionalText, rootDir, config)
+  ).entries;
 }
 
 export async function recordAuditSuppressions(args: {

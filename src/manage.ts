@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import {
   appendFile,
   cp,
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   readlink,
+  realpath,
   rename,
   rm,
   symlink,
@@ -19,6 +22,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  relative,
   resolve,
 } from "node:path";
 import { getAdapter } from "./adapters";
@@ -64,6 +68,7 @@ import {
   stringifyCanonicalMcpServers,
 } from "./mcp-config";
 import {
+  type FacultConfig,
   facultMachineStateDir,
   facultRootDir,
   legacyFacultStateDirForRoot,
@@ -656,9 +661,10 @@ export function managedStatePath(home: string = homedir()): string {
 
 export function managedStatePathForRoot(
   home: string = homedir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
-  return join(facultMachineStateDir(home, rootDir), "managed.json");
+  return join(facultMachineStateDir(home, rootDir, config), "managed.json");
 }
 
 function syncLedgerPathForRoot(
@@ -687,10 +693,15 @@ async function appendSyncLedgerEvents(args: {
 
 function legacyManagedStatePathForRoot(
   home: string = homedir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
   return join(
-    legacyFacultStateDirForRoot(rootDir ?? facultRootDir(home), home),
+    legacyFacultStateDirForRoot(
+      rootDir ?? facultRootDir(home, config),
+      home,
+      config
+    ),
     "managed.json"
   );
 }
@@ -779,11 +790,14 @@ export async function inspectManagedStateRecords(
 export async function loadManagedState(
   home: string = homedir(),
   rootDir?: string,
-  options?: { readOptionalText?: (path: string) => Promise<string | null> }
+  options?: {
+    readOptionalText?: (path: string) => Promise<string | null>;
+    config?: FacultConfig | null;
+  }
 ): Promise<ManagedState> {
   const candidates = [
-    managedStatePathForRoot(home, rootDir),
-    legacyManagedStatePathForRoot(home, rootDir),
+    managedStatePathForRoot(home, rootDir, options?.config),
+    legacyManagedStatePathForRoot(home, rootDir, options?.config),
   ];
   for (const p of candidates) {
     const txt = options?.readOptionalText
@@ -1436,6 +1450,183 @@ async function hashDirectoryTree(
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+interface StrictDirectoryTreeHash {
+  entryCount: number;
+  hash: string;
+}
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size
+  );
+}
+
+function updateTreeHashField(
+  hash: ReturnType<typeof createHash>,
+  value: string
+) {
+  hash.update(String(Buffer.byteLength(value, "utf8")));
+  hash.update(":");
+  hash.update(value);
+}
+
+/**
+ * Hash a plugin payload without following or overlooking any tree entry.
+ * This is intentionally stricter than the generic content comparison above:
+ * an installed plugin is executable input, so an unreadable, mutable, linked,
+ * or non-regular entry makes its identity unverifiable.
+ */
+async function hashStrictDirectoryTree(
+  root: string
+): Promise<StrictDirectoryTreeHash> {
+  const rootPath = resolve(root);
+  const initialRoot = await lstat(rootPath);
+  if (!initialRoot.isDirectory() || initialRoot.isSymbolicLink()) {
+    throw new Error("plugin payload root is not a regular directory");
+  }
+  const initialRealRoot = await realpath(rootPath);
+
+  const hash = createHash("sha256");
+  let entryCount = 0;
+
+  const addEntry = (
+    relativePath: string,
+    type: "directory" | "file",
+    mode: number,
+    bytes?: Uint8Array
+  ) => {
+    updateTreeHashField(hash, relativePath);
+    updateTreeHashField(hash, type);
+    updateTreeHashField(hash, (mode % 0o1_0000).toString(8));
+    if (bytes) {
+      updateTreeHashField(hash, String(bytes.byteLength));
+      hash.update(bytes);
+    } else {
+      updateTreeHashField(hash, "0");
+    }
+    entryCount += 1;
+  };
+
+  async function visitDirectory(
+    currentPath: string,
+    relativePath: string,
+    expectedStat: Stats
+  ): Promise<void> {
+    addEntry(relativePath || ".", "directory", expectedStat.mode);
+    const entries = await readdir(currentPath, { withFileTypes: true });
+    entries.sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    );
+    const initialNames = entries.map((entry) => entry.name);
+
+    for (const entry of entries) {
+      if (
+        !entry.name ||
+        entry.name === "." ||
+        entry.name === ".." ||
+        entry.name.includes("/") ||
+        entry.name.includes("\\")
+      ) {
+        throw new Error("plugin payload contains an unsafe entry name");
+      }
+      const childRelativePath = relativePath
+        ? `${relativePath}/${entry.name}`
+        : entry.name;
+      const childPath = join(currentPath, entry.name);
+      const lexicalRelative = relative(rootPath, childPath);
+      if (
+        !lexicalRelative ||
+        lexicalRelative === ".." ||
+        lexicalRelative.startsWith(
+          `..${process.platform === "win32" ? "\\" : "/"}`
+        ) ||
+        isAbsolute(lexicalRelative)
+      ) {
+        throw new Error("plugin payload traversal escaped its root");
+      }
+
+      const childStat = await lstat(childPath);
+      if (childStat.isSymbolicLink()) {
+        throw new Error(
+          `plugin payload contains a symbolic link at ${childRelativePath}`
+        );
+      }
+      if (!pathIsInsideOrEqual(await realpath(childPath), initialRealRoot)) {
+        throw new Error(
+          `plugin payload entry escaped its root at ${childRelativePath}`
+        );
+      }
+      if (childStat.isDirectory()) {
+        if (!entry.isDirectory()) {
+          throw new Error(
+            `plugin payload entry changed type at ${childRelativePath}`
+          );
+        }
+        await visitDirectory(childPath, childRelativePath, childStat);
+        continue;
+      }
+      if (!(childStat.isFile() && entry.isFile())) {
+        throw new Error(
+          `plugin payload contains a special entry at ${childRelativePath}`
+        );
+      }
+
+      const handle = await open(childPath, "r");
+      try {
+        const beforeRead = await handle.stat();
+        if (!(beforeRead.isFile() && sameFileIdentity(childStat, beforeRead))) {
+          throw new Error(
+            `plugin payload file changed before read at ${childRelativePath}`
+          );
+        }
+        const bytes = await handle.readFile();
+        const afterRead = await handle.stat();
+        if (
+          !sameFileIdentity(beforeRead, afterRead) ||
+          bytes.byteLength !== afterRead.size
+        ) {
+          throw new Error(
+            `plugin payload file changed during read at ${childRelativePath}`
+          );
+        }
+        addEntry(childRelativePath, "file", afterRead.mode, bytes);
+      } finally {
+        await handle.close();
+      }
+    }
+
+    const finalNames = (await readdir(currentPath, { withFileTypes: true }))
+      .map((entry) => entry.name)
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    if (JSON.stringify(initialNames) !== JSON.stringify(finalNames)) {
+      throw new Error(
+        `plugin payload directory changed during verification at ${relativePath || "."}`
+      );
+    }
+    const finalStat = await lstat(currentPath);
+    if (
+      !(finalStat.isDirectory() && sameFileIdentity(expectedStat, finalStat))
+    ) {
+      throw new Error(
+        `plugin payload directory changed during verification at ${relativePath || "."}`
+      );
+    }
+  }
+
+  await visitDirectory(rootPath, "", initialRoot);
+  const finalRoot = await lstat(rootPath);
+  if (
+    !sameFileIdentity(initialRoot, finalRoot) ||
+    (await realpath(rootPath)) !== initialRealRoot
+  ) {
+    throw new Error("plugin payload root changed during verification");
+  }
+  return { entryCount, hash: hash.digest("hex") };
 }
 
 async function loadMergedIndex(
@@ -5141,16 +5332,6 @@ async function runCodexPluginAdd(args: {
     };
   }
 
-  const installedHash = await hashDirectoryTree(expectedInstalledPath);
-  if (installedHash !== args.expectedHash) {
-    return {
-      status: "failed",
-      command,
-      ...added,
-      stderr: `Codex installed payload for ${pluginId} does not match the bundled ${args.expectedVersion} payload.`,
-    };
-  }
-
   const verificationCommand = [
     args.codexBin,
     "plugin",
@@ -5196,6 +5377,23 @@ async function runCodexPluginAdd(args: {
       verificationCommand,
       ...listed,
       stderr: `Codex plugin selection verification failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  try {
+    const installed = await hashStrictDirectoryTree(expectedInstalledPath);
+    if (installed.hash !== args.expectedHash) {
+      throw new Error("installed tree hash differs from bundled payload");
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      command,
+      verificationCommand,
+      ...listed,
+      stderr: `Codex installed payload for ${pluginId} does not match the bundled ${args.expectedVersion} payload: ${
         error instanceof Error ? error.message : String(error)
       }`,
     };
@@ -5278,12 +5476,18 @@ export async function setupCodexPlugin(
         const expectedVersion = isPlainObject(manifest)
           ? manifest.version
           : null;
-        const expectedHash = await hashDirectoryTree(pluginTargetDir);
+        let expectedHash: string;
         if (typeof expectedVersion !== "string" || !expectedVersion.trim()) {
           throw new Error("Bundled Codex plugin manifest has no version.");
         }
-        if (!expectedHash) {
-          throw new Error("Bundled Codex plugin payload could not be hashed.");
+        try {
+          expectedHash = (await hashStrictDirectoryTree(pluginTargetDir)).hash;
+        } catch (error) {
+          throw new Error(
+            `Bundled Codex plugin payload could not be verified: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
         }
         codexInstall = await runCodexPluginAdd({
           codexBin,

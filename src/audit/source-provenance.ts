@@ -30,12 +30,20 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
   derivedContexts: AuditDerivedContextIdentity[];
-  absentPaths: string[];
+  absentPaths: AuditAbsentPathIdentity[];
+}
+
+export interface AuditAbsentPathIdentity {
+  ancestorDev: number;
+  ancestorIno: number;
+  ancestorPath: string;
+  path: string;
+  relativeSegments: string[];
 }
 
 export interface AuditDerivedContextIdentity {
@@ -60,14 +68,29 @@ function readOnlyNoFollowFlags(): number {
   return constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0);
 }
 
-async function canonicalAbsentPath(pathValue: string): Promise<string> {
+async function canonicalAbsentPath(
+  pathValue: string
+): Promise<AuditAbsentPathIdentity> {
   const requested = normalize(resolve(pathValue));
   const suffix: string[] = [];
   let ancestor = requested;
   while (true) {
     try {
       const canonicalAncestor = await realpath(ancestor);
-      return normalize(join(canonicalAncestor, ...suffix.reverse()));
+      const metadata = await lstat(canonicalAncestor);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error(
+          `Audit context absent path has no stable directory ancestor: ${requested}`
+        );
+      }
+      const relativeSegments = suffix.reverse();
+      return {
+        ancestorDev: metadata.dev,
+        ancestorIno: metadata.ino,
+        ancestorPath: canonicalAncestor,
+        path: normalize(join(canonicalAncestor, ...relativeSegments)),
+        relativeSegments,
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -97,7 +120,14 @@ function sameFileMetadata(
 }
 
 async function readStableRegularFile(
-  pathValue: string
+  pathValue: string,
+  options?: {
+    beforeReadChunk?: (args: {
+      bytesRead: number;
+      path: string;
+    }) => Promise<void>;
+    maxBytes?: number;
+  }
 ): Promise<{ bytes: Buffer; identity: AuditEvaluatedFileIdentity }> {
   const requested = normalize(resolve(pathValue));
   const requestedMetadata = await lstat(requested);
@@ -113,7 +143,42 @@ async function readStableRegularFile(
     if (!(before.isFile() && sameFileMetadata(requestedMetadata, before))) {
       throw new Error(`Audit context must be a regular file: ${requested}`);
     }
-    const bytes = await handle.readFile();
+    const maxBytes = options?.maxBytes ?? 16 * 1024 * 1024;
+    if (
+      !(Number.isSafeInteger(before.size) && before.size >= 0) ||
+      before.size > maxBytes
+    ) {
+      throw new Error(`Audit context exceeds byte limit: ${canonical}`);
+    }
+    const chunks: Buffer[] = [];
+    let bytesRead = 0;
+    while (bytesRead < before.size) {
+      await options?.beforeReadChunk?.({ bytesRead, path: canonical });
+      const current = await handle.stat();
+      if (!sameFileMetadata(before, current) || current.size > maxBytes) {
+        throw new Error(
+          `Audit context changed while it was read: ${canonical}`
+        );
+      }
+      const chunk = Buffer.allocUnsafe(
+        Math.min(64 * 1024, before.size - bytesRead)
+      );
+      const result = await handle.read(chunk, 0, chunk.length, null);
+      if (result.bytesRead <= 0) {
+        throw new Error(
+          `Audit context ended before its declared size: ${canonical}`
+        );
+      }
+      bytesRead += result.bytesRead;
+      chunks.push(chunk.subarray(0, result.bytesRead));
+    }
+    await options?.beforeReadChunk?.({ bytesRead, path: canonical });
+    const sentinel = Buffer.allocUnsafe(1);
+    const trailing = await handle.read(sentinel, 0, 1, null);
+    if (trailing.bytesRead !== 0) {
+      throw new Error(`Audit context grew while it was read: ${canonical}`);
+    }
+    const bytes = Buffer.concat(chunks, bytesRead);
     const after = await handle.stat();
     const pathAfter = await lstat(requested);
     const canonicalAfter = await realpath(requested);
@@ -142,7 +207,7 @@ async function readStableRegularFile(
 }
 
 export class AuditSourceTracker {
-  readonly #absentPaths = new Set<string>();
+  readonly #absentPaths = new Map<string, AuditAbsentPathIdentity>();
   readonly #evaluatedFiles = new Map<string, AuditEvaluatedFileIdentity>();
   readonly #evaluatedDirectories = new Map<
     string,
@@ -150,6 +215,24 @@ export class AuditSourceTracker {
   >();
   readonly #derivedContexts = new Map<string, AuditDerivedContextIdentity>();
   readonly #protectedRoots = new Map<string, AuditProtectedRootIdentity>();
+
+  readonly #platform: NodeJS.Platform;
+
+  readonly #beforeReadChunk?: (args: {
+    bytesRead: number;
+    path: string;
+  }) => Promise<void>;
+
+  constructor(options?: {
+    beforeReadChunk?: (args: {
+      bytesRead: number;
+      path: string;
+    }) => Promise<void>;
+    platform?: NodeJS.Platform;
+  }) {
+    this.#beforeReadChunk = options?.beforeReadChunk;
+    this.#platform = options?.platform ?? process.platform;
+  }
 
   async protect(paths: string[]): Promise<void> {
     for (const pathValue of paths) {
@@ -164,6 +247,23 @@ export class AuditSourceTracker {
         );
       }
       const canonical = await realpath(requested);
+      if (requestedMetadata.isDirectory() && this.#platform === "win32") {
+        const after = await lstat(requested);
+        const canonicalAfter = await realpath(requested);
+        if (
+          !sameFileMetadata(requestedMetadata, after) ||
+          canonicalAfter !== canonical
+        ) {
+          throw new Error(`Audited source root changed: ${requested}`);
+        }
+        this.#protectedRoots.set(canonical, {
+          dev: after.dev,
+          ino: after.ino,
+          kind: "directory",
+          path: canonical,
+        });
+        continue;
+      }
       const handle = await open(requested, readOnlyNoFollowFlags());
       try {
         const metadata = await handle.stat();
@@ -172,9 +272,9 @@ export class AuditSourceTracker {
           : metadata.isDirectory()
             ? "directory"
             : null;
-        if (!kind) {
+        if (!(kind && sameFileMetadata(requestedMetadata, metadata))) {
           throw new Error(
-            `Audited source root has an unsupported file type: ${canonical}`
+            `Audited source root has an unsupported or unstable file type: ${canonical}`
           );
         }
         this.#protectedRoots.set(canonical, {
@@ -189,8 +289,14 @@ export class AuditSourceTracker {
     }
   }
 
-  async read(pathValue: string): Promise<Buffer> {
-    const { bytes, identity } = await readStableRegularFile(pathValue);
+  async read(
+    pathValue: string,
+    options?: { maxBytes?: number }
+  ): Promise<Buffer> {
+    const { bytes, identity } = await readStableRegularFile(pathValue, {
+      beforeReadChunk: this.#beforeReadChunk,
+      maxBytes: options?.maxBytes,
+    });
     const existing = this.#evaluatedFiles.get(identity.path);
     if (
       existing &&
@@ -212,7 +318,8 @@ export class AuditSourceTracker {
       metadata = await lstat(requested);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        this.#absentPaths.add(await canonicalAbsentPath(requested));
+        const proof = await canonicalAbsentPath(requested);
+        this.#absentPaths.set(proof.path, proof);
         return;
       }
       throw error;
@@ -228,8 +335,11 @@ export class AuditSourceTracker {
     throw new Error(`Audit context has an unsupported file type: ${requested}`);
   }
 
-  async readText(pathValue: string): Promise<string> {
-    return (await this.read(pathValue)).toString("utf8");
+  async readText(
+    pathValue: string,
+    options?: { maxBytes?: number }
+  ): Promise<string> {
+    return (await this.read(pathValue, options)).toString("utf8");
   }
 
   async readOptionalText(pathValue: string): Promise<string | null> {
@@ -240,7 +350,8 @@ export class AuditSourceTracker {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
-      this.#absentPaths.add(await canonicalAbsentPath(requested));
+      const proof = await canonicalAbsentPath(requested);
+      this.#absentPaths.set(proof.path, proof);
       return null;
     }
   }
@@ -252,7 +363,8 @@ export class AuditSourceTracker {
       before = await lstat(requested);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        this.#absentPaths.add(await canonicalAbsentPath(requested));
+        const proof = await canonicalAbsentPath(requested);
+        this.#absentPaths.set(proof.path, proof);
         return null;
       }
       throw error;
@@ -265,7 +377,7 @@ export class AuditSourceTracker {
     let canonical: string;
     let after: Awaited<ReturnType<typeof lstat>>;
     let entries: Dirent[];
-    if (process.platform === "win32") {
+    if (this.#platform === "win32") {
       // Windows cannot portably open directory descriptors. Persistence is
       // disabled there, but read-only evaluation still binds a before/after
       // directory identity and fails if discovery changes.
@@ -352,6 +464,36 @@ export class AuditSourceTracker {
     return entries;
   }
 
+  async captureTree(
+    pathValue: string,
+    options?: { maxEntries?: number }
+  ): Promise<void> {
+    const maxEntries = options?.maxEntries ?? 50_000;
+    let visited = 0;
+    const stack = [normalize(resolve(pathValue))];
+    while (stack.length > 0) {
+      const directory = stack.pop();
+      if (!directory) {
+        continue;
+      }
+      const entries = await this.readDirectory(directory);
+      if (entries === null) {
+        continue;
+      }
+      for (const entry of entries) {
+        visited += 1;
+        if (visited > maxEntries) {
+          throw new Error(
+            `Audit discovery tree exceeds entry limit: ${pathValue}`
+          );
+        }
+        if (entry.isDirectory() && !entry.isSymbolicLink()) {
+          stack.push(join(directory, entry.name));
+        }
+      }
+    }
+  }
+
   recordGitPathExposure(pathValue: string, value: unknown): void {
     const path = normalize(resolve(pathValue));
     this.#derivedContexts.set(`git-path-exposure\0${path}`, {
@@ -363,7 +505,7 @@ export class AuditSourceTracker {
 
   snapshot(): AuditSourceSnapshot {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         a.path.localeCompare(b.path)
       ),
@@ -373,7 +515,9 @@ export class AuditSourceTracker {
       derivedContexts: [...this.#derivedContexts.values()].sort((a, b) =>
         a.path.localeCompare(b.path)
       ),
-      absentPaths: [...this.#absentPaths].sort(),
+      absentPaths: [...this.#absentPaths.values()].sort((a, b) =>
+        a.path.localeCompare(b.path)
+      ),
     };
   }
 }
@@ -396,7 +540,7 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot> | null;
   if (
     !snapshot ||
-    snapshot.schemaVersion !== 1 ||
+    snapshot.schemaVersion !== 2 ||
     !Array.isArray(snapshot.protectedRoots) ||
     !Array.isArray(snapshot.evaluatedFiles) ||
     !Array.isArray(snapshot.evaluatedDirectories) ||
@@ -445,18 +589,80 @@ export function assertAuditSourceSnapshot(
         !isAbsolute(entry.path) ||
         !SHA256_RE.test(entry.sha256)
     ) ||
-    snapshot.absentPaths.some((entry) => !isAbsolute(entry))
+    snapshot.absentPaths.some((entry) => !isValidAbsentPathIdentity(entry))
   ) {
     throw new Error("Audit source snapshot schema is unsupported");
   }
 }
 
+function isValidAbsentPathIdentity(
+  value: unknown
+): value is AuditAbsentPathIdentity {
+  if (!(value && typeof value === "object")) {
+    return false;
+  }
+  const entry = value as Partial<AuditAbsentPathIdentity>;
+  if (
+    typeof entry.path !== "string" ||
+    typeof entry.ancestorPath !== "string" ||
+    !isAbsolute(entry.path) ||
+    !isAbsolute(entry.ancestorPath) ||
+    !Number.isFinite(entry.ancestorDev) ||
+    !Number.isFinite(entry.ancestorIno) ||
+    !Array.isArray(entry.relativeSegments) ||
+    entry.relativeSegments.length === 0
+  ) {
+    return false;
+  }
+  if (
+    entry.relativeSegments.some(
+      (segment) =>
+        typeof segment !== "string" ||
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        segment.includes("/") ||
+        segment.includes("\\")
+    )
+  ) {
+    return false;
+  }
+  return (
+    normalize(join(entry.ancestorPath, ...entry.relativeSegments)) ===
+    entry.path
+  );
+}
+
 export async function validateAuditSourceSnapshot(
-  snapshot: AuditSourceSnapshot
+  snapshot: AuditSourceSnapshot,
+  options?: { platform?: NodeJS.Platform }
 ): Promise<void> {
   assertAuditSourceSnapshot(snapshot);
+  const platform = options?.platform ?? process.platform;
   for (const root of snapshot.protectedRoots) {
     const canonical = await realpath(root.path).catch(() => null);
+    const pathMetadata = await lstat(root.path).catch(() => null);
+    if (
+      !pathMetadata ||
+      pathMetadata.isSymbolicLink() ||
+      canonical !== root.path
+    ) {
+      throw new Error(`Audit source root changed: ${root.path}`);
+    }
+    if (root.kind === "directory" && platform === "win32") {
+      const after = await lstat(root.path).catch(() => null);
+      const canonicalAfter = await realpath(root.path).catch(() => null);
+      if (
+        !after?.isDirectory() ||
+        after.dev !== root.dev ||
+        after.ino !== root.ino ||
+        !sameFileMetadata(pathMetadata, after) ||
+        canonicalAfter !== root.path
+      ) {
+        throw new Error(`Audit source root changed: ${root.path}`);
+      }
+      continue;
+    }
     const handle = await open(root.path, readOnlyNoFollowFlags()).catch(
       () => null
     );
@@ -483,11 +689,11 @@ export async function validateAuditSourceSnapshot(
     }
   }
   for (const expected of snapshot.evaluatedFiles) {
-    const { identity } = await readStableRegularFile(expected.path).catch(
-      () => ({
-        identity: null,
-      })
-    );
+    const { identity } = await readStableRegularFile(expected.path, {
+      maxBytes: Math.max(expected.size, 1),
+    }).catch(() => ({
+      identity: null,
+    }));
     if (
       !identity ||
       identity.path !== expected.path ||
@@ -498,7 +704,7 @@ export async function validateAuditSourceSnapshot(
     }
   }
   for (const expected of snapshot.evaluatedDirectories) {
-    const tracker = new AuditSourceTracker();
+    const tracker = new AuditSourceTracker({ platform });
     const entries = await tracker
       .readDirectory(expected.path)
       .catch(() => null);
@@ -520,15 +726,59 @@ export async function validateAuditSourceSnapshot(
       throw new Error(`Audit derived context changed: ${expected.path}`);
     }
   }
-  for (const pathValue of snapshot.absentPaths) {
-    const metadata = await lstat(pathValue).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return null;
+  for (const proof of snapshot.absentPaths) {
+    const ancestor = await lstat(proof.ancestorPath).catch(() => null);
+    const ancestorCanonical = await realpath(proof.ancestorPath).catch(
+      () => null
+    );
+    if (
+      !ancestor?.isDirectory() ||
+      ancestor.isSymbolicLink() ||
+      ancestor.dev !== proof.ancestorDev ||
+      ancestor.ino !== proof.ancestorIno ||
+      ancestorCanonical !== proof.ancestorPath
+    ) {
+      throw new Error(
+        `Audit context absent ancestor changed: ${proof.ancestorPath}`
+      );
+    }
+    let current = proof.ancestorPath;
+    let stillAbsent = false;
+    for (let index = 0; index < proof.relativeSegments.length; index += 1) {
+      current = join(current, proof.relativeSegments[index]!);
+      const metadata = await lstat(current).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        throw error;
+      });
+      if (!metadata) {
+        stillAbsent = true;
+        break;
       }
-      throw error;
-    });
-    if (metadata) {
-      throw new Error(`Audit context appeared after evaluation: ${pathValue}`);
+      if (metadata.isSymbolicLink()) {
+        throw new Error(
+          `Audit context absent path became a symlink: ${current}`
+        );
+      }
+      const isLast = index === proof.relativeSegments.length - 1;
+      if (isLast) {
+        throw new Error(
+          `Audit context appeared after evaluation: ${proof.path}`
+        );
+      }
+      if (!metadata.isDirectory()) {
+        throw new Error(
+          `Audit context absent path ancestor became non-directory: ${current}`
+        );
+      }
+      const canonical = await realpath(current).catch(() => null);
+      if (canonical !== current) {
+        throw new Error(`Audit context absent path escaped: ${current}`);
+      }
+    }
+    if (!stillAbsent) {
+      throw new Error(`Audit context appeared after evaluation: ${proof.path}`);
     }
   }
 }

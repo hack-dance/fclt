@@ -245,9 +245,10 @@ function detectLegacyStoreUnderAgents(home: string): string | null {
 
 export function legacyFacultStateDirForRoot(
   rootDir: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string {
-  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  const projectRoot = projectRootFromAiRoot(rootDir, home, config);
   return projectRoot
     ? join(projectRoot, ".facult")
     : legacyExternalFacultStateDir(home);
@@ -255,10 +256,11 @@ export function legacyFacultStateDirForRoot(
 
 function shouldUsePreferredGlobalStateDir(
   rootDir: string,
-  home: string
+  home: string,
+  config?: FacultConfig | null
 ): boolean {
   const resolved = resolve(rootDir);
-  if (projectRootFromAiRoot(resolved, home)) {
+  if (projectRootFromAiRoot(resolved, home, config)) {
     return false;
   }
   if (resolved === resolve(preferredGlobalAiRoot(home))) {
@@ -272,13 +274,14 @@ function shouldUsePreferredGlobalStateDir(
 
 export function facultStateDir(
   home: string = defaultHomeDir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
-  const resolvedRoot = rootDir ?? facultRootDir(home);
-  if (projectRootFromAiRoot(resolvedRoot, home)) {
-    return facultMachineStateDir(home, resolvedRoot);
+  const resolvedRoot = rootDir ?? facultRootDir(home, config);
+  if (projectRootFromAiRoot(resolvedRoot, home, config)) {
+    return facultMachineStateDir(home, resolvedRoot, config);
   }
-  if (shouldUsePreferredGlobalStateDir(resolvedRoot, home)) {
+  if (shouldUsePreferredGlobalStateDir(resolvedRoot, home, config)) {
     return preferredGlobalFacultStateDir(home);
   }
   return join(resolvedRoot, ".facult");
@@ -286,9 +289,10 @@ export function facultStateDir(
 
 export function machineStateProjectKey(
   rootDir: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string {
-  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  const projectRoot = projectRootFromAiRoot(rootDir, home, config);
   const labelSource = projectRoot ?? rootDir;
   const label = basename(labelSource).trim().toLowerCase();
   const slug = label.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -301,15 +305,16 @@ export function machineStateProjectKey(
 
 export function facultMachineStateDir(
   home: string = defaultHomeDir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
-  const resolvedRoot = rootDir ?? facultRootDir(home);
-  const projectRoot = projectRootFromAiRoot(resolvedRoot, home);
+  const resolvedRoot = rootDir ?? facultRootDir(home, config);
+  const projectRoot = projectRootFromAiRoot(resolvedRoot, home, config);
   return projectRoot
     ? join(
         facultLocalStateRoot(home),
         "projects",
-        machineStateProjectKey(resolvedRoot, home)
+        machineStateProjectKey(resolvedRoot, home, config)
       )
     : join(facultLocalStateRoot(home), "global");
 }
@@ -326,7 +331,8 @@ export function facultRuntimeCacheDir(home: string = defaultHomeDir()): string {
 
 export function projectRootFromAiRoot(
   rootDir: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string | null {
   const pathApi =
     looksLikeWindowsAbsolutePath(rootDir) || looksLikeWindowsAbsolutePath(home)
@@ -352,7 +358,7 @@ export function projectRootFromAiRoot(
         ? pathApi.dirname(resolved)
         : null;
     }
-  } else if (pathApi.resolve(facultRootDir(home)) === resolved) {
+  } else if (pathApi.resolve(facultRootDir(home, config)) === resolved) {
     return null;
   }
   if (resolved === pathApi.resolve(pathApi.join(home, ".ai"))) {
@@ -748,11 +754,12 @@ export function facultRootDir(
 
 export function findNearestProjectAiRoot(
   start: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string | null {
-  const configuredRoot = facultRootDir(home);
+  const configuredRoot = facultRootDir(home, config);
   const globalRoots = new Set([resolve(join(home, ".ai"))]);
-  if (!projectRootFromAiRoot(configuredRoot, home)) {
+  if (!projectRootFromAiRoot(configuredRoot, home, config)) {
     globalRoots.add(resolve(configuredRoot));
   }
   let current = resolve(start);
@@ -782,13 +789,11 @@ export function facultContextRootDir(args?: {
   }
 
   const cwd = args?.cwd?.trim() || process.cwd();
-  const projectRoot = findNearestProjectAiRoot(cwd, home);
+  const config = args && "config" in args ? args.config : undefined;
+  const projectRoot = findNearestProjectAiRoot(cwd, home, config);
   if (projectRoot) {
     return projectRoot;
   }
 
-  return facultRootDir(
-    home,
-    args && "config" in args ? args.config : undefined
-  );
+  return facultRootDir(home, config);
 }

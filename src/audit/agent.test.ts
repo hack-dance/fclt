@@ -18,6 +18,8 @@ import { persistAuditReport } from "./report-persistence";
 
 const JSON_SUFFIX_RE = /\.json$/;
 const SHA256_RE = /^[a-f0-9]{64}$/;
+const SOURCE_DRIFT_RE =
+  /source discovery changed during evaluation|directory changed between reads/;
 
 async function writeFile(p: string, content: string) {
   await mkdir(dirname(p), { recursive: true });
@@ -286,7 +288,7 @@ test("agent audit rejects discovery drift during a long agent call", async () =>
         return { output: { passed: true, findings: [], notes: "ok" } };
       },
     })
-  ).rejects.toThrow("source discovery changed during evaluation");
+  ).rejects.toThrow(SOURCE_DRIFT_RE);
 });
 
 test("agent audit rejects symlinks in supporting skill trees", async () => {
@@ -405,6 +407,10 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
 
   for (const tool of ["claude", "codex"] as const) {
     const recordPath = join(dir, `${tool}-record.json`);
+    const authFailMarker = join(dir, `${tool}-auth-fail`);
+    const failMarker = join(dir, `${tool}-fail`);
+    const hangMarker = join(dir, `${tool}-hang`);
+    const pipeFloodMarker = join(dir, `${tool}-pipe-flood`);
     const executable = join(bin, tool);
     await Bun.write(
       executable,
@@ -416,10 +422,11 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
         `const credentialPath = ${JSON.stringify(tool)} === "codex" ? join(process.env.CODEX_HOME, "auth.json") : join(process.env.CLAUDE_CONFIG_DIR, ".credentials.json");`,
         `const profileDir = ${JSON.stringify(tool)} === "codex" ? process.env.CODEX_HOME : process.env.CLAUDE_CONFIG_DIR;`,
         `const authEnvironmentPresent = ${JSON.stringify(tool)} === "codex" ? Boolean(process.env.OPENAI_API_KEY) : Boolean(process.env.ANTHROPIC_API_KEY);`,
-        `writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, authEnvironmentPresent, credentialPresent: existsSync(credentialPath), cwd: process.cwd(), profileEntries: readdirSync(profileDir).sort(), env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } }));`,
-        `if (process.env.FCLT_AGENT_STUB_AUTH_FAIL === "1") { console.error("authentication required"); process.exit(9); }`,
-        `if (process.env.FCLT_AGENT_STUB_FAIL === "1") process.exit(7);`,
-        `if (process.env.FCLT_AGENT_STUB_HANG === "1") await new Promise((resolve) => setTimeout(resolve, 60_000));`,
+        `writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, authEnvironmentPresent, credentialPresent: existsSync(credentialPath), cwd: process.cwd(), envKeys: Object.keys(process.env).sort(), profileEntries: readdirSync(profileDir).sort(), env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } }));`,
+        `if (existsSync(${JSON.stringify(authFailMarker)})) { console.error("authentication required"); process.exit(9); }`,
+        `if (existsSync(${JSON.stringify(failMarker)})) process.exit(7);`,
+        `if (existsSync(${JSON.stringify(hangMarker)})) await new Promise((resolve) => setTimeout(resolve, 60_000));`,
+        `if (existsSync(${JSON.stringify(pipeFloodMarker)})) { const chunk = "x".repeat(65536); for (let i = 0; i < 64; i += 1) { if (!process.stderr.write(chunk)) await new Promise((resolve) => process.stderr.once("drain", resolve)); } }`,
         tool === "codex"
           ? `writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify({ passed: true, findings: [], notes: "ok" }));`
           : `console.log(JSON.stringify({ structured_output: { passed: true, findings: [], notes: "ok" }, modelUsage: { stub: {} } }));`,
@@ -429,16 +436,40 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
     await chmod(executable, 0o755);
 
     const previousPath = process.env.PATH;
-    const previousFail = process.env.FCLT_AGENT_STUB_FAIL;
-    const previousHang = process.env.FCLT_AGENT_STUB_HANG;
-    const previousAuthFail = process.env.FCLT_AGENT_STUB_AUTH_FAIL;
     const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    const previousClaudeOauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
     const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    const unrelatedEnvironment = {
+      ALL_PROXY: process.env.ALL_PROXY,
+      AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+      BASH_ENV: process.env.BASH_ENV,
+      DATABASE_URL: process.env.DATABASE_URL,
+      GH_TOKEN: process.env.GH_TOKEN,
+      GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+      GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND,
+      HTTP_PROXY: process.env.HTTP_PROXY,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      NODE_OPTIONS: process.env.NODE_OPTIONS,
+      SERVICE_TOKEN: process.env.SERVICE_TOKEN,
+    };
     process.env.PATH = `${bin}:${previousPath ?? ""}`;
     process.env.ANTHROPIC_API_KEY =
       tool === "claude" ? "fixture-environment-auth" : undefined;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN =
+      tool === "claude" ? "fixture-environment-auth" : undefined;
     process.env.OPENAI_API_KEY =
       tool === "codex" ? "fixture-environment-auth" : undefined;
+    process.env.ALL_PROXY = "http://fixture.invalid";
+    process.env.AWS_SECRET_ACCESS_KEY = "fixture-unrelated-secret";
+    process.env.BASH_ENV = join(dir, "fixture-hook");
+    process.env.DATABASE_URL = "fixture-unrelated-secret";
+    process.env.GH_TOKEN = "fixture-unrelated-secret";
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_SSH_COMMAND = "fixture-unrelated-hook";
+    process.env.HTTP_PROXY = "http://fixture.invalid";
+    process.env.HTTPS_PROXY = "http://fixture.invalid";
+    process.env.NODE_OPTIONS = "--fixture-unrelated-hook";
+    process.env.SERVICE_TOKEN = "fixture-unrelated-secret";
     try {
       const report = await runAgentAudit({
         argv: ["ok-skill", "--with", tool, "--max-items", "1"],
@@ -453,11 +484,38 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
         credentialPresent: boolean;
         cwd: string;
         env: Record<string, string | undefined>;
+        envKeys: string[];
         profileEntries: string[];
       };
       expect(record.authEnvironmentPresent).toBe(true);
       expect(record.credentialPresent).toBe(false);
       expect(record.profileEntries).toEqual([]);
+      expect(record.envKeys).toContain(
+        tool === "claude" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"
+      );
+      for (const excluded of [
+        "ALL_PROXY",
+        "AWS_SECRET_ACCESS_KEY",
+        "BASH_ENV",
+        "DATABASE_URL",
+        "GH_TOKEN",
+        "GIT_CONFIG_COUNT",
+        "GIT_SSH_COMMAND",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NODE_OPTIONS",
+        "SERVICE_TOKEN",
+      ]) {
+        expect(record.envKeys).not.toContain(excluded);
+      }
+      expect(record.envKeys).not.toContain(
+        tool === "claude" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
+      );
+      if (tool === "claude") {
+        expect(record.envKeys).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+      } else {
+        expect(record.envKeys).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+      }
       const isolatedHome = record.env.HOME ?? "";
       expect(record.args).toContain(
         tool === "claude" ? "--no-session-persistence" : "--ephemeral"
@@ -484,6 +542,7 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
       await rename(authMarkers[tool], profileBackup);
       if (tool === "claude") {
         process.env.ANTHROPIC_API_KEY = undefined;
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
       } else {
         process.env.OPENAI_API_KEY = undefined;
       }
@@ -518,11 +577,12 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
       expect(await readdir(scratch)).toEqual([]);
       if (tool === "claude") {
         process.env.ANTHROPIC_API_KEY = "fixture-environment-auth";
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = "fixture-environment-auth";
       } else {
         process.env.OPENAI_API_KEY = "fixture-environment-auth";
       }
 
-      process.env.FCLT_AGENT_STUB_AUTH_FAIL = "1";
+      await Bun.write(authFailMarker, "1");
       await expect(
         runAgentAudit({
           argv: ["ok-skill", "--with", tool, "--max-items", "1"],
@@ -532,9 +592,9 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
         })
       ).rejects.toThrow("authentication is unavailable");
       expect(await readdir(scratch)).toEqual([]);
-      process.env.FCLT_AGENT_STUB_AUTH_FAIL = undefined;
+      await rm(authFailMarker);
 
-      process.env.FCLT_AGENT_STUB_FAIL = "1";
+      await Bun.write(failMarker, "1");
       const failed = await runAgentAudit({
         argv: ["ok-skill", "--with", tool, "--max-items", "1"],
         cwd: dir,
@@ -543,10 +603,29 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
       });
       expect(failed.results[0]?.findings[0]?.ruleId).toBe("agent-error");
       expect(await readdir(scratch)).toEqual([]);
+      await rm(failMarker);
+
+      await Bun.write(pipeFloodMarker, "1");
+      const pipeController = new AbortController();
+      const pipeTimeout = setTimeout(() => pipeController.abort(), 5000);
+      const flooded = await runAgentAudit({
+        argv: ["ok-skill", "--with", tool, "--max-items", "1"],
+        cwd: dir,
+        homeDir: home,
+        runtimeTempRoot: scratch,
+        signal: pipeController.signal,
+      });
+      clearTimeout(pipeTimeout);
+      expect(pipeController.signal.aborted).toBe(false);
+      expect(flooded.results[0]?.findings[0]?.ruleId).toBe("agent-error");
+      expect(flooded.results[0]?.findings[0]?.evidence).toContain(
+        "output exceeded"
+      );
+      expect(await readdir(scratch)).toEqual([]);
+      await rm(pipeFloodMarker);
 
       if (tool === "codex") {
-        process.env.FCLT_AGENT_STUB_FAIL = undefined;
-        process.env.FCLT_AGENT_STUB_HANG = "1";
+        await Bun.write(hangMarker, "1");
         const controller = new AbortController();
         setTimeout(() => controller.abort(), 50);
         await expect(
@@ -559,14 +638,25 @@ test("agent audit subprocesses disable persistence, isolate homes, and clean lif
           })
         ).rejects.toThrow();
         expect(await readdir(scratch)).toEqual([]);
+        await rm(hangMarker);
       }
     } finally {
       process.env.PATH = previousPath;
-      process.env.FCLT_AGENT_STUB_FAIL = previousFail;
-      process.env.FCLT_AGENT_STUB_HANG = previousHang;
-      process.env.FCLT_AGENT_STUB_AUTH_FAIL = previousAuthFail;
       process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = previousClaudeOauthToken;
       process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      process.env.ALL_PROXY = unrelatedEnvironment.ALL_PROXY;
+      process.env.AWS_SECRET_ACCESS_KEY =
+        unrelatedEnvironment.AWS_SECRET_ACCESS_KEY;
+      process.env.BASH_ENV = unrelatedEnvironment.BASH_ENV;
+      process.env.DATABASE_URL = unrelatedEnvironment.DATABASE_URL;
+      process.env.GH_TOKEN = unrelatedEnvironment.GH_TOKEN;
+      process.env.GIT_CONFIG_COUNT = unrelatedEnvironment.GIT_CONFIG_COUNT;
+      process.env.GIT_SSH_COMMAND = unrelatedEnvironment.GIT_SSH_COMMAND;
+      process.env.HTTP_PROXY = unrelatedEnvironment.HTTP_PROXY;
+      process.env.HTTPS_PROXY = unrelatedEnvironment.HTTPS_PROXY;
+      process.env.NODE_OPTIONS = unrelatedEnvironment.NODE_OPTIONS;
+      process.env.SERVICE_TOKEN = unrelatedEnvironment.SERVICE_TOKEN;
     }
   }
 });

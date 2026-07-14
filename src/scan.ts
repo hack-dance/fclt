@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -83,6 +84,25 @@ interface SourceSpec {
 
 type ScanReadText = (path: string) => Promise<string>;
 
+interface ScanTracking {
+  capturePath?: (path: string) => Promise<void>;
+  captureTree?: (path: string) => Promise<void>;
+  readDirectory?: (path: string) => Promise<import("node:fs").Dirent[] | null>;
+}
+
+const scanTracking = new AsyncLocalStorage<ScanTracking>();
+
+class ScanTrackingError extends Error {
+  override readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(
+      `Audit scan provenance failed: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+    this.cause = cause;
+  }
+}
+
 const GLOB_CHARS_REGEX = /[*?[]/;
 const SECRETY_STRING_RE =
   /\b(sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,})\b/g;
@@ -147,6 +167,7 @@ async function expandPathPatterns(
     }
 
     const baseDir = globBaseDir(abs);
+    await scanTracking.getStore()?.captureTree?.(baseDir);
     const baseSt = await statSafe(baseDir);
     if (!baseSt?.isDir) {
       continue;
@@ -169,12 +190,27 @@ async function expandPathPatterns(
 async function statSafe(
   p: string
 ): Promise<{ isFile: boolean; isDir: boolean } | null> {
+  await scanTracking.getStore()?.capturePath?.(p);
   try {
     const s = await Bun.file(p).stat();
     return { isFile: s.isFile(), isDir: s.isDirectory() };
   } catch {
     return null;
   }
+}
+
+async function readdirForScan(
+  pathValue: string
+): Promise<import("node:fs").Dirent[]> {
+  const tracked = scanTracking.getStore()?.readDirectory;
+  if (tracked) {
+    try {
+      return (await tracked(pathValue)) ?? [];
+    } catch (error) {
+      throw new ScanTrackingError(error);
+    }
+  }
+  return await readdir(pathValue, { withFileTypes: true });
 }
 
 async function readJsonSafe(
@@ -204,6 +240,7 @@ async function listSkillEntries(skillRoot: string): Promise<string[]> {
   if (!st?.isDir) {
     return [];
   }
+  await scanTracking.getStore()?.captureTree?.(skillRoot);
 
   // We treat any directory that contains a SKILL.md as a single skill entry.
   // This prevents noisy output like package.json/README.md under skills.
@@ -902,8 +939,11 @@ async function listFilesRecursive(
     }
     let entries: any[];
     try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
+      entries = await readdirForScan(dir);
+    } catch (error) {
+      if (error instanceof ScanTrackingError) {
+        throw error;
+      }
       continue;
     }
 
@@ -1083,8 +1123,11 @@ async function buildFromRootResult(args: {
     }
     let entries: any[];
     try {
-      entries = await readdir(hooksDir, { withFileTypes: true });
-    } catch {
+      entries = await readdirForScan(hooksDir);
+    } catch (error) {
+      if (error instanceof ScanTrackingError) {
+        throw error;
+      }
       return;
     }
     for (const ent of entries) {
@@ -1113,7 +1156,10 @@ async function buildFromRootResult(args: {
       txt = args.readText
         ? await args.readText(gitFile)
         : await Bun.file(gitFile).text();
-    } catch {
+    } catch (error) {
+      if (error instanceof ScanTrackingError) {
+        throw error;
+      }
       return;
     }
 
@@ -1277,8 +1323,11 @@ async function buildFromRootResult(args: {
 
     let entries: any[];
     try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
+      entries = await readdirForScan(dir);
+    } catch (error) {
+      if (error instanceof ScanTrackingError) {
+        throw error;
+      }
       return;
     }
 
@@ -1642,6 +1691,7 @@ async function buildSourceResult(
           // Add hooks config and scripts (if any).
           const hooksDir = join(installPath, "hooks");
           if ((await statSafe(hooksDir))?.isDir) {
+            await scanTracking.getStore()?.captureTree?.(hooksDir);
             const glob = new Bun.Glob("hooks/**/*");
             let n = 0;
             for await (const rel of glob.scan({
@@ -2249,93 +2299,99 @@ export async function scan(
     };
     /** Stable reader used by audit evaluation to bind every discovery byte. */
     readText?: ScanReadText;
+    /** Complete path/directory provenance hooks used by read-only audit. */
+    tracking?: ScanTracking;
   }
 ): Promise<ScanResult> {
-  const cwd = opts?.cwd ?? process.cwd();
-  const home = opts?.homeDir ?? homedir();
-  const includeGitHooks = opts?.includeGitHooks ?? false;
+  return await scanTracking.run(opts?.tracking ?? {}, async () => {
+    const cwd = opts?.cwd ?? process.cwd();
+    const home = opts?.homeDir ?? homedir();
+    const includeGitHooks = opts?.includeGitHooks ?? false;
 
-  const cfg = opts?.includeConfigFrom
-    ? opts && "configFrom" in opts
-      ? (opts.configFrom ?? null)
-      : readFacultConfig(home)
-    : null;
+    const cfg = opts?.includeConfigFrom
+      ? opts && "configFrom" in opts
+        ? (opts.configFrom ?? null)
+        : readFacultConfig(home)
+      : null;
 
-  const noDefaultIgnore =
-    opts?.fromOptions?.noDefaultIgnore ?? cfg?.scanFromNoDefaultIgnore ?? false;
+    const noDefaultIgnore =
+      opts?.fromOptions?.noDefaultIgnore ??
+      cfg?.scanFromNoDefaultIgnore ??
+      false;
 
-  const ignore = new Set<string>(
-    noDefaultIgnore ? [] : [...DEFAULT_FROM_IGNORE_DIRS]
-  );
-  for (const name of cfg?.scanFromIgnore ?? []) {
-    if (name) {
-      ignore.add(name);
-    }
-  }
-  for (const name of opts?.fromOptions?.ignoreDirNames ?? []) {
-    if (name) {
-      ignore.add(name);
-    }
-  }
-
-  const fromOpts: FromScanOptions = {
-    ignoreDirNames: ignore,
-    // Keep `--from ~` usable by default; users can still tune this down/up via flags.
-    maxVisits:
-      opts?.fromOptions?.maxVisits ?? cfg?.scanFromMaxVisits ?? 200_000,
-    maxResults:
-      opts?.fromOptions?.maxResults ?? cfg?.scanFromMaxResults ?? 20_000,
-    includeGitHooks,
-  };
-
-  const specs = [
-    ...defaultSourceSpecs(cwd, home, {
-      canonicalRoot: opts?.canonicalRoot,
-      includeGitHooks,
-    }),
-  ];
-  const sources: SourceResult[] = [];
-  for (const spec of specs) {
-    sources.push(await buildSourceResult(spec, home, opts?.readText));
-  }
-
-  const fromRootsInput = [...(cfg?.scanFrom ?? []), ...(opts?.from ?? [])];
-  const fromRoots: string[] = [];
-  const seenAbs = new Set<string>();
-  for (const root of fromRootsInput) {
-    const expanded = expandTilde(root, home);
-    const abs = expanded.startsWith("/") ? expanded : resolve(expanded);
-    if (!isSafePathString(abs)) {
-      continue;
-    }
-    if (seenAbs.has(abs)) {
-      continue;
-    }
-    seenAbs.add(abs);
-    fromRoots.push(root);
-  }
-
-  for (let i = 0; i < fromRoots.length; i += 1) {
-    const root = fromRoots[i]!;
-    const id = `from-${i + 1}`;
-    sources.push(
-      await buildFromRootResult({
-        id,
-        name: `From: ${root}`,
-        root,
-        home,
-        opts: fromOpts,
-        readText: opts?.readText,
-      })
+    const ignore = new Set<string>(
+      noDefaultIgnore ? [] : [...DEFAULT_FROM_IGNORE_DIRS]
     );
-  }
+    for (const name of cfg?.scanFromIgnore ?? []) {
+      if (name) {
+        ignore.add(name);
+      }
+    }
+    for (const name of opts?.fromOptions?.ignoreDirNames ?? []) {
+      if (name) {
+        ignore.add(name);
+      }
+    }
 
-  return {
-    version: 6,
-    scannedAt: new Date().toISOString(),
-    cwd,
-    sources,
-  };
+    const fromOpts: FromScanOptions = {
+      ignoreDirNames: ignore,
+      // Keep `--from ~` usable by default; users can still tune this down/up via flags.
+      maxVisits:
+        opts?.fromOptions?.maxVisits ?? cfg?.scanFromMaxVisits ?? 200_000,
+      maxResults:
+        opts?.fromOptions?.maxResults ?? cfg?.scanFromMaxResults ?? 20_000,
+      includeGitHooks,
+    };
+
+    const specs = [
+      ...defaultSourceSpecs(cwd, home, {
+        canonicalRoot: opts?.canonicalRoot,
+        includeGitHooks,
+      }),
+    ];
+    const sources: SourceResult[] = [];
+    for (const spec of specs) {
+      sources.push(await buildSourceResult(spec, home, opts?.readText));
+    }
+
+    const fromRootsInput = [...(cfg?.scanFrom ?? []), ...(opts?.from ?? [])];
+    const fromRoots: string[] = [];
+    const seenAbs = new Set<string>();
+    for (const root of fromRootsInput) {
+      const expanded = expandTilde(root, home);
+      const abs = expanded.startsWith("/") ? expanded : resolve(expanded);
+      if (!isSafePathString(abs)) {
+        continue;
+      }
+      if (seenAbs.has(abs)) {
+        continue;
+      }
+      seenAbs.add(abs);
+      fromRoots.push(root);
+    }
+
+    for (let i = 0; i < fromRoots.length; i += 1) {
+      const root = fromRoots[i]!;
+      const id = `from-${i + 1}`;
+      sources.push(
+        await buildFromRootResult({
+          id,
+          name: `From: ${root}`,
+          root,
+          home,
+          opts: fromOpts,
+          readText: opts?.readText,
+        })
+      );
+    }
+
+    return {
+      version: 6,
+      scannedAt: new Date().toISOString(),
+      cwd,
+      sources,
+    };
+  });
 }
 
 export async function writeState(res: ScanResult) {

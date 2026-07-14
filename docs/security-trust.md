@@ -67,6 +67,10 @@ commit. The receipt contains the evaluation-time identities and hashes of the
 exact files and derived context used by the report. fclt revalidates that
 snapshot after evaluation and again before committing, so a source change
 during a long agent call cannot be certified as the bytes that were reviewed.
+Discovery also records every probed candidate and traversed directory. Missing
+paths are anchored to the nearest existing directory identity, so a late file,
+directory, or symlink ancestor invalidates persistence before any artifact is
+created.
 Skill support files under `assets/`, `references/`, and `scripts/` are
 deterministically enumerated, bounded, hashed, and rejected on symlink or
 special-file ambiguity. fclt rejects relative or traversing paths, unresolved or
@@ -86,7 +90,10 @@ Agent audit subprocesses use temporary HOME, config, state, cache, and working
 directories with session persistence disabled. Profile credential files are
 never copied: supported environment authentication is passed through, and OS
 native credential services remain available without exposing the normal
-profile tree. A file-backed-only profile is rejected as a command-level
+profile tree. Agent children receive a small operational environment allowlist
+and only the selected tool's authentication variables; unrelated service
+credentials, proxy variables, Git overrides, and execution hooks are removed.
+A file-backed-only profile is rejected as a command-level
 precondition; use the tool's supported API-key environment variable or native
 authentication. Settings, hooks, sessions, and history are not copied.
 Authentication failures are command-level precondition failures, so they

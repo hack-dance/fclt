@@ -32,7 +32,7 @@ export interface AuditEvaluation<TReport> {
 }
 
 export const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
-export const AUDIT_REPORT_REVISION = 2;
+export const AUDIT_REPORT_REVISION = 3;
 export const AUDIT_REPORT_MAX_AGE_MS = 15 * 60 * 1000;
 
 const PATH_SEGMENT_SPLIT_RE = /[\\/]+/;
@@ -279,7 +279,7 @@ export async function persistAuditReport(args: {
     ...args.sourceSnapshot.protectedRoots,
     ...args.sourceSnapshot.evaluatedFiles,
     ...args.sourceSnapshot.evaluatedDirectories,
-    ...args.sourceSnapshot.absentPaths.map((path) => ({ path })),
+    ...args.sourceSnapshot.absentPaths,
   ].find((source) => auditPathsOverlap(source.path, reportRoot));
   if (overlap) {
     throw new Error(
@@ -494,8 +494,8 @@ export async function loadVerifiedAuditReport<
     receipt.sourceSnapshot.evaluatedDirectories.some((source) =>
       auditPathsOverlap(source.path, outputRoot)
     ) ||
-    receipt.sourceSnapshot.absentPaths.some((path) =>
-      auditPathsOverlap(path, outputRoot)
+    receipt.sourceSnapshot.absentPaths.some((proof) =>
+      auditPathsOverlap(proof.path, outputRoot)
     )
   ) {
     throw new Error("Audit report directory now overlaps an audited source");

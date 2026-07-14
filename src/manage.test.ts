@@ -50,6 +50,7 @@ async function writeCodexPluginStub(args: {
   codexBin: string;
   enabled?: boolean;
   home: string;
+  installedMutation?: "symlink" | "unreadable-subtree";
   listedVersion?: string;
   selectedVersion: string;
 }): Promise<void> {
@@ -58,13 +59,14 @@ async function writeCodexPluginStub(args: {
     args.codexBin,
     [
       `#!${process.execPath}`,
-      `import { appendFileSync, cpSync, mkdirSync, rmSync } from "node:fs";`,
+      `import { appendFileSync, chmodSync, cpSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
       `import { dirname, join } from "node:path";`,
       `const home = ${JSON.stringify(args.home)};`,
       `const selectedVersion = ${JSON.stringify(args.selectedVersion)};`,
       `const listedVersion = ${JSON.stringify(
         args.listedVersion ?? args.selectedVersion
       )};`,
+      `const installedMutation = ${JSON.stringify(args.installedMutation ?? null)};`,
       `const installedPath = join(home, ".codex", "plugins", "cache", "local", "fclt", selectedVersion);`,
       "const argv = process.argv.slice(2);",
       `appendFileSync(join(home, "codex-args.txt"), argv.join("\\n") + "\\n--\\n");`,
@@ -72,6 +74,14 @@ async function writeCodexPluginStub(args: {
       "  rmSync(installedPath, { force: true, recursive: true });",
       "  mkdirSync(dirname(installedPath), { recursive: true });",
       `  cpSync(join(home, "plugins", "fclt"), installedPath, { recursive: true });`,
+      `  if (installedMutation === "symlink") {`,
+      `    symlinkSync(join(installedPath, "scripts"), join(installedPath, "unexpected-link"));`,
+      `  } else if (installedMutation === "unreadable-subtree") {`,
+      `    const unreadable = join(installedPath, "unexpected-private");`,
+      "    mkdirSync(unreadable);",
+      `    writeFileSync(join(unreadable, "hidden.txt"), "not-part-of-the-bundled-payload\\n");`,
+      "    chmodSync(unreadable, 0);",
+      "  }",
       `  console.log(JSON.stringify({ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: selectedVersion, installedPath, authPolicy: "ON_INSTALL" }));`,
       `} else if (argv[0] === "plugin" && argv[1] === "list") {`,
       `  console.log(JSON.stringify({ installed: [{ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: listedVersion, installed: true, enabled: ${args.enabled !== false} }], available: [] }));`,
@@ -3179,6 +3189,72 @@ describe("syncManagedTools", () => {
     ).toContain("audit-read-only-v1");
     expect(await Bun.file(join(oldCache, "selected.txt")).text()).toBe(
       "legacy-wrapper\n"
+    );
+  });
+
+  it("rejects an installed plugin tree containing an extra symlink", async () => {
+    const home = await createTempDir();
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "local",
+      interface: { displayName: "Local Plugins" },
+      plugins: [],
+    });
+    const codexBin = join(home, "bin", "codex");
+    await writeCodexPluginStub({
+      codexBin,
+      home,
+      installedMutation: "symlink",
+      selectedVersion: "0.1.2",
+    });
+
+    const result = await setupCodexPlugin({ homeDir: home, codexBin });
+
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.stderr).toContain(
+      "plugin payload contains a symbolic link at unexpected-link"
+    );
+    expect(await readFile(join(home, "codex-args.txt"), "utf8")).toContain(
+      "plugin\nlist\n--marketplace\nlocal\n--json"
+    );
+  });
+
+  it("rejects an installed plugin tree containing an unreadable subtree", async () => {
+    const home = await createTempDir();
+    await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
+      name: "local",
+      interface: { displayName: "Local Plugins" },
+      plugins: [],
+    });
+    const codexBin = join(home, "bin", "codex");
+    await writeCodexPluginStub({
+      codexBin,
+      home,
+      installedMutation: "unreadable-subtree",
+      selectedVersion: "0.1.2",
+    });
+
+    const result = await setupCodexPlugin({ homeDir: home, codexBin });
+
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.stderr).toContain(
+      "Codex installed payload for fclt@local does not match"
+    );
+    expect(result.codexInstall.stderr).toContain("EACCES");
+    expect(await readFile(join(home, "codex-args.txt"), "utf8")).toContain(
+      "plugin\nlist\n--marketplace\nlocal\n--json"
+    );
+    await chmod(
+      join(
+        home,
+        ".codex",
+        "plugins",
+        "cache",
+        "local",
+        "fclt",
+        "0.1.2",
+        "unexpected-private"
+      ),
+      0o700
     );
   });
 

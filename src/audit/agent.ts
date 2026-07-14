@@ -397,12 +397,9 @@ async function readSkillBundle(
   for (const candidate of candidates
     .sort((a, b) => a.rel.localeCompare(b.rel))
     .slice(0, MAX_SUPPORT_FILES)) {
-    const rawBytes = await sourceTracker.read(candidate.path);
-    if (rawBytes.byteLength > MAX_SUPPORT_FILE_BYTES) {
-      throw new Error(
-        `Skill supporting file exceeds byte limit: ${candidate.path}`
-      );
-    }
+    const rawBytes = await sourceTracker.read(candidate.path, {
+      maxBytes: MAX_SUPPORT_FILE_BYTES,
+    });
     const raw = rawBytes.toString("utf8");
     included.push({
       rel: candidate.rel,
@@ -502,9 +499,27 @@ const AUTH_FAILURE_RE =
   /(?:not logged in|authentication (?:failed|required)|unauthorized|login required|please (?:log|sign) in|missing (?:api key|credentials)|invalid (?:api key|credentials|token))/i;
 
 const AUTH_ENV_BY_TOOL = {
-  claude: ["ANTHROPIC_API_KEY"],
+  claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
   codex: ["OPENAI_API_KEY"],
 } as const satisfies Record<AgentTool, readonly string[]>;
+
+// Keep child configuration non-persisting and non-ambient. In particular, do
+// not pass service credentials, proxy/Git overrides, or execution-hook vars.
+const OPERATIONAL_ENV_NAMES = [
+  "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "NO_COLOR",
+] as const;
+const MAX_SUBPROCESS_OUTPUT_BYTES = 1_000_000;
+const AGENT_SUBPROCESS_TIMEOUT_MS = 10 * 60 * 1000;
 
 class AgentAuditPreconditionError extends Error {}
 
@@ -563,17 +578,110 @@ async function assertSupportedAuthenticationMode(args: {
   );
 }
 
-function isolatedAgentEnvironment(runtimeDir: string): NodeJS.ProcessEnv {
+function isolatedAgentEnvironment(
+  tool: AgentTool,
+  runtimeDir: string
+): NodeJS.ProcessEnv {
   const home = join(runtimeDir, "home");
-  return {
-    ...process.env,
+  const env: NodeJS.ProcessEnv = {
     CLAUDE_CONFIG_DIR: join(runtimeDir, "claude-config"),
     CODEX_HOME: join(runtimeDir, "codex-home"),
     HOME: home,
+    TEMP: runtimeDir,
+    TMP: runtimeDir,
+    TMPDIR: runtimeDir,
     XDG_CACHE_HOME: join(runtimeDir, "xdg-cache"),
     XDG_CONFIG_HOME: join(runtimeDir, "xdg-config"),
     XDG_STATE_HOME: join(runtimeDir, "xdg-state"),
   };
+  for (const name of OPERATIONAL_ENV_NAMES) {
+    const value = process.env[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  for (const name of AUTH_ENV_BY_TOOL[tool]) {
+    const value = process.env[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
+type CapturedStream = { text: string; truncated: boolean };
+
+async function drainBoundedStream(
+  stream: ReadableStream<Uint8Array>,
+  limit: number
+): Promise<CapturedStream> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let captured = 0;
+  let truncated = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const remaining = Math.max(0, limit - captured);
+      if (captured < limit) {
+        const kept =
+          value.byteLength <= remaining ? value : value.slice(0, remaining);
+        chunks.push(kept);
+        captured += kept.byteLength;
+      }
+      if (value.byteLength > remaining) {
+        truncated = true;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return {
+    text: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+      "utf8"
+    ),
+    truncated,
+  };
+}
+
+async function collectProcessOutput(proc: {
+  exited: Promise<number>;
+  kill: (signal?: number | NodeJS.Signals) => void;
+  stderr: ReadableStream<Uint8Array>;
+  stdout: ReadableStream<Uint8Array>;
+}): Promise<{ code: number; stderr: string; stdout: string }> {
+  const stdoutPromise = drainBoundedStream(
+    proc.stdout,
+    MAX_SUBPROCESS_OUTPUT_BYTES
+  );
+  const stderrPromise = drainBoundedStream(
+    proc.stderr,
+    MAX_SUBPROCESS_OUTPUT_BYTES
+  );
+  try {
+    const [stdout, stderr, code] = await Promise.all([
+      stdoutPromise,
+      stderrPromise,
+      proc.exited,
+    ]);
+    if (stdout.truncated || stderr.truncated) {
+      throw new Error(
+        `agent subprocess output exceeded ${MAX_SUBPROCESS_OUTPUT_BYTES} byte limit`
+      );
+    }
+    return { code, stderr: stderr.text, stdout: stdout.text };
+  } catch (error) {
+    try {
+      proc.kill();
+    } catch {
+      // The process may already have exited or been terminated by its AbortSignal.
+    }
+    await Promise.allSettled([stdoutPromise, stderrPromise, proc.exited]);
+    throw error;
+  }
 }
 
 async function makeAgentRuntimeDir(tempRoot?: string): Promise<string> {
@@ -596,6 +704,12 @@ async function runClaude(
   signal?: AbortSignal
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const runtimeDir = await makeAgentRuntimeDir(tempRoot);
+  const subprocessSignal = signal
+    ? AbortSignal.any([
+        signal,
+        AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS),
+      ])
+    : AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS);
   try {
     await assertSupportedAuthenticationMode({
       homeDir: profileHome,
@@ -615,16 +729,14 @@ async function runClaude(
         "",
       ],
       cwd: runtimeDir,
-      env: isolatedAgentEnvironment(runtimeDir),
-      signal,
+      env: isolatedAgentEnvironment("claude", runtimeDir),
+      signal: subprocessSignal,
       stdin: new Blob([prompt]),
       stdout: "pipe",
       stderr: "pipe",
     });
 
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-    const code = await proc.exited;
+    const { code, stderr, stdout } = await collectProcessOutput(proc);
     if (code !== 0) {
       if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
         throw new AgentAuditPreconditionError(
@@ -660,6 +772,12 @@ async function runCodex(
   signal?: AbortSignal
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const dir = await makeAgentRuntimeDir(tempRoot);
+  const subprocessSignal = signal
+    ? AbortSignal.any([
+        signal,
+        AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS),
+      ])
+    : AbortSignal.timeout(AGENT_SUBPROCESS_TIMEOUT_MS);
   const schemaPath = join(dir, "schema.json");
   const outPath = join(dir, "last-message.txt");
   try {
@@ -688,16 +806,14 @@ async function runCodex(
         "-",
       ],
       cwd: dir,
-      env: isolatedAgentEnvironment(dir),
-      signal,
+      env: isolatedAgentEnvironment("codex", dir),
+      signal: subprocessSignal,
       stdin: new Blob([prompt]),
       stdout: "pipe",
       stderr: "pipe",
     });
 
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-    const code = await proc.exited;
+    const { code, stderr, stdout } = await collectProcessOutput(proc);
     if (code !== 0) {
       if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
         throw new AgentAuditPreconditionError(
@@ -831,6 +947,11 @@ export async function evaluateAgentAudit(opts?: {
       opts?.includeGitHooks ?? argv.includes("--include-git-hooks"),
     from,
     readText: (path) => sourceTracker.readText(path),
+    tracking: {
+      capturePath: (path) => sourceTracker.capture(path),
+      captureTree: (path) => sourceTracker.captureTree(path),
+      readDirectory: (path) => sourceTracker.readDirectory(path),
+    },
   };
   const scanRes: ScanResult = await scan(argv, scanOptions);
   const discoveryIdentity = scanDiscoveryIdentity(scanRes);
@@ -1239,8 +1360,11 @@ export async function evaluateAgentAudit(opts?: {
 
   report = applyAuditSuppressionsToAgentReport(
     report,
-    await loadAuditSuppressions(home, (path) =>
-      sourceTracker.readOptionalText(path)
+    await loadAuditSuppressions(
+      home,
+      (path) => sourceTracker.readOptionalText(path),
+      canonicalRoot,
+      exactConfig
     )
   );
 

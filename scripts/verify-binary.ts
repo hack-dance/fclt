@@ -3,6 +3,7 @@
 import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { auditPersistenceContract } from "./verify-binary-audit-contract";
 
 const JSON_SUFFIX_RE = /\.json$/;
 
@@ -127,7 +128,7 @@ const persistenceArgs = [
   auditReportRoot,
   "--json",
 ];
-if (process.platform === "win32") {
+if (auditPersistenceContract(process.platform) === "fail-closed") {
   const blockedPersistence = await runBlocked(persistenceArgs);
   if (
     !blockedPersistence.includes(

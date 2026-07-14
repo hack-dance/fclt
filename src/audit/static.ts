@@ -755,13 +755,7 @@ export async function evaluateStaticAudit(opts?: {
 }): Promise<AuditEvaluation<StaticAuditReport>> {
   const argv = opts?.argv ?? [];
   const home = opts?.homeDir ?? homedir();
-  const rulesPath =
-    opts?.rulesPath ?? join(facultStateDir(home), "audit-rules.yaml");
   const sourceTracker = new AuditSourceTracker();
-  const rulesText = await sourceTracker.readOptionalText(rulesPath);
-
-  const overrides = loadRuleOverrides(rulesText);
-  const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));
 
   const includeConfigFrom =
     opts?.includeConfigFrom ?? !argv.includes("--no-config-from");
@@ -787,6 +781,12 @@ export async function evaluateStaticAudit(opts?: {
     from = ["~"];
   }
   const canonicalRoot = facultRootDir(home, exactConfig);
+  const rulesPath =
+    opts?.rulesPath ??
+    join(facultStateDir(home, canonicalRoot, exactConfig), "audit-rules.yaml");
+  const rulesText = await sourceTracker.readOptionalText(rulesPath);
+  const overrides = loadRuleOverrides(rulesText);
+  const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));
   const scanOptions: NonNullable<Parameters<typeof scan>[1]> = {
     homeDir: home,
     cwd: opts?.cwd,
@@ -797,6 +797,11 @@ export async function evaluateStaticAudit(opts?: {
       opts?.includeGitHooks ?? argv.includes("--include-git-hooks"),
     from,
     readText: (path) => sourceTracker.readText(path),
+    tracking: {
+      capturePath: (path) => sourceTracker.capture(path),
+      captureTree: (path) => sourceTracker.captureTree(path),
+      readDirectory: (path) => sourceTracker.readDirectory(path),
+    },
   };
   const res: ScanResult = await scan(argv, scanOptions);
   const discoveryIdentity = scanDiscoveryIdentity(res);
@@ -863,6 +868,7 @@ export async function evaluateStaticAudit(opts?: {
   const managedStates = await Promise.all(
     managedRoots.map((rootDir) =>
       loadManagedState(home, rootDir, {
+        config: exactConfig,
         readOptionalText: (path) => sourceTracker.readOptionalText(path),
       })
     )
@@ -1196,8 +1202,11 @@ export async function evaluateStaticAudit(opts?: {
 
   report = applyAuditSuppressionsToStaticReport(
     report,
-    await loadAuditSuppressions(home, (path) =>
-      sourceTracker.readOptionalText(path)
+    await loadAuditSuppressions(
+      home,
+      (path) => sourceTracker.readOptionalText(path),
+      canonicalRoot,
+      exactConfig
     )
   );
 

@@ -14,9 +14,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import { auditPathsOverlap, persistAuditReport } from "./report-persistence";
 import { auditReportPersistenceSupported } from "./safe-openat";
+import { AuditSourceTracker } from "./source-provenance";
 import { evaluateStaticAudit, runStaticAudit } from "./static";
 
 const JSON_SUFFIX_RE = /\.json$/;
+const SOURCE_APPEARANCE_RE =
+  /appeared after evaluation|evaluated directory changed/;
 
 async function writeFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -318,6 +321,71 @@ describe("read-only audit boundary", () => {
     expect(await readdir(reportRoot)).toEqual([]);
   });
 
+  it("rejects a previously absent Claude config inserted at commit time", async () => {
+    const { home } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-absent-config-")
+    );
+    const claudeConfig = join(home, ".claude.json");
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          await writeFile(claudeConfig, "{}\n");
+        },
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow(SOURCE_APPEARANCE_RE);
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
+  it("rejects an absent ancestor replaced by a report-root symlink", async () => {
+    const { base, home } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-absent-symlink-")
+    );
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+    const candidate = join(base, "future", "nested", "config.json");
+    const tracker = new AuditSourceTracker();
+    await tracker.capture(candidate);
+    const absentProof = tracker.snapshot().absentPaths[0]!;
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          await mkdir(join(base, "future"));
+          await symlink(reportRoot, join(base, "future", "nested"));
+        },
+        mode: "static",
+        reportRoot,
+        sourceSnapshot: {
+          ...evaluation.sourceSnapshot,
+          absentPaths: [
+            ...evaluation.sourceSnapshot.absentPaths,
+            absentProof,
+          ].sort((a, b) => a.path.localeCompare(b.path)),
+        },
+      })
+    ).rejects.toThrow("became a symlink");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
   it("protects external discovered Claude plugin trees", async () => {
     const { base, home } = await fixture();
     const pluginRoot = join(base, "external-plugin");
@@ -361,6 +429,9 @@ describe("read-only audit boundary", () => {
       await realpath(reportRoot),
       "source-that-was-absent"
     );
+    const absentTracker = new AuditSourceTracker();
+    await absentTracker.capture(absentSourcePath);
+    const absentProof = absentTracker.snapshot().absentPaths[0]!;
 
     await expect(
       persistAuditReport({
@@ -371,8 +442,8 @@ describe("read-only audit boundary", () => {
           ...evaluation.sourceSnapshot,
           absentPaths: [
             ...evaluation.sourceSnapshot.absentPaths,
-            absentSourcePath,
-          ].sort(),
+            absentProof,
+          ].sort((a, b) => a.path.localeCompare(b.path)),
         },
       })
     ).rejects.toThrow("overlaps audited source");
