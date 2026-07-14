@@ -354,6 +354,16 @@ describe("activity feed", () => {
         truncated: true,
         omittedItems: 52,
       });
+      const boundedProjectFeed = bounded.feeds.find(
+        (entry) => entry.feed.run.id === "LR-project"
+      )?.feed;
+      if (!boundedProjectFeed) {
+        throw new Error("Expected the bounded project feed");
+      }
+      expect(boundedProjectFeed.coverage.complete).toBe(false);
+      expect(renderActivityFeed(boundedProjectFeed)).not.toContain(
+        "Nothing needs attention; configured coverage was checked."
+      );
       expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(
         1_500_000
       );

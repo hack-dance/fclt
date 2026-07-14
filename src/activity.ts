@@ -1416,9 +1416,17 @@ export async function latestActivitySet(args: {
   );
   let remainingItems = MAX_ACTIVITY_SET_ITEMS;
   for (const entry of feeds) {
+    const originalItemCount = entry.feed.items.length;
     const items = entry.feed.items.slice(0, remainingItems);
     remainingItems -= items.length;
-    entry.feed = { ...entry.feed, items };
+    entry.feed = {
+      ...entry.feed,
+      coverage:
+        items.length < originalItemCount
+          ? { ...entry.feed.coverage, complete: false }
+          : entry.feed.coverage,
+      items,
+    };
   }
   let omittedItems =
     fullItemCount -
@@ -1480,6 +1488,7 @@ export async function latestActivitySet(args: {
       .find((candidate) => candidate.feed.items.length > 0);
     if (itemEntry) {
       itemEntry.feed.items.pop();
+      itemEntry.feed.coverage.complete = false;
       omittedItems += 1;
       result.truncation.omittedItems = omittedItems;
       result.truncation.truncated = true;
