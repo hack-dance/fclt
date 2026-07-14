@@ -393,7 +393,10 @@ function parseProtocolReport(raw) {
       !isPlainObject(report.protocol) ||
       !Number.isInteger(report.protocol.version) ||
       !Number.isInteger(report.protocol.minimumPluginVersion) ||
-      !Number.isInteger(report.protocol.maximumPluginVersion)
+      !Number.isInteger(report.protocol.maximumPluginVersion) ||
+      (report.capabilities !== undefined &&
+        (!Array.isArray(report.capabilities) ||
+          report.capabilities.some((value) => typeof value !== "string")))
     ) {
       return null;
     }
@@ -488,6 +491,7 @@ async function inspectCandidate(candidate, options = {}) {
     protocol: report?.protocol,
     platform: report?.runtime?.platform,
     architecture: report?.runtime?.architecture,
+    capabilities: report?.capabilities || [],
   };
 }
 

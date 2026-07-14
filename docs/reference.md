@@ -180,9 +180,11 @@ fclt self-update
 ```
 
 Audit evaluation is read-only across library, CLI, interactive initial scan,
-and typed MCP entry points. `--report-root` explicitly persists an atomic
-latest report only to a pre-existing, non-symlinked root that does not overlap
-the audited sources. `--update-index` is a separate explicit canonical
+and typed MCP entry points. `--report-root` explicitly persists a
+content-addressed report and receipt only to a pre-existing, non-symlinked root
+that does not overlap any evaluated source. `audit fix` and `audit safe`
+require `--report <exact-report.json> --yes`; legacy latest reports are never
+trusted for mutation. `--update-index` is a separate explicit canonical
 generated-state mutation.
 
 `self-update` detects release-script, npm/Bun, and mise-managed npm installs.

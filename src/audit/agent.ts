@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { facultRootDir, readFacultConfig } from "../paths";
@@ -12,6 +12,7 @@ import { parseJsonLenient } from "../util/json";
 import {
   type AuditEvaluation,
   auditedRootsFromScan,
+  auditPathsOverlap,
   parseReportRootFlag,
   persistAuditReport,
 } from "./report-persistence";
@@ -460,87 +461,140 @@ const PER_ITEM_SCHEMA = {
   required: ["passed", "findings", "notes"],
 } as const;
 
-async function runClaude(
-  prompt: string
-): Promise<{ output: PerItemOutput; model?: string }> {
-  const proc = Bun.spawn({
-    cmd: [
-      "claude",
-      "-p",
-      "--output-format",
-      "json",
-      "--json-schema",
-      JSON.stringify(PER_ITEM_SCHEMA),
-      "--tools",
-      "",
-    ],
-    stdin: new Blob([prompt]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const code = await proc.exited;
-  if (code !== 0) {
-    throw new Error(`claude exited with code ${code}: ${stderr || stdout}`);
-  }
-
-  const parsed = JSON.parse(stdout) as any;
-  const structured = parsed?.structured_output as unknown;
-  if (!structured || typeof structured !== "object") {
-    throw new Error("claude did not return structured_output");
-  }
+function isolatedAgentEnvironment(runtimeDir: string): NodeJS.ProcessEnv {
+  const home = join(runtimeDir, "home");
   return {
-    output: structured as PerItemOutput,
-    model: Object.keys(parsed?.modelUsage ?? {})[0],
+    ...process.env,
+    CLAUDE_CONFIG_DIR: join(runtimeDir, "claude-config"),
+    CODEX_HOME: join(runtimeDir, "codex-home"),
+    HOME: home,
+    XDG_CACHE_HOME: join(runtimeDir, "xdg-cache"),
+    XDG_CONFIG_HOME: join(runtimeDir, "xdg-config"),
+    XDG_STATE_HOME: join(runtimeDir, "xdg-state"),
   };
 }
 
-async function runCodex(
-  prompt: string
+async function makeAgentRuntimeDir(tempRoot?: string): Promise<string> {
+  const root = tempRoot ?? tmpdir();
+  await mkdir(root, { recursive: true });
+  const runtimeDir = await mkdtemp(join(root, "facult-agent-audit-"));
+  await Promise.all([
+    mkdir(join(runtimeDir, "home"), { recursive: true }),
+    mkdir(join(runtimeDir, "claude-config"), { recursive: true }),
+    mkdir(join(runtimeDir, "codex-home"), { recursive: true }),
+  ]);
+  return runtimeDir;
+}
+
+async function runClaude(
+  prompt: string,
+  tempRoot?: string,
+  signal?: AbortSignal
 ): Promise<{ output: PerItemOutput; model?: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "facult-agent-audit-"));
+  const runtimeDir = await makeAgentRuntimeDir(tempRoot);
+  try {
+    const proc = Bun.spawn({
+      cmd: [
+        "claude",
+        "-p",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "--json-schema",
+        JSON.stringify(PER_ITEM_SCHEMA),
+        "--tools",
+        "",
+      ],
+      cwd: runtimeDir,
+      env: isolatedAgentEnvironment(runtimeDir),
+      signal,
+      stdin: new Blob([prompt]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const code = await proc.exited;
+    if (code !== 0) {
+      throw new Error(`claude exited with code ${code}: ${stderr || stdout}`);
+    }
+
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    const structured = parsed.structured_output as unknown;
+    if (!structured || typeof structured !== "object") {
+      throw new Error("claude did not return structured_output");
+    }
+    const modelUsage = parsed.modelUsage;
+    return {
+      output: structured as PerItemOutput,
+      model:
+        modelUsage && typeof modelUsage === "object"
+          ? Object.keys(modelUsage)[0]
+          : undefined,
+    };
+  } finally {
+    await rm(runtimeDir, { recursive: true, force: true });
+  }
+}
+
+async function runCodex(
+  prompt: string,
+  tempRoot?: string,
+  signal?: AbortSignal
+): Promise<{ output: PerItemOutput; model?: string }> {
+  const dir = await makeAgentRuntimeDir(tempRoot);
   const schemaPath = join(dir, "schema.json");
   const outPath = join(dir, "last-message.txt");
-  await Bun.write(schemaPath, `${JSON.stringify(PER_ITEM_SCHEMA, null, 2)}\n`);
-
-  const proc = Bun.spawn({
-    cmd: [
-      "codex",
-      "exec",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "read-only",
-      "--output-schema",
+  try {
+    await Bun.write(
       schemaPath,
-      "--output-last-message",
-      outPath,
-      "-",
-    ],
-    stdin: new Blob([prompt]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+      `${JSON.stringify(PER_ITEM_SCHEMA, null, 2)}\n`
+    );
 
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const code = await proc.exited;
-  if (code !== 0) {
-    throw new Error(`codex exited with code ${code}: ${stderr || stdout}`);
-  }
+    const proc = Bun.spawn({
+      cmd: [
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        schemaPath,
+        "--output-last-message",
+        outPath,
+        "-",
+      ],
+      cwd: dir,
+      env: isolatedAgentEnvironment(dir),
+      signal,
+      stdin: new Blob([prompt]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
-  const raw = await Bun.file(outPath).text();
-  const trimmed = raw.trim();
-  const jsonStart = trimmed.indexOf("{");
-  const jsonEnd = trimmed.lastIndexOf("}");
-  if (jsonStart < 0 || jsonEnd < 0 || jsonEnd <= jsonStart) {
-    throw new Error("codex output did not contain JSON object");
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const code = await proc.exited;
+    if (code !== 0) {
+      throw new Error(`codex exited with code ${code}: ${stderr || stdout}`);
+    }
+
+    const raw = await Bun.file(outPath).text();
+    const trimmed = raw.trim();
+    const jsonStart = trimmed.indexOf("{");
+    const jsonEnd = trimmed.lastIndexOf("}");
+    if (jsonStart < 0 || jsonEnd < 0 || jsonEnd <= jsonStart) {
+      throw new Error("codex output did not contain JSON object");
+    }
+    const parsed = JSON.parse(
+      trimmed.slice(jsonStart, jsonEnd + 1)
+    ) as PerItemOutput;
+    return { output: parsed };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
-  const parsed = JSON.parse(
-    trimmed.slice(jsonStart, jsonEnd + 1)
-  ) as PerItemOutput;
-  return { output: parsed };
 }
 
 function promptForItem(args: {
@@ -583,6 +637,8 @@ export async function evaluateAgentAudit(opts?: {
   requested?: string | null;
   withTool?: AgentTool;
   maxItems?: number;
+  runtimeTempRoot?: string;
+  signal?: AbortSignal;
   // Test hook: inject a runner by tool name.
   runner?: (
     tool: AgentTool,
@@ -632,6 +688,29 @@ export async function evaluateAgentAudit(opts?: {
     from,
   });
   const canonicalRoot = facultRootDir(home);
+  const auditedRoots = auditedRootsFromScan(scanRes);
+  const runtimeTempRoot = await realpath(
+    opts?.runtimeTempRoot ?? tmpdir()
+  ).catch(() => null);
+  if (!runtimeTempRoot) {
+    throw new Error(
+      "Agent audit runtime temp root could not be resolved safely"
+    );
+  }
+  if (!opts?.runner) {
+    const canonicalAuditedRoots = await Promise.all(
+      auditedRoots.map((root) => realpath(root).catch(() => null))
+    );
+    const runtimeOverlap = canonicalAuditedRoots.find(
+      (root): root is string =>
+        typeof root === "string" && auditPathsOverlap(root, runtimeTempRoot)
+    );
+    if (runtimeOverlap) {
+      throw new Error(
+        `Agent audit runtime temp root overlaps audited source: ${runtimeTempRoot} <-> ${runtimeOverlap}`
+      );
+    }
+  }
 
   // Collect skill instances and prefer canonical copies when available.
   const skillInstances: { name: string; path: string; sourceId: string }[] = [];
@@ -829,9 +908,9 @@ export async function evaluateAgentAudit(opts?: {
     opts?.runner ??
     (async (t: AgentTool, prompt: string) => {
       if (t === "claude") {
-        return await runClaude(prompt);
+        return await runClaude(prompt, runtimeTempRoot, opts?.signal);
       }
-      return await runCodex(prompt);
+      return await runCodex(prompt, runtimeTempRoot, opts?.signal);
     });
 
   const results: AuditItemResult[] = [];
@@ -992,7 +1071,7 @@ export async function evaluateAgentAudit(opts?: {
     await loadAuditSuppressions(home)
   );
 
-  return { auditedRoots: auditedRootsFromScan(scanRes), report };
+  return { auditedRoots, report };
 }
 
 export async function runAgentAudit(

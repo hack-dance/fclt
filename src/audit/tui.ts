@@ -1039,19 +1039,6 @@ export async function auditTuiCommand(argv: string[]) {
         : undefined;
       refreshReviewState();
 
-      if (staticReport) {
-        await Bun.write(
-          join(facultStateDir(homedir()), "audit", "static-latest.json"),
-          `${JSON.stringify(staticReport, null, 2)}\n`
-        );
-      }
-      if (agentReport) {
-        await Bun.write(
-          join(facultStateDir(homedir()), "audit", "agent-latest.json"),
-          `${JSON.stringify(agentReport, null, 2)}\n`
-        );
-      }
-
       await updateIndexFromAuditReport({
         homeDir: homedir(),
         timestamp: new Date().toISOString(),

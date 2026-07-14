@@ -487,7 +487,7 @@ Audit local capability:
 fclt audit
 fclt audit --non-interactive --severity high
 fclt audit --non-interactive --report-root /absolute/isolated/reports --json
-fclt audit fix mcp:github
+fclt audit fix mcp:github --report /absolute/isolated/reports/static-<sha256>.json --yes
 ```
 
 Audit evaluation is read-only by default: it does not refresh saved reports or
@@ -495,6 +495,11 @@ generated index annotations. Persisting a report requires `--report-root` with
 an existing absolute directory outside every audited root. Use
 `--update-index` only when an explicit canonical generated-state mutation is
 intended.
+
+Persisted reports are content-addressed and accompanied by a receipt binding
+the report bytes, evaluated source revisions, and finding identities. `audit
+fix` and `audit safe` require the exact fresh report path and `--yes`; legacy
+`*-latest.json` files cannot authorize mutation.
 
 Keep tracked MCP config secret-free. Use local overlays such as `mcp/servers.local.json` for machine-specific secrets.
 

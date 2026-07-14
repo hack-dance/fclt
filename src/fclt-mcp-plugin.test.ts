@@ -29,9 +29,22 @@ function compatibleStubScript(): string {
   return [
     `#!${process.execPath}`,
     "if (process.argv[2] === 'protocol') {",
-    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]}}));",
+    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['audit-read-only-v1']}));",
     "} else {",
     "  console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
+    "}",
+    "",
+  ].join("\n");
+}
+
+function legacyProtocolStubScript(version: string): string {
+  return [
+    `#!${process.execPath}`,
+    "if (process.argv[2] === 'protocol') {",
+    `  console.log(JSON.stringify({schemaVersion:1,packageVersion:${JSON.stringify(version)},protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['plugin-runtime-handshake-v1']}));`,
+    "} else {",
+    "  if (process.env.FCLT_LEGACY_INVOKED) require('node:fs').writeFileSync(process.env.FCLT_LEGACY_INVOKED, 'invoked');",
+    "  console.log('{}');",
     "}",
     "",
   ].join("\n");
@@ -789,6 +802,54 @@ describe("bundled fclt MCP plugin", () => {
       expect(await snapshotTree(home)).toEqual(before);
     } finally {
       child.kill();
+    }
+  });
+
+  it("fails typed audit closed for protocol-v1 runtimes without the read-only capability", async () => {
+    for (const version of ["2.24.1", "2.24.0"]) {
+      const base = await mkdtemp(join(tmpdir(), "facult-mcp-legacy-audit-"));
+      const stub = join(base, "fclt-legacy.cjs");
+      const invoked = join(base, "invoked.txt");
+      await Bun.write(stub, legacyProtocolStubScript(version));
+      await chmod(stub, 0o755);
+      const pluginRoot = facultBuiltinCodexPluginRoot();
+      const child = spawn(
+        process.execPath,
+        [join(pluginRoot, "scripts", "fclt-mcp.cjs")],
+        {
+          cwd: pluginRoot,
+          env: {
+            ...process.env,
+            FCLT_BIN: stub,
+            FCLT_LEGACY_INVOKED: invoked,
+            HOME: base,
+            PWD: base,
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        }
+      );
+      try {
+        child.stdin.write(
+          frame({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "fclt_audit",
+              arguments: { action: "scan", cwd: base },
+            },
+          })
+        );
+        const response = (await readFrame(child.stdout)) as {
+          result?: { content?: { text?: string }[]; isError?: boolean };
+        };
+        expect(response.result?.isError).toBe(true);
+        const payload = toolPayload(response) as unknown as { error: string };
+        expect(payload.error).toBe("missing_runtime_capability");
+        expect(await Bun.file(invoked).exists()).toBe(false);
+      } finally {
+        child.kill();
+      }
     }
   });
 

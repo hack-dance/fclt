@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+
+const JSON_SUFFIX_RE = /\.json$/;
 
 const repoRoot = resolve(import.meta.dir, "..");
 const defaultBinary =
@@ -84,6 +86,60 @@ if (status.version !== 1) {
 if (status.packageVersion !== version) {
   throw new Error(
     `Expected status packageVersion ${version}, got ${JSON.stringify(status.packageVersion)}`
+  );
+}
+
+const auditSource = join(tempHome, "audit-source");
+const auditSkill = join(auditSource, "skills", "compiled-audit", "SKILL.md");
+const auditReportRoot = await mkdtemp(
+  join(tmpdir(), "fclt-binary-audit-reports-")
+);
+await mkdir(dirname(auditSkill), { recursive: true });
+await Bun.write(auditSkill, "# Compiled Audit\n\nReview safely.\n");
+const auditSourceBefore = await Bun.file(auditSkill).text();
+const readOnlyAudit = JSON.parse(
+  await run([
+    "audit",
+    "--non-interactive",
+    "--no-config-from",
+    "--from",
+    auditSource,
+    "--json",
+  ])
+) as { mode?: string };
+if (
+  readOnlyAudit.mode !== "static" ||
+  (await Bun.file(auditSkill).text()) !== auditSourceBefore ||
+  (await readdir(auditReportRoot)).length !== 0
+) {
+  throw new Error(
+    "Compiled default audit did not preserve its read-only boundary"
+  );
+}
+const persistedAuditText = await run([
+  "audit",
+  "--non-interactive",
+  "--no-config-from",
+  "--from",
+  auditSource,
+  "--report-root",
+  auditReportRoot,
+  "--json",
+]);
+const reportNames = (await readdir(auditReportRoot)).sort();
+const reportName = reportNames.find(
+  (name) => name.startsWith("static-") && !name.endsWith(".receipt.json")
+);
+if (
+  !reportName ||
+  reportNames.length !== 2 ||
+  !reportNames.includes(reportName.replace(JSON_SUFFIX_RE, ".receipt.json")) ||
+  (await Bun.file(join(auditReportRoot, reportName)).text()) !==
+    `${JSON.stringify(JSON.parse(persistedAuditText), null, 2)}\n` ||
+  (await Bun.file(auditSkill).text()) !== auditSourceBefore
+) {
+  throw new Error(
+    "Compiled explicit audit persistence did not produce an isolated report and receipt"
   );
 }
 

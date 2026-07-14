@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runAgentAudit } from "./agent";
@@ -162,4 +162,104 @@ test("agent audit respects requested MCP filter (does not audit skills)", async 
   expect(report.results.map((r) => `${r.type}:${r.item}`)).toEqual([
     "mcp:test",
   ]);
+});
+
+test("agent audit subprocesses disable persistence, isolate homes, and clean lifecycle artifacts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-agent-subprocess-"));
+  const home = join(dir, "audited-home");
+  const bin = join(dir, "bin");
+  const scratch = await mkdtemp(join(tmpdir(), "facult-agent-scratch-"));
+  const scratchCanonical = await realpath(scratch);
+  await mkdir(bin, { recursive: true });
+  await writeFile(
+    join(home, ".ai", "skills", "ok-skill", "SKILL.md"),
+    "Hello\n"
+  );
+
+  for (const tool of ["claude", "codex"] as const) {
+    const recordPath = join(dir, `${tool}-record.json`);
+    const executable = join(bin, tool);
+    await Bun.write(
+      executable,
+      [
+        `#!${process.execPath}`,
+        `import { writeFileSync } from "node:fs";`,
+        "const args = process.argv.slice(2);",
+        `writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, cwd: process.cwd(), env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } }));`,
+        `if (process.env.FCLT_AGENT_STUB_FAIL === "1") process.exit(7);`,
+        `if (process.env.FCLT_AGENT_STUB_HANG === "1") await new Promise((resolve) => setTimeout(resolve, 60_000));`,
+        tool === "codex"
+          ? `writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify({ passed: true, findings: [], notes: "ok" }));`
+          : `console.log(JSON.stringify({ structured_output: { passed: true, findings: [], notes: "ok" }, modelUsage: { stub: {} } }));`,
+        "",
+      ].join("\n")
+    );
+    await chmod(executable, 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousFail = process.env.FCLT_AGENT_STUB_FAIL;
+    const previousHang = process.env.FCLT_AGENT_STUB_HANG;
+    process.env.PATH = `${bin}:${previousPath ?? ""}`;
+    try {
+      const report = await runAgentAudit({
+        argv: ["ok-skill", "--with", tool, "--max-items", "1"],
+        cwd: dir,
+        homeDir: home,
+        runtimeTempRoot: scratch,
+      });
+      expect(report.results[0]?.passed).toBe(true);
+      const record = (await Bun.file(recordPath).json()) as {
+        args: string[];
+        cwd: string;
+        env: Record<string, string | undefined>;
+      };
+      const isolatedHome = record.env.HOME ?? "";
+      expect(record.args).toContain(
+        tool === "claude" ? "--no-session-persistence" : "--ephemeral"
+      );
+      expect(record.cwd.startsWith(scratchCanonical)).toBe(true);
+      expect(isolatedHome.startsWith(scratchCanonical)).toBe(true);
+      expect(isolatedHome.startsWith(home)).toBe(false);
+      expect(
+        (record.env.CLAUDE_CONFIG_DIR ?? "").startsWith(scratchCanonical)
+      ).toBe(true);
+      expect((record.env.CODEX_HOME ?? "").startsWith(scratchCanonical)).toBe(
+        true
+      );
+      expect(
+        (record.env.XDG_CONFIG_HOME ?? "").startsWith(scratchCanonical)
+      ).toBe(true);
+      expect(await readdir(scratch)).toEqual([]);
+
+      process.env.FCLT_AGENT_STUB_FAIL = "1";
+      const failed = await runAgentAudit({
+        argv: ["ok-skill", "--with", tool, "--max-items", "1"],
+        cwd: dir,
+        homeDir: home,
+        runtimeTempRoot: scratch,
+      });
+      expect(failed.results[0]?.findings[0]?.ruleId).toBe("agent-error");
+      expect(await readdir(scratch)).toEqual([]);
+
+      if (tool === "codex") {
+        process.env.FCLT_AGENT_STUB_FAIL = undefined;
+        process.env.FCLT_AGENT_STUB_HANG = "1";
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 50);
+        const interrupted = await runAgentAudit({
+          argv: ["ok-skill", "--with", tool, "--max-items", "1"],
+          cwd: dir,
+          homeDir: home,
+          runtimeTempRoot: scratch,
+          signal: controller.signal,
+        });
+        expect(interrupted.results[0]?.findings[0]?.ruleId).toBe("agent-error");
+        expect(await readdir(scratch)).toEqual([]);
+      }
+    } finally {
+      process.env.PATH = previousPath;
+      process.env.FCLT_AGENT_STUB_FAIL = previousFail;
+      process.env.FCLT_AGENT_STUB_HANG = previousHang;
+    }
+  }
 });

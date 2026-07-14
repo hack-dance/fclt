@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname } from "node:path";
 import {
   assertLegacyManagedMutationAllowed,
   LEGACY_MANAGED_MUTATION_FLAG,
@@ -13,17 +13,13 @@ import {
   loadCanonicalMcpState,
   stringifyCanonicalMcpServers,
 } from "../mcp-config";
-import { facultContextRootDir, facultStateDir } from "../paths";
+import { facultContextRootDir } from "../paths";
 import { getGitPathExposure } from "../util/git";
 import { parseJsonLenient } from "../util/json";
 import type { AgentAuditReport } from "./agent";
+import { loadVerifiedAuditReport } from "./report-persistence";
 import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
-import {
-  applyAuditSuppressionsToAgentReport,
-  applyAuditSuppressionsToStaticReport,
-} from "./suppressions";
 import type { AuditFinding, AuditItemResult, StaticAuditReport } from "./types";
-import { updateIndexFromAuditReport } from "./update-index";
 
 type AuditFixSource = "static" | "agent" | "combined";
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
@@ -36,6 +32,7 @@ interface AuditFixArgs {
   itemSelectors: string[];
   json: boolean;
   paths: string[];
+  reportPaths: string[];
   source?: AuditFixSource;
   yes: boolean;
 }
@@ -72,6 +69,7 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
     itemSelectors: [],
     json: false,
     paths: [],
+    reportPaths: [],
     yes: false,
   };
 
@@ -101,7 +99,12 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
       continue;
     }
 
-    if (arg === "--source" || arg === "--item" || arg === "--path") {
+    if (
+      arg === "--source" ||
+      arg === "--item" ||
+      arg === "--path" ||
+      arg === "--report"
+    ) {
       const next = argv[i + 1];
       if (!next) {
         throw new Error(`${arg} requires a value`);
@@ -110,8 +113,10 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
         args.source = parseSource(next);
       } else if (arg === "--item") {
         args.itemSelectors.push(next);
-      } else {
+      } else if (arg === "--path") {
         args.paths.push(next);
+      } else {
+        args.reportPaths.push(next);
       }
       i += 1;
       continue;
@@ -120,7 +125,8 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
     if (
       arg.startsWith("--source=") ||
       arg.startsWith("--item=") ||
-      arg.startsWith("--path=")
+      arg.startsWith("--path=") ||
+      arg.startsWith("--report=")
     ) {
       const [flag, rawValue] = arg.split(ARG_VALUE_SPLIT_RE, 2);
       const value = rawValue ?? "";
@@ -131,8 +137,10 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
         args.source = parseSource(value);
       } else if (flag === "--item") {
         args.itemSelectors.push(value);
-      } else {
+      } else if (flag === "--path") {
         args.paths.push(value);
+      } else {
+        args.reportPaths.push(value);
       }
       continue;
     }
@@ -146,6 +154,11 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
 
   if (!args.all && args.itemSelectors.length === 0 && args.paths.length === 0) {
     throw new Error("Specify what to fix with --item, --path, or use --all.");
+  }
+  if (args.reportPaths.length === 0) {
+    throw new Error(
+      "audit fix requires --report <exact persisted report path>; legacy latest reports are not trusted"
+    );
   }
 
   return args;
@@ -374,28 +387,6 @@ function matchesSelection(args: {
   return true;
 }
 
-async function loadLatestStaticReport(
-  homeDir: string
-): Promise<StaticAuditReport | null> {
-  const path = join(facultStateDir(homeDir), "audit", "static-latest.json");
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    return null;
-  }
-  return (await file.json()) as StaticAuditReport;
-}
-
-async function loadLatestAgentReport(
-  homeDir: string
-): Promise<AgentAuditReport | null> {
-  const path = join(facultStateDir(homeDir), "audit", "agent-latest.json");
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    return null;
-  }
-  return (await file.json()) as AgentAuditReport;
-}
-
 function inferSource(args: {
   requested?: AuditFixSource;
   staticReport: StaticAuditReport | null;
@@ -411,59 +402,6 @@ function inferSource(args: {
     return "agent";
   }
   return "static";
-}
-
-function rewriteStaticReportResults(
-  report: StaticAuditReport,
-  fixedSelections: FindingSelection[]
-): StaticAuditReport {
-  return applyAuditSuppressionsToStaticReport(
-    {
-      ...report,
-      results: removeFixedInlineSecretFindings({
-        results: report.results,
-        fixed: fixedSelections,
-      }),
-    },
-    []
-  );
-}
-
-function rewriteAgentReportResults(
-  report: AgentAuditReport,
-  fixedSelections: FindingSelection[]
-): AgentAuditReport {
-  return applyAuditSuppressionsToAgentReport(
-    {
-      ...report,
-      results: removeFixedInlineSecretFindings({
-        results: report.results,
-        fixed: fixedSelections,
-      }),
-    },
-    []
-  );
-}
-
-async function rewriteLatestReports(args: {
-  homeDir: string;
-  staticReport: StaticAuditReport | null;
-  agentReport: AgentAuditReport | null;
-}) {
-  const auditDir = join(facultStateDir(args.homeDir), "audit");
-  await mkdir(auditDir, { recursive: true });
-  if (args.staticReport) {
-    await Bun.write(
-      join(auditDir, "static-latest.json"),
-      `${JSON.stringify(args.staticReport, null, 2)}\n`
-    );
-  }
-  if (args.agentReport) {
-    await Bun.write(
-      join(auditDir, "agent-latest.json"),
-      `${JSON.stringify(args.agentReport, null, 2)}\n`
-    );
-  }
 }
 
 function selectFixableFindings(args: {
@@ -731,12 +669,23 @@ export async function runAuditFix(args: {
   const cwd = args.cwd ?? process.cwd();
   const rootDir = facultContextRootDir({ home: homeDir, cwd });
 
-  const staticReport = await loadLatestStaticReport(homeDir);
-  const agentReport = await loadLatestAgentReport(homeDir);
-  if (!(staticReport || agentReport)) {
-    throw new Error(
-      "No latest audit reports found. Run `fclt audit` first, then fix the flagged secrets."
-    );
+  let staticReport: StaticAuditReport | null = null;
+  let agentReport: AgentAuditReport | null = null;
+  for (const reportPath of parsed.reportPaths) {
+    const report = await loadVerifiedAuditReport<
+      StaticAuditReport | AgentAuditReport
+    >({ reportPath });
+    if (report.mode === "static") {
+      if (staticReport) {
+        throw new Error("Only one exact static audit report may be supplied");
+      }
+      staticReport = report;
+    } else {
+      if (agentReport) {
+        throw new Error("Only one exact agent audit report may be supplied");
+      }
+      agentReport = report;
+    }
   }
 
   const source = inferSource({
@@ -744,6 +693,13 @@ export async function runAuditFix(args: {
     staticReport,
     agentReport,
   });
+  if (
+    (source === "static" && !staticReport) ||
+    (source === "agent" && !agentReport) ||
+    (source === "combined" && !(staticReport && agentReport))
+  ) {
+    throw new Error(`Exact report input does not satisfy --source ${source}`);
+  }
   const reportResults =
     source === "static"
       ? (staticReport?.results ?? [])
@@ -776,6 +732,9 @@ export async function runAuditFix(args: {
       trackedPath: null,
     };
   }
+  if (!parsed.yes) {
+    throw new Error("audit fix mutation requires explicit --yes approval");
+  }
 
   const fixed = await fixInlineMcpSecrets({
     findings: selections,
@@ -784,33 +743,6 @@ export async function runAuditFix(args: {
     allowLegacyManagedMutation: legacyManagedMutationApproved({
       argv: args.argv,
     }),
-  });
-
-  const nextStaticReport =
-    staticReport && fixed.fixedSelections.length > 0
-      ? rewriteStaticReportResults(staticReport, fixed.fixedSelections)
-      : staticReport;
-  const nextAgentReport =
-    agentReport && fixed.fixedSelections.length > 0
-      ? rewriteAgentReportResults(agentReport, fixed.fixedSelections)
-      : agentReport;
-
-  await rewriteLatestReports({
-    homeDir,
-    staticReport: nextStaticReport,
-    agentReport: nextAgentReport,
-  });
-
-  await updateIndexFromAuditReport({
-    homeDir,
-    timestamp: new Date().toISOString(),
-    results: uniqueByKey(
-      mergeStaticAndAgentResults({
-        static: nextStaticReport?.results ?? [],
-        agent: nextAgentReport?.results ?? [],
-      }),
-      keyForResult
-    ),
   });
 
   return {
@@ -829,13 +761,15 @@ function printHelp() {
   console.log(`fclt audit fix — remediate fixable audit findings
 
 Usage:
-  fclt audit fix <item>
-  fclt audit fix --item <item> [--path <path>] [--source <static|agent|combined>] [${LEGACY_MANAGED_MUTATION_FLAG}]
-  fclt audit fix --all [--source <static|agent|combined>] [--yes] [${LEGACY_MANAGED_MUTATION_FLAG}]
+  fclt audit fix <item> --report <exact-report.json> --yes
+  fclt audit fix --item <item> --report <exact-report.json> [--path <path>] [--source <static|agent|combined>] --yes [${LEGACY_MANAGED_MUTATION_FLAG}]
+  fclt audit fix --all --report <exact-report.json> [--report <second-report.json>] [--source <static|agent|combined>] --yes [${LEGACY_MANAGED_MUTATION_FLAG}]
   fclt audit fix --dry-run ...
 
 Notes:
   - Currently fixes inline MCP secrets by moving them into a local canonical overlay.
+  - Requires a fresh, content-hashed report and matching receipt created by --report-root.
+  - Legacy static-latest.json and agent-latest.json files never authorize mutation.
   - Tracked canonical MCP config is scrubbed and managed tool MCP configs are re-synced.
   - Managed tool copies continue to work, but the canonical secret now lives in *.local.json.
 `);

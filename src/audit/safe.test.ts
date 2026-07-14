@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { facultStateDir } from "../paths";
 import type { AgentAuditReport } from "./agent";
+import { persistAuditReport } from "./report-persistence";
 import { auditSafeCommand, runAuditSafe } from "./safe";
 import { loadAuditSuppressions } from "./suppressions";
 import type { StaticAuditReport } from "./types";
@@ -22,25 +22,40 @@ async function makeTempHome(): Promise<string> {
   return dir;
 }
 
-async function writeLatestReports(args: {
+async function writeExactReports(args: {
   homeDir: string;
   staticReport?: StaticAuditReport;
   agentReport?: AgentAuditReport;
-}) {
-  const auditDir = join(facultStateDir(args.homeDir), "audit");
-  await mkdir(auditDir, { recursive: true });
+}): Promise<string[]> {
+  const reportRoot = join(
+    tmpdir(),
+    `fclt-audit-safe-reports-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+  await mkdir(reportRoot);
+  const paths: string[] = [];
   if (args.staticReport) {
-    await Bun.write(
-      join(auditDir, "static-latest.json"),
-      `${JSON.stringify(args.staticReport, null, 2)}\n`
+    args.staticReport.timestamp = new Date().toISOString();
+    paths.push(
+      await persistAuditReport({
+        auditedRoots: [args.homeDir],
+        mode: "static",
+        report: args.staticReport,
+        reportRoot,
+      })
     );
   }
   if (args.agentReport) {
-    await Bun.write(
-      join(auditDir, "agent-latest.json"),
-      `${JSON.stringify(args.agentReport, null, 2)}\n`
+    args.agentReport.timestamp = new Date().toISOString();
+    paths.push(
+      await persistAuditReport({
+        auditedRoots: [args.homeDir],
+        mode: "agent",
+        report: args.agentReport,
+        reportRoot,
+      })
     );
   }
+  return paths;
 }
 
 afterEach(async () => {
@@ -53,11 +68,82 @@ afterEach(async () => {
 });
 
 describe("audit safe", () => {
+  it("rejects legacy latest, missing receipts, stale reports, and changed sources", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const legacyPath = join(
+      tempHome,
+      ".ai",
+      ".facult",
+      "audit",
+      "static-latest.json"
+    );
+    await mkdir(join(legacyPath, ".."), { recursive: true });
+    await Bun.write(legacyPath, "{}\n");
+    await expect(
+      runAuditSafe({ argv: ["alpha", "--yes"], homeDir: tempHome })
+    ).rejects.toThrow("requires --report");
+
+    const sourcePath = join(tempHome, ".ai", "skills", "alpha", "SKILL.md");
+    await mkdir(join(sourcePath, ".."), { recursive: true });
+    await Bun.write(sourcePath, "# Alpha\n");
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-safe-invalid-")
+    );
+    const report: StaticAuditReport = {
+      timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      mode: "static",
+      results: [],
+      summary: {
+        totalItems: 0,
+        totalFindings: 0,
+        flaggedItems: 0,
+        bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+      },
+    };
+    const stalePath = await persistAuditReport({
+      auditedRoots: [sourcePath],
+      mode: "static",
+      report,
+      reportRoot,
+    });
+    await expect(
+      runAuditSafe({
+        argv: ["--all", "--report", stalePath, "--yes"],
+        homeDir: tempHome,
+      })
+    ).rejects.toThrow("stale");
+
+    report.timestamp = new Date().toISOString();
+    const freshPath = await persistAuditReport({
+      auditedRoots: [sourcePath],
+      mode: "static",
+      report,
+      reportRoot,
+    });
+    await Bun.write(sourcePath, "# Changed\n");
+    await expect(
+      runAuditSafe({
+        argv: ["--all", "--report", freshPath, "--yes"],
+        homeDir: tempHome,
+      })
+    ).rejects.toThrow("source-root identity changed");
+
+    const missingReceiptPath = join(reportRoot, "static-missing.json");
+    await Bun.write(missingReceiptPath, `${JSON.stringify(report)}\n`);
+    await expect(
+      runAuditSafe({
+        argv: ["--all", "--report", missingReceiptPath, "--yes"],
+        homeDir: tempHome,
+      })
+    ).rejects.toThrow("receipt is missing");
+  });
+
   it("records a suppression from the latest static audit report", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    await writeLatestReports({
+    const [reportPath] = await writeExactReports({
       homeDir: tempHome,
       staticReport: {
         timestamp: "2026-03-26T17:00:00.000Z",
@@ -88,7 +174,16 @@ describe("audit safe", () => {
     });
 
     const result = await runAuditSafe({
-      argv: ["alpha", "--rule", "credential-access", "--note", "reviewed"],
+      argv: [
+        "alpha",
+        "--rule",
+        "credential-access",
+        "--note",
+        "reviewed",
+        "--report",
+        reportPath!,
+        "--yes",
+      ],
       homeDir: tempHome,
     });
 
@@ -97,19 +192,13 @@ describe("audit safe", () => {
 
     const suppressions = await loadAuditSuppressions(tempHome);
     expect(suppressions).toHaveLength(1);
-
-    const latest = (await Bun.file(
-      join(facultStateDir(tempHome), "audit", "static-latest.json")
-    ).json()) as StaticAuditReport;
-    expect(latest.results[0]?.findings).toHaveLength(0);
-    expect(latest.results[0]?.passed).toBe(true);
   });
 
   it("matches combined-view rule ids against future raw reports", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    await writeLatestReports({
+    const reportPaths = await writeExactReports({
       homeDir: tempHome,
       staticReport: {
         timestamp: "2026-03-26T17:00:00.000Z",
@@ -167,24 +256,24 @@ describe("audit safe", () => {
         "static:credential-access",
         "--source",
         "combined",
+        "--report",
+        reportPaths[0]!,
+        "--report",
+        reportPaths[1]!,
+        "--yes",
       ],
       homeDir: tempHome,
     });
 
     expect(result.source).toBe("combined");
     expect(result.matched).toBe(1);
-
-    const latestStatic = (await Bun.file(
-      join(facultStateDir(tempHome), "audit", "static-latest.json")
-    ).json()) as StaticAuditReport;
-    expect(latestStatic.results[0]?.findings).toHaveLength(0);
   });
 
   it("supports a direct non-interactive audit safe command", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    await writeLatestReports({
+    const [reportPath] = await writeExactReports({
       homeDir: tempHome,
       staticReport: {
         timestamp: "2026-03-26T17:00:00.000Z",
@@ -213,9 +302,10 @@ describe("audit safe", () => {
       },
     });
 
-    await auditSafeCommand(["alpha", "--rule", "non-https-url"], {
-      homeDir: tempHome,
-    });
+    await auditSafeCommand(
+      ["alpha", "--rule", "non-https-url", "--report", reportPath!, "--yes"],
+      { homeDir: tempHome }
+    );
 
     expect(process.exitCode === undefined || process.exitCode === 0).toBe(true);
     const suppressions = await loadAuditSuppressions(tempHome);

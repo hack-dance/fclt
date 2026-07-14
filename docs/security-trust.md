@@ -60,18 +60,26 @@ mkdir -p /absolute/isolated/audit-reports
 fclt audit --non-interactive --report-root /absolute/isolated/audit-reports --json
 ```
 
-The report is written atomically as `static-latest.json` or
-`agent-latest.json`. fclt rejects relative or traversing paths, unresolved or
+The report is committed as content-addressed `static-<sha256>.json` or
+`agent-<sha256>.json` plus a matching `.receipt.json`. Descriptor-relative,
+exclusive creation retains the validated output-directory inode across the
+commit. fclt rejects relative or traversing paths, unresolved or
 ambiguous destinations, symlink destinations, and any destination that
-equals, contains, or is contained by an audited source root. Generated
+equals, contains, or is contained by an evaluated root, skill/plugin tree,
+MCP config, hook, or asset path. Generated
 `index.json` annotations are also withheld unless `--update-index` is supplied
 as a separate explicit mutation.
 
+Persistence currently requires native descriptor-relative `openat`/`linkat`
+support (macOS or Linux). Other platforms fail closed rather than falling back
+to a pathname validate-then-rename sequence; read-only audit remains available.
+
 Compatibility note: older releases refreshed
 `.ai/.facult/audit/*-latest.json` and generated index audit annotations during
-every audit. Those implicit writes are removed. Existing saved reports remain
-available to the explicit `audit safe` and `audit fix` workflows, but a new
-read-only audit does not silently replace them.
+every audit. Those implicit writes are removed. Legacy saved `*-latest.json`
+reports remain inspection artifacts only; they do not authorize `audit safe`
+or `audit fix`. Those mutations require an exact fresh content-addressed
+report, its receipt, and explicit `--yes` approval.
 
 Root cause of the old behavior: the static and agent library runners wrote
 their latest reports before returning; both non-interactive CLI wrappers then
@@ -83,9 +91,16 @@ the scanned source.
 Suppress or fix reviewed findings:
 
 ```bash
-fclt audit safe mcp:github --rule static:mcp-env-inline-secret --note "reviewed"
-fclt audit fix mcp:github
+fclt audit safe mcp:github --rule static:mcp-env-inline-secret --note "reviewed" \
+  --report /absolute/isolated/audit-reports/static-<sha256>.json --yes
+fclt audit fix mcp:github \
+  --report /absolute/isolated/audit-reports/static-<sha256>.json --yes
 ```
+
+Receipts fail closed when their schema/capability revision, report hash,
+finding identities, source path identity or content revision, or 15-minute
+freshness window does not match. Supply both exact reports with repeated
+`--report` for a combined static/agent action.
 
 ## Secrets
 

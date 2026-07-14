@@ -6,12 +6,15 @@ import {
   readdir,
   readFile,
   readlink,
+  rename,
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import { auditPathsOverlap, persistAuditReport } from "./report-persistence";
 import { evaluateStaticAudit, runStaticAudit } from "./static";
+
+const JSON_SUFFIX_RE = /\.json$/;
 
 async function writeFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -79,6 +82,19 @@ async function runAuditCli(args: string[], home: string) {
   return { exitCode, stderr, stdout };
 }
 
+async function exactReportPath(
+  reportRoot: string,
+  mode: "agent" | "static" = "static"
+): Promise<string> {
+  const fileName = (await readdir(reportRoot)).find(
+    (name) => name.startsWith(`${mode}-`) && !name.endsWith(".receipt.json")
+  );
+  if (!fileName) {
+    throw new Error(`No exact ${mode} report found`);
+  }
+  return join(reportRoot, fileName);
+}
+
 describe("read-only audit boundary", () => {
   it("classifies Windows-shaped overlap without prefix false positives", () => {
     expect(
@@ -86,6 +102,16 @@ describe("read-only audit boundary", () => {
     ).toBe(true);
     expect(
       auditPathsOverlap("C:\\capability", "C:\\capability-other", win32)
+    ).toBe(false);
+    expect(auditPathsOverlap("C:\\capability", "D:\\reports", win32)).toBe(
+      false
+    );
+    expect(
+      auditPathsOverlap(
+        "\\\\server-a\\capability",
+        "\\\\server-b\\reports",
+        win32
+      )
     ).toBe(false);
   });
 
@@ -139,9 +165,15 @@ describe("read-only audit boundary", () => {
     );
     expect(cli.exitCode).toBe(0);
     const report = JSON.parse(cli.stdout);
-    expect(await readFile(join(reportRoot, "static-latest.json"), "utf8")).toBe(
+    const reportPath = await exactReportPath(reportRoot);
+    expect(await readFile(reportPath, "utf8")).toBe(
       `${JSON.stringify(report, null, 2)}\n`
     );
+    expect(
+      await Bun.file(
+        reportPath.replace(JSON_SUFFIX_RE, ".receipt.json")
+      ).exists()
+    ).toBe(true);
     expect(await snapshotTree(home)).toEqual(before);
   });
 
@@ -257,11 +289,86 @@ describe("read-only audit boundary", () => {
     );
 
     expect(
-      JSON.parse(await readFile(join(reportRoot, "static-latest.json"), "utf8"))
+      JSON.parse(await readFile(await exactReportPath(reportRoot), "utf8"))
     ).toEqual(evaluation.report);
-    expect(
-      (await readdir(reportRoot)).filter((name) => name.endsWith(".tmp"))
-    ).toEqual([]);
+    expect(await readdir(reportRoot)).toHaveLength(2);
+  });
+
+  it("protects external discovered Claude plugin trees", async () => {
+    const { base, home } = await fixture();
+    const pluginRoot = join(base, "external-plugin");
+    await writeFile(
+      join(pluginRoot, "skills", "review", "SKILL.md"),
+      "# Review\n"
+    );
+    await writeFile(join(pluginRoot, "hooks", "hooks.json"), "{}\n");
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+    );
+    const reportRoot = join(pluginRoot, "reports");
+    await mkdir(reportRoot);
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+
+    await expect(
+      persistAuditReport({ ...evaluation, mode: "static", reportRoot })
+    ).rejects.toThrow("overlaps audited source");
+  });
+
+  it("anchors commits to the opened directory inode during ancestor swaps", async () => {
+    const { home } = await fixture();
+    const parent = await mkdtemp(join(tmpdir(), "fclt-audit-race-"));
+    const reportRoot = join(parent, "reports");
+    const movedRoot = join(parent, "reports-moved");
+    await mkdir(reportRoot);
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          await rename(reportRoot, movedRoot);
+          await mkdir(reportRoot);
+        },
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow("changed during descriptor-relative commit");
+    expect(await readdir(reportRoot)).toEqual([]);
+    expect(await readdir(movedRoot)).toHaveLength(2);
+  });
+
+  it("leaves no report artifacts when persistence is interrupted before commit", async () => {
+    const { home } = await fixture();
+    const reportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-interrupted-"));
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: () => Promise.reject(new Error("interrupted")),
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow("interrupted");
+    expect(await readdir(reportRoot)).toEqual([]);
   });
 
   it("does not persist a report when evaluation fails", async () => {

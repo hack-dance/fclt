@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
 import { isInlineMcpSecretValue } from "../mcp-config";
@@ -1158,7 +1158,11 @@ export async function evaluateStaticAudit(opts?: {
     await loadAuditSuppressions(home)
   );
 
-  return { auditedRoots: auditedRootsFromScan(res), report };
+  const auditedRoots = auditedRootsFromScan(res);
+  if (await Bun.file(rulesPath).exists()) {
+    auditedRoots.push(rulesPath, dirname(rulesPath));
+  }
+  return { auditedRoots: Array.from(new Set(auditedRoots)).sort(), report };
 }
 
 export async function runStaticAudit(

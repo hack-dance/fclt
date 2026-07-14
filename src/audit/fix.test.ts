@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -9,12 +9,13 @@ import {
 import { manageTool } from "../manage";
 import { facultStateDir } from "../paths";
 import { runAuditFix } from "./fix";
-import { runStaticAudit } from "./static";
-import type { StaticAuditReport } from "./types";
+import { persistAuditReport } from "./report-persistence";
+import { evaluateStaticAudit, runStaticAudit } from "./static";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_LEGACY_MUTATION_ENV = process.env[LEGACY_MANAGED_MUTATION_ENV];
 let tempHome: string | null = null;
+let tempReportRoot: string | null = null;
 
 async function makeTempHome(): Promise<string> {
   const base = join(tmpdir(), "fclt-audit-fix-tests");
@@ -38,6 +39,10 @@ afterEach(async () => {
     await rm(tempHome, { recursive: true, force: true });
   }
   tempHome = null;
+  if (tempReportRoot) {
+    await rm(tempReportRoot, { recursive: true, force: true });
+  }
+  tempReportRoot = null;
   process.env.HOME = ORIGINAL_HOME;
   process.env[LEGACY_MANAGED_MUTATION_ENV] = ORIGINAL_LEGACY_MUTATION_ENV;
 });
@@ -63,11 +68,12 @@ describe("audit fix", () => {
 
     await manageTool("codex", { homeDir: tempHome, rootDir });
 
-    const before = await runStaticAudit({
+    const evaluation = await evaluateStaticAudit({
       argv: [],
       homeDir: tempHome,
       minSeverity: "high",
     });
+    const before = evaluation.report;
     const beforeFindings = before.results.flatMap((result) =>
       result.findings.map((finding) => ({
         item: result.item,
@@ -80,22 +86,36 @@ describe("audit fix", () => {
         (finding) => finding.ruleId === "mcp-env-inline-secret"
       )
     ).toBe(true);
-    await writeJson(
-      join(facultStateDir(tempHome), "audit", "static-latest.json"),
-      before
+    const legacyPath = join(
+      facultStateDir(tempHome),
+      "audit",
+      "static-latest.json"
     );
+    await writeJson(legacyPath, { legacy: true });
+    tempReportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-fix-report-"));
+    const reportPath = await persistAuditReport({
+      ...evaluation,
+      mode: "static",
+      reportRoot: tempReportRoot,
+    });
 
     process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
     await expect(
       runAuditFix({
-        argv: ["mcp:github"],
+        argv: ["mcp:github", "--report", reportPath, "--yes"],
         cwd: tempHome,
         homeDir: tempHome,
       })
     ).rejects.toThrow("fclt audit fix managed-output sync is a deprecated");
 
     const result = await runAuditFix({
-      argv: ["mcp:github", LEGACY_MANAGED_MUTATION_FLAG],
+      argv: [
+        "mcp:github",
+        "--report",
+        reportPath,
+        "--yes",
+        LEGACY_MANAGED_MUTATION_FLAG,
+      ],
       cwd: tempHome,
       homeDir: tempHome,
     });
@@ -118,16 +138,7 @@ describe("audit fix", () => {
       "github_pat_test_1234567890"
     );
 
-    const latest = (await Bun.file(
-      join(facultStateDir(tempHome), "audit", "static-latest.json")
-    ).json()) as StaticAuditReport;
-    expect(
-      latest.results.some((entry) =>
-        entry.findings.some(
-          (finding) => finding.ruleId === "mcp-env-inline-secret"
-        )
-      )
-    ).toBe(false);
+    expect(await Bun.file(legacyPath).json()).toEqual({ legacy: true });
 
     const after = await runStaticAudit({
       argv: [],
