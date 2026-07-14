@@ -96,6 +96,84 @@ describe("CLI output contracts", () => {
     expect(out.trim()).toMatch(SEMVER_RE);
   });
 
+  it("uses the baked version even under a parent package's npm environment", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facult-cli-version-"));
+
+    try {
+      const compiledVersion = "7.8.9";
+      const binaryBasePath = join(dir, "fclt-version-test");
+      const build = Bun.spawn(
+        [
+          "bun",
+          "build",
+          "./src/index.ts",
+          "--compile",
+          "--define",
+          `FCLT_COMPILED_VERSION=${JSON.stringify(compiledVersion)}`,
+          "--outfile",
+          binaryBasePath,
+        ],
+        {
+          cwd: process.cwd(),
+          stdout: "pipe",
+          stderr: "pipe",
+        }
+      );
+      const [buildCode, buildError] = await Promise.all([
+        build.exited,
+        new Response(build.stderr).text(),
+      ]);
+      expect(buildCode, buildError).toBe(0);
+
+      const binaryPath =
+        process.platform === "win32" ? `${binaryBasePath}.exe` : binaryBasePath;
+      const proc = Bun.spawn([binaryPath, "--version"], {
+        env: {
+          ...process.env,
+          FACULT_NPM_PACKAGE_VERSION: "6.7.8",
+          npm_package_version: "0.1.83",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [code, out, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+
+      expect(code).toBe(0);
+      expect(err).toBe("");
+      expect(out.trim()).toBe(compiledVersion);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses only the explicitly namespaced package version in source fallback", async () => {
+    const proc = Bun.spawn(
+      ["bun", join(process.cwd(), "src/index.ts"), "--version"],
+      {
+        env: {
+          ...process.env,
+          FACULT_NPM_PACKAGE_VERSION: "6.7.8",
+          npm_package_version: "0.1.83",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(out.trim()).toBe("6.7.8");
+  });
+
   it("status --json emits valid JSON", async () => {
     const dir = await mkdtemp(join(tmpdir(), "facult-cli-status-"));
 

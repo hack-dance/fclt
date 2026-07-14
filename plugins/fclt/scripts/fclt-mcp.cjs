@@ -246,7 +246,7 @@ const tools = [
   {
     name: "fclt_automation",
     description:
-      "Inspect autosync state or read and preview the fclt evolution loop. Schedule and canonical mutation remain CLI-only.",
+      "Read one aggregate activity set across all configured loops by default, or inspect one explicit loop scope. Schedule and canonical mutation remain CLI-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -259,11 +259,36 @@ const tools = [
             "loop_preview",
           ],
         },
-        scope: { type: "string", enum: ["global", "project"] },
+        scope: {
+          type: "string",
+          enum: ["all", "global", "project"],
+        },
         cwd: { type: "string" },
         tool: { type: "string" },
       },
-      required: ["action", "scope"],
+      required: ["action"],
+      oneOf: [
+        {
+          properties: {
+            action: { const: "loop_activity" },
+            scope: {
+              type: "string",
+              enum: ["all", "global", "project"],
+              default: "all",
+            },
+          },
+          required: ["action"],
+        },
+        {
+          properties: {
+            action: {
+              enum: ["autosync_status", "loop_status", "loop_preview"],
+            },
+            scope: { type: "string", enum: ["global", "project"] },
+          },
+          required: ["action", "scope"],
+        },
+      ],
     },
   },
   {
@@ -987,6 +1012,13 @@ function commandForTool(name, args = {}) {
         "--json",
       ];
     case "fclt_automation":
+      if (
+        args.action !== "loop_activity" &&
+        args.scope !== "global" &&
+        args.scope !== "project"
+      ) {
+        throw new Error(`${args.action} requires global or project scope`);
+      }
       if (args.action === "autosync_status") {
         return [
           "autosync",
@@ -1002,7 +1034,16 @@ function commandForTool(name, args = {}) {
         return ["ai", "loop", ...scopeArgs(args.scope), "status", "--json"];
       }
       if (args.action === "loop_activity") {
-        return ["ai", "loop", ...scopeArgs(args.scope), "activity", "--json"];
+        return [
+          "ai",
+          "loop",
+          ...scopeArgs(args.scope),
+          "activity",
+          ...(args.scope === "global" || args.scope === "project"
+            ? []
+            : ["--all"]),
+          "--json",
+        ];
       }
       if (args.action === "loop_preview") {
         return [
@@ -1132,7 +1173,11 @@ function operationMetadata(name, args, command) {
     tool: name,
     action,
     risk,
-    scope: args.scope || "auto",
+    scope:
+      args.scope ||
+      (name === "fclt_automation" && action === "loop_activity"
+        ? "all"
+        : "auto"),
     target:
       args.id ||
       args.selector ||

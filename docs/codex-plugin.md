@@ -53,11 +53,19 @@ remain deliberately withheld until their CLI APIs provide transaction-safe
 preview, precondition, verification, and rollback contracts.
 
 The evolution-loop actions exposed through `fclt_automation` are
-`loop_status` and `loop_preview`. Both require an explicit scope;
-`loop_preview` performs a fresh incremental scan of configured sources without
-advancing cursors or writing reconciliation or loop state. Enabling, disabling,
-or manually running the scheduler remains a CLI-only operation. The router
-accepts no raw argv, credentials, endpoints, or external mutation fields.
+`loop_status`, `loop_activity`, and `loop_preview`. `loop_activity` defaults to
+`all` and returns one portable activity set across Global and every configured
+project loop; callers may filter it to `global` or `project`. Status and preview
+still require one explicit scope. `loop_preview` performs a fresh incremental
+scan of configured sources without advancing cursors or writing reconciliation
+or loop state. Enabling, disabling, or manually running the scheduler remains a
+CLI-only operation. The router accepts no raw argv, credentials, endpoints, or
+external mutation fields.
+
+Calling `loop_activity` without a scope deliberately selects the portable
+cross-project view. It does not return project roots, machine state keys, raw
+reports, or local file URLs. The version 2 set is size-bounded and reports
+unavailable or truncated scopes explicitly.
 
 ## Install In Codex
 

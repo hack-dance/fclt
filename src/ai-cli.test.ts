@@ -195,6 +195,23 @@ describe("ai CLI", () => {
     });
     expect(activityText).not.toContain(tempHome);
 
+    const allActivityOut = await captureConsole(async () => {
+      await aiCommand(["loop", "activity", "--json"]);
+    });
+    expect(allActivityOut.errors).toEqual([]);
+    expect(JSON.parse(allActivityOut.logs.join("\n"))).toMatchObject({
+      version: 2,
+      kind: "activity-set",
+      mode: "latest",
+      scope: "all",
+      coverage: {
+        configuredScopes: 1,
+        reportingScopes: 1,
+        unavailableScopes: 0,
+      },
+      feeds: [{ scopeId: "global", feed: { scope: "global" } }],
+    });
+
     const readableActivity = await captureConsole(async () => {
       await aiCommand(["loop", "activity", "--global"]);
     });
@@ -237,6 +254,31 @@ describe("ai CLI", () => {
     ).toContain(
       `fclt ai loop run --global --root '${rootDir}' --scheduled --json`
     );
+    await aiCommand(["loop", "run", "--global", "--root", rootDir, "--json"]);
+    process.env.FACULT_ROOT_DIR = undefined;
+    const allActivityOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "activity",
+        "--all",
+        "--root",
+        rootDir,
+        "--json",
+      ]);
+    });
+    expect(allActivityOut.errors).toEqual([]);
+    expect(JSON.parse(allActivityOut.logs.join("\n"))).toMatchObject({
+      version: 2,
+      feeds: [{ scopeId: "global", feed: { scope: "global" } }],
+    });
+    const implicitAllActivityOut = await captureConsole(async () => {
+      await aiCommand(["loop", "activity", "--root", rootDir, "--json"]);
+    });
+    expect(implicitAllActivityOut.errors).toEqual([
+      "All-scope activity accepts only a global --root; use --project for one project",
+    ]);
+    process.env.FACULT_ROOT_DIR = rootDir;
+    process.exitCode = 0;
     const automationPath = join(enabled.automationPath, "automation.toml");
     await Bun.write(
       automationPath,

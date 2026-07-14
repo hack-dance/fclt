@@ -1,11 +1,22 @@
 import { describe, expect, it } from "bun:test";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildActivityFeed,
+  latestActivitySet,
   redactPortableActivityText,
   renderActivityFeed,
+  renderActivitySet,
 } from "./activity";
 import type { AiWritebackRecord } from "./ai";
 import type { EvolutionLoopReport, LoopQueueItem } from "./evolution-loop";
+import {
+  facultAiEvolutionLoopConfigPath,
+  facultAiEvolutionLoopReportDir,
+  facultAiEvolutionLoopStatePath,
+  facultLocalStateRoot,
+} from "./paths";
 import type { ReconciliationReview } from "./reconciliation-types";
 
 function queueItem(overrides?: Partial<LoopQueueItem>): LoopQueueItem {
@@ -147,6 +158,558 @@ function writeback(
 }
 
 describe("activity feed", () => {
+  it("aggregates Global and configured project reports without exposing project roots", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-set-"));
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const globalReport = report({
+        runId: "LR-global",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      globalReport.activity = buildActivityFeed({
+        report: globalReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      const globalReportPath = join(
+        facultAiEvolutionLoopReportDir(homeDir, globalRootDir),
+        "LR-global.json"
+      );
+      await mkdir(join(globalReportPath, ".."), { recursive: true });
+      await Bun.write(globalReportPath, JSON.stringify(globalReport));
+      const globalStatePath = facultAiEvolutionLoopStatePath(
+        homeDir,
+        globalRootDir
+      );
+      await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        facultAiEvolutionLoopConfigPath(homeDir, globalRootDir),
+        JSON.stringify({ version: 1, scope: "global" })
+      );
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: globalReportPath,
+        })
+      );
+
+      const projectsDir = join(facultLocalStateRoot(homeDir), "projects");
+      const reportingLoopDir = join(
+        projectsDir,
+        "example-one",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const unavailableLoopDir = join(
+        projectsDir,
+        "example-two",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const projectReport = report({ runId: "LR-project" });
+      projectReport.activity = buildActivityFeed({
+        report: projectReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await mkdir(join(reportingLoopDir, "reports"), { recursive: true });
+      await mkdir(unavailableLoopDir, { recursive: true });
+      await Bun.write(
+        join(reportingLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(reportingLoopDir, "reports", "LR-project.json"),
+        JSON.stringify(projectReport)
+      );
+      await Bun.write(
+        join(reportingLoopDir, "state.json"),
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: "/private/machine/path/LR-project.json",
+        })
+      );
+      await Bun.write(
+        join(unavailableLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+
+      const set = await latestActivitySet({ homeDir, globalRootDir });
+
+      expect(set).toMatchObject({
+        version: 2,
+        kind: "activity-set",
+        scope: "all",
+        coverage: {
+          complete: false,
+          configuredScopes: 3,
+          reportingScopes: 2,
+          unavailableScopes: 1,
+        },
+      });
+      expect(set.feeds.map((entry) => entry.feed.scope)).toEqual([
+        "global",
+        "project",
+      ]);
+      expect(set.feeds.map((entry) => entry.scopeId)).toEqual(
+        set.scopes
+          .filter((scope) => scope.state === "reporting")
+          .map((scope) => scope.id)
+      );
+      expect(set.scopes.map((scope) => scope.state)).toEqual([
+        "reporting",
+        "reporting",
+        "unavailable",
+      ]);
+      expect(JSON.stringify(set)).not.toContain("/Users/example/private");
+      expect(JSON.stringify(set)).not.toContain("example-one");
+      expect(JSON.stringify(set)).not.toContain("example-two");
+
+      const originalProjectScopeId = set.feeds.find(
+        (entry) => entry.feed.run.id === "LR-project"
+      )?.scopeId;
+      const earlierLoopDir = join(
+        projectsDir,
+        "aaa-earlier",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      await mkdir(earlierLoopDir, { recursive: true });
+      await Bun.write(
+        join(earlierLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      const malformedLoopDir = join(
+        projectsDir,
+        "malformed-embedded",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const malformedReport = report({
+        runId: "LR-malformed",
+        projectRoot: "/Users/example/private/malformed",
+      });
+      (malformedReport as unknown as { activity: unknown }).activity = {
+        version: 1,
+        scope: "project",
+        title: "/Users/example/private/not-portable",
+      };
+      await mkdir(join(malformedLoopDir, "reports"), { recursive: true });
+      await Bun.write(
+        join(malformedLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(malformedLoopDir, "state.json"),
+        JSON.stringify({ lastReportPath: "LR-malformed.json" })
+      );
+      await Bun.write(
+        join(malformedLoopDir, "reports", "LR-malformed.json"),
+        JSON.stringify(malformedReport)
+      );
+      const reordered = await latestActivitySet({ homeDir, globalRootDir });
+      expect(
+        reordered.feeds.find((entry) => entry.feed.run.id === "LR-project")
+          ?.scopeId
+      ).toBe(originalProjectScopeId);
+      expect(
+        reordered.feeds.find((entry) => entry.feed.run.id === "LR-malformed")
+          ?.feed.snapshot
+      ).toBe("legacy-derived");
+      expect(JSON.stringify(reordered)).not.toContain("/Users/example/private");
+
+      const projectActivity = projectReport.activity;
+      if (!projectActivity) {
+        throw new Error("Expected embedded project activity");
+      }
+      const firstItem = projectActivity.items[0];
+      if (!firstItem) {
+        throw new Error("Expected project activity item");
+      }
+      const firstSource = projectActivity.coverage.sources[0];
+      if (!firstSource) {
+        throw new Error("Expected project activity coverage");
+      }
+      projectActivity.items = [];
+      projectActivity.counts = {
+        changed: 0,
+        needsAttention: 0,
+        new: 0,
+        resolved: 0,
+        total: 0,
+        unchangedSuppressed: 0,
+      };
+      projectActivity.coverage.checked = 30;
+      projectActivity.coverage.sources = Array.from(
+        { length: 30 },
+        (_, index) => ({
+          ...firstSource,
+          id: `source-${index}`,
+          state: index === 0 ? ("changed" as const) : firstSource.state,
+        })
+      );
+      await Bun.write(
+        join(reportingLoopDir, "reports", "LR-project.json"),
+        JSON.stringify(projectReport)
+      );
+      const sourceBounded = await latestActivitySet({ homeDir, globalRootDir });
+      const sourceBoundedProjectFeed = sourceBounded.feeds.find(
+        (entry) => entry.feed.run.id === "LR-project"
+      )?.feed;
+      if (!sourceBoundedProjectFeed) {
+        throw new Error("Expected the source-bounded project feed");
+      }
+      expect(sourceBounded.truncation.omittedSources).toBe(5);
+      expect(sourceBounded.coverage.checkedSources).toBe(27);
+      expect(sourceBoundedProjectFeed.coverage.complete).toBe(false);
+      expect(sourceBoundedProjectFeed.coverage.checked).toBe(25);
+      expect(sourceBoundedProjectFeed.coverage.sources).toHaveLength(25);
+      expect(sourceBoundedProjectFeed.coverage.sources[0]?.state).toBe(
+        "changed"
+      );
+      expect(renderActivityFeed(sourceBoundedProjectFeed)).toContain(
+        "Coverage: 25/25 sources checked · incomplete"
+      );
+      expect(renderActivityFeed(sourceBoundedProjectFeed)).not.toContain(
+        "Nothing needs attention; configured coverage was checked."
+      );
+      projectActivity.items = Array.from({ length: 300 }, (_, index) => ({
+        ...firstItem,
+        id: `item-${index}`,
+        title: `${"Long portable activity ".repeat(100)}${index}`,
+        technical: { ...firstItem.technical, queueId: `item-${index}` },
+      }));
+      projectActivity.counts.total = projectActivity.items.length;
+      await Bun.write(
+        join(reportingLoopDir, "reports", "LR-project.json"),
+        JSON.stringify(projectReport)
+      );
+      const bounded = await latestActivitySet({ homeDir, globalRootDir });
+      expect(bounded.truncation).toMatchObject({
+        truncated: true,
+        omittedItems: 52,
+      });
+      const boundedProjectFeed = bounded.feeds.find(
+        (entry) => entry.feed.run.id === "LR-project"
+      )?.feed;
+      if (!boundedProjectFeed) {
+        throw new Error("Expected the bounded project feed");
+      }
+      expect(boundedProjectFeed.coverage.complete).toBe(false);
+      expect(renderActivityFeed(boundedProjectFeed)).not.toContain(
+        "Nothing needs attention; configured coverage was checked."
+      );
+      expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThanOrEqual(
+        1_500_000
+      );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not invent an unavailable Global scope for a project-only setup", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "fclt-project-only-activity-")
+    );
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const projectLoopDir = join(
+        facultLocalStateRoot(homeDir),
+        "projects",
+        "project-only",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const projectReport = report({ runId: "LR-project-only" });
+      projectReport.activity = buildActivityFeed({
+        report: projectReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await mkdir(join(projectLoopDir, "reports"), { recursive: true });
+      await Bun.write(
+        join(projectLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(projectLoopDir, "reports", "LR-project-only.json"),
+        JSON.stringify(projectReport)
+      );
+      await Bun.write(
+        join(projectLoopDir, "state.json"),
+        JSON.stringify({ lastReportPath: "LR-project-only.json" })
+      );
+
+      const set = await latestActivitySet({ homeDir, globalRootDir });
+
+      expect(set.coverage).toMatchObject({
+        complete: true,
+        configuredScopes: 1,
+        reportingScopes: 1,
+        unavailableScopes: 0,
+      });
+      expect(set.scopes).toHaveLength(1);
+      expect(set.scopes[0]).toMatchObject({
+        scope: "project",
+        state: "reporting",
+      });
+      expect(renderActivitySet(set)).not.toContain(
+        "Global activity is unavailable"
+      );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates malformed or unreadable Global activity while project scopes keep reporting", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-isolation-"));
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const globalStatePath = facultAiEvolutionLoopStatePath(
+        homeDir,
+        globalRootDir
+      );
+      await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        facultAiEvolutionLoopConfigPath(homeDir, globalRootDir),
+        JSON.stringify({ version: 1, scope: "global" })
+      );
+      await Bun.write(globalStatePath, "{not-json");
+
+      const projectLoopDir = join(
+        facultLocalStateRoot(homeDir),
+        "projects",
+        "generic-project",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const projectReport = report({ runId: "LR-project-isolation" });
+      projectReport.activity = buildActivityFeed({
+        report: projectReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await mkdir(join(projectLoopDir, "reports"), { recursive: true });
+      await Bun.write(
+        join(projectLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(projectLoopDir, "state.json"),
+        JSON.stringify({ lastReportPath: "LR-project-isolation.json" })
+      );
+      await Bun.write(
+        join(projectLoopDir, "reports", "LR-project-isolation.json"),
+        JSON.stringify(projectReport)
+      );
+
+      const unreadable = await latestActivitySet({ homeDir, globalRootDir });
+      expect(unreadable.coverage).toMatchObject({
+        configuredScopes: 2,
+        reportingScopes: 1,
+        unavailableScopes: 1,
+        complete: false,
+      });
+      expect(unreadable.scopes.find((scope) => scope.id === "global")).toEqual({
+        id: "global",
+        scope: "global",
+        state: "unavailable",
+      });
+      expect(unreadable.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+
+      const externalReportPath = join(homeDir, "outside-loop-reports.json");
+      const externalGlobalReport = report({
+        runId: "LR-global-external",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      externalGlobalReport.activity = buildActivityFeed({
+        report: externalGlobalReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await Bun.write(externalReportPath, JSON.stringify(externalGlobalReport));
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({ lastReportPath: externalReportPath })
+      );
+      const external = await latestActivitySet({ homeDir, globalRootDir });
+      expect(external.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+
+      const malformedGlobalReport = report({
+        runId: "LR-global-malformed",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      (malformedGlobalReport as unknown as { activity: unknown }).activity = {
+        version: 1,
+        scope: "global",
+      };
+      const globalReportPath = join(
+        facultAiEvolutionLoopReportDir(homeDir, globalRootDir),
+        "LR-global-malformed.json"
+      );
+      await mkdir(join(globalReportPath, ".."), { recursive: true });
+      await Bun.write(globalReportPath, JSON.stringify(malformedGlobalReport));
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: globalReportPath,
+        })
+      );
+
+      const malformed = await latestActivitySet({ homeDir, globalRootDir });
+      expect(malformed.coverage).toMatchObject({
+        configuredScopes: 2,
+        reportingScopes: 1,
+        unavailableScopes: 1,
+        complete: false,
+      });
+      expect(malformed.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+
+      await Bun.write(
+        globalReportPath,
+        JSON.stringify({
+          ...malformedGlobalReport,
+          padding: "x".repeat(2_000_001),
+        })
+      );
+      expect((await Bun.file(globalReportPath).stat()).size).toBeGreaterThan(
+        2_000_000
+      );
+      const oversized = await latestActivitySet({ homeDir, globalRootDir });
+      expect(oversized.coverage).toMatchObject({
+        configuredScopes: 2,
+        reportingScopes: 1,
+        unavailableScopes: 1,
+        complete: false,
+      });
+      expect(oversized.feeds.map((entry) => entry.feed.run.id)).toEqual([
+        "LR-project-isolation",
+      ]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces the aggregate byte budget after items are exhausted", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-budget-"));
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const globalReport = report({
+        runId: "LR-global-budget",
+        scope: "global",
+        projectRoot: undefined,
+      });
+      const activity = buildActivityFeed({
+        report: globalReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      activity.items = [];
+      activity.counts.total = 0;
+      activity.coverage.checked = 25;
+      activity.coverage.sources = Array.from({ length: 25 }, (_, index) => ({
+        id: `source-${index}`,
+        label: `Source ${index}`,
+        state: "checked" as const,
+      }));
+      (activity as unknown as Record<string, unknown>).padding = Array.from(
+        { length: 1800 },
+        (_, index) => `${"x".repeat(900)}${index}`
+      );
+      globalReport.activity = activity;
+
+      const globalReportPath = join(
+        facultAiEvolutionLoopReportDir(homeDir, globalRootDir),
+        "LR-global-budget.json"
+      );
+      await mkdir(join(globalReportPath, ".."), { recursive: true });
+      await Bun.write(globalReportPath, JSON.stringify(globalReport));
+      const globalStatePath = facultAiEvolutionLoopStatePath(
+        homeDir,
+        globalRootDir
+      );
+      await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        facultAiEvolutionLoopConfigPath(homeDir, globalRootDir),
+        JSON.stringify({ version: 1, scope: "global" })
+      );
+      await Bun.write(
+        globalStatePath,
+        JSON.stringify({
+          version: 1,
+          generation: 1,
+          queue: {},
+          fingerprints: {},
+          lastReportPath: globalReportPath,
+        })
+      );
+
+      const set = await latestActivitySet({ homeDir, globalRootDir });
+
+      expect(Buffer.byteLength(JSON.stringify(set))).toBeLessThanOrEqual(
+        1_500_000
+      );
+      expect(set.coverage).toMatchObject({
+        checkedSources: 0,
+        configuredScopes: 1,
+        degradedSources: 0,
+        reportingScopes: 0,
+        complete: false,
+      });
+      expect(set.truncation).toEqual({
+        truncated: true,
+        omittedScopes: 1,
+        omittedItems: 0,
+        omittedSources: 25,
+        discoveryTruncated: false,
+      });
+      expect(set.scopes).toEqual([
+        { id: "global", scope: "global", state: "omitted" },
+      ]);
+      expect(set.feeds).toEqual([]);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("produces a deterministic portable snapshot with bounded privacy-aware observations", () => {
     const feed = buildActivityFeed({
       report: report(),

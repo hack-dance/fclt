@@ -121,7 +121,7 @@ fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incr
 fclt ai loop enable [--rrule <rrule>] [--source <id>] [--dry-run] [--json]
 fclt ai loop disable [--dry-run] [--json]
 fclt ai loop status [--json]
-fclt ai loop activity [--json]
+fclt ai loop activity [--all|--global|--project] [--json]
 fclt ai loop run [--since <date>] [--until <date>] [--source <id>] [--dry-run] [--scheduled] [--json]
 ```
 
@@ -139,9 +139,19 @@ Bounded windows always rescan their complete requested range. Use
 `--incremental` only when advancing from the stored per-source watermarks is
 intended. A source-filtered run cannot prove an empty review.
 
-`loop activity` reads the immutable activity snapshot embedded in the latest
-loop report. Its JSON is portable and path-free; use `loop report --json` when
-you need machine-local technical paths and the full controller record.
+`loop activity` defaults to one aggregate read model across Global and every
+configured project loop. The aggregate reports which scopes are available and
+keeps each portable per-scope feed intact so consumers can filter or label by
+origin. Use `--global` or `--project` for one scope. Project discovery is owned
+by fclt's machine-local loop state; project roots and state keys never appear in
+the activity JSON. Use `loop report --json` when you need machine-local
+technical paths and the full controller record for one explicit scope.
+
+Single-scope activity feeds retain contract version 1. The aggregate is the
+distinct version 2 `activity-set` contract: each feed is joined to a stable
+opaque `scopeId`, and `truncation` reports any bounded omissions. Aggregate
+responses are capped before they reach CLI or plugin consumers; incomplete or
+truncated coverage is never presented as complete.
 
 `loop enable` is an explicit opt-in that installs an fclt-owned Codex
 automation. The loop persists the full current queue, emits a delta for
