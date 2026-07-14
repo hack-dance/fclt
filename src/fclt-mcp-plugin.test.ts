@@ -394,7 +394,7 @@ describe("bundled fclt MCP plugin", () => {
         operation: { preview: false, risk: "read_only", scope: "all" },
         result: {
           stdout: {
-            argv: ["ai", "loop", "--all", "activity", "--json"],
+            argv: ["ai", "loop", "activity", "--all", "--json"],
           },
         },
       });

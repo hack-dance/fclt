@@ -1037,10 +1037,11 @@ function commandForTool(name, args = {}) {
         return [
           "ai",
           "loop",
-          ...(args.scope === "global" || args.scope === "project"
-            ? scopeArgs(args.scope)
-            : ["--all"]),
+          ...scopeArgs(args.scope),
           "activity",
+          ...(args.scope === "global" || args.scope === "project"
+            ? []
+            : ["--all"]),
           "--json",
         ];
       }
