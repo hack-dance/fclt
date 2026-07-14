@@ -17,7 +17,7 @@ import {
   extractCodexTomlMcpServerBlocks,
   sanitizeCodexTomlMcpText,
 } from "../util/codex-toml";
-import { type GitPathExposure, getGitPathExposure } from "../util/git";
+import type { GitPathExposure } from "../util/git";
 import { parseJsonLenient } from "../util/json";
 import {
   type AuditEvaluation,
@@ -1024,8 +1024,7 @@ export async function evaluateStaticAudit(opts?: {
   for (const cfg of Array.from(uniqMcpConfigs.values()).sort((a, b) =>
     a.path.localeCompare(b.path)
   )) {
-    const exposure = await getGitPathExposure(cfg.path);
-    sourceTracker.recordGitPathExposure(cfg.path, exposure);
+    const exposure = await sourceTracker.recordGitPathExposure(cfg.path);
     const isManagedOutput = managedMcpConfigPaths.has(cfg.path);
     const isToml = cfg.format === "toml" || cfg.path.endsWith(".toml");
 

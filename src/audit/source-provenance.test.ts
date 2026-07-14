@@ -13,7 +13,6 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { getGitPathExposure } from "../util/git";
 import {
   AuditSourceTracker,
   validateAuditSourceSnapshot,
@@ -90,11 +89,8 @@ async function captureCanonicalContractFixture() {
       rejectUnsupportedEntries: true,
     });
   }
-  tracker.recordGitPathExposure(firstRoot, await getGitPathExposure(firstRoot));
-  tracker.recordGitPathExposure(
-    secondRoot,
-    await getGitPathExposure(secondRoot)
-  );
+  await tracker.recordGitPathExposure(firstRoot);
+  await tracker.recordGitPathExposure(secondRoot);
   await tracker.capture(join(root, "missing-a.json"));
   await tracker.capture(join(root, "missing-b.json"));
   return tracker.snapshot();
@@ -581,9 +577,33 @@ test("strict tree exact entry boundary revalidates repeatedly and boundary plus 
   const root = await mkdtemp(
     join(tmpdir(), "fclt-provenance-tree-exact-boundary-")
   );
-  await mkdir(join(root, "child"));
-  await writeFile(join(root, "child", "exact"), "x");
-  const snapshot = await captureStrictTree(root, { maxEntries: 3 });
+  const child = join(root, "child");
+  const exact = join(child, "exact");
+  await mkdir(child);
+  await writeFile(exact, "x");
+  const readDirectories: string[] = [];
+  const openedPaths: string[] = [];
+  const tracker = new AuditSourceTracker({
+    beforeDirectoryRead: ({ path }) => {
+      readDirectories.push(path);
+      return Promise.resolve();
+    },
+    beforeFileOpen: ({ path }) => {
+      openedPaths.push(path);
+      return Promise.resolve();
+    },
+  });
+  await tracker.captureTree(root, {
+    maxEntries: 3,
+    rejectUnsupportedEntries: true,
+  });
+  const snapshot = tracker.snapshot();
+
+  expect(readDirectories).toEqual([
+    await realpath(root),
+    await realpath(child),
+  ]);
+  expect(openedPaths).toEqual([exact]);
 
   await expect(validateAuditSourceSnapshot(snapshot)).resolves.toBeUndefined();
   await expect(validateAuditSourceSnapshot(snapshot)).resolves.toBeUndefined();
@@ -626,6 +646,97 @@ test("strict tree never opens sibling or child files when its manifest exhausts 
     })
   ).rejects.toThrow("entry limit");
   expect(readDirectories).toEqual([await realpath(root)]);
+  expect(openedPaths).toEqual([]);
+});
+
+test("strict tree never opens an exhausted later sibling or a lexically earlier file", async () => {
+  const cases = [
+    { earlierFile: false, laterFile: false, name: "empty-later" },
+    { earlierFile: false, laterFile: true, name: "nonempty-later" },
+    { earlierFile: true, laterFile: true, name: "earlier-file" },
+  ];
+  for (const fixtureCase of cases) {
+    const root = await mkdtemp(
+      join(tmpdir(), `fclt-provenance-tree-${fixtureCase.name}-`)
+    );
+    const first = join(root, "a");
+    const later = join(root, "b");
+    const earlierFile = join(root, "0-earlier.txt");
+    const laterFile = join(later, "sentinel.txt");
+    await mkdir(first);
+    await mkdir(later);
+    await writeFile(join(first, "one"), "1");
+    await writeFile(join(first, "two"), "2");
+    if (fixtureCase.earlierFile) {
+      await writeFile(earlierFile, "must-not-open");
+    }
+    if (fixtureCase.laterFile) {
+      await writeFile(laterFile, "must-not-open");
+    }
+    const readDirectories: string[] = [];
+    const openedPaths: string[] = [];
+    const tracker = new AuditSourceTracker({
+      beforeDirectoryRead: ({ path }) => {
+        readDirectories.push(path);
+        return Promise.resolve();
+      },
+      beforeFileOpen: ({ path }) => {
+        openedPaths.push(path);
+        return Promise.resolve();
+      },
+    });
+
+    await expect(
+      tracker.captureTree(root, {
+        maxEntries: fixtureCase.earlierFile ? 6 : 5,
+        rejectUnsupportedEntries: true,
+      })
+    ).rejects.toThrow("entry limit");
+    expect(readDirectories).toEqual([
+      await realpath(root),
+      await realpath(first),
+    ]);
+    expect(readDirectories).not.toContain(await realpath(later));
+    expect(openedPaths).toEqual([]);
+  }
+});
+
+test("strict tree deep exhaustion does not open a later root sibling or reserved leaf", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-deep-later-sibling-")
+  );
+  const first = join(root, "a");
+  const deep = join(first, "b");
+  const later = join(root, "z");
+  const leaf = join(deep, "leaf.txt");
+  await mkdir(deep, { recursive: true });
+  await mkdir(later);
+  await writeFile(leaf, "must-not-open");
+  const readDirectories: string[] = [];
+  const openedPaths: string[] = [];
+  const tracker = new AuditSourceTracker({
+    beforeDirectoryRead: ({ path }) => {
+      readDirectories.push(path);
+      return Promise.resolve();
+    },
+    beforeFileOpen: ({ path }) => {
+      openedPaths.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  await expect(
+    tracker.captureTree(root, {
+      maxEntries: 5,
+      rejectUnsupportedEntries: true,
+    })
+  ).rejects.toThrow("entry limit");
+  expect(readDirectories).toEqual([
+    await realpath(root),
+    await realpath(first),
+    await realpath(deep),
+  ]);
+  expect(readDirectories).not.toContain(await realpath(later));
   expect(openedPaths).toEqual([]);
 });
 

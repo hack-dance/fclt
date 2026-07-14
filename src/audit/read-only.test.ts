@@ -124,6 +124,17 @@ async function exactReportPath(
   return join(reportRoot, fileName);
 }
 
+function recomputeSourceValidationContract(
+  snapshot: ReturnType<AuditSourceTracker["snapshot"]>
+): void {
+  const contract = structuredClone(snapshot) as typeof snapshot &
+    Record<string, unknown>;
+  Reflect.deleteProperty(contract, "validationContractSha256");
+  snapshot.validationContractSha256 = createHash("sha256")
+    .update(JSON.stringify(contract))
+    .digest("hex");
+}
+
 describe("read-only audit boundary", () => {
   it("classifies Windows-shaped overlap without prefix false positives", () => {
     expect(auditReportPersistenceSupported("darwin")).toBe(true);
@@ -171,8 +182,8 @@ describe("read-only audit boundary", () => {
       ],
       home
     );
-    expect(cli.exitCode).toBe(0);
     expect(cli.stderr).toBe("");
+    expect(cli.exitCode).toBe(0);
     expect(JSON.parse(cli.stdout).mode).toBe("static");
     expect(await snapshotTree(home)).toEqual(before);
   });
@@ -342,6 +353,43 @@ describe("read-only audit boundary", () => {
     await expect(
       persistAuditReport({ ...evaluation, mode: "static", reportRoot })
     ).rejects.toThrow("evaluated context changed");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
+  it("rejects a recomputed-contract physical alias with zero artifacts", async () => {
+    const sourceRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-persistence-physical-alias-")
+    );
+    const target = join(sourceRoot, "target");
+    const alias = join(sourceRoot, "alias");
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-persistence-alias-report-")
+    );
+    await mkdir(target);
+    await symlink(target, alias, "dir");
+    const tracker = new AuditSourceTracker();
+    await tracker.protect([sourceRoot]);
+    await tracker.recordGitPathExposure(target);
+    const snapshot = tracker.snapshot();
+    const context = snapshot.derivedContexts[0]!;
+    snapshot.derivedContexts.push({ ...context, path: alias });
+    snapshot.derivedContexts.sort((left, right) =>
+      `${left.kind}\0${left.path}`.localeCompare(`${right.kind}\0${right.path}`)
+    );
+    recomputeSourceValidationContract(snapshot);
+
+    await expect(
+      persistAuditReport({
+        auditedRoots: [sourceRoot],
+        mode: "static",
+        report: {
+          results: [],
+          timestamp: "2026-01-01T00:00:00.000Z",
+        },
+        reportRoot,
+        sourceSnapshot: snapshot,
+      })
+    ).rejects.toThrow("schema is unsupported");
     expect(await readdir(reportRoot)).toEqual([]);
   });
 

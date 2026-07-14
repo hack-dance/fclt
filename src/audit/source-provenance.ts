@@ -34,7 +34,7 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 5;
+  schemaVersion: 6;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
@@ -65,9 +65,16 @@ export interface AuditAbsentPathIdentity {
 }
 
 export interface AuditDerivedContextIdentity {
+  ctimeMs: number;
+  dev: number;
+  ino: number;
   kind: "git-path-exposure";
+  mode: number;
+  mtimeMs: number;
   path: string;
+  pathKind: "directory" | "file";
   sha256: string;
+  size: number;
 }
 
 export interface AuditEvaluatedDirectoryIdentity {
@@ -100,6 +107,10 @@ function isNonNegativeSafeInteger(value: number): boolean {
 
 function isPositiveSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function hasUsablePhysicalIdentity(dev: number, ino: number): boolean {
+  return isNonNegativeSafeInteger(dev) && isPositiveSafeInteger(ino);
 }
 
 function isContainedPath(root: string, candidate: string): boolean {
@@ -169,7 +180,18 @@ const ABSENT_PATH_KEYS = [
   "path",
   "relativeSegments",
 ] as const;
-const DERIVED_CONTEXT_KEYS = ["kind", "path", "sha256"] as const;
+const DERIVED_CONTEXT_KEYS = [
+  "ctimeMs",
+  "dev",
+  "ino",
+  "kind",
+  "mode",
+  "mtimeMs",
+  "path",
+  "pathKind",
+  "sha256",
+  "size",
+] as const;
 const DIRECTORY_IDENTITY_KEYS = [
   "ctimeMs",
   "dev",
@@ -217,7 +239,7 @@ function canonicalSnapshotContract(
   snapshot: AuditSourceSnapshotContract
 ): AuditSourceSnapshotContract {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     protectedRoots: snapshot.protectedRoots.map((entry) => ({
       dev: entry.dev,
       ino: entry.ino,
@@ -256,9 +278,16 @@ function canonicalSnapshotContract(
       root: entry.root,
     })),
     derivedContexts: snapshot.derivedContexts.map((entry) => ({
+      ctimeMs: entry.ctimeMs,
+      dev: entry.dev,
+      ino: entry.ino,
       kind: entry.kind,
+      mode: entry.mode,
+      mtimeMs: entry.mtimeMs,
       path: entry.path,
+      pathKind: entry.pathKind,
       sha256: entry.sha256,
+      size: entry.size,
     })),
     absentPaths: snapshot.absentPaths.map((entry) => ({
       ancestorDev: entry.ancestorDev,
@@ -407,6 +436,92 @@ function sameDirectoryMetadata(
   );
 }
 
+interface StablePhysicalPathIdentity {
+  ctimeMs: number;
+  dev: number;
+  ino: number;
+  kind: "directory" | "file";
+  mode: number;
+  mtimeMs: number;
+  path: string;
+  size: number;
+}
+
+function samePhysicalPathIdentity(
+  left: StablePhysicalPathIdentity,
+  right: StablePhysicalPathIdentity
+): boolean {
+  return (
+    left.path === right.path &&
+    left.kind === right.kind &&
+    sameFileMetadata(left, right)
+  );
+}
+
+async function captureStablePhysicalPathIdentity(
+  pathValue: string,
+  platform: NodeJS.Platform
+): Promise<StablePhysicalPathIdentity> {
+  const requested = normalize(resolve(pathValue));
+  const before = await lstat(requested);
+  if (before.isSymbolicLink() || !(before.isDirectory() || before.isFile())) {
+    throw new Error(
+      `Audit context must have a stable physical identity: ${requested}`
+    );
+  }
+  const canonical = await realpath(requested);
+  const kind = before.isDirectory() ? "directory" : "file";
+  if (platform === "win32") {
+    const after = await lstat(requested);
+    const canonicalAfter = await realpath(requested);
+    if (
+      canonicalAfter !== canonical ||
+      (after.isDirectory() ? "directory" : after.isFile() ? "file" : null) !==
+        kind ||
+      !sameFileMetadata(before, after)
+    ) {
+      throw new Error(`Audit context physical identity changed: ${canonical}`);
+    }
+    return {
+      ctimeMs: after.ctimeMs,
+      dev: after.dev,
+      ino: after.ino,
+      kind,
+      mode: after.mode,
+      mtimeMs: after.mtimeMs,
+      path: canonical,
+      size: after.size,
+    };
+  }
+  const handle = await open(requested, readOnlyNoFollowFlags());
+  try {
+    const opened = await handle.stat();
+    const after = await lstat(requested);
+    const canonicalAfter = await realpath(requested);
+    if (
+      canonicalAfter !== canonical ||
+      (opened.isDirectory() ? "directory" : opened.isFile() ? "file" : null) !==
+        kind ||
+      !sameFileMetadata(before, opened) ||
+      !sameFileMetadata(opened, after)
+    ) {
+      throw new Error(`Audit context physical identity changed: ${canonical}`);
+    }
+    return {
+      ctimeMs: opened.ctimeMs,
+      dev: opened.dev,
+      ino: opened.ino,
+      kind,
+      mode: opened.mode,
+      mtimeMs: opened.mtimeMs,
+      path: canonical,
+      size: opened.size,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
 async function readStableRegularFile(
   pathValue: string,
   options?: {
@@ -518,8 +633,15 @@ export class AuditSourceTracker {
   >();
   readonly #derivedContexts = new Map<string, AuditDerivedContextIdentity>();
   readonly #protectedRoots = new Map<string, AuditProtectedRootIdentity>();
+  readonly #physicalIdentityToPath = new Map<string, string>();
+  readonly #physicalPathToIdentity = new Map<string, string>();
+  readonly #requestedPaths = new Map<string, string>();
 
   readonly #platform: NodeJS.Platform;
+
+  readonly #beforeDerivedContextEvaluation?: (args: {
+    path: string;
+  }) => Promise<void>;
 
   readonly #beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
 
@@ -531,6 +653,7 @@ export class AuditSourceTracker {
   }) => Promise<void>;
 
   constructor(options?: {
+    beforeDerivedContextEvaluation?: (args: { path: string }) => Promise<void>;
     beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
     beforeFileOpen?: (args: { path: string }) => Promise<void>;
     beforeReadChunk?: (args: {
@@ -539,10 +662,45 @@ export class AuditSourceTracker {
     }) => Promise<void>;
     platform?: NodeJS.Platform;
   }) {
+    this.#beforeDerivedContextEvaluation =
+      options?.beforeDerivedContextEvaluation;
     this.#beforeDirectoryRead = options?.beforeDirectoryRead;
     this.#beforeFileOpen = options?.beforeFileOpen;
     this.#beforeReadChunk = options?.beforeReadChunk;
     this.#platform = options?.platform ?? process.platform;
+  }
+
+  #registerPhysicalIdentity(args: {
+    dev: number;
+    ino: number;
+    kind: "directory" | "file";
+    path: string;
+    requestedPath?: string;
+  }): void {
+    const physicalIdentity = `${args.dev}\0${args.ino}`;
+    const pathIdentity = `${args.kind}\0${physicalIdentity}`;
+    const identityPath = this.#physicalIdentityToPath.get(physicalIdentity);
+    const priorPathIdentity = this.#physicalPathToIdentity.get(args.path);
+    if (
+      (identityPath !== undefined && identityPath !== args.path) ||
+      (priorPathIdentity !== undefined && priorPathIdentity !== pathIdentity)
+    ) {
+      throw new Error(
+        `Audit context has a physical path alias or conflicting identity: ${args.path}`
+      );
+    }
+    if (args.requestedPath !== undefined) {
+      const requested = normalize(resolve(args.requestedPath));
+      const priorRequest = this.#requestedPaths.get(args.path);
+      if (priorRequest !== undefined && priorRequest !== requested) {
+        throw new Error(
+          `Audit context has a physical path alias: ${requested}`
+        );
+      }
+      this.#requestedPaths.set(args.path, requested);
+    }
+    this.#physicalIdentityToPath.set(physicalIdentity, args.path);
+    this.#physicalPathToIdentity.set(args.path, pathIdentity);
   }
 
   async protect(paths: string[]): Promise<void> {
@@ -567,12 +725,17 @@ export class AuditSourceTracker {
         ) {
           throw new Error(`Audited source root changed: ${requested}`);
         }
-        this.#protectedRoots.set(canonical, {
+        const identity = {
           dev: after.dev,
           ino: after.ino,
           kind: "directory",
           path: canonical,
+        } as const;
+        this.#registerPhysicalIdentity({
+          ...identity,
+          requestedPath: requested,
         });
+        this.#protectedRoots.set(canonical, identity);
         continue;
       }
       const handle = await open(requested, readOnlyNoFollowFlags());
@@ -588,12 +751,17 @@ export class AuditSourceTracker {
             `Audited source root has an unsupported or unstable file type: ${canonical}`
           );
         }
-        this.#protectedRoots.set(canonical, {
+        const identity: AuditProtectedRootIdentity = {
           dev: metadata.dev,
           ino: metadata.ino,
           kind,
           path: canonical,
+        };
+        this.#registerPhysicalIdentity({
+          ...identity,
+          requestedPath: requested,
         });
+        this.#protectedRoots.set(canonical, identity);
       } finally {
         await handle.close();
       }
@@ -608,6 +776,11 @@ export class AuditSourceTracker {
       beforeFileOpen: this.#beforeFileOpen,
       beforeReadChunk: this.#beforeReadChunk,
       maxBytes: options?.maxBytes,
+    });
+    this.#registerPhysicalIdentity({
+      ...identity,
+      kind: "file",
+      requestedPath: pathValue,
     });
     const existing = this.#evaluatedFiles.get(identity.path);
     if (
@@ -631,7 +804,7 @@ export class AuditSourceTracker {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         const proof = await canonicalAbsentPath(requested);
-        this.#absentPaths.set(proof.path, proof);
+        this.#recordAbsentProof(requested, proof);
         return;
       }
       throw error;
@@ -663,7 +836,7 @@ export class AuditSourceTracker {
         throw error;
       }
       const proof = await canonicalAbsentPath(requested);
-      this.#absentPaths.set(proof.path, proof);
+      this.#recordAbsentProof(requested, proof);
       return null;
     }
   }
@@ -679,7 +852,7 @@ export class AuditSourceTracker {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         const proof = await canonicalAbsentPath(requested);
-        this.#absentPaths.set(proof.path, proof);
+        this.#recordAbsentProof(requested, proof);
         return null;
       }
       throw error;
@@ -780,6 +953,11 @@ export class AuditSourceTracker {
       mtimeMs: stableMetadata.mtimeMs,
       path: canonical,
     };
+    this.#registerPhysicalIdentity({
+      ...identity,
+      kind: "directory",
+      requestedPath: requested,
+    });
     const existing = this.#evaluatedDirectories.get(canonical);
     if (
       existing &&
@@ -842,10 +1020,11 @@ export class AuditSourceTracker {
     const root = normalize(resolve(pathValue));
     const directoryPaths = new Set<string>();
     const filePaths = new Set<string>();
+    const reservedFiles: { entryPath: string; relativePath: string }[] = [];
     let aggregateBytes = 0;
     let usedEntries = 1;
 
-    const visit = async (
+    const reserveShape = async (
       directory: string,
       relativeDirectory: string,
       depth: number
@@ -912,39 +1091,21 @@ export class AuditSourceTracker {
         }
         return { entryPath, isDirectory, isFile, relativePath };
       });
-      if (
-        usedEntries >= maxEntries &&
-        manifest.some((entry) => entry.isDirectory)
-      ) {
-        throw new Error(
-          `Audit discovery tree exceeds entry limit: ${pathValue}`
-        );
-      }
       for (const entry of manifest) {
         if (entry.isDirectory) {
-          await visit(entry.entryPath, entry.relativePath, depth + 1);
-          continue;
-        }
-        if (!entry.isFile) {
-          continue;
-        }
-        if (strict) {
-          const remainingBytes = maxAggregateBytes - aggregateBytes;
-          if (remainingBytes < 0) {
+          if (usedEntries >= maxEntries) {
             throw new Error(
-              `Audit discovery tree exceeds aggregate byte limit: ${root}`
+              `Audit discovery tree exceeds entry limit: ${pathValue}`
             );
           }
-          const bytes = await this.read(entry.entryPath, {
-            maxBytes: Math.min(maxFileBytes, remainingBytes),
+          await reserveShape(entry.entryPath, entry.relativePath, depth + 1);
+          continue;
+        }
+        if (strict && entry.isFile) {
+          reservedFiles.push({
+            entryPath: entry.entryPath,
+            relativePath: entry.relativePath,
           });
-          filePaths.add(await realpath(entry.entryPath));
-          aggregateBytes += bytes.byteLength;
-          if (aggregateBytes > maxAggregateBytes) {
-            throw new Error(
-              `Audit discovery tree exceeds aggregate byte limit: ${root}`
-            );
-          }
         }
       }
     };
@@ -952,9 +1113,30 @@ export class AuditSourceTracker {
     if (usedEntries > maxEntries) {
       throw new Error(`Audit discovery tree exceeds entry limit: ${root}`);
     }
-    await visit(root, "", 0);
+    await reserveShape(root, "", 0);
     if (!strict) {
       return;
+    }
+    reservedFiles.sort((left, right) =>
+      compareStrings(left.relativePath, right.relativePath)
+    );
+    for (const file of reservedFiles) {
+      const remainingBytes = maxAggregateBytes - aggregateBytes;
+      if (remainingBytes < 0) {
+        throw new Error(
+          `Audit discovery tree exceeds aggregate byte limit: ${root}`
+        );
+      }
+      const bytes = await this.read(file.entryPath, {
+        maxBytes: Math.min(maxFileBytes, remainingBytes),
+      });
+      filePaths.add(await realpath(file.entryPath));
+      aggregateBytes += bytes.byteLength;
+      if (aggregateBytes > maxAggregateBytes) {
+        throw new Error(
+          `Audit discovery tree exceeds aggregate byte limit: ${root}`
+        );
+      }
     }
     const canonicalRoot = await realpath(root);
     const treeIdentity: AuditCapturedTreeIdentity = {
@@ -980,18 +1162,65 @@ export class AuditSourceTracker {
     this.#capturedTrees.set(canonicalRoot, treeIdentity);
   }
 
-  recordGitPathExposure(pathValue: string, value: unknown): void {
-    const path = normalize(resolve(pathValue));
-    this.#derivedContexts.set(`git-path-exposure\0${path}`, {
-      kind: "git-path-exposure",
-      path,
-      sha256: digest(Buffer.from(JSON.stringify(value))),
+  async recordGitPathExposure(
+    pathValue: string
+  ): Promise<Awaited<ReturnType<typeof getGitPathExposure>>> {
+    const before = await captureStablePhysicalPathIdentity(
+      pathValue,
+      this.#platform
+    );
+    await this.#beforeDerivedContextEvaluation?.({ path: before.path });
+    const value = await getGitPathExposure(before.path);
+    const after = await captureStablePhysicalPathIdentity(
+      before.path,
+      this.#platform
+    );
+    if (!samePhysicalPathIdentity(before, after)) {
+      throw new Error(
+        `Audit derived context physical identity changed: ${before.path}`
+      );
+    }
+    this.#registerPhysicalIdentity({
+      ...after,
+      requestedPath: pathValue,
     });
+    const key = `git-path-exposure\0${before.path}`;
+    if (this.#derivedContexts.has(key)) {
+      throw new Error(
+        `Audit derived context has a duplicate physical target: ${before.path}`
+      );
+    }
+    this.#derivedContexts.set(key, {
+      ctimeMs: after.ctimeMs,
+      dev: after.dev,
+      ino: after.ino,
+      kind: "git-path-exposure",
+      mode: after.mode,
+      mtimeMs: after.mtimeMs,
+      path: after.path,
+      pathKind: after.kind,
+      sha256: digest(Buffer.from(JSON.stringify(value))),
+      size: after.size,
+    });
+    return value;
+  }
+
+  #recordAbsentProof(
+    _requestedPath: string,
+    proof: AuditAbsentPathIdentity
+  ): void {
+    this.#registerPhysicalIdentity({
+      dev: proof.ancestorDev,
+      ino: proof.ancestorIno,
+      kind: "directory",
+      path: proof.ancestorPath,
+    });
+    this.#absentPaths.set(proof.path, proof);
   }
 
   snapshot(): AuditSourceSnapshot {
     const contract: AuditSourceSnapshotContract = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         compareStrings(a.path, b.path)
       ),
@@ -1040,7 +1269,7 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot>;
   const shapeIsValid =
     hasExactKeys(value, SNAPSHOT_KEYS) &&
-    snapshot.schemaVersion === 5 &&
+    snapshot.schemaVersion === 6 &&
     typeof snapshot.validationContractSha256 === "string" &&
     SHA256_RE.test(snapshot.validationContractSha256) &&
     Array.isArray(snapshot.protectedRoots) &&
@@ -1084,6 +1313,9 @@ export function assertAuditSourceSnapshot(
     validationContractDigest(contract) !==
     exactSnapshot.validationContractSha256
   ) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+  if (!hasCoherentPhysicalIdentities(exactSnapshot)) {
     throw new Error("Audit source snapshot schema is unsupported");
   }
 
@@ -1190,8 +1422,10 @@ function isValidProtectedRootIdentity(
   const entry = value as Partial<AuditProtectedRootIdentity>;
   return (
     hasExactKeys(value, PROTECTED_ROOT_KEYS) &&
-    isNonNegativeSafeInteger(entry.dev ?? Number.NaN) &&
-    isNonNegativeSafeInteger(entry.ino ?? Number.NaN) &&
+    hasUsablePhysicalIdentity(
+      entry.dev ?? Number.NaN,
+      entry.ino ?? Number.NaN
+    ) &&
     (entry.kind === "directory" || entry.kind === "file") &&
     isCanonicalAbsolutePath(entry.path)
   );
@@ -1207,8 +1441,10 @@ function isValidFileIdentity(
   return (
     hasExactKeys(value, FILE_IDENTITY_KEYS) &&
     Number.isFinite(entry.ctimeMs) &&
-    isNonNegativeSafeInteger(entry.dev ?? Number.NaN) &&
-    isNonNegativeSafeInteger(entry.ino ?? Number.NaN) &&
+    hasUsablePhysicalIdentity(
+      entry.dev ?? Number.NaN,
+      entry.ino ?? Number.NaN
+    ) &&
     isNonNegativeSafeInteger(entry.mode ?? Number.NaN) &&
     Number.isFinite(entry.mtimeMs) &&
     isCanonicalAbsolutePath(entry.path) &&
@@ -1228,10 +1464,12 @@ function isValidDirectoryIdentity(
   return (
     hasExactKeys(value, DIRECTORY_IDENTITY_KEYS) &&
     Number.isFinite(entry.ctimeMs) &&
-    isNonNegativeSafeInteger(entry.dev ?? Number.NaN) &&
+    hasUsablePhysicalIdentity(
+      entry.dev ?? Number.NaN,
+      entry.ino ?? Number.NaN
+    ) &&
     typeof entry.entriesSha256 === "string" &&
     SHA256_RE.test(entry.entriesSha256) &&
-    isNonNegativeSafeInteger(entry.ino ?? Number.NaN) &&
     isNonNegativeSafeInteger(entry.maxEntries ?? Number.NaN) &&
     entry.maxEntries! <= 50_000 &&
     isNonNegativeSafeInteger(entry.mode ?? Number.NaN) &&
@@ -1366,10 +1604,19 @@ function isValidDerivedContextIdentity(
   const entry = value as Partial<AuditDerivedContextIdentity>;
   return (
     hasExactKeys(value, DERIVED_CONTEXT_KEYS) &&
+    Number.isFinite(entry.ctimeMs) &&
+    hasUsablePhysicalIdentity(
+      entry.dev ?? Number.NaN,
+      entry.ino ?? Number.NaN
+    ) &&
     entry.kind === "git-path-exposure" &&
+    isNonNegativeSafeInteger(entry.mode ?? Number.NaN) &&
+    Number.isFinite(entry.mtimeMs) &&
     isCanonicalAbsolutePath(entry.path) &&
+    (entry.pathKind === "directory" || entry.pathKind === "file") &&
     typeof entry.sha256 === "string" &&
-    SHA256_RE.test(entry.sha256)
+    SHA256_RE.test(entry.sha256) &&
+    isNonNegativeSafeInteger(entry.size ?? Number.NaN)
   );
 }
 
@@ -1385,8 +1632,10 @@ function isValidAbsentPathIdentity(
       hasExactKeys(value, ABSENT_PATH_KEYS) &&
       isCanonicalAbsolutePath(entry.path) &&
       isCanonicalAbsolutePath(entry.ancestorPath) &&
-      isNonNegativeSafeInteger(entry.ancestorDev ?? Number.NaN) &&
-      isNonNegativeSafeInteger(entry.ancestorIno ?? Number.NaN) &&
+      hasUsablePhysicalIdentity(
+        entry.ancestorDev ?? Number.NaN,
+        entry.ancestorIno ?? Number.NaN
+      ) &&
       Array.isArray(entry.relativeSegments)
     ) ||
     entry.relativeSegments.length === 0
@@ -1410,6 +1659,65 @@ function isValidAbsentPathIdentity(
     normalize(join(entry.ancestorPath, ...entry.relativeSegments)) ===
       entry.path && isContainedPath(entry.ancestorPath, entry.path)
   );
+}
+
+function hasCoherentPhysicalIdentities(snapshot: AuditSourceSnapshot): boolean {
+  const identityToPath = new Map<string, string>();
+  const pathToIdentity = new Map<string, string>();
+  const register = (args: {
+    dev: number;
+    ino: number;
+    kind: "directory" | "file";
+    path: string;
+  }): boolean => {
+    const physicalIdentity = `${args.dev}\0${args.ino}`;
+    const expectedPathIdentity = `${args.kind}\0${physicalIdentity}`;
+    const identityPath = identityToPath.get(physicalIdentity);
+    const existingPathIdentity = pathToIdentity.get(args.path);
+    if (
+      (identityPath !== undefined && identityPath !== args.path) ||
+      (existingPathIdentity !== undefined &&
+        existingPathIdentity !== expectedPathIdentity)
+    ) {
+      return false;
+    }
+    identityToPath.set(physicalIdentity, args.path);
+    pathToIdentity.set(args.path, expectedPathIdentity);
+    return true;
+  };
+  for (const root of snapshot.protectedRoots) {
+    if (!register(root)) {
+      return false;
+    }
+  }
+  for (const file of snapshot.evaluatedFiles) {
+    if (!register({ ...file, kind: "file" })) {
+      return false;
+    }
+  }
+  for (const directory of snapshot.evaluatedDirectories) {
+    if (!register({ ...directory, kind: "directory" })) {
+      return false;
+    }
+  }
+  for (const context of snapshot.derivedContexts) {
+    if (!register({ ...context, kind: context.pathKind })) {
+      return false;
+    }
+  }
+  for (const proof of snapshot.absentPaths) {
+    if (
+      !register({
+        dev: proof.ancestorDev,
+        ino: proof.ancestorIno,
+        kind: "directory",
+        path: proof.ancestorPath,
+      })
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function validateAuditSourceSnapshot(
@@ -1566,8 +1874,36 @@ export async function validateAuditSourceSnapshot(
     }
   }
   for (const expected of snapshot.derivedContexts) {
+    const expectedIdentity: StablePhysicalPathIdentity = {
+      ctimeMs: expected.ctimeMs,
+      dev: expected.dev,
+      ino: expected.ino,
+      kind: expected.pathKind,
+      mode: expected.mode,
+      mtimeMs: expected.mtimeMs,
+      path: expected.path,
+      size: expected.size,
+    };
+    const before = await captureStablePhysicalPathIdentity(
+      expected.path,
+      platform
+    ).catch(() => null);
+    if (!(before && samePhysicalPathIdentity(before, expectedIdentity))) {
+      throw new Error(`Audit derived context changed: ${expected.path}`);
+    }
     const value = await getGitPathExposure(expected.path);
-    if (digest(Buffer.from(JSON.stringify(value))) !== expected.sha256) {
+    const after = await captureStablePhysicalPathIdentity(
+      expected.path,
+      platform
+    ).catch(() => null);
+    if (
+      !(
+        after &&
+        samePhysicalPathIdentity(before, after) &&
+        samePhysicalPathIdentity(after, expectedIdentity)
+      ) ||
+      digest(Buffer.from(JSON.stringify(value))) !== expected.sha256
+    ) {
       throw new Error(`Audit derived context changed: ${expected.path}`);
     }
   }
@@ -1624,6 +1960,21 @@ export async function validateAuditSourceSnapshot(
     }
     if (!stillAbsent) {
       throw new Error(`Audit context appeared after evaluation: ${proof.path}`);
+    }
+    const ancestorAfter = await lstat(proof.ancestorPath).catch(() => null);
+    const ancestorCanonicalAfter = await realpath(proof.ancestorPath).catch(
+      () => null
+    );
+    if (
+      !ancestorAfter?.isDirectory() ||
+      ancestorAfter.isSymbolicLink() ||
+      ancestorAfter.dev !== proof.ancestorDev ||
+      ancestorAfter.ino !== proof.ancestorIno ||
+      ancestorCanonicalAfter !== proof.ancestorPath
+    ) {
+      throw new Error(
+        `Audit context absent ancestor changed: ${proof.ancestorPath}`
+      );
     }
   }
 }
