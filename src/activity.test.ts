@@ -363,6 +363,7 @@ describe("activity feed", () => {
         (_, index) => ({
           ...firstSource,
           id: `source-${index}`,
+          state: index === 0 ? ("changed" as const) : firstSource.state,
         })
       );
       await Bun.write(
@@ -377,9 +378,13 @@ describe("activity feed", () => {
         throw new Error("Expected the source-bounded project feed");
       }
       expect(sourceBounded.truncation.omittedSources).toBe(5);
+      expect(sourceBounded.coverage.checkedSources).toBe(27);
       expect(sourceBoundedProjectFeed.coverage.complete).toBe(false);
       expect(sourceBoundedProjectFeed.coverage.checked).toBe(25);
       expect(sourceBoundedProjectFeed.coverage.sources).toHaveLength(25);
+      expect(sourceBoundedProjectFeed.coverage.sources[0]?.state).toBe(
+        "changed"
+      );
       expect(renderActivityFeed(sourceBoundedProjectFeed)).toContain(
         "Coverage: 25/25 sources checked · incomplete"
       );
@@ -683,7 +688,9 @@ describe("activity feed", () => {
         1_500_000
       );
       expect(set.coverage).toMatchObject({
+        checkedSources: 0,
         configuredScopes: 1,
+        degradedSources: 0,
         reportingScopes: 0,
         complete: false,
       });

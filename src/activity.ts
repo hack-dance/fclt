@@ -1156,10 +1156,10 @@ function boundedAggregateFeed(feed: ActivityFeed): {
     MAX_ACTIVITY_SET_SOURCES_PER_FEED
   );
   const omittedSources = redacted.coverage.sources.length - sources.length;
-  const checked = sources.filter((source) => source.state === "checked").length;
   const degraded = sources.filter(
     (source) => source.state === "stale" || source.state === "unavailable"
   ).length;
+  const checked = sources.length - degraded;
   return {
     feed: {
       ...redacted,
@@ -1173,6 +1173,17 @@ function boundedAggregateFeed(feed: ActivityFeed): {
     },
     omittedSources,
   };
+}
+
+function refreshActivitySetCoverageTotals(set: ActivitySet) {
+  set.coverage.checkedSources = set.feeds.reduce(
+    (total, entry) => total + entry.feed.coverage.checked,
+    0
+  );
+  set.coverage.degradedSources = set.feeds.reduce(
+    (total, entry) => total + entry.feed.coverage.degraded,
+    0
+  );
 }
 
 function activityFeedFromReport(
@@ -1542,10 +1553,17 @@ export async function latestActivitySet(args: {
       .find((candidate) => candidate.feed.coverage.sources.length > 0);
     if (sourceEntry) {
       sourceEntry.feed.coverage.sources.pop();
+      const degraded = sourceEntry.feed.coverage.sources.filter(
+        (source) => source.state === "stale" || source.state === "unavailable"
+      ).length;
+      sourceEntry.feed.coverage.checked =
+        sourceEntry.feed.coverage.sources.length - degraded;
+      sourceEntry.feed.coverage.degraded = degraded;
       sourceEntry.feed.coverage.complete = false;
       result.truncation.omittedSources += 1;
       result.truncation.truncated = true;
       result.coverage.complete = false;
+      refreshActivitySetCoverageTotals(result);
       continue;
     }
 
@@ -1566,6 +1584,7 @@ export async function latestActivitySet(args: {
         }
       }
       result.coverage.reportingScopes = result.feeds.length;
+      refreshActivitySetCoverageTotals(result);
       result.truncation.omittedScopes = omittedScopeIds.size;
       result.truncation.truncated = true;
       result.coverage.complete = false;
@@ -1589,6 +1608,7 @@ export async function latestActivitySet(args: {
     result.coverage.reportingScopes = 0;
     result.scopes = [];
     result.feeds = [];
+    refreshActivitySetCoverageTotals(result);
     result.truncation.omittedScopes = result.coverage.configuredScopes;
     result.truncation.truncated = true;
   }
