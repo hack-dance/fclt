@@ -30,6 +30,40 @@ export function auditReportPersistenceSupported(
   return platform === "darwin" || platform === "linux";
 }
 
+export function openReadOnlyAt(args: {
+  directoryFd: number;
+  fileName: string;
+}): number {
+  if (args.fileName.includes("/") || args.fileName.includes("\\")) {
+    throw new Error(
+      "Descriptor-relative report names must be single path segments"
+    );
+  }
+  const configuration = platformConfiguration();
+  const libc = dlopen(configuration.library, {
+    openat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
+      returns: FFIType.i32,
+    },
+  });
+  try {
+    const fd = libc.symbols.openat(
+      args.directoryFd,
+      ptr(Buffer.from(`${args.fileName}\0`)),
+      safeExistingOpenFlags(),
+      0
+    );
+    if (fd < 0) {
+      throw new Error(
+        `Descriptor-relative report open failed closed: ${args.fileName}`
+      );
+    }
+    return fd;
+  } finally {
+    libc.close();
+  }
+}
+
 export function writeExclusiveAt(args: {
   contents: string;
   directoryFd: number;

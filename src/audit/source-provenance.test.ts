@@ -167,6 +167,52 @@ test("absence proofs reject newly created symlink ancestors", async () => {
   );
 });
 
+test("absence operations retain their first lexical ancestor observation", async () => {
+  for (const operation of [
+    "capture",
+    "optional-text",
+    "directory",
+    "tree",
+  ] as const) {
+    const root = await mkdtemp(
+      join(tmpdir(), `fclt-provenance-first-absence-${operation}-`)
+    );
+    const target = join(root, "target");
+    const alias = join(root, "alias");
+    const missing = join(alias, "missing");
+    await mkdir(target);
+    await symlink(target, alias, "dir");
+    let replaced = false;
+    const tracker = new AuditSourceTracker({
+      beforeAbsentProof: async () => {
+        if (replaced) {
+          return;
+        }
+        replaced = true;
+        await rm(alias);
+        await symlink(target, alias, "dir");
+      },
+    });
+
+    const run = async (): Promise<void> => {
+      if (operation === "capture") {
+        await tracker.capture(missing);
+      } else if (operation === "optional-text") {
+        await tracker.readOptionalText(missing);
+      } else if (operation === "directory") {
+        await tracker.readDirectory(missing);
+      } else {
+        await tracker.captureTree(missing, {
+          rejectUnsupportedEntries: true,
+        });
+      }
+    };
+
+    await expect(run()).rejects.toThrow("requested path changed");
+    expect(tracker.snapshot().absentPaths).toEqual([]);
+  }
+});
+
 test("strict tree capture binds bytes and modes for every unselected file", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-provenance-tree-file-"));
   const selected = join(root, "selected.json");
@@ -714,6 +760,29 @@ test("strict tree never opens an exhausted later sibling or a lexically earlier 
     expect(readDirectories).not.toContain(await realpath(later));
     expect(openedPaths).toEqual([]);
   }
+});
+
+test("strict tree reserves its manifest before validating an overlapping protected child", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-protected-tree-budget-")
+  );
+  const child = join(root, "a-child.txt");
+  await writeFile(child, "stable\n");
+  const tracker = new AuditSourceTracker();
+  await tracker.captureTree(root, {
+    maxEntries: 2,
+    rejectUnsupportedEntries: true,
+  });
+  await tracker.protect([child]);
+  const snapshot = tracker.snapshot();
+
+  await rm(child);
+  await symlink("missing-target", child);
+  await writeFile(join(root, "z-late.txt"), "late\n");
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
 });
 
 test("strict tree deep exhaustion does not open a later root sibling or reserved leaf", async () => {

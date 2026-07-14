@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { constants, type Dirent } from "node:fs";
-import { lstat, open, opendir, realpath } from "node:fs/promises";
+import { type BigIntStats, constants, type Dirent } from "node:fs";
+import { lstat, open, opendir, readlink, realpath } from "node:fs/promises";
 import {
   basename,
   dirname,
@@ -14,6 +14,8 @@ import {
 import { getGitPathExposure } from "../util/git";
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
+const NON_NEGATIVE_DECIMAL_RE = /^(?:0|[1-9]\d*)$/;
+const POSITIVE_DECIMAL_RE = /^[1-9]\d*$/;
 
 export interface AuditProtectedRootIdentity {
   dev: number;
@@ -34,7 +36,7 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 7;
+  schemaVersion: 8;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
@@ -61,6 +63,7 @@ export interface AuditAbsentPathIdentity {
   ancestorDev: number;
   ancestorIno: number;
   ancestorPath: string;
+  lexicalChain: AuditLexicalPathComponentIdentity[];
   path: string;
   relativeSegments: string[];
   requestedPath: string;
@@ -71,7 +74,16 @@ export interface AuditRequestedPathIdentity {
   dev: number;
   ino: number;
   kind: "directory" | "file";
+  lexicalChain: AuditLexicalPathComponentIdentity[];
   requestedPath: string;
+}
+
+export interface AuditLexicalPathComponentIdentity {
+  dev: string;
+  ino: string;
+  kind: "directory" | "file" | "symlink";
+  linkTarget: string | null;
+  path: string;
 }
 
 export interface AuditDerivedContextIdentity {
@@ -187,6 +199,7 @@ const ABSENT_PATH_KEYS = [
   "ancestorDev",
   "ancestorIno",
   "ancestorPath",
+  "lexicalChain",
   "path",
   "relativeSegments",
   "requestedPath",
@@ -196,7 +209,15 @@ const REQUESTED_PATH_KEYS = [
   "dev",
   "ino",
   "kind",
+  "lexicalChain",
   "requestedPath",
+] as const;
+const LEXICAL_PATH_COMPONENT_KEYS = [
+  "dev",
+  "ino",
+  "kind",
+  "linkTarget",
+  "path",
 ] as const;
 const DERIVED_CONTEXT_KEYS = [
   "ctimeMs",
@@ -258,7 +279,7 @@ function canonicalSnapshotContract(
   snapshot: AuditSourceSnapshotContract
 ): AuditSourceSnapshotContract {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     protectedRoots: snapshot.protectedRoots.map((entry) => ({
       dev: entry.dev,
       ino: entry.ino,
@@ -312,6 +333,13 @@ function canonicalSnapshotContract(
       ancestorDev: entry.ancestorDev,
       ancestorIno: entry.ancestorIno,
       ancestorPath: entry.ancestorPath,
+      lexicalChain: entry.lexicalChain.map((component) => ({
+        dev: component.dev,
+        ino: component.ino,
+        kind: component.kind,
+        linkTarget: component.linkTarget,
+        path: component.path,
+      })),
       path: entry.path,
       relativeSegments: [...entry.relativeSegments],
       requestedPath: entry.requestedPath,
@@ -321,6 +349,13 @@ function canonicalSnapshotContract(
       dev: entry.dev,
       ino: entry.ino,
       kind: entry.kind,
+      lexicalChain: entry.lexicalChain.map((component) => ({
+        dev: component.dev,
+        ino: component.ino,
+        kind: component.kind,
+        linkTarget: component.linkTarget,
+        path: component.path,
+      })),
       requestedPath: entry.requestedPath,
     })),
   };
@@ -392,10 +427,127 @@ function readOnlyNoFollowFlags(): number {
   return constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0);
 }
 
+const MAX_LEXICAL_PATH_COMPONENTS = 256;
+
+function lexicalPathPrefixes(pathValue: string): string[] {
+  const requested = normalize(resolve(pathValue));
+  const prefixes: string[] = [];
+  let current = requested;
+  while (true) {
+    prefixes.push(current);
+    const parent = dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+    if (prefixes.length > MAX_LEXICAL_PATH_COMPONENTS) {
+      throw new Error(
+        `Audit lexical path has too many components: ${requested}`
+      );
+    }
+  }
+  return prefixes.reverse();
+}
+
+async function captureLexicalPathChainOnce(
+  pathValue: string,
+  allowAbsent: boolean
+): Promise<AuditLexicalPathComponentIdentity[]> {
+  const requested = normalize(resolve(pathValue));
+  const chain: AuditLexicalPathComponentIdentity[] = [];
+  for (const componentPath of lexicalPathPrefixes(requested)) {
+    let before: BigIntStats;
+    try {
+      before = await lstat(componentPath, { bigint: true });
+    } catch (error) {
+      if (allowAbsent && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        break;
+      }
+      throw error;
+    }
+    const kind = before.isSymbolicLink()
+      ? "symlink"
+      : before.isDirectory()
+        ? "directory"
+        : before.isFile()
+          ? "file"
+          : null;
+    if (!(kind && before.dev >= 0n && before.ino > 0n)) {
+      throw new Error(
+        `Audit lexical path has an unsupported component: ${componentPath}`
+      );
+    }
+    const linkTarget =
+      kind === "symlink" ? await readlink(componentPath) : null;
+    chain.push({
+      dev: before.dev.toString(),
+      ino: before.ino.toString(),
+      kind,
+      linkTarget,
+      path: componentPath,
+    });
+  }
+  if (
+    chain.length === 0 ||
+    (!allowAbsent && chain.at(-1)?.path !== requested)
+  ) {
+    throw new Error(`Audit lexical path is absent or incomplete: ${requested}`);
+  }
+  return chain;
+}
+
+export async function captureStableAuditLexicalPathChain(
+  pathValue: string,
+  options?: { allowAbsent?: boolean }
+): Promise<AuditLexicalPathComponentIdentity[]> {
+  const requested = normalize(resolve(pathValue));
+  const allowAbsent = options?.allowAbsent === true;
+  const before = await captureLexicalPathChainOnce(requested, allowAbsent);
+  const after = await captureLexicalPathChainOnce(requested, allowAbsent);
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    throw new Error(`Audit lexical path changed: ${requested}`);
+  }
+  return before;
+}
+
+async function captureAuditLexicalPathStateOnce(pathValue: string): Promise<{
+  chain: AuditLexicalPathComponentIdentity[];
+  complete: boolean;
+}> {
+  const requested = normalize(resolve(pathValue));
+  const chain = await captureLexicalPathChainOnce(requested, true);
+  return { chain, complete: chain.at(-1)?.path === requested };
+}
+
+function assertLexicalChainUnchanged(
+  requestedPath: string,
+  before: AuditLexicalPathComponentIdentity[],
+  after: AuditLexicalPathComponentIdentity[]
+): void {
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    throw new Error(`Audit requested path changed: ${requestedPath}`);
+  }
+}
+
 async function canonicalAbsentPath(
-  pathValue: string
+  pathValue: string,
+  initialLexicalChain?: AuditLexicalPathComponentIdentity[]
 ): Promise<AuditAbsentPathIdentity> {
   const requested = normalize(resolve(pathValue));
+  const currentLexicalChain = await captureStableAuditLexicalPathChain(
+    requested,
+    {
+      allowAbsent: true,
+    }
+  );
+  if (initialLexicalChain) {
+    assertLexicalChainUnchanged(
+      requested,
+      initialLexicalChain,
+      currentLexicalChain
+    );
+  }
+  const lexicalChain = initialLexicalChain ?? currentLexicalChain;
   const suffix: string[] = [];
   let ancestor = requested;
   while (true) {
@@ -408,14 +560,31 @@ async function canonicalAbsentPath(
         );
       }
       const relativeSegments = suffix.reverse();
-      return {
+      const proof: AuditAbsentPathIdentity = {
         ancestorDev: metadata.dev,
         ancestorIno: metadata.ino,
         ancestorPath: canonicalAncestor,
+        lexicalChain,
         path: normalize(join(canonicalAncestor, ...relativeSegments)),
         relativeSegments,
         requestedPath: requested,
       };
+      const lexicalAfter = await captureStableAuditLexicalPathChain(requested, {
+        allowAbsent: true,
+      });
+      assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
+      const lexicalAncestor = lexicalChain.at(-1);
+      if (
+        !lexicalAncestor ||
+        normalize(join(lexicalAncestor.path, ...proof.relativeSegments)) !==
+          requested ||
+        (await realpath(lexicalAncestor.path)) !== proof.ancestorPath
+      ) {
+        throw new Error(
+          `Audit context absent path has an inconsistent lexical ancestor: ${requested}`
+        );
+      }
+      return proof;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -682,6 +851,8 @@ export class AuditSourceTracker {
     path: string;
   }) => Promise<void>;
 
+  readonly #beforeAbsentProof?: (args: { path: string }) => Promise<void>;
+
   readonly #beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
 
   readonly #beforeFileOpen?: (args: { path: string }) => Promise<void>;
@@ -692,6 +863,7 @@ export class AuditSourceTracker {
   }) => Promise<void>;
 
   constructor(options?: {
+    beforeAbsentProof?: (args: { path: string }) => Promise<void>;
     beforeDerivedContextEvaluation?: (args: { path: string }) => Promise<void>;
     beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
     beforeFileOpen?: (args: { path: string }) => Promise<void>;
@@ -701,6 +873,7 @@ export class AuditSourceTracker {
     }) => Promise<void>;
     platform?: NodeJS.Platform;
   }) {
+    this.#beforeAbsentProof = options?.beforeAbsentProof;
     this.#beforeDerivedContextEvaluation =
       options?.beforeDerivedContextEvaluation;
     this.#beforeDirectoryRead = options?.beforeDirectoryRead;
@@ -709,10 +882,33 @@ export class AuditSourceTracker {
     this.#platform = options?.platform ?? process.platform;
   }
 
+  async #recordInitialAbsence(
+    requested: string,
+    lexicalChain: AuditLexicalPathComponentIdentity[]
+  ): Promise<void> {
+    await this.#beforeAbsentProof?.({ path: requested });
+    const proof = await canonicalAbsentPath(requested, lexicalChain);
+    this.#recordAbsentProof(requested, proof);
+  }
+
+  #assertRequestedPathChain(
+    requested: string,
+    expected: AuditLexicalPathComponentIdentity[]
+  ): void {
+    const recorded = this.#requestedPaths.get(requested);
+    if (
+      !recorded ||
+      JSON.stringify(recorded.lexicalChain) !== JSON.stringify(expected)
+    ) {
+      throw new Error(`Audit requested path changed: ${requested}`);
+    }
+  }
+
   #registerPhysicalIdentity(args: {
     dev: number;
     ino: number;
     kind: "directory" | "file";
+    lexicalChain?: AuditLexicalPathComponentIdentity[];
     path: string;
     requestedPath?: string;
   }): void {
@@ -730,11 +926,17 @@ export class AuditSourceTracker {
     }
     if (args.requestedPath !== undefined) {
       const requested = normalize(resolve(args.requestedPath));
+      if (!args.lexicalChain) {
+        throw new Error(
+          `Audit requested path has no lexical identity: ${requested}`
+        );
+      }
       const binding: AuditRequestedPathIdentity = {
         canonicalPath: args.path,
         dev: args.dev,
         ino: args.ino,
         kind: args.kind,
+        lexicalChain: args.lexicalChain,
         requestedPath: requested,
       };
       const priorBinding = this.#requestedPaths.get(requested);
@@ -761,6 +963,7 @@ export class AuditSourceTracker {
         continue;
       }
       const requested = normalize(pathValue);
+      const lexicalChain = await captureLexicalPathChainOnce(requested, false);
       const requestedMetadata = await lstat(requested);
       if (requestedMetadata.isSymbolicLink()) {
         throw new Error(
@@ -783,8 +986,14 @@ export class AuditSourceTracker {
           kind: "directory",
           path: canonical,
         } as const;
+        const lexicalAfter = await captureLexicalPathChainOnce(
+          requested,
+          false
+        );
+        assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
         this.#registerPhysicalIdentity({
           ...identity,
+          lexicalChain,
           requestedPath: requested,
         });
         this.#protectedRoots.set(canonical, identity);
@@ -809,8 +1018,14 @@ export class AuditSourceTracker {
           kind,
           path: canonical,
         };
+        const lexicalAfter = await captureLexicalPathChainOnce(
+          requested,
+          false
+        );
+        assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
         this.#registerPhysicalIdentity({
           ...identity,
+          lexicalChain,
           requestedPath: requested,
         });
         this.#protectedRoots.set(canonical, identity);
@@ -824,15 +1039,28 @@ export class AuditSourceTracker {
     pathValue: string,
     options?: { maxBytes?: number }
   ): Promise<Buffer> {
+    const requested = normalize(resolve(pathValue));
+    const initialState = await captureAuditLexicalPathStateOnce(requested);
+    if (!initialState.complete) {
+      const error = new Error(
+        `Audit requested path is absent: ${requested}`
+      ) as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    }
+    const lexicalChain = initialState.chain;
     const { bytes, identity } = await readStableRegularFile(pathValue, {
       beforeFileOpen: this.#beforeFileOpen,
       beforeReadChunk: this.#beforeReadChunk,
       maxBytes: options?.maxBytes,
     });
+    const lexicalAfter = await captureLexicalPathChainOnce(requested, false);
+    assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
     this.#registerPhysicalIdentity({
       ...identity,
       kind: "file",
-      requestedPath: pathValue,
+      lexicalChain,
+      requestedPath: requested,
     });
     const existing = this.#evaluatedFiles.get(identity.path);
     if (
@@ -850,23 +1078,28 @@ export class AuditSourceTracker {
 
   async capture(pathValue: string): Promise<void> {
     const requested = normalize(resolve(pathValue));
+    const initialState = await captureAuditLexicalPathStateOnce(requested);
+    if (!initialState.complete) {
+      await this.#recordInitialAbsence(requested, initialState.chain);
+      return;
+    }
     let metadata: Awaited<ReturnType<typeof lstat>>;
     try {
       metadata = await lstat(requested);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        const proof = await canonicalAbsentPath(requested);
-        this.#recordAbsentProof(requested, proof);
-        return;
+        throw new Error(`Audit requested path changed: ${requested}`);
       }
       throw error;
     }
     if (metadata.isFile()) {
       await this.read(requested);
+      this.#assertRequestedPathChain(requested, initialState.chain);
       return;
     }
     if (metadata.isDirectory()) {
       await this.readDirectory(requested);
+      this.#assertRequestedPathChain(requested, initialState.chain);
       return;
     }
     throw new Error(`Audit context has an unsupported file type: ${requested}`);
@@ -881,15 +1114,20 @@ export class AuditSourceTracker {
 
   async readOptionalText(pathValue: string): Promise<string | null> {
     const requested = normalize(resolve(pathValue));
-    try {
-      return await this.readText(requested);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-      const proof = await canonicalAbsentPath(requested);
-      this.#recordAbsentProof(requested, proof);
+    const initialState = await captureAuditLexicalPathStateOnce(requested);
+    if (!initialState.complete) {
+      await this.#recordInitialAbsence(requested, initialState.chain);
       return null;
+    }
+    try {
+      const value = await this.readText(requested);
+      this.#assertRequestedPathChain(requested, initialState.chain);
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`Audit requested path changed: ${requested}`);
+      }
+      throw error;
     }
   }
 
@@ -898,14 +1136,18 @@ export class AuditSourceTracker {
     options?: { maxEntries?: number }
   ): Promise<Dirent[] | null> {
     const requested = normalize(resolve(pathValue));
+    const initialState = await captureAuditLexicalPathStateOnce(requested);
+    if (!initialState.complete) {
+      await this.#recordInitialAbsence(requested, initialState.chain);
+      return null;
+    }
+    const lexicalChain = initialState.chain;
     let before: Awaited<ReturnType<typeof lstat>>;
     try {
       before = await lstat(requested);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        const proof = await canonicalAbsentPath(requested);
-        this.#recordAbsentProof(requested, proof);
-        return null;
+        throw new Error(`Audit requested path changed: ${requested}`);
       }
       throw error;
     }
@@ -1005,9 +1247,12 @@ export class AuditSourceTracker {
       mtimeMs: stableMetadata.mtimeMs,
       path: canonical,
     };
+    const lexicalAfter = await captureLexicalPathChainOnce(requested, false);
+    assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
     this.#registerPhysicalIdentity({
       ...identity,
       kind: "directory",
+      lexicalChain,
       requestedPath: requested,
     });
     const existing = this.#evaluatedDirectories.get(canonical);
@@ -1217,6 +1462,8 @@ export class AuditSourceTracker {
   async recordGitPathExposure(
     pathValue: string
   ): Promise<Awaited<ReturnType<typeof getGitPathExposure>>> {
+    const requested = normalize(resolve(pathValue));
+    const lexicalChain = await captureLexicalPathChainOnce(requested, false);
     const before = await captureStablePhysicalPathIdentity(
       pathValue,
       this.#platform
@@ -1232,9 +1479,12 @@ export class AuditSourceTracker {
         `Audit derived context physical identity changed: ${before.path}`
       );
     }
+    const lexicalAfter = await captureLexicalPathChainOnce(requested, false);
+    assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
     this.#registerPhysicalIdentity({
       ...after,
-      requestedPath: pathValue,
+      lexicalChain,
+      requestedPath: requested,
     });
     const key = `git-path-exposure\0${before.path}`;
     if (this.#derivedContexts.has(key)) {
@@ -1282,7 +1532,7 @@ export class AuditSourceTracker {
 
   snapshot(): AuditSourceSnapshot {
     const contract: AuditSourceSnapshotContract = {
-      schemaVersion: 7,
+      schemaVersion: 8,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         compareStrings(a.path, b.path)
       ),
@@ -1334,7 +1584,7 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot>;
   const shapeIsValid =
     hasExactKeys(value, SNAPSHOT_KEYS) &&
-    snapshot.schemaVersion === 7 &&
+    snapshot.schemaVersion === 8 &&
     typeof snapshot.validationContractSha256 === "string" &&
     SHA256_RE.test(snapshot.validationContractSha256) &&
     Array.isArray(snapshot.protectedRoots) &&
@@ -1765,6 +2015,7 @@ function isValidAbsentPathIdentity(
         entry.ancestorDev ?? Number.NaN,
         entry.ancestorIno ?? Number.NaN
       ) &&
+      Array.isArray(entry.lexicalChain) &&
       Array.isArray(entry.relativeSegments) &&
       isCanonicalAbsolutePath(entry.requestedPath)
     ) ||
@@ -1787,7 +2038,70 @@ function isValidAbsentPathIdentity(
   }
   return (
     normalize(join(entry.ancestorPath, ...entry.relativeSegments)) ===
-      entry.path && isContainedPath(entry.ancestorPath, entry.path)
+      entry.path &&
+    isContainedPath(entry.ancestorPath, entry.path) &&
+    isValidLexicalPathChain(entry.lexicalChain, entry.requestedPath, false) &&
+    entry.lexicalChain.length <
+      lexicalPathPrefixes(entry.requestedPath).length &&
+    JSON.stringify(
+      lexicalPathPrefixes(entry.requestedPath)
+        .slice(entry.lexicalChain.length)
+        .map((path) => basename(path))
+    ) === JSON.stringify(entry.relativeSegments)
+  );
+}
+
+function isValidLexicalPathComponentIdentity(
+  value: unknown
+): value is AuditLexicalPathComponentIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
+  }
+  const entry = value as Partial<AuditLexicalPathComponentIdentity>;
+  const linkTargetIsValid =
+    entry.kind === "symlink"
+      ? typeof entry.linkTarget === "string" && !entry.linkTarget.includes("\0")
+      : entry.linkTarget === null;
+  return (
+    hasExactKeys(value, LEXICAL_PATH_COMPONENT_KEYS) &&
+    typeof entry.dev === "string" &&
+    NON_NEGATIVE_DECIMAL_RE.test(entry.dev) &&
+    typeof entry.ino === "string" &&
+    POSITIVE_DECIMAL_RE.test(entry.ino) &&
+    (entry.kind === "directory" ||
+      entry.kind === "file" ||
+      entry.kind === "symlink") &&
+    linkTargetIsValid &&
+    isCanonicalAbsolutePath(entry.path)
+  );
+}
+
+function isValidLexicalPathChain(
+  value: unknown[],
+  requestedPath: string,
+  complete: boolean
+): value is AuditLexicalPathComponentIdentity[] {
+  if (
+    value.length === 0 ||
+    value.length > MAX_LEXICAL_PATH_COMPONENTS ||
+    !value.every(isValidLexicalPathComponentIdentity)
+  ) {
+    return false;
+  }
+  const prefixes = lexicalPathPrefixes(requestedPath);
+  if (
+    complete
+      ? value.length !== prefixes.length
+      : value.length >= prefixes.length
+  ) {
+    return false;
+  }
+  return value.every(
+    (component, index) =>
+      component.path === prefixes[index] &&
+      (index === value.length - 1
+        ? complete || component.kind !== "file"
+        : component.kind !== "file")
   );
 }
 
@@ -1806,7 +2120,12 @@ function isValidRequestedPathIdentity(
       entry.ino ?? Number.NaN
     ) &&
     (entry.kind === "directory" || entry.kind === "file") &&
-    isCanonicalAbsolutePath(entry.requestedPath)
+    Array.isArray(entry.lexicalChain) &&
+    isCanonicalAbsolutePath(entry.requestedPath) &&
+    isValidLexicalPathChain(entry.lexicalChain, entry.requestedPath, true) &&
+    entry.lexicalChain.at(-1)?.dev === String(entry.dev) &&
+    entry.lexicalChain.at(-1)?.ino === String(entry.ino) &&
+    entry.lexicalChain.at(-1)?.kind === entry.kind
   );
 }
 
@@ -1887,21 +2206,19 @@ export async function validateAuditSourceSnapshot(
 ): Promise<void> {
   assertAuditSourceSnapshot(snapshot);
   const platform = options?.platform ?? process.platform;
-  const capturedMemberPaths = new Set(
-    snapshot.capturedTrees.flatMap((tree) => [
-      ...tree.directoryPaths,
-      ...tree.filePaths,
-    ])
-  );
   const validateRequestedBinding = async (
     expected: AuditRequestedPathIdentity
   ): Promise<void> => {
+    const lexicalChain = await captureStableAuditLexicalPathChain(
+      expected.requestedPath
+    ).catch(() => null);
     const actual = await captureStablePhysicalPathIdentity(
       expected.requestedPath,
       platform
     ).catch(() => null);
     if (
-      !actual ||
+      !(actual && lexicalChain) ||
+      JSON.stringify(lexicalChain) !== JSON.stringify(expected.lexicalChain) ||
       actual.path !== expected.canonicalPath ||
       actual.dev !== expected.dev ||
       actual.ino !== expected.ino ||
@@ -1914,14 +2231,26 @@ export async function validateAuditSourceSnapshot(
   };
   const validateRequestedBindings = async (): Promise<void> => {
     for (const expected of snapshot.requestedPaths) {
-      if (capturedMemberPaths.has(expected.canonicalPath)) {
-        continue;
-      }
       await validateRequestedBinding(expected);
     }
   };
-  await validateRequestedBindings();
-  for (const root of snapshot.protectedRoots) {
+  const capturedTreeMemberPaths = new Set(
+    snapshot.capturedTrees.flatMap((tree) => [
+      ...tree.directoryPaths,
+      ...tree.filePaths,
+    ])
+  );
+  for (const expected of snapshot.requestedPaths) {
+    // Strict trees must reserve and validate their complete manifests before
+    // any member path is opened. The tree pass below revalidates these exact
+    // lexical bindings after that reservation succeeds.
+    if (!capturedTreeMemberPaths.has(expected.canonicalPath)) {
+      await validateRequestedBinding(expected);
+    }
+  }
+  const validateProtectedRoot = async (
+    root: AuditProtectedRootIdentity
+  ): Promise<void> => {
     const canonical = await realpath(root.path).catch(() => null);
     const pathMetadata = await lstat(root.path).catch(() => null);
     if (
@@ -1943,7 +2272,7 @@ export async function validateAuditSourceSnapshot(
       ) {
         throw new Error(`Audit source root changed: ${root.path}`);
       }
-      continue;
+      return;
     }
     const handle = await open(root.path, readOnlyNoFollowFlags()).catch(
       () => null
@@ -1969,7 +2298,7 @@ export async function validateAuditSourceSnapshot(
     } finally {
       await handle.close();
     }
-  }
+  };
   const expectedFiles = new Map(
     snapshot.evaluatedFiles.map((identity) => [identity.path, identity])
   );
@@ -2039,6 +2368,11 @@ export async function validateAuditSourceSnapshot(
       }
       validatedDirectories.add(path);
     }
+  }
+  // Strict-tree manifests must reserve their complete aggregate budget before
+  // any overlapping protected child is opened independently.
+  for (const root of snapshot.protectedRoots) {
+    await validateProtectedRoot(root);
   }
   for (const expected of snapshot.evaluatedFiles) {
     if (validatedFiles.has(expected.path)) {

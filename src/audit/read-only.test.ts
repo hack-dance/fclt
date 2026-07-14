@@ -214,7 +214,7 @@ describe("read-only audit boundary", () => {
     const reportPath = await exactReportPath(reportRoot);
     const envelope = JSON.parse(await readFile(reportPath, "utf8"));
     expect(envelope.report).toEqual(report);
-    expect(envelope.receipt.reportRevision).toBe(9);
+    expect(envelope.receipt.reportRevision).toBe(10);
     await expect(loadVerifiedAuditReport({ reportPath })).resolves.toEqual(
       report
     );
@@ -387,6 +387,7 @@ describe("read-only audit boundary", () => {
         auditedRoots: [sourceRoot],
         mode: "static",
         report: {
+          mode: "static",
           results: [],
           timestamp: "2026-01-01T00:00:00.000Z",
         },
@@ -444,6 +445,7 @@ describe("read-only audit boundary", () => {
         },
         mode: "static",
         report: {
+          mode: "static",
           results: [],
           timestamp: "2026-01-01T00:00:00.000Z",
         },
@@ -825,6 +827,7 @@ describe("read-only audit boundary", () => {
         auditedRoots: [],
         mode: "static",
         report: {
+          mode: "static",
           results: [],
           timestamp: "2026-01-01T00:00:00.000Z",
         },

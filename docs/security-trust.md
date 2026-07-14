@@ -84,16 +84,20 @@ non-symlink directory strictly inside Claude's plugin cache. Its entire tree is
 captured with stable no-follow reads, exact file bytes and modes, directory
 contents and identities, and conservative entry, depth, path, per-file, and
 aggregate-byte bounds. The provenance receipt stores each strict tree's exact
-limits and canonical membership. Snapshot schema v7 rejects extra, missing,
+limits and canonical membership. Snapshot schema v8 rejects extra, missing,
 duplicate, reordered, aliased, overlapping, or conflicting records and binds a
 canonical validation-contract digest. It also binds every lexical requested
 path to the same physical identity from first observation through final
-validation, including absence proofs across ancestor retargets. Requested-path
-membership is exact: an extra, stale, missing, or conflicting binding is
-rejected even if a contract digest is recomputed. Report revision 9 and receipt
-schema v4 make detached or older authorization fail closed. Final-name
-collisions are opened without following links and accepted only when the
-private, singly linked regular file has exactly the canonical envelope bytes;
+validation, including every lexical ancestor's type, inode, and raw link target
+and absence proofs across ancestor retargets. Requested-path membership is exact:
+an extra, stale, missing, or conflicting binding is rejected even if a contract
+digest is recomputed. Report revision 10 and receipt schema v5 make detached or
+older authorization fail closed. Report loading keeps both the parent directory
+and envelope open by descriptor, revalidates their lexical and physical identity
+at every read and authorization boundary, and applies overlap checks to that
+same bound directory object. Final-name collisions are opened without following
+links and accepted only when the private, singly linked regular file has exactly
+the canonical envelope bytes;
 symlinks, hardlinks, special files, permission ambiguity, and conflicting
 content fail closed. Each directory's replay budget is derived from that one tree
 contract, and the complete current-directory manifest is reserved against the

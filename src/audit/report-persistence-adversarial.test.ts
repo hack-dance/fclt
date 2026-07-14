@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   AUDIT_REPORT_MAX_ENVELOPE_BYTES,
   auditReportRootPermissionsAreSafe,
@@ -28,6 +28,24 @@ const PERSISTENCE_COLLISION_RE =
   /collision|commit failed closed|symlink|unsafe/i;
 const READ_DRIFT_RE = /grew|changed while reading/;
 const TIMESTAMP_SCHEMA_RE = /timestamp|provenance|schema/i;
+const DIRECTORY_CHANGED_RE = /directory changed/i;
+const ENVELOPE_OR_DIRECTORY_CHANGED_RE =
+  /(?:envelope name|audit report directory) changed/i;
+const PERMISSION_AMBIGUOUS_RE = /permission-ambiguous/i;
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 async function fixture() {
   const sourceRoot = await mkdtemp(
@@ -395,8 +413,8 @@ describe("adversarial audit report persistence", () => {
       null,
       2
     ).replace(
-      '"receipt": {\n    "schemaVersion": 4,',
-      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 4,'
+      '"receipt": {\n    "schemaVersion": 5,',
+      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 5,'
     )}\n`;
     await writeFile(reportPath, duplicateReceiptKey);
     await chmod(reportPath, 0o600);
@@ -548,5 +566,308 @@ describe("adversarial audit report persistence", () => {
       })
     ).rejects.toThrow(TIMESTAMP_SCHEMA_RE);
     expect(await readdir(reportRoot)).toEqual([]);
+  });
+
+  test("writer and loader reject report placement in a derived context", async () => {
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-derived-overlap-writer-")
+    );
+    const tracker = new AuditSourceTracker();
+    await tracker.recordGitPathExposure(reportRoot);
+    const timestamp = new Date(
+      Math.floor(Date.now() / 1000) * 1000
+    ).toISOString();
+    await expect(
+      persistAuditReport({
+        auditedRoots: [],
+        mode: "static",
+        report: { mode: "static", results: [], timestamp },
+        reportRoot,
+        sourceSnapshot: tracker.snapshot(),
+      })
+    ).rejects.toThrow("overlaps audited source");
+    expect(await readdir(reportRoot)).toEqual([]);
+
+    const current = await fixture();
+    const placedRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-derived-overlap-loader-")
+    );
+    const reportPath = await persistAuditReport({
+      ...current.evaluation,
+      mode: "static",
+      reportRoot: placedRoot,
+    });
+    const placedTracker = new AuditSourceTracker();
+    await placedTracker.recordGitPathExposure(placedRoot);
+    const sourceSnapshot = placedTracker.snapshot();
+    const envelope = JSON.parse(await readFile(reportPath, "utf8")) as {
+      receipt: {
+        sourceIdentitySha256: string;
+        sourceSnapshot: unknown;
+      };
+    };
+    envelope.receipt.sourceSnapshot = sourceSnapshot;
+    envelope.receipt.sourceIdentitySha256 = createHash("sha256")
+      .update(stableJson(sourceSnapshot))
+      .digest("hex");
+    await writePrivateJson(reportPath, envelope);
+
+    await expect(loadVerifiedAuditReport({ reportPath })).rejects.toThrow(
+      "overlaps an audited source"
+    );
+  });
+
+  test("loader binds the exact parent descriptor, permissions, and final child name", async () => {
+    const moved = await fixture();
+    const movedRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-parent-move-")
+    );
+    const movedPath = await persistAuditReport({
+      ...moved.evaluation,
+      mode: "static",
+      reportRoot: movedRoot,
+    });
+    const movedDestination = join(moved.sourceRoot, "moved-reports");
+    await expect(
+      loadVerifiedAuditReport({
+        beforeEnvelopeReadChunk: async () => {
+          await rename(movedRoot, movedDestination);
+          await mkdir(movedRoot);
+        },
+        reportPath: movedPath,
+      })
+    ).rejects.toThrow(DIRECTORY_CHANGED_RE);
+    expect(await readdir(movedRoot)).toEqual([]);
+    expect(await readdir(movedDestination)).toEqual([moved.reportFileName]);
+
+    const unsafe = await fixture();
+    const unsafeRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-root-mode-")
+    );
+    const unsafePath = await persistAuditReport({
+      ...unsafe.evaluation,
+      mode: "static",
+      reportRoot: unsafeRoot,
+    });
+    await chmod(unsafeRoot, 0o777);
+    await expect(
+      loadVerifiedAuditReport({ reportPath: unsafePath })
+    ).rejects.toThrow(PERMISSION_AMBIGUOUS_RE);
+
+    const drift = await fixture();
+    const driftRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-root-drift-")
+    );
+    const driftPath = await persistAuditReport({
+      ...drift.evaluation,
+      mode: "static",
+      reportRoot: driftRoot,
+    });
+    await chmod(driftRoot, 0o755);
+    await expect(
+      loadVerifiedAuditReport({
+        beforeEnvelopeReadChunk: async () => {
+          await chmod(driftRoot, 0o700);
+        },
+        reportPath: driftPath,
+      })
+    ).rejects.toThrow(DIRECTORY_CHANGED_RE);
+
+    const replaced = await fixture();
+    const replacedRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-child-replacement-")
+    );
+    const replacedPath = await persistAuditReport({
+      ...replaced.evaluation,
+      mode: "static",
+      reportRoot: replacedRoot,
+    });
+    const originalPath = `${replacedPath}.original`;
+    const exactBytes = await readFile(replacedPath);
+    await expect(
+      loadVerifiedAuditReport({
+        beforeEnvelopeReadChunk: async () => {
+          await rename(replacedPath, originalPath);
+          await writeFile(replacedPath, exactBytes);
+          await chmod(replacedPath, 0o600);
+        },
+        reportPath: replacedPath,
+      })
+    ).rejects.toThrow(ENVELOPE_OR_DIRECTORY_CHANGED_RE);
+    expect(await readFile(originalPath)).toEqual(exactBytes);
+    expect(await readFile(replacedPath)).toEqual(exactBytes);
+
+    const linked = await fixture();
+    const linkedTarget = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-linked-target-")
+    );
+    const linkedRoot = join(linkedTarget, "reports");
+    await mkdir(linkedRoot);
+    const linkedBase = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-linked-base-")
+    );
+    const linkedAlias = join(linkedBase, "alias");
+    await symlink(linkedTarget, linkedAlias, "dir");
+    const linkedPath = await persistAuditReport({
+      ...linked.evaluation,
+      mode: "static",
+      reportRoot: linkedRoot,
+    });
+    const lexicalLinkedPath = join(
+      linkedAlias,
+      "reports",
+      basename(linkedPath)
+    );
+    await expect(
+      loadVerifiedAuditReport({
+        beforeEnvelopeReadChunk: async () => {
+          await rename(linkedAlias, `${linkedAlias}.original`);
+          await symlink(linkedTarget, linkedAlias, "dir");
+        },
+        reportPath: lexicalLinkedPath,
+      })
+    ).rejects.toThrow(DIRECTORY_CHANGED_RE);
+
+    const late = await fixture();
+    const lateRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-loader-late-chunk-")
+    );
+    const latePath = await persistAuditReport({
+      ...late.evaluation,
+      mode: "static",
+      report: {
+        ...late.evaluation.report,
+        padding: "x".repeat(128 * 1024),
+      },
+      reportRoot: lateRoot,
+    });
+    const lateMoved = join(late.sourceRoot, "late-moved-reports");
+    let lateSwap = false;
+    await expect(
+      loadVerifiedAuditReport({
+        beforeEnvelopeReadChunk: async (bytesRead) => {
+          if (!lateSwap && bytesRead >= 64 * 1024) {
+            lateSwap = true;
+            await rename(lateRoot, lateMoved);
+            await mkdir(lateRoot);
+          }
+        },
+        reportPath: latePath,
+      })
+    ).rejects.toThrow(DIRECTORY_CHANGED_RE);
+    expect(lateSwap).toBe(true);
+  });
+
+  test("loader revalidates the bound directory at source-validation and return hooks", async () => {
+    for (const hook of ["source", "return"] as const) {
+      const current = await fixture();
+      const reportRoot = await mkdtemp(
+        join(tmpdir(), `fclt-report-loader-${hook}-hook-`)
+      );
+      const reportPath = await persistAuditReport({
+        ...current.evaluation,
+        mode: "static",
+        reportRoot,
+      });
+      const movedRoot = join(current.sourceRoot, `${hook}-moved-reports`);
+      const mutate = async () => {
+        await rename(reportRoot, movedRoot);
+        await mkdir(reportRoot);
+      };
+      await expect(
+        loadVerifiedAuditReport({
+          beforeEnvelopeReturn: hook === "return" ? mutate : undefined,
+          beforeSourceValidation: hook === "source" ? mutate : undefined,
+          reportPath,
+        })
+      ).rejects.toThrow(DIRECTORY_CHANGED_RE);
+      expect(await readdir(reportRoot)).toEqual([]);
+      expect(await readdir(movedRoot)).toEqual([current.reportFileName]);
+    }
+  });
+
+  test("writer and loader share one duplicate-finding identity rule", async () => {
+    const current = await fixture();
+    const finding = {
+      message: "duplicate",
+      ruleId: "duplicate-rule",
+      severity: "high" as const,
+    };
+    const result = {
+      findings: [finding, { ...finding }],
+      item: "duplicate-item",
+      passed: false,
+      path: current.sourceRoot,
+      type: "skill" as const,
+    };
+    const missingRoot = join(current.sourceRoot, "missing-report-root");
+    await expect(
+      persistAuditReport({
+        ...current.evaluation,
+        mode: "static",
+        report: { ...current.evaluation.report, results: [result] },
+        reportRoot: missingRoot,
+      })
+    ).rejects.toThrow("duplicate finding identities");
+
+    const crossResult = {
+      ...current.evaluation.report,
+      results: [
+        { ...result, findings: [finding] },
+        { ...result, findings: [{ ...finding }] },
+      ],
+    };
+    await expect(
+      persistAuditReport({
+        ...current.evaluation,
+        mode: "static",
+        report: crossResult,
+        reportRoot: missingRoot,
+      })
+    ).rejects.toThrow("duplicate finding identities");
+
+    const reordered = {
+      ...current.evaluation.report,
+      results: [
+        {
+          ...result,
+          findings: [
+            finding,
+            { ...finding, message: "near-duplicate" },
+            { ...finding },
+          ],
+        },
+      ],
+    };
+    await expect(
+      persistAuditReport({
+        ...current.evaluation,
+        mode: "static",
+        report: reordered,
+        reportRoot: missingRoot,
+      })
+    ).rejects.toThrow("duplicate finding identities");
+
+    const nearDuplicateRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-near-duplicate-")
+    );
+    const nearDuplicate = {
+      ...current.evaluation.report,
+      results: [
+        {
+          ...result,
+          findings: [finding, { ...finding, message: "near-duplicate" }],
+        },
+      ],
+    };
+    const reportPath = await persistAuditReport({
+      ...current.evaluation,
+      mode: "static",
+      report: nearDuplicate,
+      reportRoot: nearDuplicateRoot,
+    });
+    await expect(loadVerifiedAuditReport({ reportPath })).resolves.toEqual(
+      nearDuplicate
+    );
   });
 });

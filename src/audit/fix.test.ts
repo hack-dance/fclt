@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,6 +16,10 @@ const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_LEGACY_MUTATION_ENV = process.env[LEGACY_MANAGED_MUTATION_ENV];
 let tempHome: string | null = null;
 let tempReportRoot: string | null = null;
+let evaluation: Awaited<ReturnType<typeof evaluateStaticAudit>> | null = null;
+let legacyPath: string | null = null;
+let reportPath: string | null = null;
+let rootDir: string | null = null;
 
 async function makeTempHome(): Promise<string> {
   const base = join(tmpdir(), "fclt-audit-fix-tests");
@@ -33,7 +37,48 @@ async function writeJson(path: string, value: unknown) {
   await Bun.write(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-afterEach(async () => {
+async function makeFixBase() {
+  tempHome = await makeTempHome();
+  process.env.HOME = tempHome;
+
+  rootDir = join(tempHome, ".ai");
+  await mkdir(join(rootDir, "mcp"), { recursive: true });
+  await writeJson(join(rootDir, "mcp", "servers.json"), {
+    servers: {
+      github: {
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-github"],
+        env: {
+          GITHUB_PERSONAL_ACCESS_TOKEN: "github_pat_test_1234567890",
+        },
+      },
+    },
+  });
+
+  await manageTool("codex", { homeDir: tempHome, rootDir });
+  legacyPath = join(facultStateDir(tempHome), "audit", "static-latest.json");
+  await writeJson(legacyPath, { legacy: true });
+}
+
+beforeAll(async () => {
+  await makeFixBase();
+});
+
+beforeAll(async () => {
+  evaluation = await evaluateStaticAudit({
+    argv: [],
+    homeDir: tempHome!,
+    minSeverity: "high",
+  });
+  tempReportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-fix-report-"));
+  reportPath = await persistAuditReport({
+    ...evaluation,
+    mode: "static",
+    reportRoot: tempReportRoot,
+  });
+});
+
+afterAll(async () => {
   process.exitCode = undefined;
   if (tempHome) {
     await rm(tempHome, { recursive: true, force: true });
@@ -43,45 +88,17 @@ afterEach(async () => {
     await rm(tempReportRoot, { recursive: true, force: true });
   }
   tempReportRoot = null;
+  evaluation = null;
+  legacyPath = null;
+  reportPath = null;
+  rootDir = null;
   process.env.HOME = ORIGINAL_HOME;
   process.env[LEGACY_MANAGED_MUTATION_ENV] = ORIGINAL_LEGACY_MUTATION_ENV;
 });
 
 describe("audit fix", () => {
-  it("moves inline MCP secrets into a local overlay and keeps future audits clean", async () => {
-    tempHome = await makeTempHome();
-    process.env.HOME = tempHome;
-
-    const rootDir = join(tempHome, ".ai");
-    await mkdir(join(rootDir, "mcp"), { recursive: true });
-    await writeJson(join(rootDir, "mcp", "servers.json"), {
-      servers: {
-        github: {
-          command: "npx",
-          args: ["-y", "@modelcontextprotocol/server-github"],
-          env: {
-            GITHUB_PERSONAL_ACCESS_TOKEN: "github_pat_test_1234567890",
-          },
-        },
-      },
-    });
-
-    await manageTool("codex", { homeDir: tempHome, rootDir });
-
-    const legacyPath = join(
-      facultStateDir(tempHome),
-      "audit",
-      "static-latest.json"
-    );
-    await writeJson(legacyPath, { legacy: true });
-
-    const evaluation = await evaluateStaticAudit({
-      argv: [],
-      homeDir: tempHome,
-      minSeverity: "high",
-    });
-    const before = evaluation.report;
-    const beforeFindings = before.results.flatMap((result) =>
+  it("prepares a fresh exact report for the fix workflow", async () => {
+    const beforeFindings = evaluation!.report.results.flatMap((result) =>
       result.findings.map((finding) => ({
         item: result.item,
         path: result.path,
@@ -93,37 +110,38 @@ describe("audit fix", () => {
         (finding) => finding.ruleId === "mcp-env-inline-secret"
       )
     ).toBe(true);
-    tempReportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-fix-report-"));
-    const reportPath = await persistAuditReport({
-      ...evaluation,
-      mode: "static",
-      reportRoot: tempReportRoot,
-    });
+    expect(await Bun.file(reportPath!).exists()).toBe(true);
+  });
 
+  it("rejects deprecated managed-output sync without its explicit mutation flag", async () => {
     process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
+
     await expect(
       runAuditFix({
-        argv: ["mcp:github", "--report", reportPath, "--yes"],
-        cwd: tempHome,
-        homeDir: tempHome,
+        argv: ["mcp:github", "--report", reportPath!, "--yes"],
+        cwd: tempHome!,
+        homeDir: tempHome!,
       })
     ).rejects.toThrow("fclt audit fix managed-output sync is a deprecated");
+  });
 
+  it("moves inline MCP secrets into a local overlay and keeps future audits clean", async () => {
+    process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
     const result = await runAuditFix({
       argv: [
         "mcp:github",
         "--report",
-        reportPath,
+        reportPath!,
         "--yes",
         LEGACY_MANAGED_MUTATION_FLAG,
       ],
-      cwd: tempHome,
-      homeDir: tempHome,
+      cwd: tempHome!,
+      homeDir: tempHome!,
     });
 
     expect(result.fixed).toBeGreaterThan(0);
-    expect(result.trackedPath).toBe(join(rootDir, "mcp", "servers.json"));
-    expect(result.localPath).toBe(join(rootDir, "mcp", "servers.local.json"));
+    expect(result.trackedPath).toBe(join(rootDir!, "mcp", "servers.json"));
+    expect(result.localPath).toBe(join(rootDir!, "mcp", "servers.local.json"));
 
     const tracked = (await Bun.file(result.trackedPath!).json()) as {
       servers: Record<string, { env?: Record<string, string> }>;
@@ -139,11 +157,11 @@ describe("audit fix", () => {
       "github_pat_test_1234567890"
     );
 
-    expect(await Bun.file(legacyPath).json()).toEqual({ legacy: true });
+    expect(await Bun.file(legacyPath!).json()).toEqual({ legacy: true });
 
     const after = await runStaticAudit({
       argv: [],
-      homeDir: tempHome,
+      homeDir: tempHome!,
       minSeverity: "high",
     });
     expect(

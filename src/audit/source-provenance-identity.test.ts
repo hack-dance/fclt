@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   type AuditSourceSnapshot,
   AuditSourceTracker,
@@ -304,4 +304,102 @@ test("absence proof validation binds the original lexical request across ancesto
   await symlink(existingDirectory, aliasDirectory, "dir");
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow();
+});
+
+test("requested paths reject same-target lexical symlink replacement", async () => {
+  const { root, target, targetDirectory } = await makeFileFixture(
+    "fclt-provenance-same-target-link-replacement-"
+  );
+  const aliasDirectory = join(root, "alias");
+  const requested = join(aliasDirectory, "config.json");
+  await symlink(targetDirectory, aliasDirectory, "dir");
+  const tracker = new AuditSourceTracker();
+  await tracker.read(requested);
+  const snapshot = tracker.snapshot();
+  expect(snapshot.evaluatedFiles[0]?.path).toBe(await realpath(target));
+
+  await rm(aliasDirectory);
+  await symlink(targetDirectory, aliasDirectory, "dir");
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "requested path changed"
+  );
+  await expect(tracker.protect([requested])).rejects.toThrow(
+    "requested path changed"
+  );
+});
+
+test("absence proofs reject same-target lexical symlink replacement", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-absence-same-target-link-")
+  );
+  const targetDirectory = join(root, "target");
+  const aliasDirectory = join(root, "alias");
+  const requested = join(aliasDirectory, "future.json");
+  await mkdir(targetDirectory);
+  await symlink(targetDirectory, aliasDirectory, "dir");
+  const tracker = new AuditSourceTracker();
+  await tracker.capture(requested);
+  const snapshot = tracker.snapshot();
+
+  await rm(aliasDirectory);
+  await symlink(targetDirectory, aliasDirectory, "dir");
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "absent requested path changed"
+  );
+});
+
+test("recomputed contracts cannot shorten, reorder, or inject lexical chains", async () => {
+  const { target } = await makeFileFixture(
+    "fclt-provenance-lexical-chain-contract-"
+  );
+  const tracker = new AuditSourceTracker();
+  await tracker.read(target);
+  const valid = tracker.snapshot();
+  const mutations: AuditSourceSnapshot[] = [];
+
+  const shortened = structuredClone(valid);
+  shortened.requestedPaths[0]!.lexicalChain.shift();
+  mutations.push(recomputeValidationContract(shortened));
+
+  const reordered = structuredClone(valid);
+  reordered.requestedPaths[0]!.lexicalChain.reverse();
+  mutations.push(recomputeValidationContract(reordered));
+
+  const injected = structuredClone(valid);
+  const injectedComponent = injected.requestedPaths[0]!
+    .lexicalChain[0] as unknown as Record<string, unknown>;
+  injectedComponent.unexpected = true;
+  mutations.push(recomputeValidationContract(injected));
+
+  const extended = structuredClone(valid);
+  extended.requestedPaths[0]!.lexicalChain.push({
+    ...extended.requestedPaths[0]!.lexicalChain.at(-1)!,
+  });
+  mutations.push(recomputeValidationContract(extended));
+
+  const impossibleIntermediate = structuredClone(valid);
+  const traversed =
+    impossibleIntermediate.requestedPaths[0]!.lexicalChain.at(-2)!;
+  traversed.kind = "file";
+  traversed.linkTarget = null;
+  mutations.push(recomputeValidationContract(impossibleIntermediate));
+
+  const absentTracker = new AuditSourceTracker();
+  await absentTracker.capture(join(dirname(target), "missing.json"));
+  const impossibleAbsence = absentTracker.snapshot();
+  const absentAncestor = impossibleAbsence.absentPaths[0]!.lexicalChain.at(-1)!;
+  absentAncestor.kind = "file";
+  absentAncestor.linkTarget = null;
+  mutations.push(recomputeValidationContract(impossibleAbsence));
+
+  for (const snapshot of mutations) {
+    expect(() => assertAuditSourceSnapshot(snapshot)).toThrow(
+      "schema is unsupported"
+    );
+    await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+      "schema is unsupported"
+    );
+  }
 });
