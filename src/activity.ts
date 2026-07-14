@@ -1156,12 +1156,18 @@ function boundedAggregateFeed(feed: ActivityFeed): {
     MAX_ACTIVITY_SET_SOURCES_PER_FEED
   );
   const omittedSources = redacted.coverage.sources.length - sources.length;
+  const checked = sources.filter((source) => source.state === "checked").length;
+  const degraded = sources.filter(
+    (source) => source.state === "stale" || source.state === "unavailable"
+  ).length;
   return {
     feed: {
       ...redacted,
       coverage: {
         ...redacted.coverage,
+        checked,
         complete: redacted.coverage.complete && omittedSources === 0,
+        degraded,
         sources,
       },
     },
@@ -1172,7 +1178,7 @@ function boundedAggregateFeed(feed: ActivityFeed): {
 function activityFeedFromReport(
   value: unknown,
   expectedScope: "global" | "project"
-): ActivityFeed | null {
+): ReturnType<typeof boundedAggregateFeed> | null {
   if (
     !isRecord(value) ||
     value.version !== 1 ||
@@ -1189,7 +1195,7 @@ function activityFeedFromReport(
       isActivityFeed(report.activity) &&
       report.activity.scope === expectedScope
     ) {
-      return boundedAggregateFeed(report.activity).feed;
+      return boundedAggregateFeed(report.activity);
     }
     if (expectedScope === "global") {
       return null;
@@ -1204,7 +1210,7 @@ function activityFeedFromReport(
         proposals: [],
         snapshot: "legacy-derived",
       })
-    ).feed;
+    );
   } catch {
     return null;
   }
@@ -1222,7 +1228,7 @@ async function latestActivityFromLoopFiles(args: {
   statePath: string;
   reportDir: string;
   scope: "global" | "project";
-}): Promise<ActivityFeed | null> {
+}): Promise<ReturnType<typeof boundedAggregateFeed> | null> {
   try {
     const state = await readBoundedJson(args.statePath, 100_000);
     if (!isRecord(state) || typeof state.lastReportPath !== "string") {
@@ -1248,7 +1254,7 @@ async function latestActivityFromLoopFiles(args: {
 
 async function latestProjectActivityFromLoopDir(
   loopDir: string
-): Promise<ActivityFeed | null> {
+): Promise<ReturnType<typeof boundedAggregateFeed> | null> {
   return await latestActivityFromLoopFiles({
     statePath: join(loopDir, "state.json"),
     reportDir: join(loopDir, "reports"),
@@ -1259,7 +1265,10 @@ async function latestProjectActivityFromLoopDir(
 async function latestGlobalActivity(args: {
   homeDir: string;
   rootDir: string;
-}): Promise<{ configured: boolean; feed: ActivityFeed | null }> {
+}): Promise<{
+  activity: ReturnType<typeof boundedAggregateFeed> | null;
+  configured: boolean;
+}> {
   return await withFacultRootScope(
     { rootDir: args.rootDir, scope: "global" },
     async () => {
@@ -1269,18 +1278,18 @@ async function latestGlobalActivity(args: {
           100_000
         );
         if (!(isRecord(config) && config.scope === "global")) {
-          return { configured: false, feed: null };
+          return { activity: null, configured: false };
         }
       } catch {
-        return { configured: false, feed: null };
+        return { activity: null, configured: false };
       }
       return {
-        configured: true,
-        feed: await latestActivityFromLoopFiles({
+        activity: await latestActivityFromLoopFiles({
           statePath: facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir),
           reportDir: facultAiEvolutionLoopReportDir(args.homeDir, args.rootDir),
           scope: "global",
         }),
+        configured: true,
       };
     }
   );
@@ -1313,7 +1322,11 @@ async function mapConcurrent<T, R>(
 }
 
 async function configuredProjectActivity(args: { homeDir: string }): Promise<{
-  projects: Array<{ id: string; feed: ActivityFeed | null; omitted: boolean }>;
+  projects: Array<{
+    activity: ReturnType<typeof boundedAggregateFeed> | null;
+    id: string;
+    omitted: boolean;
+  }>;
   discoveryTruncated: boolean;
 }> {
   const projectsDir = join(facultLocalStateRoot(args.homeDir), "projects");
@@ -1361,10 +1374,10 @@ async function configuredProjectActivity(args: { homeDir: string }): Promise<{
     async (project, index) => {
       const omitted = index >= MAX_ACTIVITY_SET_PROJECTS;
       return {
-        id: projectScopeId(project.entry.name),
-        feed: omitted
+        activity: omitted
           ? null
           : await latestProjectActivityFromLoopDir(project.loopDir),
+        id: projectScopeId(project.entry.name),
         omitted,
       };
     }
@@ -1383,11 +1396,13 @@ export async function latestActivitySet(args: {
     }),
     configuredProjectActivity({ homeDir: args.homeDir }),
   ]);
-  const globalFeed = globalActivity.feed;
+  const globalFeed = globalActivity.activity?.feed ?? null;
   const feeds: ActivitySet["feeds"] = [
     ...(globalFeed ? [{ scopeId: "global", feed: globalFeed }] : []),
     ...discovery.projects.flatMap((project) =>
-      project.feed ? [{ scopeId: project.id, feed: project.feed }] : []
+      project.activity
+        ? [{ scopeId: project.id, feed: project.activity.feed }]
+        : []
     ),
   ];
   const scopes: ActivitySet["scopes"] = [
@@ -1407,10 +1422,12 @@ export async function latestActivitySet(args: {
       scope: "project" as const,
       state: project.omitted
         ? ("omitted" as const)
-        : project.feed
+        : project.activity
           ? ("reporting" as const)
           : ("unavailable" as const),
-      ...(project.feed?.project ? { project: project.feed.project } : {}),
+      ...(project.activity?.feed.project
+        ? { project: project.activity.feed.project }
+        : {}),
     })),
   ];
   const unavailableScopes = scopes.filter(
@@ -1427,17 +1444,12 @@ export async function latestActivitySet(args: {
     null
   );
   const allFeeds = feeds.map((entry) => entry.feed);
-  const omittedSources = allFeeds.reduce(
-    (total, feed) =>
-      total +
-      Math.max(
-        0,
-        feed.coverage.checked +
-          feed.coverage.degraded -
-          feed.coverage.sources.length
-      ),
-    0
-  );
+  const omittedSources =
+    (globalActivity.activity?.omittedSources ?? 0) +
+    discovery.projects.reduce(
+      (total, project) => total + (project.activity?.omittedSources ?? 0),
+      0
+    );
   const fullItemCount = allFeeds.reduce(
     (total, feed) => total + feed.items.length,
     0

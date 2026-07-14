@@ -378,6 +378,11 @@ describe("activity feed", () => {
       }
       expect(sourceBounded.truncation.omittedSources).toBe(5);
       expect(sourceBoundedProjectFeed.coverage.complete).toBe(false);
+      expect(sourceBoundedProjectFeed.coverage.checked).toBe(25);
+      expect(sourceBoundedProjectFeed.coverage.sources).toHaveLength(25);
+      expect(renderActivityFeed(sourceBoundedProjectFeed)).toContain(
+        "Coverage: 25/25 sources checked · incomplete"
+      );
       expect(renderActivityFeed(sourceBoundedProjectFeed)).not.toContain(
         "Nothing needs attention; configured coverage was checked."
       );
