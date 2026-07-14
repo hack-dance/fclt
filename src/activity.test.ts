@@ -7,10 +7,12 @@ import {
   latestActivitySet,
   redactPortableActivityText,
   renderActivityFeed,
+  renderActivitySet,
 } from "./activity";
 import type { AiWritebackRecord } from "./ai";
 import type { EvolutionLoopReport, LoopQueueItem } from "./evolution-loop";
 import {
+  facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopReportDir,
   facultAiEvolutionLoopStatePath,
   facultLocalStateRoot,
@@ -183,6 +185,10 @@ describe("activity feed", () => {
       );
       await mkdir(join(globalStatePath, ".."), { recursive: true });
       await Bun.write(
+        facultAiEvolutionLoopConfigPath(homeDir, globalRootDir),
+        JSON.stringify({ version: 1, scope: "global" })
+      );
+      await Bun.write(
         globalStatePath,
         JSON.stringify({
           version: 1,
@@ -338,6 +344,43 @@ describe("activity feed", () => {
       if (!firstItem) {
         throw new Error("Expected project activity item");
       }
+      const firstSource = projectActivity.coverage.sources[0];
+      if (!firstSource) {
+        throw new Error("Expected project activity coverage");
+      }
+      projectActivity.items = [];
+      projectActivity.counts = {
+        changed: 0,
+        needsAttention: 0,
+        new: 0,
+        resolved: 0,
+        total: 0,
+        unchangedSuppressed: 0,
+      };
+      projectActivity.coverage.checked = 30;
+      projectActivity.coverage.sources = Array.from(
+        { length: 30 },
+        (_, index) => ({
+          ...firstSource,
+          id: `source-${index}`,
+        })
+      );
+      await Bun.write(
+        join(reportingLoopDir, "reports", "LR-project.json"),
+        JSON.stringify(projectReport)
+      );
+      const sourceBounded = await latestActivitySet({ homeDir, globalRootDir });
+      const sourceBoundedProjectFeed = sourceBounded.feeds.find(
+        (entry) => entry.feed.run.id === "LR-project"
+      )?.feed;
+      if (!sourceBoundedProjectFeed) {
+        throw new Error("Expected the source-bounded project feed");
+      }
+      expect(sourceBounded.truncation.omittedSources).toBe(5);
+      expect(sourceBoundedProjectFeed.coverage.complete).toBe(false);
+      expect(renderActivityFeed(sourceBoundedProjectFeed)).not.toContain(
+        "Nothing needs attention; configured coverage was checked."
+      );
       projectActivity.items = Array.from({ length: 300 }, (_, index) => ({
         ...firstItem,
         id: `item-${index}`,
@@ -372,6 +415,63 @@ describe("activity feed", () => {
     }
   });
 
+  it("does not invent an unavailable Global scope for a project-only setup", async () => {
+    const homeDir = await mkdtemp(
+      join(tmpdir(), "fclt-project-only-activity-")
+    );
+    try {
+      const globalRootDir = join(homeDir, ".ai");
+      const projectLoopDir = join(
+        facultLocalStateRoot(homeDir),
+        "projects",
+        "project-only",
+        "ai",
+        "project",
+        "evolution",
+        "loop"
+      );
+      const projectReport = report({ runId: "LR-project-only" });
+      projectReport.activity = buildActivityFeed({
+        report: projectReport,
+        review: null,
+        writebacks: [],
+        proposals: [],
+      });
+      await mkdir(join(projectLoopDir, "reports"), { recursive: true });
+      await Bun.write(
+        join(projectLoopDir, "config.json"),
+        JSON.stringify({ version: 1, scope: "project" })
+      );
+      await Bun.write(
+        join(projectLoopDir, "reports", "LR-project-only.json"),
+        JSON.stringify(projectReport)
+      );
+      await Bun.write(
+        join(projectLoopDir, "state.json"),
+        JSON.stringify({ lastReportPath: "LR-project-only.json" })
+      );
+
+      const set = await latestActivitySet({ homeDir, globalRootDir });
+
+      expect(set.coverage).toMatchObject({
+        complete: true,
+        configuredScopes: 1,
+        reportingScopes: 1,
+        unavailableScopes: 0,
+      });
+      expect(set.scopes).toHaveLength(1);
+      expect(set.scopes[0]).toMatchObject({
+        scope: "project",
+        state: "reporting",
+      });
+      expect(renderActivitySet(set)).not.toContain(
+        "Global activity is unavailable"
+      );
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("isolates malformed or unreadable Global activity while project scopes keep reporting", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "fclt-activity-isolation-"));
     try {
@@ -381,6 +481,10 @@ describe("activity feed", () => {
         globalRootDir
       );
       await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        facultAiEvolutionLoopConfigPath(homeDir, globalRootDir),
+        JSON.stringify({ version: 1, scope: "global" })
+      );
       await Bun.write(globalStatePath, "{not-json");
 
       const projectLoopDir = join(
@@ -553,6 +657,10 @@ describe("activity feed", () => {
         globalRootDir
       );
       await mkdir(join(globalStatePath, ".."), { recursive: true });
+      await Bun.write(
+        facultAiEvolutionLoopConfigPath(homeDir, globalRootDir),
+        JSON.stringify({ version: 1, scope: "global" })
+      );
       await Bun.write(
         globalStatePath,
         JSON.stringify({

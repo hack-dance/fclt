@@ -14,6 +14,7 @@ import {
   latestEvolutionLoopReport,
 } from "./evolution-loop";
 import {
+  facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopReportDir,
   facultAiEvolutionLoopStatePath,
   facultLocalStateRoot,
@@ -1154,12 +1155,17 @@ function boundedAggregateFeed(feed: ActivityFeed): {
     0,
     MAX_ACTIVITY_SET_SOURCES_PER_FEED
   );
+  const omittedSources = redacted.coverage.sources.length - sources.length;
   return {
     feed: {
       ...redacted,
-      coverage: { ...redacted.coverage, sources },
+      coverage: {
+        ...redacted.coverage,
+        complete: redacted.coverage.complete && omittedSources === 0,
+        sources,
+      },
     },
-    omittedSources: redacted.coverage.sources.length - sources.length,
+    omittedSources,
   };
 }
 
@@ -1253,15 +1259,30 @@ async function latestProjectActivityFromLoopDir(
 async function latestGlobalActivity(args: {
   homeDir: string;
   rootDir: string;
-}): Promise<ActivityFeed | null> {
+}): Promise<{ configured: boolean; feed: ActivityFeed | null }> {
   return await withFacultRootScope(
     { rootDir: args.rootDir, scope: "global" },
-    async () =>
-      await latestActivityFromLoopFiles({
-        statePath: facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir),
-        reportDir: facultAiEvolutionLoopReportDir(args.homeDir, args.rootDir),
-        scope: "global",
-      })
+    async () => {
+      try {
+        const config = await readBoundedJson(
+          facultAiEvolutionLoopConfigPath(args.homeDir, args.rootDir),
+          100_000
+        );
+        if (!(isRecord(config) && config.scope === "global")) {
+          return { configured: false, feed: null };
+        }
+      } catch {
+        return { configured: false, feed: null };
+      }
+      return {
+        configured: true,
+        feed: await latestActivityFromLoopFiles({
+          statePath: facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir),
+          reportDir: facultAiEvolutionLoopReportDir(args.homeDir, args.rootDir),
+          scope: "global",
+        }),
+      };
+    }
   );
 }
 
@@ -1355,13 +1376,14 @@ export async function latestActivitySet(args: {
   homeDir: string;
   globalRootDir: string;
 }): Promise<ActivitySet> {
-  const [globalFeed, discovery] = await Promise.all([
+  const [globalActivity, discovery] = await Promise.all([
     latestGlobalActivity({
       homeDir: args.homeDir,
       rootDir: args.globalRootDir,
     }),
     configuredProjectActivity({ homeDir: args.homeDir }),
   ]);
+  const globalFeed = globalActivity.feed;
   const feeds: ActivitySet["feeds"] = [
     ...(globalFeed ? [{ scopeId: "global", feed: globalFeed }] : []),
     ...discovery.projects.flatMap((project) =>
@@ -1369,11 +1391,17 @@ export async function latestActivitySet(args: {
     ),
   ];
   const scopes: ActivitySet["scopes"] = [
-    {
-      id: "global",
-      scope: "global",
-      state: globalFeed ? "reporting" : "unavailable",
-    },
+    ...(globalActivity.configured
+      ? [
+          {
+            id: "global",
+            scope: "global" as const,
+            state: globalFeed
+              ? ("reporting" as const)
+              : ("unavailable" as const),
+          },
+        ]
+      : []),
     ...discovery.projects.map((project) => ({
       id: project.id,
       scope: "project" as const,
@@ -1440,6 +1468,7 @@ export async function latestActivitySet(args: {
     generatedAt,
     coverage: {
       complete:
+        scopes.length > 0 &&
         unavailableScopes === 0 &&
         omittedScopes === 0 &&
         !discovery.discoveryTruncated &&
