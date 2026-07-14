@@ -377,34 +377,26 @@ describe("read-only audit boundary", () => {
     const reportRoot = await mkdtemp(
       join(tmpdir(), "fclt-audit-absent-symlink-")
     );
-    const evaluation = await evaluateStaticAudit({
-      argv: [],
-      cwd: home,
-      from: [home],
-      homeDir: home,
-      includeConfigFrom: false,
-    });
     const candidate = join(base, "future", "nested", "config.json");
     const tracker = new AuditSourceTracker();
+    const auditedRoot = join(home, ".ai");
+    await tracker.protect([auditedRoot]);
     await tracker.capture(candidate);
-    const absentProof = tracker.snapshot().absentPaths[0]!;
 
     await expect(
       persistAuditReport({
-        ...evaluation,
+        auditedRoots: [auditedRoot],
         beforeDescriptorCommit: async () => {
           await mkdir(join(base, "future"));
           await symlink(reportRoot, join(base, "future", "nested"));
         },
         mode: "static",
-        reportRoot,
-        sourceSnapshot: {
-          ...evaluation.sourceSnapshot,
-          absentPaths: [
-            ...evaluation.sourceSnapshot.absentPaths,
-            absentProof,
-          ].sort((a, b) => a.path.localeCompare(b.path)),
+        report: {
+          results: [],
+          timestamp: "2026-01-01T00:00:00.000Z",
         },
+        reportRoot,
+        sourceSnapshot: tracker.snapshot(),
       })
     ).rejects.toThrow("became a symlink");
     expect(await readdir(reportRoot)).toEqual([]);
@@ -579,6 +571,55 @@ describe("read-only audit boundary", () => {
     expect(await readdir(reportRoot)).toEqual([]);
   });
 
+  it("reserves a late plugin manifest before handling an over-budget child", async () => {
+    const { home } = await fixture();
+    const pluginRoot = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "entry-reservation-plugin"
+    );
+    const childRoot = join(pluginRoot, "a-child");
+    const sentinelPath = join(childRoot, "sentinel.txt");
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-plugin-entry-reservation-")
+    );
+    await writeFile(sentinelPath, "stable\n");
+    await writeFile(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+    );
+    const evaluation = await evaluateStaticAudit({
+      argv: [],
+      cwd: home,
+      from: [home],
+      homeDir: home,
+      includeConfigFrom: false,
+    });
+
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeDescriptorCommit: async () => {
+          await rm(sentinelPath);
+          await symlink("missing-target", sentinelPath);
+          // Root + a-child + 254 siblings consumes the complete 256-entry
+          // budget. Reaching this symlink first would report "unsupported".
+          for (let index = 0; index < 254; index += 1) {
+            await Bun.write(
+              join(pluginRoot, `z-late-${index.toString().padStart(4, "0")}`),
+              ""
+            );
+          }
+        },
+        mode: "static",
+        reportRoot,
+      })
+    ).rejects.toThrow("entry limit");
+    expect(await readdir(reportRoot)).toEqual([]);
+  });
+
   it("rejects late drift anywhere in a discovered Claude plugin tree", async () => {
     const { home } = await fixture();
     const pluginRoot = join(
@@ -717,37 +758,26 @@ describe("read-only audit boundary", () => {
   });
 
   it("rejects persistence above a source path proven absent during evaluation", async () => {
-    const { home } = await fixture();
     const reportRoot = await mkdtemp(
       join(tmpdir(), "fclt-audit-absent-overlap-")
     );
-    const evaluation = await evaluateStaticAudit({
-      argv: [],
-      cwd: home,
-      from: [home],
-      homeDir: home,
-      includeConfigFrom: false,
-    });
     const absentSourcePath = join(
       await realpath(reportRoot),
       "source-that-was-absent"
     );
     const absentTracker = new AuditSourceTracker();
     await absentTracker.capture(absentSourcePath);
-    const absentProof = absentTracker.snapshot().absentPaths[0]!;
 
     await expect(
       persistAuditReport({
-        ...evaluation,
+        auditedRoots: [],
         mode: "static",
-        reportRoot,
-        sourceSnapshot: {
-          ...evaluation.sourceSnapshot,
-          absentPaths: [
-            ...evaluation.sourceSnapshot.absentPaths,
-            absentProof,
-          ].sort((a, b) => a.path.localeCompare(b.path)),
+        report: {
+          results: [],
+          timestamp: "2026-01-01T00:00:00.000Z",
         },
+        reportRoot,
+        sourceSnapshot: absentTracker.snapshot(),
       })
     ).rejects.toThrow("overlaps audited source");
     expect(await readdir(reportRoot)).toEqual([]);

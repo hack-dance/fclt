@@ -12,7 +12,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { getGitPathExposure } from "../util/git";
 import {
   AuditSourceTracker,
   validateAuditSourceSnapshot,
@@ -47,6 +48,56 @@ async function writeEmptyFiles(
       ""
     );
   }
+}
+
+async function assertSchemaRejected(value: unknown): Promise<void> {
+  try {
+    await validateAuditSourceSnapshot(value as never);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("schema is unsupported")
+    ) {
+      return;
+    }
+    throw error;
+  }
+  throw new Error("Expected audit source snapshot schema rejection");
+}
+
+async function captureCanonicalContractFixture() {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-contract-"));
+  const firstRoot = join(root, "a-tree");
+  const secondRoot = join(root, "b-tree");
+  const firstNested = join(firstRoot, "nested");
+  const secondNested = join(secondRoot, "nested");
+  await mkdir(firstNested, { recursive: true });
+  await mkdir(secondNested, { recursive: true });
+  await writeFile(join(firstRoot, "root.txt"), "first\n");
+  await writeFile(join(firstNested, "nested.txt"), "nested first\n");
+  await writeFile(join(secondRoot, "root.txt"), "second\n");
+  await writeFile(join(secondNested, "nested.txt"), "nested second\n");
+
+  const tracker = new AuditSourceTracker();
+  await tracker.protect([firstRoot, secondRoot]);
+  for (const treeRoot of [firstRoot, secondRoot]) {
+    await tracker.captureTree(treeRoot, {
+      maxAggregateBytes: 256,
+      maxDepth: 4,
+      maxEntries: 8,
+      maxFileBytes: 64,
+      maxRelativePathBytes: 128,
+      rejectUnsupportedEntries: true,
+    });
+  }
+  tracker.recordGitPathExposure(firstRoot, await getGitPathExposure(firstRoot));
+  tracker.recordGitPathExposure(
+    secondRoot,
+    await getGitPathExposure(secondRoot)
+  );
+  await tracker.capture(join(root, "missing-a.json"));
+  await tracker.capture(join(root, "missing-b.json"));
+  return tracker.snapshot();
 }
 
 test("Windows provenance binds directories without POSIX directory descriptors", async () => {
@@ -272,6 +323,310 @@ test("strict tree snapshot rejects missing or expanded validation contracts", as
       ],
     })
   ).rejects.toThrow("schema is unsupported");
+});
+
+test("strict tree snapshot binds every exact resource limit and directory budget", async () => {
+  const snapshot = await captureCanonicalContractFixture();
+  const limitFields = [
+    "maxEntries",
+    "maxFileBytes",
+    "maxAggregateBytes",
+    "maxDepth",
+    "maxRelativePathBytes",
+  ] as const;
+
+  for (const field of limitFields) {
+    for (const delta of [-1, 1]) {
+      const mutated = structuredClone(snapshot);
+      const tree = mutated.capturedTrees[0]! as unknown as Record<
+        string,
+        number
+      >;
+      tree[field] = tree[field]! + delta;
+      await assertSchemaRejected(mutated);
+    }
+  }
+
+  const directoryBudget = snapshot.evaluatedDirectories[0]!.maxEntries;
+  for (const value of [directoryBudget - 1, directoryBudget + 1, 50_000]) {
+    const mutated = structuredClone(snapshot);
+    mutated.evaluatedDirectories[0]!.maxEntries = value;
+    await assertSchemaRejected(mutated);
+  }
+});
+
+test("source snapshot rejects duplicate-first, duplicate-last, and conflicting identities", async () => {
+  const snapshot = await captureCanonicalContractFixture();
+  const firstFile = snapshot.evaluatedFiles[0]!;
+
+  const duplicateFirst = structuredClone(snapshot);
+  duplicateFirst.evaluatedFiles.unshift({
+    ...firstFile,
+    sha256: "0".repeat(64),
+  });
+  await assertSchemaRejected(duplicateFirst);
+
+  const duplicateLast = structuredClone(snapshot);
+  duplicateLast.evaluatedFiles.push({ ...firstFile });
+  await assertSchemaRejected(duplicateLast);
+
+  const conflictingLast = structuredClone(snapshot);
+  conflictingLast.evaluatedFiles.push({
+    ...firstFile,
+    size: firstFile.size + 1,
+  });
+  await assertSchemaRejected(conflictingLast);
+
+  const duplicateDirectory = structuredClone(snapshot);
+  duplicateDirectory.evaluatedDirectories.push({
+    ...snapshot.evaluatedDirectories[0]!,
+  });
+  await assertSchemaRejected(duplicateDirectory);
+
+  const conflictingTree = structuredClone(snapshot);
+  conflictingTree.capturedTrees.push({
+    ...snapshot.capturedTrees[0]!,
+    maxEntries: snapshot.capturedTrees[0]!.maxEntries + 1,
+  });
+  await assertSchemaRejected(conflictingTree);
+});
+
+test("source snapshot requires canonical ordering for every set-like list", async () => {
+  const snapshot = await captureCanonicalContractFixture();
+  const topLevelLists = [
+    "protectedRoots",
+    "evaluatedFiles",
+    "evaluatedDirectories",
+    "capturedTrees",
+    "derivedContexts",
+    "absentPaths",
+  ] as const;
+
+  for (const key of topLevelLists) {
+    const mutated = structuredClone(snapshot);
+    const list = mutated[key];
+    expect(list.length).toBeGreaterThan(1);
+    Reflect.set(mutated, key, [...list].reverse());
+    await assertSchemaRejected(mutated);
+  }
+
+  for (const key of ["directoryPaths", "filePaths"] as const) {
+    const mutated = structuredClone(snapshot);
+    const list = mutated.capturedTrees[0]![key];
+    expect(list.length).toBeGreaterThan(1);
+    mutated.capturedTrees[0]![key] = [...list].reverse();
+    await assertSchemaRejected(mutated);
+  }
+});
+
+test("source snapshot enforces exact keys on the snapshot and every nested record", async () => {
+  const snapshot = await captureCanonicalContractFixture();
+  const nestedTargets = [
+    {
+      key: "path",
+      select: (value: typeof snapshot) => value.protectedRoots[0]!,
+    },
+    {
+      key: "sha256",
+      select: (value: typeof snapshot) => value.evaluatedFiles[0]!,
+    },
+    {
+      key: "entriesSha256",
+      select: (value: typeof snapshot) => value.evaluatedDirectories[0]!,
+    },
+    {
+      key: "root",
+      select: (value: typeof snapshot) => value.capturedTrees[0]!,
+    },
+    {
+      key: "kind",
+      select: (value: typeof snapshot) => value.derivedContexts[0]!,
+    },
+    {
+      key: "relativeSegments",
+      select: (value: typeof snapshot) => value.absentPaths[0]!,
+    },
+  ];
+
+  const extraTopLevel = structuredClone(snapshot) as unknown as Record<
+    string,
+    unknown
+  >;
+  extraTopLevel.unexpected = true;
+  await assertSchemaRejected(extraTopLevel);
+
+  const missingTopLevel = structuredClone(snapshot) as unknown as Record<
+    string,
+    unknown
+  >;
+  Reflect.deleteProperty(missingTopLevel, "schemaVersion");
+  await assertSchemaRejected(missingTopLevel);
+
+  const missingDigest = structuredClone(snapshot) as unknown as Record<
+    string,
+    unknown
+  >;
+  Reflect.deleteProperty(missingDigest, "validationContractSha256");
+  await assertSchemaRejected(missingDigest);
+
+  const invalidDigest = structuredClone(snapshot);
+  invalidDigest.validationContractSha256 = "0".repeat(64);
+  await assertSchemaRejected(invalidDigest);
+
+  for (const { key, select } of nestedTargets) {
+    const extra = structuredClone(snapshot);
+    const extraRecord = select(extra) as unknown as Record<string, unknown>;
+    extraRecord.unexpected = true;
+    await assertSchemaRejected(extra);
+
+    const missing = structuredClone(snapshot);
+    const missingRecord = select(missing) as unknown as Record<string, unknown>;
+    Reflect.deleteProperty(missingRecord, key);
+    await assertSchemaRejected(missing);
+  }
+});
+
+test("source snapshot rejects canonical path aliases and cross-tree overlaps", async () => {
+  const snapshot = await captureCanonicalContractFixture();
+  const firstFile = snapshot.evaluatedFiles[0]!;
+
+  const dotAlias = structuredClone(snapshot);
+  dotAlias.evaluatedFiles[0]!.path = `${dirname(firstFile.path)}/./${basename(
+    firstFile.path
+  )}`;
+  await assertSchemaRejected(dotAlias);
+
+  const parentAlias = structuredClone(snapshot);
+  parentAlias.capturedTrees[0]!.root =
+    `${snapshot.capturedTrees[0]!.root}/nested/..`;
+  await assertSchemaRejected(parentAlias);
+
+  const symlinkAliasPath = join(dirname(firstFile.path), "file-alias");
+  await symlink(firstFile.path, symlinkAliasPath);
+  const symlinkAlias = structuredClone(snapshot);
+  symlinkAlias.evaluatedFiles[0]!.path = symlinkAliasPath;
+  symlinkAlias.capturedTrees[0]!.filePaths =
+    symlinkAlias.capturedTrees[0]!.filePaths.map((path) =>
+      path === firstFile.path ? symlinkAliasPath : path
+    ).sort();
+  await assertSchemaRejected(symlinkAlias);
+  await rm(symlinkAliasPath);
+
+  const overlappingTrees = structuredClone(snapshot);
+  const firstTree = overlappingTrees.capturedTrees[0]!;
+  const secondTree = overlappingTrees.capturedTrees[1]!;
+  secondTree.root = firstTree.directoryPaths[1]!;
+  secondTree.directoryPaths = [secondTree.root];
+  secondTree.filePaths = firstTree.filePaths.filter((path) =>
+    path.startsWith(`${secondTree.root}/`)
+  );
+  await assertSchemaRejected(overlappingTrees);
+});
+
+test("source snapshot rejects missing, extra, and wrong-kind tree members", async () => {
+  const snapshot = await captureCanonicalContractFixture();
+
+  const missingIdentity = structuredClone(snapshot);
+  missingIdentity.evaluatedFiles.splice(0, 1);
+  await assertSchemaRejected(missingIdentity);
+
+  const extraIdentity = structuredClone(snapshot);
+  extraIdentity.evaluatedFiles.push({
+    ...snapshot.evaluatedFiles[0]!,
+    path: join(dirname(snapshot.evaluatedFiles[0]!.path), "extra.txt"),
+  });
+  await assertSchemaRejected(extraIdentity);
+
+  const missingMember = structuredClone(snapshot);
+  missingMember.capturedTrees[0]!.filePaths.splice(0, 1);
+  await assertSchemaRejected(missingMember);
+
+  const wrongKind = structuredClone(snapshot);
+  const filePath = wrongKind.capturedTrees[0]!.filePaths.shift()!;
+  wrongKind.capturedTrees[0]!.directoryPaths.push(filePath);
+  wrongKind.capturedTrees[0]!.directoryPaths.sort();
+  await assertSchemaRejected(wrongKind);
+});
+
+test("strict tree reserves sibling and deep manifests against one aggregate entry budget", async () => {
+  const siblingRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-reserve-siblings-")
+  );
+  await mkdir(join(siblingRoot, "a"));
+  await mkdir(join(siblingRoot, "b"));
+  await writeFile(join(siblingRoot, "a", "one"), "1");
+  await writeFile(join(siblingRoot, "b", "two"), "2");
+  await expect(
+    captureStrictTree(siblingRoot, { maxEntries: 5 })
+  ).resolves.toBeDefined();
+  await writeFile(join(siblingRoot, "a", "overflow"), "3");
+  await expect(
+    captureStrictTree(siblingRoot, { maxEntries: 5 })
+  ).rejects.toThrow("entry limit");
+
+  const deepRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-reserve-deep-")
+  );
+  await mkdir(join(deepRoot, "a", "b"), { recursive: true });
+  await writeFile(join(deepRoot, "a", "b", "leaf"), "x");
+  await expect(
+    captureStrictTree(deepRoot, { maxEntries: 4 })
+  ).resolves.toBeDefined();
+  await expect(captureStrictTree(deepRoot, { maxEntries: 3 })).rejects.toThrow(
+    "entry limit"
+  );
+});
+
+test("strict tree exact entry boundary revalidates repeatedly and boundary plus one fails", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-exact-boundary-")
+  );
+  await mkdir(join(root, "child"));
+  await writeFile(join(root, "child", "exact"), "x");
+  const snapshot = await captureStrictTree(root, { maxEntries: 3 });
+
+  await expect(validateAuditSourceSnapshot(snapshot)).resolves.toBeUndefined();
+  await expect(validateAuditSourceSnapshot(snapshot)).resolves.toBeUndefined();
+
+  await writeFile(join(root, "child", "plus-one"), "y");
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
+    "entry limit"
+  );
+});
+
+test("strict tree never opens sibling or child files when its manifest exhausts the entry budget", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-tree-no-open-after-limit-")
+  );
+  const child = join(root, "child");
+  const sentinel = join(child, "sentinel-secret.txt");
+  await mkdir(child);
+  await writeFile(join(root, "a-file.txt"), "must-not-open-first");
+  await writeFile(sentinel, "must-not-open");
+  const readDirectories: string[] = [];
+  const openedPaths: string[] = [];
+  const tracker = new AuditSourceTracker({
+    beforeDirectoryRead: ({ path }) => {
+      readDirectories.push(path);
+      return Promise.resolve();
+    },
+    beforeFileOpen: ({ path }) => {
+      openedPaths.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  await expect(
+    tracker.captureTree(root, {
+      maxEntries: 3,
+      rejectUnsupportedEntries: true,
+    })
+  ).rejects.toThrow("entry limit");
+  expect(readDirectories).toEqual([await realpath(root)]);
+  expect(openedPaths).toEqual([]);
 });
 
 test("strict tree capture rejects sparse and growing files", async () => {

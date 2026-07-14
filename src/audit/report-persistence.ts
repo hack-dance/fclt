@@ -32,7 +32,7 @@ export interface AuditEvaluation<TReport> {
 }
 
 export const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
-export const AUDIT_REPORT_REVISION = 5;
+export const AUDIT_REPORT_REVISION = 6;
 export const AUDIT_REPORT_MAX_AGE_MS = 15 * 60 * 1000;
 
 const PATH_SEGMENT_SPLIT_RE = /[\\/]+/;

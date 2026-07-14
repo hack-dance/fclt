@@ -34,13 +34,14 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 4;
+  schemaVersion: 5;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
   capturedTrees: AuditCapturedTreeIdentity[];
   derivedContexts: AuditDerivedContextIdentity[];
   absentPaths: AuditAbsentPathIdentity[];
+  validationContractSha256: string;
 }
 
 export interface AuditCapturedTreeIdentity {
@@ -111,6 +112,15 @@ function isContainedPath(root: string, candidate: string): boolean {
   );
 }
 
+function isCanonicalAbsolutePath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    !value.includes("\0") &&
+    isAbsolute(value) &&
+    normalize(resolve(value)) === value
+  );
+}
+
 function hasExactKeys(value: object, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   return (
@@ -127,6 +137,19 @@ function isSortedUniqueStringArray(value: unknown[]): value is string[] {
   );
 }
 
+function isSortedUniqueBy<T>(
+  values: readonly T[],
+  key: (value: T) => string
+): boolean {
+  return values.every(
+    (value, index) => index === 0 || key(value) > key(values[index - 1]!)
+  );
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 const CAPTURED_TREE_KEYS = [
   "directoryPaths",
   "filePaths",
@@ -138,6 +161,114 @@ const CAPTURED_TREE_KEYS = [
   "rejectUnsupportedEntries",
   "root",
 ] as const;
+
+const ABSENT_PATH_KEYS = [
+  "ancestorDev",
+  "ancestorIno",
+  "ancestorPath",
+  "path",
+  "relativeSegments",
+] as const;
+const DERIVED_CONTEXT_KEYS = ["kind", "path", "sha256"] as const;
+const DIRECTORY_IDENTITY_KEYS = [
+  "ctimeMs",
+  "dev",
+  "entriesSha256",
+  "ino",
+  "maxEntries",
+  "mode",
+  "mtimeMs",
+  "path",
+] as const;
+const FILE_IDENTITY_KEYS = [
+  "ctimeMs",
+  "dev",
+  "ino",
+  "mode",
+  "mtimeMs",
+  "path",
+  "sha256",
+  "size",
+] as const;
+const PROTECTED_ROOT_KEYS = ["dev", "ino", "kind", "path"] as const;
+const SNAPSHOT_KEYS = [
+  "absentPaths",
+  "capturedTrees",
+  "derivedContexts",
+  "evaluatedDirectories",
+  "evaluatedFiles",
+  "protectedRoots",
+  "schemaVersion",
+  "validationContractSha256",
+] as const;
+
+type AuditSourceSnapshotContract = Omit<
+  AuditSourceSnapshot,
+  "validationContractSha256"
+>;
+
+function validationContractDigest(
+  snapshot: AuditSourceSnapshotContract
+): string {
+  return digest(Buffer.from(JSON.stringify(snapshot)));
+}
+
+function canonicalSnapshotContract(
+  snapshot: AuditSourceSnapshotContract
+): AuditSourceSnapshotContract {
+  return {
+    schemaVersion: 5,
+    protectedRoots: snapshot.protectedRoots.map((entry) => ({
+      dev: entry.dev,
+      ino: entry.ino,
+      kind: entry.kind,
+      path: entry.path,
+    })),
+    evaluatedFiles: snapshot.evaluatedFiles.map((entry) => ({
+      ctimeMs: entry.ctimeMs,
+      dev: entry.dev,
+      ino: entry.ino,
+      mode: entry.mode,
+      mtimeMs: entry.mtimeMs,
+      path: entry.path,
+      sha256: entry.sha256,
+      size: entry.size,
+    })),
+    evaluatedDirectories: snapshot.evaluatedDirectories.map((entry) => ({
+      ctimeMs: entry.ctimeMs,
+      dev: entry.dev,
+      entriesSha256: entry.entriesSha256,
+      ino: entry.ino,
+      maxEntries: entry.maxEntries,
+      mode: entry.mode,
+      mtimeMs: entry.mtimeMs,
+      path: entry.path,
+    })),
+    capturedTrees: snapshot.capturedTrees.map((entry) => ({
+      directoryPaths: [...entry.directoryPaths],
+      filePaths: [...entry.filePaths],
+      maxAggregateBytes: entry.maxAggregateBytes,
+      maxDepth: entry.maxDepth,
+      maxEntries: entry.maxEntries,
+      maxFileBytes: entry.maxFileBytes,
+      maxRelativePathBytes: entry.maxRelativePathBytes,
+      rejectUnsupportedEntries: true,
+      root: entry.root,
+    })),
+    derivedContexts: snapshot.derivedContexts.map((entry) => ({
+      kind: entry.kind,
+      path: entry.path,
+      sha256: entry.sha256,
+    })),
+    absentPaths: snapshot.absentPaths.map((entry) => ({
+      ancestorDev: entry.ancestorDev,
+      ancestorIno: entry.ancestorIno,
+      ancestorPath: entry.ancestorPath,
+      path: entry.path,
+      relativeSegments: [...entry.relativeSegments],
+    })),
+  };
+}
 
 function compareDirents(left: Dirent, right: Dirent): number {
   return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
@@ -270,6 +401,7 @@ function sameDirectoryMetadata(
     left.ctimeMs === right.ctimeMs &&
     left.dev === right.dev &&
     left.ino === right.ino &&
+    left.maxEntries === right.maxEntries &&
     left.mode === right.mode &&
     left.mtimeMs === right.mtimeMs
   );
@@ -278,6 +410,7 @@ function sameDirectoryMetadata(
 async function readStableRegularFile(
   pathValue: string,
   options?: {
+    beforeFileOpen?: (args: { path: string }) => Promise<void>;
     beforeReadChunk?: (args: {
       bytesRead: number;
       path: string;
@@ -292,6 +425,7 @@ async function readStableRegularFile(
       `Audit context must be a regular non-symlink file: ${requested}`
     );
   }
+  await options?.beforeFileOpen?.({ path: requested });
   const handle = await open(requested, readOnlyNoFollowFlags());
   try {
     const before = await handle.stat();
@@ -387,18 +521,26 @@ export class AuditSourceTracker {
 
   readonly #platform: NodeJS.Platform;
 
+  readonly #beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
+
+  readonly #beforeFileOpen?: (args: { path: string }) => Promise<void>;
+
   readonly #beforeReadChunk?: (args: {
     bytesRead: number;
     path: string;
   }) => Promise<void>;
 
   constructor(options?: {
+    beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
+    beforeFileOpen?: (args: { path: string }) => Promise<void>;
     beforeReadChunk?: (args: {
       bytesRead: number;
       path: string;
     }) => Promise<void>;
     platform?: NodeJS.Platform;
   }) {
+    this.#beforeDirectoryRead = options?.beforeDirectoryRead;
+    this.#beforeFileOpen = options?.beforeFileOpen;
     this.#beforeReadChunk = options?.beforeReadChunk;
     this.#platform = options?.platform ?? process.platform;
   }
@@ -463,6 +605,7 @@ export class AuditSourceTracker {
     options?: { maxBytes?: number }
   ): Promise<Buffer> {
     const { bytes, identity } = await readStableRegularFile(pathValue, {
+      beforeFileOpen: this.#beforeFileOpen,
       beforeReadChunk: this.#beforeReadChunk,
       maxBytes: options?.maxBytes,
     });
@@ -561,6 +704,7 @@ export class AuditSourceTracker {
       requestedMaxEntries,
       priorIdentity?.maxEntries ?? requestedMaxEntries
     );
+    await this.#beforeDirectoryRead?.({ path: existingCanonical });
     if (this.#platform === "win32") {
       // Windows cannot portably open directory descriptors. Persistence is
       // disabled there, but read-only evaluation still binds a before/after
@@ -699,7 +843,7 @@ export class AuditSourceTracker {
     const directoryPaths = new Set<string>();
     const filePaths = new Set<string>();
     let aggregateBytes = 0;
-    let visited = 1;
+    let usedEntries = 1;
 
     const visit = async (
       directory: string,
@@ -709,7 +853,12 @@ export class AuditSourceTracker {
       if (depth > maxDepth) {
         throw new Error(`Audit discovery tree exceeds depth limit: ${root}`);
       }
-      const remainingEntries = maxEntries - visited;
+      const remainingEntries = maxEntries - usedEntries;
+      if (remainingEntries < 0) {
+        throw new Error(
+          `Audit discovery tree exceeds entry limit: ${pathValue}`
+        );
+      }
       const entries = await this.readDirectory(directory, {
         maxEntries: remainingEntries,
       });
@@ -724,13 +873,13 @@ export class AuditSourceTracker {
       if (strict) {
         directoryPaths.add(await realpath(directory));
       }
-      for (const entry of entries) {
-        visited += 1;
-        if (visited > maxEntries) {
-          throw new Error(
-            `Audit discovery tree exceeds entry limit: ${pathValue}`
-          );
-        }
+      usedEntries += entries.length;
+      if (usedEntries > maxEntries) {
+        throw new Error(
+          `Audit discovery tree exceeds entry limit: ${pathValue}`
+        );
+      }
+      const manifest = entries.map((entry) => {
         if (
           !entry.name ||
           entry.name === "." ||
@@ -751,17 +900,33 @@ export class AuditSourceTracker {
           );
         }
         const entryPath = join(directory, entry.name);
-        if (entry.isDirectory() && !entry.isSymbolicLink()) {
-          await visit(entryPath, relativePath, depth + 1);
-          continue;
-        }
-        if (entry.isSymbolicLink() || !entry.isFile()) {
+        const isDirectory = entry.isDirectory() && !entry.isSymbolicLink();
+        const isFile = entry.isFile() && !entry.isSymbolicLink();
+        if (!(isDirectory || isFile)) {
           if (!strict) {
-            continue;
+            return { entryPath, isDirectory, isFile, relativePath };
           }
           throw new Error(
             `Audit discovery tree has an unsupported entry: ${entryPath}`
           );
+        }
+        return { entryPath, isDirectory, isFile, relativePath };
+      });
+      if (
+        usedEntries >= maxEntries &&
+        manifest.some((entry) => entry.isDirectory)
+      ) {
+        throw new Error(
+          `Audit discovery tree exceeds entry limit: ${pathValue}`
+        );
+      }
+      for (const entry of manifest) {
+        if (entry.isDirectory) {
+          await visit(entry.entryPath, entry.relativePath, depth + 1);
+          continue;
+        }
+        if (!entry.isFile) {
+          continue;
         }
         if (strict) {
           const remainingBytes = maxAggregateBytes - aggregateBytes;
@@ -770,10 +935,10 @@ export class AuditSourceTracker {
               `Audit discovery tree exceeds aggregate byte limit: ${root}`
             );
           }
-          const bytes = await this.read(entryPath, {
+          const bytes = await this.read(entry.entryPath, {
             maxBytes: Math.min(maxFileBytes, remainingBytes),
           });
-          filePaths.add(await realpath(entryPath));
+          filePaths.add(await realpath(entry.entryPath));
           aggregateBytes += bytes.byteLength;
           if (aggregateBytes > maxAggregateBytes) {
             throw new Error(
@@ -784,7 +949,7 @@ export class AuditSourceTracker {
       }
     };
 
-    if (visited > maxEntries) {
+    if (usedEntries > maxEntries) {
       throw new Error(`Audit discovery tree exceeds entry limit: ${root}`);
     }
     await visit(root, "", 0);
@@ -803,17 +968,16 @@ export class AuditSourceTracker {
       rejectUnsupportedEntries: true,
       root: canonicalRoot,
     };
-    this.#capturedTrees.set(
-      [
-        canonicalRoot,
-        maxEntries,
-        maxAggregateBytes,
-        maxDepth,
-        maxFileBytes,
-        maxRelativePathBytes,
-      ].join("\0"),
-      treeIdentity
-    );
+    const existingTree = this.#capturedTrees.get(canonicalRoot);
+    if (
+      existingTree &&
+      JSON.stringify(existingTree) !== JSON.stringify(treeIdentity)
+    ) {
+      throw new Error(
+        `Audit discovery tree has conflicting contracts: ${canonicalRoot}`
+      );
+    }
+    this.#capturedTrees.set(canonicalRoot, treeIdentity);
   }
 
   recordGitPathExposure(pathValue: string, value: unknown): void {
@@ -826,23 +990,31 @@ export class AuditSourceTracker {
   }
 
   snapshot(): AuditSourceSnapshot {
-    return {
-      schemaVersion: 4,
+    const contract: AuditSourceSnapshotContract = {
+      schemaVersion: 5,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
-        a.path.localeCompare(b.path)
+        compareStrings(a.path, b.path)
       ),
-      // Preserve first-read order: this is the order in which bytes entered evaluation.
-      evaluatedFiles: [...this.#evaluatedFiles.values()],
-      evaluatedDirectories: [...this.#evaluatedDirectories.values()],
+      evaluatedFiles: [...this.#evaluatedFiles.values()].sort((a, b) =>
+        compareStrings(a.path, b.path)
+      ),
+      evaluatedDirectories: [...this.#evaluatedDirectories.values()].sort(
+        (a, b) => compareStrings(a.path, b.path)
+      ),
       capturedTrees: [...this.#capturedTrees.values()].sort((left, right) =>
-        JSON.stringify(left).localeCompare(JSON.stringify(right))
+        compareStrings(left.root, right.root)
       ),
       derivedContexts: [...this.#derivedContexts.values()].sort((a, b) =>
-        a.path.localeCompare(b.path)
+        compareStrings(`${a.kind}\0${a.path}`, `${b.kind}\0${b.path}`)
       ),
       absentPaths: [...this.#absentPaths.values()].sort((a, b) =>
-        a.path.localeCompare(b.path)
+        compareStrings(a.path, b.path)
       ),
+    };
+    const canonicalContract = canonicalSnapshotContract(contract);
+    return {
+      ...canonicalContract,
+      validationContractSha256: validationContractDigest(canonicalContract),
     };
   }
 }
@@ -862,95 +1034,224 @@ export async function captureAuditSourceSnapshot(args: {
 export function assertAuditSourceSnapshot(
   value: unknown
 ): asserts value is AuditSourceSnapshot {
-  const snapshot = value as Partial<AuditSourceSnapshot> | null;
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+  const snapshot = value as Partial<AuditSourceSnapshot>;
+  const shapeIsValid =
+    hasExactKeys(value, SNAPSHOT_KEYS) &&
+    snapshot.schemaVersion === 5 &&
+    typeof snapshot.validationContractSha256 === "string" &&
+    SHA256_RE.test(snapshot.validationContractSha256) &&
+    Array.isArray(snapshot.protectedRoots) &&
+    Array.isArray(snapshot.evaluatedFiles) &&
+    Array.isArray(snapshot.evaluatedDirectories) &&
+    Array.isArray(snapshot.capturedTrees) &&
+    Array.isArray(snapshot.derivedContexts) &&
+    Array.isArray(snapshot.absentPaths) &&
+    snapshot.protectedRoots.every(isValidProtectedRootIdentity) &&
+    snapshot.evaluatedFiles.every(isValidFileIdentity) &&
+    snapshot.evaluatedDirectories.every(isValidDirectoryIdentity) &&
+    snapshot.capturedTrees.every(isValidCapturedTreeIdentity) &&
+    snapshot.derivedContexts.every(isValidDerivedContextIdentity) &&
+    snapshot.absentPaths.every(isValidAbsentPathIdentity);
+  if (!shapeIsValid) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+
+  const exactSnapshot = snapshot as AuditSourceSnapshot;
   if (
-    !snapshot ||
-    snapshot.schemaVersion !== 4 ||
-    !Array.isArray(snapshot.protectedRoots) ||
-    !Array.isArray(snapshot.evaluatedFiles) ||
-    !Array.isArray(snapshot.evaluatedDirectories) ||
-    !Array.isArray(snapshot.capturedTrees) ||
-    !Array.isArray(snapshot.derivedContexts) ||
-    !Array.isArray(snapshot.absentPaths) ||
-    snapshot.protectedRoots.some(
-      (entry) =>
-        !(
-          entry &&
-          typeof entry === "object" &&
-          isAbsolute(entry.path) &&
-          Number.isFinite(entry.dev) &&
-          Number.isFinite(entry.ino)
-        ) ||
-        (entry.kind !== "directory" && entry.kind !== "file")
-    ) ||
-    snapshot.evaluatedFiles.some(
-      (entry) =>
-        !(
-          entry &&
-          typeof entry === "object" &&
-          isAbsolute(entry.path) &&
-          Number.isFinite(entry.ctimeMs) &&
-          Number.isFinite(entry.dev) &&
-          Number.isFinite(entry.ino) &&
-          Number.isFinite(entry.mode) &&
-          Number.isFinite(entry.mtimeMs) &&
-          Number.isFinite(entry.size) &&
-          SHA256_RE.test(entry.sha256)
-        )
-    ) ||
-    snapshot.evaluatedDirectories.some(
-      (entry) =>
-        !(
-          entry &&
-          typeof entry === "object" &&
-          isAbsolute(entry.path) &&
-          Number.isFinite(entry.ctimeMs) &&
-          Number.isFinite(entry.dev) &&
-          Number.isFinite(entry.ino) &&
-          isNonNegativeSafeInteger(entry.maxEntries) &&
-          Number.isFinite(entry.mode) &&
-          Number.isFinite(entry.mtimeMs) &&
-          SHA256_RE.test(entry.entriesSha256)
-        )
-    ) ||
-    snapshot.capturedTrees.some((entry) =>
-      isInvalidCapturedTreeIdentity(
-        entry,
-        snapshot.evaluatedFiles as AuditEvaluatedFileIdentity[],
-        snapshot.evaluatedDirectories as AuditEvaluatedDirectoryIdentity[]
-      )
-    ) ||
-    snapshot.derivedContexts.some(
-      (entry) =>
-        !(entry && typeof entry === "object") ||
-        entry.kind !== "git-path-exposure" ||
-        !isAbsolute(entry.path) ||
-        !SHA256_RE.test(entry.sha256)
-    ) ||
-    snapshot.absentPaths.some((entry) => !isValidAbsentPathIdentity(entry))
+    !(
+      isSortedUniqueBy(exactSnapshot.protectedRoots, (entry) => entry.path) &&
+      isSortedUniqueBy(exactSnapshot.evaluatedFiles, (entry) => entry.path) &&
+      isSortedUniqueBy(
+        exactSnapshot.evaluatedDirectories,
+        (entry) => entry.path
+      ) &&
+      isSortedUniqueBy(exactSnapshot.capturedTrees, (entry) => entry.root) &&
+      isSortedUniqueBy(
+        exactSnapshot.derivedContexts,
+        (entry) => `${entry.kind}\0${entry.path}`
+      ) &&
+      isSortedUniqueBy(exactSnapshot.absentPaths, (entry) => entry.path)
+    )
   ) {
     throw new Error("Audit source snapshot schema is unsupported");
   }
-}
 
-function isInvalidCapturedTreeIdentity(
-  value: unknown,
-  evaluatedFiles: AuditEvaluatedFileIdentity[],
-  evaluatedDirectories: AuditEvaluatedDirectoryIdentity[]
-): boolean {
+  const contract = canonicalSnapshotContract(exactSnapshot);
   if (
-    !(
-      value &&
-      typeof value === "object" &&
-      hasExactKeys(value, CAPTURED_TREE_KEYS)
+    validationContractDigest(contract) !==
+    exactSnapshot.validationContractSha256
+  ) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+
+  const files = new Map(
+    exactSnapshot.evaluatedFiles.map((entry) => [entry.path, entry])
+  );
+  const directories = new Map(
+    exactSnapshot.evaluatedDirectories.map((entry) => [entry.path, entry])
+  );
+  if ([...files.keys()].some((path) => directories.has(path))) {
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+
+  const treeOwners = new Map<string, string>();
+  for (let index = 0; index < exactSnapshot.capturedTrees.length; index += 1) {
+    const tree = exactSnapshot.capturedTrees[index]!;
+    for (const other of exactSnapshot.capturedTrees.slice(index + 1)) {
+      if (
+        isContainedPath(tree.root, other.root) ||
+        isContainedPath(other.root, tree.root)
+      ) {
+        throw new Error("Audit source snapshot schema is unsupported");
+      }
+    }
+    const budgets = deriveCapturedTreeDirectoryBudgets(tree);
+    if (!budgets) {
+      throw new Error("Audit source snapshot schema is unsupported");
+    }
+    let aggregateBytes = 0;
+    for (const path of tree.directoryPaths) {
+      const identity = directories.get(path);
+      const expectedBudget = budgets.get(path);
+      if (!identity || identity.maxEntries !== expectedBudget) {
+        throw new Error("Audit source snapshot schema is unsupported");
+      }
+      if (treeOwners.has(path)) {
+        throw new Error("Audit source snapshot schema is unsupported");
+      }
+      treeOwners.set(path, tree.root);
+    }
+    for (const path of tree.filePaths) {
+      const identity = files.get(path);
+      if (!identity || treeOwners.has(path)) {
+        throw new Error("Audit source snapshot schema is unsupported");
+      }
+      aggregateBytes += identity.size;
+      if (
+        identity.size > tree.maxFileBytes ||
+        aggregateBytes > tree.maxAggregateBytes
+      ) {
+        throw new Error("Audit source snapshot schema is unsupported");
+      }
+      treeOwners.set(path, tree.root);
+    }
+  }
+
+  for (const path of [...files.keys(), ...directories.keys()]) {
+    const containingTree = exactSnapshot.capturedTrees.find((tree) =>
+      isContainedPath(tree.root, path)
+    );
+    if (containingTree && treeOwners.get(path) !== containingTree.root) {
+      throw new Error("Audit source snapshot schema is unsupported");
+    }
+  }
+
+  const protectedPaths = new Set(
+    exactSnapshot.protectedRoots.map((root) => root.path)
+  );
+  if (
+    exactSnapshot.absentPaths.some(
+      (proof) =>
+        files.has(proof.path) ||
+        directories.has(proof.path) ||
+        protectedPaths.has(proof.path)
     )
   ) {
-    return true;
+    throw new Error("Audit source snapshot schema is unsupported");
+  }
+
+  for (const root of exactSnapshot.protectedRoots) {
+    const file = files.get(root.path);
+    const directory = directories.get(root.path);
+    if (
+      (file &&
+        (root.kind !== "file" ||
+          root.dev !== file.dev ||
+          root.ino !== file.ino)) ||
+      (directory &&
+        (root.kind !== "directory" ||
+          root.dev !== directory.dev ||
+          root.ino !== directory.ino))
+    ) {
+      throw new Error("Audit source snapshot schema is unsupported");
+    }
+  }
+}
+
+function isValidProtectedRootIdentity(
+  value: unknown
+): value is AuditProtectedRootIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
+  }
+  const entry = value as Partial<AuditProtectedRootIdentity>;
+  return (
+    hasExactKeys(value, PROTECTED_ROOT_KEYS) &&
+    isNonNegativeSafeInteger(entry.dev ?? Number.NaN) &&
+    isNonNegativeSafeInteger(entry.ino ?? Number.NaN) &&
+    (entry.kind === "directory" || entry.kind === "file") &&
+    isCanonicalAbsolutePath(entry.path)
+  );
+}
+
+function isValidFileIdentity(
+  value: unknown
+): value is AuditEvaluatedFileIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
+  }
+  const entry = value as Partial<AuditEvaluatedFileIdentity>;
+  return (
+    hasExactKeys(value, FILE_IDENTITY_KEYS) &&
+    Number.isFinite(entry.ctimeMs) &&
+    isNonNegativeSafeInteger(entry.dev ?? Number.NaN) &&
+    isNonNegativeSafeInteger(entry.ino ?? Number.NaN) &&
+    isNonNegativeSafeInteger(entry.mode ?? Number.NaN) &&
+    Number.isFinite(entry.mtimeMs) &&
+    isCanonicalAbsolutePath(entry.path) &&
+    typeof entry.sha256 === "string" &&
+    SHA256_RE.test(entry.sha256) &&
+    isNonNegativeSafeInteger(entry.size ?? Number.NaN)
+  );
+}
+
+function isValidDirectoryIdentity(
+  value: unknown
+): value is AuditEvaluatedDirectoryIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
+  }
+  const entry = value as Partial<AuditEvaluatedDirectoryIdentity>;
+  return (
+    hasExactKeys(value, DIRECTORY_IDENTITY_KEYS) &&
+    Number.isFinite(entry.ctimeMs) &&
+    isNonNegativeSafeInteger(entry.dev ?? Number.NaN) &&
+    typeof entry.entriesSha256 === "string" &&
+    SHA256_RE.test(entry.entriesSha256) &&
+    isNonNegativeSafeInteger(entry.ino ?? Number.NaN) &&
+    isNonNegativeSafeInteger(entry.maxEntries ?? Number.NaN) &&
+    entry.maxEntries! <= 50_000 &&
+    isNonNegativeSafeInteger(entry.mode ?? Number.NaN) &&
+    Number.isFinite(entry.mtimeMs) &&
+    isCanonicalAbsolutePath(entry.path)
+  );
+}
+
+function isValidCapturedTreeIdentity(
+  value: unknown
+): value is AuditCapturedTreeIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
   }
   const entry = value as Partial<AuditCapturedTreeIdentity>;
   if (
-    typeof entry.root !== "string" ||
-    !isAbsolute(entry.root) ||
+    !(
+      hasExactKeys(value, CAPTURED_TREE_KEYS) &&
+      isCanonicalAbsolutePath(entry.root)
+    ) ||
     entry.rejectUnsupportedEntries !== true ||
     !Array.isArray(entry.filePaths) ||
     !Array.isArray(entry.directoryPaths) ||
@@ -964,77 +1265,130 @@ function isInvalidCapturedTreeIdentity(
     entry.maxDepth! > STRICT_CAPTURE_TREE_LIMITS.maxDepth ||
     entry.maxFileBytes! > STRICT_CAPTURE_TREE_LIMITS.maxFileBytes ||
     entry.maxRelativePathBytes! >
-      STRICT_CAPTURE_TREE_LIMITS.maxRelativePathBytes
+      STRICT_CAPTURE_TREE_LIMITS.maxRelativePathBytes ||
+    !isSortedUniqueStringArray(entry.directoryPaths) ||
+    !isSortedUniqueStringArray(entry.filePaths)
   ) {
-    return true;
+    return false;
   }
-  const contract = entry as AuditCapturedTreeIdentity;
-  const fileIdentities = new Map(
-    evaluatedFiles.map((identity) => [identity.path, identity])
-  );
-  const directoryPaths = new Set(
-    evaluatedDirectories.map((identity) => identity.path)
-  );
-  const allPaths = [...contract.directoryPaths, ...contract.filePaths];
+  const tree = entry as AuditCapturedTreeIdentity;
+  const allPaths = [...tree.directoryPaths, ...tree.filePaths];
   if (
-    contract.directoryPaths.length + contract.filePaths.length >
-      contract.maxEntries ||
-    !contract.directoryPaths.includes(contract.root) ||
+    tree.directoryPaths[0] !== tree.root ||
     new Set(allPaths).size !== allPaths.length ||
-    !isSortedUniqueStringArray(contract.directoryPaths) ||
-    !isSortedUniqueStringArray(contract.filePaths) ||
-    contract.directoryPaths.some((path) => !directoryPaths.has(path)) ||
-    contract.filePaths.some((path) => !fileIdentities.has(path))
+    allPaths.length > tree.maxEntries
   ) {
-    return true;
+    return false;
   }
-  let aggregateBytes = 0;
-  for (const path of allPaths) {
-    if (!(isAbsolute(path) && isContainedPath(contract.root, path))) {
-      return true;
+  const files = new Set(tree.filePaths);
+  return allPaths.every((path) => {
+    if (!(isCanonicalAbsolutePath(path) && isContainedPath(tree.root, path))) {
+      return false;
     }
-    const relativePath = relative(contract.root, path);
-    if (
-      Buffer.byteLength(relativePath, "utf8") > contract.maxRelativePathBytes
-    ) {
-      return true;
+    const relativePath = relative(tree.root, path);
+    if (Buffer.byteLength(relativePath, "utf8") > tree.maxRelativePathBytes) {
+      return false;
     }
     const segments = relativePath ? relativePath.split(sep) : [];
-    const depth = fileIdentities.has(path)
+    const depth = files.has(path)
       ? Math.max(segments.length - 1, 0)
       : segments.length;
-    if (depth > contract.maxDepth) {
-      return true;
-    }
-    const file = fileIdentities.get(path);
-    if (file) {
-      if (file.size > contract.maxFileBytes) {
-        return true;
-      }
-      aggregateBytes += file.size;
-      if (aggregateBytes > contract.maxAggregateBytes) {
-        return true;
-      }
-    }
+    return depth <= tree.maxDepth;
+  });
+}
+
+function deriveCapturedTreeDirectoryBudgets(
+  tree: AuditCapturedTreeIdentity
+): Map<string, number> | null {
+  const directories = new Set(tree.directoryPaths);
+  const childDirectories = new Map<string, string[]>();
+  const childFiles = new Map<string, string[]>();
+  for (const path of tree.directoryPaths) {
+    childDirectories.set(path, []);
+    childFiles.set(path, []);
   }
-  return false;
+  for (const path of tree.directoryPaths) {
+    if (path === tree.root) {
+      continue;
+    }
+    const parent = dirname(path);
+    if (!directories.has(parent)) {
+      return null;
+    }
+    childDirectories.get(parent)!.push(path);
+  }
+  for (const path of tree.filePaths) {
+    const parent = dirname(path);
+    if (!directories.has(parent)) {
+      return null;
+    }
+    childFiles.get(parent)!.push(path);
+  }
+  for (const children of childDirectories.values()) {
+    children.sort(compareStrings);
+  }
+  let usedEntries = 1;
+  const budgets = new Map<string, number>();
+  const visit = (path: string): boolean => {
+    const remaining = tree.maxEntries - usedEntries;
+    if (remaining < 0 || budgets.has(path)) {
+      return false;
+    }
+    budgets.set(path, remaining);
+    usedEntries +=
+      childDirectories.get(path)!.length + childFiles.get(path)!.length;
+    if (usedEntries > tree.maxEntries) {
+      return false;
+    }
+    for (const child of childDirectories.get(path)!) {
+      if (usedEntries >= tree.maxEntries || !visit(child)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (
+    !visit(tree.root) ||
+    budgets.size !== tree.directoryPaths.length ||
+    usedEntries !== tree.directoryPaths.length + tree.filePaths.length
+  ) {
+    return null;
+  }
+  return budgets;
+}
+
+function isValidDerivedContextIdentity(
+  value: unknown
+): value is AuditDerivedContextIdentity {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
+    return false;
+  }
+  const entry = value as Partial<AuditDerivedContextIdentity>;
+  return (
+    hasExactKeys(value, DERIVED_CONTEXT_KEYS) &&
+    entry.kind === "git-path-exposure" &&
+    isCanonicalAbsolutePath(entry.path) &&
+    typeof entry.sha256 === "string" &&
+    SHA256_RE.test(entry.sha256)
+  );
 }
 
 function isValidAbsentPathIdentity(
   value: unknown
 ): value is AuditAbsentPathIdentity {
-  if (!(value && typeof value === "object")) {
+  if (!(value && typeof value === "object" && !Array.isArray(value))) {
     return false;
   }
   const entry = value as Partial<AuditAbsentPathIdentity>;
   if (
-    typeof entry.path !== "string" ||
-    typeof entry.ancestorPath !== "string" ||
-    !isAbsolute(entry.path) ||
-    !isAbsolute(entry.ancestorPath) ||
-    !Number.isFinite(entry.ancestorDev) ||
-    !Number.isFinite(entry.ancestorIno) ||
-    !Array.isArray(entry.relativeSegments) ||
+    !(
+      hasExactKeys(value, ABSENT_PATH_KEYS) &&
+      isCanonicalAbsolutePath(entry.path) &&
+      isCanonicalAbsolutePath(entry.ancestorPath) &&
+      isNonNegativeSafeInteger(entry.ancestorDev ?? Number.NaN) &&
+      isNonNegativeSafeInteger(entry.ancestorIno ?? Number.NaN) &&
+      Array.isArray(entry.relativeSegments)
+    ) ||
     entry.relativeSegments.length === 0
   ) {
     return false;
@@ -1054,7 +1408,7 @@ function isValidAbsentPathIdentity(
   }
   return (
     normalize(join(entry.ancestorPath, ...entry.relativeSegments)) ===
-    entry.path
+      entry.path && isContainedPath(entry.ancestorPath, entry.path)
   );
 }
 
@@ -1205,11 +1559,7 @@ export async function validateAuditSourceSnapshot(
     if (
       !(entries && actual) ||
       actual.path !== expected.path ||
-      actual.ctimeMs !== expected.ctimeMs ||
-      actual.dev !== expected.dev ||
-      actual.ino !== expected.ino ||
-      actual.mode !== expected.mode ||
-      actual.mtimeMs !== expected.mtimeMs ||
+      !sameDirectoryMetadata(actual, expected) ||
       actual.entriesSha256 !== expected.entriesSha256
     ) {
       throw new Error(`Audit evaluated directory changed: ${expected.path}`);

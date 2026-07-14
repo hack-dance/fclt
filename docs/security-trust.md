@@ -77,8 +77,12 @@ non-symlink directory strictly inside Claude's plugin cache. Its entire tree is
 captured with stable no-follow reads, exact file bytes and modes, directory
 contents and identities, and conservative entry, depth, path, per-file, and
 aggregate-byte bounds. The provenance receipt stores each strict tree's exact
-limits and canonical membership, and every authorization replay enforces the
-same aggregate budget before generic directory validation. A missing,
+limits and canonical membership. Snapshot schema v5 rejects extra, missing,
+duplicate, reordered, aliased, overlapping, or conflicting records and binds a
+canonical validation-contract digest; report revision 6 makes older receipts
+fail closed. Each directory's replay budget is derived from that one tree
+contract, and the complete current-directory manifest is reserved against the
+single aggregate entry budget before any child is opened or traversed. A missing,
 inaccessible, linked, escaped, replaced, or
 changed declared tree aborts evaluation or persistence with no report artifact.
 Skill support files under `assets/`, `references/`, and `scripts/` are
