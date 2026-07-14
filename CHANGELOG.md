@@ -1,3 +1,20 @@
+## [2.25.0](https://github.com/hack-dance/fclt/compare/v2.24.1...v2.25.0) (2026-07-14)
+
+### Features
+
+* **ai:** aggregate activity across scopes ([8a3753e](https://github.com/hack-dance/fclt/commit/8a3753e96fc006287c91fdc7c15e8202a9c78b53))
+
+### Bug Fixes
+
+* **activity:** bound global aggregate reads ([e19b657](https://github.com/hack-dance/fclt/commit/e19b65709d2a4e7d31a5c6930a54bbfacd618042))
+* **activity:** distinguish configured coverage ([b839da3](https://github.com/hack-dance/fclt/commit/b839da32da12c891128c3aa5bcc343ad3a21dddb))
+* **activity:** isolate and bound aggregate reads ([29d0902](https://github.com/hack-dance/fclt/commit/29d0902915964531f337acd3b7c950daf22a860c))
+* **activity:** keep bounded coverage consistent ([6428aa5](https://github.com/hack-dance/fclt/commit/6428aa50c6647abe992a58c69643ab645b0578c5))
+* **activity:** mark truncated feeds incomplete ([c35c15e](https://github.com/hack-dance/fclt/commit/c35c15e4e390e2f00e646afe5d1b81b57aa04ea5))
+* **activity:** recompute bounded source totals ([96f014b](https://github.com/hack-dance/fclt/commit/96f014b44d957b45db4b73dd10e3bbc2b56b021a))
+* **cli:** prefer the compiled package version ([3273210](https://github.com/hack-dance/fclt/commit/32732104713e5f1eb9a43409ec99280d438c84f6))
+* **plugin:** pass all scope after activity ([4fcbc2a](https://github.com/hack-dance/fclt/commit/4fcbc2ae082974a74abeac94869a8f66088eb5a4))
+
 ## [2.24.1](https://github.com/hack-dance/fclt/compare/v2.24.0...v2.24.1) (2026-07-13)
 
 ### Bug Fixes
