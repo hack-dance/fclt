@@ -37,16 +37,16 @@ export function extractServersObject(
       return value;
     }
   }
-  const servers =
-    (raw.servers as Record<string, unknown> | undefined) ??
-    (raw.mcpServers as Record<string, unknown> | undefined) ??
-    (raw["mcp.servers"] as Record<string, unknown> | undefined) ??
-    ((raw.mcp as Record<string, unknown> | undefined)?.servers as
-      | Record<string, unknown>
-      | undefined) ??
-    null;
-  if (servers && isPlainObject(servers)) {
-    return servers;
+  const nestedMcpServers = isPlainObject(raw.mcp) ? raw.mcp.servers : undefined;
+  for (const candidate of [
+    raw.servers,
+    raw.mcpServers,
+    raw["mcp.servers"],
+    nestedMcpServers,
+  ]) {
+    if (isPlainObject(candidate)) {
+      return candidate;
+    }
   }
   return null;
 }
