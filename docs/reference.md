@@ -80,8 +80,12 @@ fclt deploy plan --asset instruction:<name>|snippet:<path> \
 ```
 
 This is a read-only, one-asset/one-destination planning boundary. It emits a deterministic,
-content-addressed plan and has no executor. Use isolated roots while this boundary is being proven;
-broad managed apply remains deprecated and contained.
+content-addressed plan and has no executor. The planner scans canonical ownership records and
+allows at most one claim for the exact tool and destination. Existing rollback targets survive
+no-op and update replans; recorded snapshots are required and hash-verified. Asset or adapter
+ownership transfer fails closed until a separate, explicitly reviewed migration command exists.
+Use isolated roots while this boundary is being proven; broad managed apply remains deprecated and
+contained.
 
 ## Legacy managed mode
 

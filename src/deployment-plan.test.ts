@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   lstat,
   mkdir,
@@ -15,6 +16,7 @@ import {
   buildDeploymentPlan,
   type DeploymentPlanV1,
   type DeploymentStateV1,
+  serializeDeploymentState,
 } from "./deployment-plan";
 
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -59,6 +61,10 @@ function planOptions(fixture: Fixture) {
   };
 }
 
+function sha256(value: Uint8Array | string): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 async function snapshotTree(root: string): Promise<Record<string, string>> {
   const snapshot: Record<string, string> = {};
   async function visit(pathValue: string, relativePath: string): Promise<void> {
@@ -95,6 +101,22 @@ function deploymentStateWrite(plan: Readonly<DeploymentPlanV1>): {
     throw new Error("Expected deployment-state write");
   }
   return { path: write.path, state: write.contentSource.state };
+}
+
+async function materializePlanFixture(
+  plan: Readonly<DeploymentPlanV1>
+): Promise<void> {
+  for (const write of plan.operations.writes) {
+    await mkdir(dirname(write.path), { recursive: true });
+    if (write.contentSource.kind === "path") {
+      await Bun.write(write.path, await readFile(write.contentSource.path));
+    } else {
+      await Bun.write(
+        write.path,
+        serializeDeploymentState(write.contentSource.state)
+      );
+    }
+  }
 }
 
 async function runCli(args: string[]): Promise<{
@@ -157,6 +179,7 @@ describe("immutable per-asset deployment planning", () => {
     expect(first.operations.reads.map((read) => read.kind)).toEqual([
       "canonical-source",
       "current-target",
+      "ownership-directory",
       "deployment-state",
     ]);
     expect(first.operations.writes.map((write) => write.kind)).toEqual([
@@ -306,6 +329,148 @@ describe("immutable per-asset deployment planning", () => {
     ).rejects.toThrow("escapes its root");
   });
 
+  it("preserves an absent rollback target across post-apply no-op and update replans", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+
+    const options = {
+      ...planOptions(fixture),
+      expectedCurrentHash: undefined,
+    };
+    const beforeNoOp = await snapshotTree(fixture.root);
+    const firstNoOp = await buildDeploymentPlan(options);
+    const secondNoOp = await buildDeploymentPlan(options);
+    const afterNoOp = await snapshotTree(fixture.root);
+
+    expect(afterNoOp).toEqual(beforeNoOp);
+    expect(secondNoOp).toEqual(firstNoOp);
+    expect(firstNoOp.ownerMode).toBe("fclt-owned");
+    expect(firstNoOp.rollbackTarget).toEqual(initial.rollbackTarget);
+    expect(firstNoOp.operations.writes).toEqual([]);
+
+    await Bun.write(fixture.sourcePath, "# Updated\n\nNew desired content.\n");
+    const beforeUpdatePlan = await snapshotTree(fixture.root);
+    const update = await buildDeploymentPlan(options);
+    const afterUpdatePlan = await snapshotTree(fixture.root);
+
+    expect(afterUpdatePlan).toEqual(beforeUpdatePlan);
+    expect(update.rollbackTarget).toEqual(initial.rollbackTarget);
+    expect(update.operations.writes.map((write) => write.kind)).toEqual([
+      "target",
+      "deployment-state",
+    ]);
+    expect(
+      update.operations.writes.some(
+        (write) => write.kind === "rollback-snapshot"
+      )
+    ).toBe(false);
+  });
+
+  it("preserves and verifies the original snapshot rollback across owned replans", async () => {
+    const fixture = await createFixture();
+    const targetPath = join(
+      fixture.targetRoot,
+      "instructions",
+      "WORK_UNITS.md"
+    );
+    const legacy = "legacy user content\n";
+    await mkdir(dirname(targetPath), { recursive: true });
+    await Bun.write(targetPath, legacy);
+    const initial = await buildDeploymentPlan({
+      ...planOptions(fixture),
+      expectedCurrentHash: sha256(legacy),
+    });
+    expect(initial.rollbackTarget.kind).toBe("snapshot");
+    await materializePlanFixture(initial);
+
+    const options = {
+      ...planOptions(fixture),
+      expectedCurrentHash: undefined,
+    };
+    const before = await snapshotTree(fixture.root);
+    const noOp = await buildDeploymentPlan(options);
+    const after = await snapshotTree(fixture.root);
+    expect(after).toEqual(before);
+    expect(noOp.rollbackTarget).toEqual(initial.rollbackTarget);
+    expect(noOp.operations.writes).toEqual([]);
+    expect(
+      noOp.operations.reads.find((read) => read.kind === "rollback-snapshot")
+    ).toMatchObject({
+      required: true,
+      expectedHash: sha256(legacy),
+    });
+
+    if (initial.rollbackTarget.kind !== "snapshot") {
+      throw new Error("Expected snapshot rollback target");
+    }
+    await rm(initial.rollbackTarget.path);
+    await expect(buildDeploymentPlan(options)).rejects.toThrow(
+      "Rollback snapshot is missing"
+    );
+    await Bun.write(initial.rollbackTarget.path, "tampered snapshot\n");
+    await expect(buildDeploymentPlan(options)).rejects.toThrow(
+      "Rollback snapshot tamper detected"
+    );
+  });
+
+  it("enforces one destination ownership record and rejects implicit transfers", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+
+    const secondSource = join(
+      fixture.canonicalRoot,
+      "instructions",
+      "SECOND.md"
+    );
+    await Bun.write(secondSource, await readFile(fixture.sourcePath));
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        asset: "instruction:SECOND",
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow("future explicit migration/transfer command");
+
+    const changedAdapterState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      binding: { ...stateWrite.state.binding, adapterVersion: "v0" },
+    };
+    await Bun.write(
+      stateWrite.path,
+      serializeDeploymentState(changedAdapterState)
+    );
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow("future explicit migration/transfer command");
+
+    await Bun.write(
+      stateWrite.path,
+      serializeDeploymentState(stateWrite.state)
+    );
+    const orphanPath = join(dirname(stateWrite.path), "orphan.json");
+    await Bun.write(orphanPath, serializeDeploymentState(stateWrite.state));
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow("Conflicting deployment ownership claims");
+
+    await rm(stateWrite.path);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow("Orphaned deployment ownership claim");
+  });
+
   it("fails closed on path traversal and symlink escape", async () => {
     const fixture = await createFixture();
     await expect(
@@ -329,7 +494,7 @@ describe("immutable per-asset deployment planning", () => {
       buildDeploymentPlan({ ...planOptions(fixture), adapterVersion: "v999" })
     ).rejects.toThrow("Unsupported codex adapter version");
     await expect(buildDeploymentPlan(planOptions(fixture))).rejects.toThrow(
-      "Unresolved variable"
+      "Invalid interpolation at line 1, column 5 (expression redacted)."
     );
 
     const clean = await createFixture();
@@ -372,5 +537,89 @@ describe("immutable per-asset deployment planning", () => {
         process.env.API_TOKEN = previous;
       }
     }
+  });
+
+  it("keeps planner provenance deterministic despite ambient package-manager variables", async () => {
+    const fixture = await createFixture();
+    const priorFacultVersion = process.env.FACULT_NPM_PACKAGE_VERSION;
+    const priorNpmVersion = process.env.npm_package_version;
+    try {
+      process.env.FACULT_NPM_PACKAGE_VERSION = "99.0.0";
+      process.env.npm_package_version = "98.0.0";
+      const first = await buildDeploymentPlan({
+        ...planOptions(fixture),
+        plannerVersion: undefined,
+      });
+      process.env.FACULT_NPM_PACKAGE_VERSION = "1.0.0";
+      process.env.npm_package_version = "2.0.0";
+      const second = await buildDeploymentPlan({
+        ...planOptions(fixture),
+        plannerVersion: undefined,
+      });
+      expect(second).toEqual(first);
+      expect(second.planner.version).toBe("2.24.1");
+      await expect(
+        buildDeploymentPlan({
+          ...planOptions(fixture),
+          plannerVersion: "2.24.0",
+        })
+      ).rejects.toThrow("does not match the authoritative fclt version");
+    } finally {
+      if (priorFacultVersion === undefined) {
+        Reflect.deleteProperty(process.env, "FACULT_NPM_PACKAGE_VERSION");
+      } else {
+        process.env.FACULT_NPM_PACKAGE_VERSION = priorFacultVersion;
+      }
+      if (priorNpmVersion === undefined) {
+        Reflect.deleteProperty(process.env, "npm_package_version");
+      } else {
+        process.env.npm_package_version = priorNpmVersion;
+      }
+    }
+  });
+
+  it("redacts malformed interpolation expressions from CLI stderr", async () => {
+    const fallbackLiteral = "credential-literal-must-not-leak";
+    const fixture = await createFixture(
+      `Token: ${DOLLAR}{secret:API_TOKEN:-${fallbackLiteral}}\n`
+    );
+    const before = await snapshotTree(fixture.root);
+    const result = await runCli([
+      "deploy",
+      "plan",
+      "--asset",
+      "instruction:WORK_UNITS",
+      "--destination",
+      "instructions/WORK_UNITS.md",
+      "--tool",
+      "codex",
+      "--adapter-version",
+      "v1",
+      "--root",
+      fixture.canonicalRoot,
+      "--target-root",
+      fixture.targetRoot,
+      "--state-root",
+      fixture.stateRoot,
+      "--expected-current-hash",
+      "absent",
+      "--json",
+    ]);
+    const after = await snapshotTree(fixture.root);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      "Invalid interpolation at line 1, column 8 (expression redacted).\n"
+    );
+    expect(result.stderr).not.toContain("API_TOKEN");
+    expect(result.stderr).not.toContain(fallbackLiteral);
+    expect(result.stderr).not.toContain("secret:");
+    expect(after).toEqual(before);
+
+    await Bun.write(fixture.sourcePath, `Token: ${DOLLAR}{secret:API_TOKEN`);
+    await expect(buildDeploymentPlan(planOptions(fixture))).rejects.toThrow(
+      "Invalid interpolation at line 1, column 8 (expression redacted)."
+    );
   });
 });

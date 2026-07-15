@@ -306,7 +306,11 @@ fclt deploy plan \
 
 `deploy plan` reads canonical, target, and ownership state directly and never writes them. The
 content-addressed JSON plan fails closed on stale hashes, unsupported adapters, unresolved
-variables, lossy translation, corrupt ownership state, and path escape. It has no apply subcommand.
+variables, lossy translation, corrupt ownership state, and path escape. Ownership is keyed by the
+exact tool and destination, so an asset or adapter change cannot silently claim an already-owned
+path. Existing rollback targets are preserved, and snapshot targets must still match their recorded
+hash. Ownership transfer is reserved for a future explicit migration command. This slice has no
+apply subcommand.
 
 ```bash
 fclt setup codex-plugin
