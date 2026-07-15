@@ -1,3 +1,9 @@
+## [2.27.0](https://github.com/hack-dance/fclt/compare/v2.26.0...v2.27.0) (2026-07-15)
+
+### Features
+
+* add durable activity history ([#62](https://github.com/hack-dance/fclt/issues/62)) ([1a0080e](https://github.com/hack-dance/fclt/commit/1a0080e40c73971cf72b5d267348b64ce26d500f))
+
 ## [2.26.0](https://github.com/hack-dance/fclt/compare/v2.25.4...v2.26.0) (2026-07-15)
 
 ### Features
