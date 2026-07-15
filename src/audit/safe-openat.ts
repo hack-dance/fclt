@@ -205,6 +205,18 @@ interface DirectoryStreamLibrary {
   rewinddir: (directory: Pointer) => void;
 }
 
+interface DirectoryStreamSymbols {
+  __errno_location?: () => Pointer;
+  __error?: () => Pointer;
+  close: (fd: number) => number;
+  closedir: (directory: Pointer) => number;
+  dup: (fd: number) => number;
+  fdopendir: (fd: number) => Pointer;
+  readdir?: (directory: Pointer) => Pointer;
+  readdir$INODE64?: (directory: Pointer) => Pointer;
+  rewinddir: (directory: Pointer) => void;
+}
+
 interface PrivateFileSnapshot {
   contents: string;
   metadata: Stats;
@@ -238,48 +250,59 @@ interface PrivateFileMutationSymbols extends DirectoryMutationSymbols {
   write: (fd: number, buffer: Pointer, length: number) => number | bigint;
 }
 
+export function darwinReaddirSymbol(
+  architecture: string = process.arch
+): "readdir" | "readdir$INODE64" {
+  // Intel macOS still exports the legacy 32-bit-inode `readdir` ABI. Native
+  // callers are redirected to the modern dirent layout by the SDK symbol
+  // alias, which FFI must select explicitly. Apple Silicon only exposes the
+  // modern ABI under the unsuffixed symbol.
+  return architecture === "x64" ? "readdir$INODE64" : "readdir";
+}
+
 function directoryStreamLibrary(): DirectoryStreamLibrary {
   const configuration = platformConfiguration();
-  const commonSymbols = {
+  const definitions: Record<string, FFIFunction> = {
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
     dup: { args: [FFIType.i32], returns: FFIType.i32 },
     fdopendir: { args: [FFIType.i32], returns: FFIType.ptr },
-    readdir: { args: [FFIType.ptr], returns: FFIType.ptr },
     rewinddir: { args: [FFIType.ptr], returns: FFIType.void },
-  } as const;
+  };
   if (process.platform === "darwin") {
-    const libc = openSystemLibc(configuration, {
-      ...commonSymbols,
-      __error: { args: [], returns: FFIType.ptr },
-    });
+    const readdirSymbol = darwinReaddirSymbol();
+    definitions[readdirSymbol] = {
+      args: [FFIType.ptr],
+      returns: FFIType.ptr,
+    };
+    definitions.__error = { args: [], returns: FFIType.ptr };
+    const libc = openSystemLibc(configuration, definitions);
+    const symbols = libc.symbols as unknown as DirectoryStreamSymbols;
     return {
       close: () => libc.close(),
-      closeFileDescriptor: (fileDescriptor) =>
-        libc.symbols.close(fileDescriptor),
-      closedir: (directory) => libc.symbols.closedir(directory),
-      dup: (fileDescriptor) => libc.symbols.dup(fileDescriptor),
-      errnoPointer: () => libc.symbols.__error()!,
-      fdopendir: (fileDescriptor) => libc.symbols.fdopendir(fileDescriptor),
-      readdir: (directory) => libc.symbols.readdir(directory),
-      rewinddir: (directory) => libc.symbols.rewinddir(directory),
+      closeFileDescriptor: (fileDescriptor) => symbols.close(fileDescriptor),
+      closedir: (directory) => symbols.closedir(directory),
+      dup: (fileDescriptor) => symbols.dup(fileDescriptor),
+      errnoPointer: () => symbols.__error!(),
+      fdopendir: (fileDescriptor) => symbols.fdopendir(fileDescriptor),
+      readdir: (directory) => symbols[readdirSymbol]!(directory),
+      rewinddir: (directory) => symbols.rewinddir(directory),
     };
   }
   if (process.platform === "linux") {
-    const libc = openSystemLibc(configuration, {
-      ...commonSymbols,
-      __errno_location: { args: [], returns: FFIType.ptr },
-    });
+    definitions.readdir = { args: [FFIType.ptr], returns: FFIType.ptr };
+    definitions.__errno_location = { args: [], returns: FFIType.ptr };
+    const libc = openSystemLibc(configuration, definitions);
+    const symbols = libc.symbols as unknown as DirectoryStreamSymbols;
     return {
       close: () => libc.close(),
-      closeFileDescriptor: (fileDescriptor) =>
-        libc.symbols.close(fileDescriptor),
-      closedir: (directory) => libc.symbols.closedir(directory),
-      dup: (fileDescriptor) => libc.symbols.dup(fileDescriptor),
-      errnoPointer: () => libc.symbols.__errno_location()!,
-      fdopendir: (fileDescriptor) => libc.symbols.fdopendir(fileDescriptor),
-      readdir: (directory) => libc.symbols.readdir(directory),
-      rewinddir: (directory) => libc.symbols.rewinddir(directory),
+      closeFileDescriptor: (fileDescriptor) => symbols.close(fileDescriptor),
+      closedir: (directory) => symbols.closedir(directory),
+      dup: (fileDescriptor) => symbols.dup(fileDescriptor),
+      errnoPointer: () => symbols.__errno_location!(),
+      fdopendir: (fileDescriptor) => symbols.fdopendir(fileDescriptor),
+      readdir: (directory) => symbols.readdir!(directory),
+      rewinddir: (directory) => symbols.rewinddir(directory),
     };
   }
   throw new Error(
