@@ -349,8 +349,8 @@ async function discoverMcpConfig(
 
   if (p.endsWith(".json")) {
     cfg.format = "json";
-    const text = readText ? await readText(p) : await Bun.file(p).text();
     try {
+      const text = readText ? await readText(p) : await Bun.file(p).text();
       const parsed = parseJsonLenient(text);
       const serversObj = extractMcpServersObject(parsed);
       if (serversObj) {
@@ -364,8 +364,8 @@ async function discoverMcpConfig(
 
   if (p.endsWith(".toml")) {
     cfg.format = "toml";
-    const text = readText ? await readText(p) : await Bun.file(p).text();
     try {
+      const text = readText ? await readText(p) : await Bun.file(p).text();
       cfg.servers = extractCodexTomlMcpServerNames(text);
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
@@ -414,8 +414,8 @@ async function discoverAssetFile(
   const asset: AssetFile = { kind: "unknown", path: p, format };
 
   if (format === "json") {
-    const text = readText ? await readText(p) : await Bun.file(p).text();
     try {
+      const text = readText ? await readText(p) : await Bun.file(p).text();
       const parsed = parseJsonLenient(text);
       // Summary is derived later once we know "kind" (see discoverAssetsFromSpecs).
       // Avoid storing parsed content here to prevent persisting secrets.
