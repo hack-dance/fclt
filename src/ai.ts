@@ -2809,7 +2809,7 @@ Usage:
   fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
   fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
   fclt ai review <init|status|reconcile> [args...]
-  fclt ai loop <enable|disable|status|report|activity|run> [args...]
+  fclt ai loop <enable|disable|status|report|activity|resolve|run> [args...]
 `;
 }
 
@@ -2822,6 +2822,7 @@ Usage:
   fclt ai loop status [--json]
   fclt ai loop report [--json]
   fclt ai loop activity [--all|--global|--project] [--json]
+  fclt ai loop resolve <activity-action-locator> [--json]
   fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
 
 The loop keeps a full machine-local review queue and emits a delta for
@@ -2939,6 +2940,40 @@ async function loopCommand(argv: string[]) {
   }
   if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
     console.log(loopHelp());
+    return;
+  }
+  if (sub === "resolve") {
+    if (parsed.rootArg || parsed.scope !== "merged") {
+      throw new Error(
+        "Activity locator resolution does not accept caller-supplied root or scope authority"
+      );
+    }
+    const locatorArgs = commandArgs.filter((arg) => arg !== "--json");
+    const locator = locatorArgs[0];
+    if (
+      locatorArgs.length !== 1 ||
+      !locator ||
+      locator.startsWith("-") ||
+      commandArgs.some((arg) => arg.startsWith("-") && arg !== "--json")
+    ) {
+      throw new Error(
+        "loop resolve accepts exactly one opaque locator and optional --json"
+      );
+    }
+    const { renderActivityActionResolution, resolveActivityActionLocator } =
+      await import("./activity-action");
+    const result = await resolveActivityActionLocator({
+      homeDir: process.env.HOME ?? "",
+      locator,
+    });
+    console.log(
+      commandArgs.includes("--json")
+        ? JSON.stringify(result, null, 2)
+        : renderActivityActionResolution(result)
+    );
+    if (result.status === "rejected") {
+      process.exitCode = 1;
+    }
     return;
   }
   const rootDir = resolveCliContextRoot({

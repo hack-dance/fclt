@@ -182,48 +182,65 @@ const tools = [
   {
     name: "fclt_registry",
     description:
-      "Search and verify remote capability, preview installs and updates, or run typed source reconciliation reviews. Registry mutation remains withheld.",
+      "Search and verify remote capability, preview installs and updates, run typed source reconciliation reviews, or resolve one opaque activity action locator without mutation. Registry mutation remains withheld.",
     inputSchema: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: [
-            "search",
-            "verify_source",
-            "source_list",
-            "install_preview",
-            "update_check",
-            "reconcile_status",
-            "reconcile",
-          ],
-        },
-        scope: { type: "string", enum: ["global", "project"] },
-        cwd: { type: "string" },
-        query: { type: "string" },
-        source: { type: "string" },
-        item: { type: "string" },
-        as: { type: "string" },
-        since: {
-          type: "string",
-          pattern:
-            "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2}))?$",
-        },
-        until: {
-          type: "string",
-          pattern:
-            "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2}))?$",
-        },
-        sourceIds: {
-          type: "array",
-          items: {
-            type: "string",
-            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      oneOf: [
+        {
+          type: "object",
+          properties: {
+            action: { const: "activity_resolve" },
+            locator: {
+              type: "string",
+              pattern: "^fclt-act-v[0-9]+\\.[a-f0-9]{64}\\.[a-f0-9]{64}$",
+            },
           },
+          required: ["action", "locator"],
+          additionalProperties: false,
         },
-        incremental: { type: "boolean" },
-      },
-      required: ["action"],
+        {
+          type: "object",
+          properties: {
+            action: {
+              type: "string",
+              enum: [
+                "search",
+                "verify_source",
+                "source_list",
+                "install_preview",
+                "update_check",
+                "reconcile_status",
+                "reconcile",
+              ],
+            },
+            scope: { type: "string", enum: ["global", "project"] },
+            cwd: { type: "string" },
+            query: { type: "string" },
+            source: { type: "string" },
+            item: { type: "string" },
+            as: { type: "string" },
+            since: {
+              type: "string",
+              pattern:
+                "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2}))?$",
+            },
+            until: {
+              type: "string",
+              pattern:
+                "^\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2}))?$",
+            },
+            sourceIds: {
+              type: "array",
+              items: {
+                type: "string",
+                pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              },
+            },
+            incremental: { type: "boolean" },
+          },
+          required: ["action"],
+          additionalProperties: false,
+        },
+      ],
     },
   },
   {
@@ -410,7 +427,9 @@ const tools = [
 ];
 
 for (const tool of tools) {
-  tool.inputSchema.additionalProperties = false;
+  if (!tool.inputSchema.oneOf || tool.inputSchema.properties) {
+    tool.inputSchema.additionalProperties = false;
+  }
 }
 
 function isPlainObject(value) {
@@ -425,7 +444,19 @@ function validateToolArguments(name, args) {
   if (!tool) {
     throw new Error(`Unknown tool: ${name}`);
   }
-  const schema = tool.inputSchema;
+  const rootSchema = tool.inputSchema;
+  const schema =
+    rootSchema.oneOf && !rootSchema.properties
+      ? rootSchema.oneOf.find((branch) => {
+          const action = branch.properties?.action;
+          return (
+            action?.const === args.action || action?.enum?.includes(args.action)
+          );
+        })
+      : rootSchema;
+  if (!schema) {
+    throw new Error(`${name}.action is not an allowed value`);
+  }
   const properties = schema.properties || {};
   const unknown = Object.keys(args).filter((key) => !(key in properties));
   if (unknown.length > 0) {
@@ -440,6 +471,12 @@ function validateToolArguments(name, args) {
   }
   for (const [key, value] of Object.entries(args)) {
     const property = properties[key];
+    if (property.const !== undefined && value !== property.const) {
+      throw new Error(`${name}.${key} is not an allowed value`);
+    }
+    if (!property.type) {
+      continue;
+    }
     const validType =
       property.type === "array"
         ? Array.isArray(value)
@@ -845,6 +882,23 @@ function requireOnlyRegistryFields(args, fields) {
 }
 
 function registryCommand(args) {
+  if (args.action === "activity_resolve") {
+    const unexpected = Object.keys(args).filter(
+      (key) => key !== "action" && key !== "locator"
+    );
+    if (unexpected.length > 0) {
+      throw new Error(
+        `activity_resolve received unsupported fields: ${unexpected.join(", ")}`
+      );
+    }
+    return [
+      "ai",
+      "loop",
+      "resolve",
+      requireString("locator", args.locator),
+      "--json",
+    ];
+  }
   if (
     args.scope === "project" &&
     args.action !== "reconcile_status" &&

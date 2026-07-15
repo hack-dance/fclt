@@ -122,6 +122,7 @@ fclt ai loop enable [--rrule <rrule>] [--source <id>] [--dry-run] [--json]
 fclt ai loop disable [--dry-run] [--json]
 fclt ai loop status [--json]
 fclt ai loop activity [--all|--global|--project] [--json]
+fclt ai loop resolve <activity-action-locator> [--json]
 fclt ai loop run [--since <date>] [--until <date>] [--source <id>] [--dry-run] [--scheduled] [--json]
 ```
 
@@ -152,6 +153,15 @@ distinct version 2 `activity-set` contract: each feed is joined to a stable
 opaque `scopeId`, and `truncation` reports any bounded omissions. Aggregate
 responses are capped before they reach CLI or plugin consumers; incomplete or
 truncated coverage is never presented as complete.
+
+Actionable items may include an optional opaque `actionLocator`. Resolve it
+with `loop resolve` to obtain a read-only, plain-language plan for the exact
+verified current scope and resource. Resolution accepts no root or scope flag,
+performs no mutation, and fails closed when the activity run, queue revision,
+resource lifecycle, allowed action class, or project/runtime identity changed.
+Older or non-actionable items without a locator remain handoff-only. See
+[Activity action locators](./activity-action-locators.md) for versioning and
+error semantics.
 
 `loop enable` is an explicit opt-in that installs an fclt-owned Codex
 automation. The loop persists the full current queue, emits a delta for

@@ -1,6 +1,11 @@
 import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
+import {
+  ACTIVITY_ACTION_LOCATOR_PATTERN,
+  activityActionScopeBinding,
+  createActivityActionLocator,
+} from "./activity-action-contract";
 import type {
   AiProposalRecord,
   AiWritebackRecord,
@@ -18,6 +23,7 @@ import {
   facultAiEvolutionLoopStatePath,
   facultLocalStateRoot,
   machineStateProjectScopeId,
+  preferredGlobalAiRoot,
   withFacultRootScope,
 } from "./paths";
 import { reconciliationReviewById } from "./reconciliation";
@@ -118,6 +124,7 @@ export interface ActivityContext {
 }
 
 export interface ActivityItem {
+  actionLocator?: string;
   id: string;
   kind: LoopQueueItem["kind"];
   categories: ActivityCategory[];
@@ -731,8 +738,24 @@ export function buildActivityFeed(args: {
   writebacks: AiWritebackRecord[];
   proposals: AiProposalRecord[];
   snapshot?: ActivityFeed["snapshot"];
+  locatorContext?: {
+    homeDir: string;
+    rootDir: string;
+    runtimeId?: string;
+  };
 }): ActivityFeed {
   const project = activityProject(args.report.projectRoot);
+  const locatorScope =
+    args.locatorContext?.runtimeId &&
+    (args.report.scope === "project" ||
+      resolve(args.locatorContext.rootDir) ===
+        resolve(preferredGlobalAiRoot(args.locatorContext.homeDir)))
+      ? activityActionScopeBinding({
+          ...args.locatorContext,
+          runtimeId: args.locatorContext.runtimeId,
+          scope: args.report.scope,
+        })
+      : null;
   const writebackById = new Map(
     args.writebacks.map((record) => [record.id, record])
   );
@@ -787,7 +810,16 @@ export function buildActivityFeed(args: {
         writebacks,
       }),
     };
+    const actionLocator = locatorScope
+      ? createActivityActionLocator({
+          item,
+          proposal,
+          runId: args.report.runId,
+          scope: locatorScope,
+        })
+      : null;
     return {
+      ...(actionLocator ? { actionLocator: actionLocator.locator } : {}),
       id: item.id,
       kind: item.kind,
       categories,
@@ -1029,6 +1061,9 @@ function isActivityItem(value: unknown): value is ActivityItem {
     return false;
   }
   if (
+    (value.actionLocator !== undefined &&
+      (typeof value.actionLocator !== "string" ||
+        !ACTIVITY_ACTION_LOCATOR_PATTERN.test(value.actionLocator))) ||
     typeof value.id !== "string" ||
     typeof value.kind !== "string" ||
     !Array.isArray(value.categories) ||
@@ -1090,7 +1125,7 @@ function isActivityItem(value: unknown): value is ActivityItem {
   return true;
 }
 
-function isActivityFeed(value: unknown): value is ActivityFeed {
+export function isActivityFeed(value: unknown): value is ActivityFeed {
   return (
     isRecord(value) &&
     value.version === 1 &&
