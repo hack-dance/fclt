@@ -1,5 +1,12 @@
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  resolve,
+} from "node:path";
 import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
 import { isInlineMcpSecretValue } from "../mcp-config";
@@ -781,9 +788,12 @@ export async function evaluateStaticAudit(opts?: {
     from = ["~"];
   }
   const canonicalRoot = facultRootDir(home, exactConfig);
-  const rulesPath =
+  const rulesPathInput =
     opts?.rulesPath ??
     join(facultStateDir(home, canonicalRoot, exactConfig), "audit-rules.yaml");
+  const rulesPath = isAbsolute(rulesPathInput)
+    ? normalize(rulesPathInput)
+    : resolve(rulesPathInput);
   const rulesText = await sourceTracker.readOptionalText(rulesPath);
   const overrides = loadRuleOverrides(rulesText);
   const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));

@@ -36,7 +36,7 @@ export interface AuditEvaluatedFileIdentity {
 }
 
 export interface AuditSourceSnapshot {
-  schemaVersion: 8;
+  schemaVersion: 9;
   protectedRoots: AuditProtectedRootIdentity[];
   evaluatedFiles: AuditEvaluatedFileIdentity[];
   evaluatedDirectories: AuditEvaluatedDirectoryIdentity[];
@@ -79,6 +79,8 @@ export interface AuditRequestedPathIdentity {
 }
 
 export interface AuditLexicalPathComponentIdentity {
+  birthtimeNs: string | null;
+  ctimeNs: string | null;
   dev: string;
   ino: string;
   kind: "directory" | "file" | "symlink";
@@ -213,6 +215,8 @@ const REQUESTED_PATH_KEYS = [
   "requestedPath",
 ] as const;
 const LEXICAL_PATH_COMPONENT_KEYS = [
+  "birthtimeNs",
+  "ctimeNs",
   "dev",
   "ino",
   "kind",
@@ -279,7 +283,7 @@ function canonicalSnapshotContract(
   snapshot: AuditSourceSnapshotContract
 ): AuditSourceSnapshotContract {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     protectedRoots: snapshot.protectedRoots.map((entry) => ({
       dev: entry.dev,
       ino: entry.ino,
@@ -334,6 +338,8 @@ function canonicalSnapshotContract(
       ancestorIno: entry.ancestorIno,
       ancestorPath: entry.ancestorPath,
       lexicalChain: entry.lexicalChain.map((component) => ({
+        birthtimeNs: component.birthtimeNs,
+        ctimeNs: component.ctimeNs,
         dev: component.dev,
         ino: component.ino,
         kind: component.kind,
@@ -350,6 +356,8 @@ function canonicalSnapshotContract(
       ino: entry.ino,
       kind: entry.kind,
       lexicalChain: entry.lexicalChain.map((component) => ({
+        birthtimeNs: component.birthtimeNs,
+        ctimeNs: component.ctimeNs,
         dev: component.dev,
         ino: component.ino,
         kind: component.kind,
@@ -480,6 +488,8 @@ async function captureLexicalPathChainOnce(
     const linkTarget =
       kind === "symlink" ? await readlink(componentPath) : null;
     chain.push({
+      birthtimeNs: kind === "symlink" ? before.birthtimeNs.toString() : null,
+      ctimeNs: kind === "symlink" ? before.ctimeNs.toString() : null,
       dev: before.dev.toString(),
       ino: before.ino.toString(),
       kind,
@@ -1532,7 +1542,7 @@ export class AuditSourceTracker {
 
   snapshot(): AuditSourceSnapshot {
     const contract: AuditSourceSnapshotContract = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       protectedRoots: [...this.#protectedRoots.values()].sort((a, b) =>
         compareStrings(a.path, b.path)
       ),
@@ -1584,7 +1594,7 @@ export function assertAuditSourceSnapshot(
   const snapshot = value as Partial<AuditSourceSnapshot>;
   const shapeIsValid =
     hasExactKeys(value, SNAPSHOT_KEYS) &&
-    snapshot.schemaVersion === 8 &&
+    snapshot.schemaVersion === 9 &&
     typeof snapshot.validationContractSha256 === "string" &&
     SHA256_RE.test(snapshot.validationContractSha256) &&
     Array.isArray(snapshot.protectedRoots) &&
@@ -2062,8 +2072,16 @@ function isValidLexicalPathComponentIdentity(
     entry.kind === "symlink"
       ? typeof entry.linkTarget === "string" && !entry.linkTarget.includes("\0")
       : entry.linkTarget === null;
+  const generationIdentityIsValid =
+    entry.kind === "symlink"
+      ? typeof entry.birthtimeNs === "string" &&
+        NON_NEGATIVE_DECIMAL_RE.test(entry.birthtimeNs) &&
+        typeof entry.ctimeNs === "string" &&
+        POSITIVE_DECIMAL_RE.test(entry.ctimeNs)
+      : entry.birthtimeNs === null && entry.ctimeNs === null;
   return (
     hasExactKeys(value, LEXICAL_PATH_COMPONENT_KEYS) &&
+    generationIdentityIsValid &&
     typeof entry.dev === "string" &&
     NON_NEGATIVE_DECIMAL_RE.test(entry.dev) &&
     typeof entry.ino === "string" &&

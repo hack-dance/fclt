@@ -223,6 +223,40 @@ describe("read-only audit boundary", () => {
     expect(await snapshotTree(home)).toEqual(before);
   });
 
+  it("persists safely when an explicit rules path is relative", async () => {
+    const { base, home } = await fixture();
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-relative-rules-")
+    );
+    const rulesPath = join("..", "rules", "audit-rules.yaml");
+    await writeFile(join(base, "rules", "audit-rules.yaml"), "rules: []\n");
+    const before = await snapshotTree(home);
+
+    const cli = await runAuditCli(
+      [
+        "audit",
+        "--non-interactive",
+        "--no-config-from",
+        "--from",
+        home,
+        "--rules",
+        rulesPath,
+        "--report-root",
+        reportRoot,
+        "--json",
+      ],
+      home
+    );
+
+    expect(cli.stderr).toBe("");
+    expect(cli.exitCode).toBe(0);
+    const reportPath = await exactReportPath(reportRoot);
+    await expect(loadVerifiedAuditReport({ reportPath })).resolves.toEqual(
+      JSON.parse(cli.stdout)
+    );
+    expect(await snapshotTree(home)).toEqual(before);
+  });
+
   it("updates generated audit annotations only in explicit mutation mode", async () => {
     const { home } = await fixture();
     const skillPath = join(home, ".ai", "skills", "review");

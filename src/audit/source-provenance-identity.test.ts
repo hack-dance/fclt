@@ -19,6 +19,9 @@ import {
   validateAuditSourceSnapshot,
 } from "./source-provenance";
 
+const NON_NEGATIVE_DECIMAL_RE = /^\d+$/;
+const POSITIVE_DECIMAL_RE = /^[1-9]\d*$/;
+
 function recomputeValidationContract(
   snapshot: AuditSourceSnapshot
 ): AuditSourceSnapshot {
@@ -317,9 +320,17 @@ test("requested paths reject same-target lexical symlink replacement", async () 
   await tracker.read(requested);
   const snapshot = tracker.snapshot();
   expect(snapshot.evaluatedFiles[0]?.path).toBe(await realpath(target));
+  const aliasIdentity = snapshot.requestedPaths[0]!.lexicalChain.find(
+    (component) => component.path === aliasDirectory
+  );
+  expect(aliasIdentity?.birthtimeNs).toMatch(NON_NEGATIVE_DECIMAL_RE);
+  expect(aliasIdentity?.ctimeNs).toMatch(POSITIVE_DECIMAL_RE);
+  expect(aliasIdentity?.kind).toBe("symlink");
+  expect(aliasIdentity?.linkTarget).toBe(targetDirectory);
+  expect(() => assertAuditSourceSnapshot(snapshot)).not.toThrow();
 
   await rm(aliasDirectory);
-  await symlink("target", aliasDirectory, "dir");
+  await symlink(targetDirectory, aliasDirectory, "dir");
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "requested path changed"
@@ -343,7 +354,7 @@ test("absence proofs reject same-target lexical symlink replacement", async () =
   const snapshot = tracker.snapshot();
 
   await rm(aliasDirectory);
-  await symlink("target", aliasDirectory, "dir");
+  await symlink(targetDirectory, aliasDirectory, "dir");
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "absent requested path changed"
@@ -372,6 +383,26 @@ test("recomputed contracts cannot shorten, reorder, or inject lexical chains", a
     .lexicalChain[0] as unknown as Record<string, unknown>;
   injectedComponent.unexpected = true;
   mutations.push(recomputeValidationContract(injected));
+
+  const generationRoot = await mkdtemp(
+    join(tmpdir(), "fclt-provenance-lexical-generation-")
+  );
+  const generationTargetDirectory = join(generationRoot, "target");
+  const generationAliasDirectory = join(generationRoot, "alias");
+  const generationTarget = join(generationTargetDirectory, "target.json");
+  const generationAlias = join(generationAliasDirectory, "target.json");
+  await mkdir(generationTargetDirectory);
+  await writeFile(generationTarget, "{}\n");
+  await symlink(generationTargetDirectory, generationAliasDirectory, "dir");
+  const generationTracker = new AuditSourceTracker();
+  await generationTracker.read(generationAlias);
+  const missingGeneration = generationTracker.snapshot();
+  const symlinkComponent =
+    missingGeneration.requestedPaths[0]!.lexicalChain.find(
+      (component) => component.path === generationAliasDirectory
+    )!;
+  Reflect.deleteProperty(symlinkComponent, "ctimeNs");
+  mutations.push(recomputeValidationContract(missingGeneration));
 
   const extended = structuredClone(valid);
   extended.requestedPaths[0]!.lexicalChain.push({

@@ -190,7 +190,7 @@ test("absence operations retain their first lexical ancestor observation", async
         }
         replaced = true;
         await rm(alias);
-        await symlink("target", alias, "dir");
+        await symlink(target, alias, "dir");
       },
     });
 
