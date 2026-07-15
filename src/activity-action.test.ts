@@ -311,6 +311,29 @@ describe("activity action locators", () => {
     expect(JSON.stringify(projectResolution)).not.toContain(project.rootDir);
   });
 
+  it("resolves locators for path-safe legacy proposal ids", async () => {
+    const legacyId = "EV-LEGACY";
+    const fixture = await persistScope({
+      homeDir,
+      scope: "project",
+      proposal: proposal({ id: legacyId }),
+      item: queueItem({
+        id: `proposal:${legacyId}`,
+        proposalId: legacyId,
+      }),
+      runId: "LR-legacy-id",
+    });
+
+    expect(
+      await resolveActivityActionLocator({ homeDir, locator: fixture.locator })
+    ).toMatchObject({
+      status: "resolved",
+      target: {
+        resource: { kind: "proposal", id: legacyId },
+      },
+    });
+  });
+
   it("preserves global resolution when project discovery exceeds its cap", async () => {
     const global = await persistScope({
       homeDir,
