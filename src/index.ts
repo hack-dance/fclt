@@ -143,6 +143,7 @@ function printHelp() {
               ],
               ["search/install/update", "Work with remote capability indices"],
               ["manage/sync", "Preview deprecated broad managed-mode output"],
+              ["deploy plan", "Build one immutable per-asset deployment plan"],
               [
                 "setup",
                 "Install narrow agent integrations without full managed mode",
@@ -1358,6 +1359,11 @@ async function main(argv: string[]) {
       return;
     case "manage":
       await import("./manage").then(({ manageCommand }) => manageCommand(rest));
+      return;
+    case "deploy":
+      await import("./deployment-plan").then(({ deployCommand }) =>
+        deployCommand(rest)
+      );
       return;
     case "unmanage":
       await import("./manage").then(({ unmanageCommand }) =>

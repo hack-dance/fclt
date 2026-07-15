@@ -69,6 +69,20 @@ fclt index [--force]
 
 Use these to create or normalize canonical capability in `~/.ai` or `<repo>/.ai`.
 
+## Per-asset deployment planning
+
+```bash
+fclt deploy plan --asset instruction:<name>|snippet:<path> \
+  --destination <relative-path> --tool codex --adapter-version v1 \
+  --root <canonical-root> --target-root <tool-root> --state-root <state-root> \
+  --scope global|project [--expected-source-hash sha256:<hex>] \
+  [--expected-current-hash absent|sha256:<hex>] --json
+```
+
+This is a read-only, one-asset/one-destination planning boundary. It emits a deterministic,
+content-addressed plan and has no executor. Use isolated roots while this boundary is being proven;
+broad managed apply remains deprecated and contained.
+
 ## Legacy managed mode
 
 ```bash
