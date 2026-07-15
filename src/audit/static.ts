@@ -9,10 +9,7 @@ import {
 } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
-import {
-  extractAuditMcpServersObject,
-  isInlineMcpSecretValue,
-} from "../mcp-config";
+import { extractServersObject, isInlineMcpSecretValue } from "../mcp-config";
 import {
   facultConfigPath,
   facultContextRootDir,
@@ -1107,7 +1104,7 @@ export async function evaluateStaticAudit(opts?: {
       continue;
     }
 
-    const serversObj = extractAuditMcpServersObject(parsed);
+    const serversObj = extractServersObject(parsed);
     if (!serversObj) {
       continue;
     }

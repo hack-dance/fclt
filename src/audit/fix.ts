@@ -1,10 +1,7 @@
 import { closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize } from "node:path";
-import {
-  extractAuditMcpServersObject,
-  isInlineMcpSecretValue,
-} from "../mcp-config";
+import { extractServersObject, isInlineMcpSecretValue } from "../mcp-config";
 import { facultContextRootDir } from "../paths";
 import { parseJsonLenient } from "../util/json";
 import type { AgentAuditReport } from "./agent";
@@ -371,20 +368,20 @@ function transformBoundMcpConfigs(args: {
   if (!isPlainObject(sourceRoot)) {
     throw new Error("Bound MCP source is not a JSON object");
   }
-  const sourceServers = extractAuditMcpServersObject(sourceRoot);
+  const sourceServers = extractServersObject(sourceRoot);
   if (!sourceServers) {
     throw new Error("Bound MCP source has no servers object");
   }
   const destinationRoot: Record<string, unknown> = args.destinationContents
     ? (() => {
         const parsed = parseJsonLenient(args.destinationContents);
-        if (!(isPlainObject(parsed) && extractAuditMcpServersObject(parsed))) {
+        if (!(isPlainObject(parsed) && extractServersObject(parsed))) {
           throw new Error("Bound MCP destination has no servers object");
         }
         return parsed;
       })()
     : { servers: {} };
-  const destinationServers = extractAuditMcpServersObject(destinationRoot)!;
+  const destinationServers = extractServersObject(destinationRoot)!;
 
   for (const binding of args.bindings) {
     const sourceServer = sourceServers[binding.serverName];

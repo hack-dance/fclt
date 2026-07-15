@@ -488,21 +488,21 @@ describe("audit fix", () => {
     }
   });
 
-  it("remediates the exact container selected by the static auditor", async () => {
+  it("remediates the active container shared by runtime and static audit", async () => {
     const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
       sourceRoot: {
         servers: {
-          github: {
-            command: "decoy-command",
-            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "decoy_secret_1234567890" },
-          },
-        },
-        "mcp.servers": {
           github: {
             command: "fixture-command",
             env: {
               GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
             },
+          },
+        },
+        "mcp.servers": {
+          github: {
+            command: "decoy-command",
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "decoy_secret_1234567890" },
           },
         },
       },
@@ -517,12 +517,14 @@ describe("audit fix", () => {
       expect(await Bun.file(fixture.trackedPath).json()).toEqual({
         servers: {
           github: {
-            command: "decoy-command",
-            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "decoy_secret_1234567890" },
+            command: "fixture-command",
           },
         },
         "mcp.servers": {
-          github: { command: "fixture-command" },
+          github: {
+            command: "decoy-command",
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "decoy_secret_1234567890" },
+          },
         },
       });
       expect(await Bun.file(fixture.localPath).json()).toEqual({
