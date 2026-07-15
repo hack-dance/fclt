@@ -127,6 +127,7 @@ async function makeAuthorizedFixture(
   marker = "fixture_secret_1234567890",
   options?: {
     localMode?: number;
+    localRoot?: Record<string, unknown>;
     localServer?: Record<string, unknown>;
     serverName?: string;
     sourceRoot?: Record<string, unknown>;
@@ -148,10 +149,13 @@ async function makeAuthorizedFixture(
       },
     }
   );
-  if (options?.localServer) {
-    await writeJson(localPath, {
-      servers: { [serverName]: options.localServer },
-    });
+  if (options?.localRoot || options?.localServer) {
+    await writeJson(
+      localPath,
+      options.localRoot ?? {
+        servers: { [serverName]: options.localServer },
+      }
+    );
     if (options.localMode !== undefined) {
       await chmod(localPath, options.localMode);
     }
@@ -423,6 +427,64 @@ describe("audit fix", () => {
           },
         },
       });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("initializes an exact-bound empty local overlay", async () => {
+    const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
+      localRoot: {},
+    });
+    try {
+      const result = await runAuditFix({
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect(result.fixed).toBe(1);
+      expect(await Bun.file(fixture.localPath).json()).toEqual({
+        servers: {
+          github: {
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+            },
+          },
+        },
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("reports unsupported remediation names without creating a binding", async () => {
+    const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
+      serverName: "team/github",
+    });
+    try {
+      const envelope = (await Bun.file(fixture.exactReportPath).json()) as {
+        receipt: { remediationBindings: unknown[] };
+        report: { results: Array<{ findings: Array<{ ruleId: string }> }> };
+      };
+      expect(envelope.receipt.remediationBindings).toEqual([]);
+      expect(
+        envelope.report.results.flatMap((result) => result.findings)
+      ).toContainEqual(
+        expect.objectContaining({ ruleId: "mcp-env-inline-secret" })
+      );
+      const dryRun = await runAuditFix({
+        argv: [
+          "--item",
+          "team/github",
+          "--report",
+          fixture.exactReportPath,
+          "--dry-run",
+        ],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect(dryRun.matched).toBe(1);
+      expect(dryRun.fixed).toBe(0);
     } finally {
       await fixture.cleanup();
     }

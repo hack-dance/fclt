@@ -405,7 +405,9 @@ export function buildMcpRemediationBindings(args: {
         result.path !== location.configPath ||
         dirname(result.path) !== mcpRoot ||
         !["servers.json", "mcp.json"].includes(basename(result.path)) ||
-        !existingPaths.has(result.path)
+        !existingPaths.has(result.path) ||
+        !isSingleSafeSegment(location.serverName) ||
+        !isSingleSafeSegment(location.envKey)
       ) {
         return [];
       }

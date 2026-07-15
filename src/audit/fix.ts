@@ -375,8 +375,15 @@ function transformBoundMcpConfigs(args: {
   const destinationRoot: Record<string, unknown> = args.destinationContents
     ? (() => {
         const parsed = parseJsonLenient(args.destinationContents);
-        if (!(isPlainObject(parsed) && extractServersObject(parsed))) {
-          throw new Error("Bound MCP destination has no servers object");
+        if (!isPlainObject(parsed)) {
+          throw new Error("Bound MCP destination is not a JSON object");
+        }
+        if (!extractServersObject(parsed)) {
+          if (Object.keys(parsed).length === 0) {
+            parsed.servers = {};
+          } else {
+            throw new Error("Bound MCP destination has no servers object");
+          }
         }
         return parsed;
       })()
