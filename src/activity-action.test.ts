@@ -28,6 +28,7 @@ import {
   facultAiEvolutionLoopReportDir,
   facultAiEvolutionLoopStatePath,
   facultAiProposalDir,
+  facultLocalStateRoot,
   machineStateProjectKey,
   preferredGlobalAiRoot,
 } from "./paths";
@@ -308,6 +309,40 @@ describe("activity action locators", () => {
       },
     });
     expect(JSON.stringify(projectResolution)).not.toContain(project.rootDir);
+  });
+
+  it("preserves global resolution when project discovery exceeds its cap", async () => {
+    const global = await persistScope({
+      homeDir,
+      scope: "global",
+      proposal: proposal({ scope: "global" }),
+      runId: "LR-global-cap",
+    });
+    const project = await persistScope({
+      homeDir,
+      scope: "project",
+      proposal: proposal(),
+      runId: "LR-project-cap",
+    });
+    const projectsDir = join(facultLocalStateRoot(homeDir), "projects");
+    await Promise.all(
+      Array.from({ length: 1000 }, (_, index) =>
+        mkdir(join(projectsDir, `overflow-${index}`), { recursive: true })
+      )
+    );
+
+    expect(
+      await resolveActivityActionLocator({ homeDir, locator: global.locator })
+    ).toMatchObject({
+      status: "resolved",
+      target: { scopeId: "global", scope: "global" },
+    });
+    expect(
+      await resolveActivityActionLocator({ homeDir, locator: project.locator })
+    ).toMatchObject({
+      status: "rejected",
+      error: { code: "locator_not_found" },
+    });
   });
 
   it("is read-only and emits no raw root, argv, endpoint, token, or credential fields", async () => {

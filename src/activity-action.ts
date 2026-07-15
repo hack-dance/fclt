@@ -415,7 +415,7 @@ async function resolvableScopes(homeDir: string): Promise<ResolvableScope[]> {
     return scopes;
   }
   if (entries.length > MAX_PROJECT_SCOPE_DIRS) {
-    return [];
+    return scopes;
   }
   for (const entry of entries) {
     const project = await projectScope({ entry, homeDir, projectsDir });
