@@ -30,6 +30,13 @@ const DESTINATION_COLLISION_KEY_RE =
   /^case-folded-path-v2:unicode-case-folding@1\.1\.1:.+/;
 const SOURCE_DIR_SUFFIX_RE = /\/src$/;
 const DOLLAR = "$";
+const PACKAGE_VERSION = (
+  JSON.parse(
+    await readFile(join(import.meta.dir, "..", "package.json"), "utf8")
+  ) as { version: string }
+).version;
+const MISMATCHED_PACKAGE_VERSION =
+  PACKAGE_VERSION === "0.0.0" ? "0.0.1" : "0.0.0";
 
 interface Fixture {
   canonicalRoot: string;
@@ -61,7 +68,7 @@ function planOptions(fixture: Fixture) {
     canonicalRoot: fixture.canonicalRoot,
     destination: "instructions/WORK_UNITS.md",
     expectedCurrentHash: null,
-    plannerVersion: "2.24.1",
+    plannerVersion: PACKAGE_VERSION,
     scope: "global" as const,
     stateRoot: fixture.stateRoot,
     targetRoot: fixture.targetRoot,
@@ -200,7 +207,7 @@ describe("immutable per-asset deployment planning", () => {
     expect(second).toEqual(first);
     expect(after).toEqual(before);
     expect(first.schemaVersion).toBe(1);
-    expect(first.planner).toEqual({ name: "fclt", version: "2.24.1" });
+    expect(first.planner).toEqual({ name: "fclt", version: PACKAGE_VERSION });
     expect(first.planId).toMatch(SHA256_RE);
     expect(first.binding.asset).toEqual({
       kind: "instruction",
@@ -246,7 +253,7 @@ describe("immutable per-asset deployment planning", () => {
     expect(Object.isFrozen(first.operations.writes)).toBe(true);
   });
 
-  it("proves the fclt 2.24.1 CLI consumer against an isolated Codex home", async () => {
+  it(`proves the fclt ${PACKAGE_VERSION} CLI consumer against an isolated Codex home`, async () => {
     const fixture = await createFixture();
     const before = await snapshotTree(fixture.root);
     const result = await runCli([
@@ -276,7 +283,7 @@ describe("immutable per-asset deployment planning", () => {
 
     expect(result).toMatchObject({ code: 0, stderr: "" });
     const plan = JSON.parse(result.stdout) as DeploymentPlanV1;
-    expect(plan.planner.version).toBe("2.24.1");
+    expect(plan.planner.version).toBe(PACKAGE_VERSION);
     expect(plan.binding.destination.root).toBe(fixture.targetRoot);
     expect(plan.operations.writes.map((write) => write.kind)).toEqual([
       "target",
@@ -1305,11 +1312,11 @@ describe("immutable per-asset deployment planning", () => {
         plannerVersion: undefined,
       });
       expect(second).toEqual(first);
-      expect(second.planner.version).toBe("2.24.1");
+      expect(second.planner.version).toBe(PACKAGE_VERSION);
       await expect(
         buildDeploymentPlan({
           ...planOptions(fixture),
-          plannerVersion: "2.24.0",
+          plannerVersion: MISMATCHED_PACKAGE_VERSION,
         })
       ).rejects.toThrow("does not match the authoritative fclt version");
     } finally {
