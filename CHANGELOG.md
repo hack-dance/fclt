@@ -1,3 +1,18 @@
+## [2.28.0](https://github.com/hack-dance/fclt/compare/v2.27.2...v2.28.0) (2026-07-15)
+
+### Features
+
+* add immutable per-asset deployment planning ([818881b](https://github.com/hack-dance/fclt/commit/818881b782397cdcb0504c4485d02f2d33414193))
+
+### Bug Fixes
+
+* canonicalize deployment destination identity ([514a10c](https://github.com/hack-dance/fclt/commit/514a10ce09d30a6f8ac4223e49eeda3586ab10c0))
+* close deployment planning races ([56aecd7](https://github.com/hack-dance/fclt/commit/56aecd77cb496f17f5e0e33583f96e32da571c37))
+* harden deployment path identity ([6b28a33](https://github.com/hack-dance/fclt/commit/6b28a33537f287226174133068a23699d6aff85b))
+* harden immutable deployment state scans ([36e6865](https://github.com/hack-dance/fclt/commit/36e686595be5c93ca7cc7bc39c81cad809eeaffc))
+* preserve deployment ownership lifecycle ([0cbea75](https://github.com/hack-dance/fclt/commit/0cbea75d7db5e8edc72a292d84c21113bdc590a7))
+* reuse hardened descriptor helpers for deploy plans ([5a18070](https://github.com/hack-dance/fclt/commit/5a180709d3086b98f4f6383ef3b87278b72e3717))
+
 ## [2.27.2](https://github.com/hack-dance/fclt/compare/v2.27.1...v2.27.2) (2026-07-15)
 
 ### Bug Fixes
