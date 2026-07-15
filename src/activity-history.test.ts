@@ -798,5 +798,24 @@ describe("activity history", () => {
     expect(aggregate.truncation.truncated).toBe(true);
     expect(aggregate.truncation.omittedScopes).toBe(2);
     expect(aggregate.coverage.complete).toBe(false);
+
+    const omittedScope = aggregate.coverage.scopes.find(
+      (scope) => scope.state === "omitted"
+    );
+    expect(omittedScope).toBeDefined();
+    const targeted = await queryActivityHistory({
+      homeDir: home,
+      rootDir: globalRoot,
+      scope: "all",
+      scopeId: omittedScope!.id,
+      since: "2026-07-02T00:00:00.000Z",
+      eventTypes: ["run"],
+    });
+    expect(targeted.events).toHaveLength(1);
+    expect(targeted.coverage.scopes[0]?.state).toBe("available");
+    expect(targeted.truncation).toMatchObject({
+      truncated: false,
+      omittedScopes: 0,
+    });
   });
 });

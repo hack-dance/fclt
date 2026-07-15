@@ -1715,14 +1715,17 @@ export async function queryActivityHistory(
   const limit = validateQuery(query);
   const cursor = parseCursor(query.cursor);
   const discovered = await scopeDescriptors(query);
-  const selectedDescriptors = discovered.descriptors.filter(
-    (descriptor) => !query.scopeId || descriptor.id === query.scopeId
-  );
+  const selectedDescriptors = discovered.descriptors
+    .filter((descriptor) => !query.scopeId || descriptor.id === query.scopeId)
+    .map((descriptor) =>
+      query.scopeId ? { ...descriptor, omitted: false } : descriptor
+    );
+  const readableScopeCount = selectedDescriptors.filter(
+    (descriptor) => !descriptor.omitted
+  ).length;
   const perScopeBudget = Math.max(
     1,
-    Math.floor(
-      MAX_QUERY_SCANNED_EVENTS / Math.max(selectedDescriptors.length, 1)
-    )
+    Math.floor(MAX_QUERY_SCANNED_EVENTS / Math.max(readableScopeCount, 1))
   );
   const reads: ScopeRead[] = [];
   for (const descriptor of selectedDescriptors) {
@@ -1773,7 +1776,7 @@ export async function queryActivityHistory(
       detail: read.detail,
     };
   });
-  const omittedScopes = discovered.descriptors.filter(
+  const omittedScopes = selectedDescriptors.filter(
     (entry) => entry.omitted
   ).length;
   const scanLimitReached = reads.some((read) => read.scanLimitReached);
