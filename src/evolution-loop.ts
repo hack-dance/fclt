@@ -1880,11 +1880,15 @@ async function persistFailedLoopRun(args: {
     auditPath,
   };
   const { buildActivityFeed } = await import("./activity");
+  const proposals = await listProposals({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+  });
   report.activity = buildActivityFeed({
     report,
     review: args.review ?? null,
     writebacks: [],
-    proposals: [],
+    proposals,
     locatorContext: {
       homeDir: args.homeDir,
       rootDir: args.rootDir,

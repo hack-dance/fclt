@@ -1075,6 +1075,59 @@ describe("evolution loop", () => {
     expect(audit).toContain('"attempt":3');
   });
 
+  it("keeps proposal action locators in failed-run activity snapshots", async () => {
+    const project = await makeProject();
+    await mkdir(join(project.rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(project.rootDir, "instructions", "REVIEW.md"),
+      "# Review\n"
+    );
+    await Bun.write(
+      join(project.projectRoot, "review.md"),
+      "## 2026-01-02 Capability review\n\nThe rule in @project/instructions/REVIEW.md needs a durable verification loop.\n"
+    );
+    await enableEvolutionLoop({
+      ...project,
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const complete = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const proposalId = complete.queue.find(
+      (item) => item.kind === "proposal"
+    )?.proposalId;
+    expect(proposalId).toBeDefined();
+
+    await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["missing-source"],
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+    const failed = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+    const proposalActivity = failed.activity?.items.find(
+      (item) => item.technical.proposalId === proposalId
+    );
+    expect(failed.status).toBe("failed");
+    expect(proposalActivity?.actionLocator).toBeDefined();
+    expect(
+      await resolveActivityActionLocator({
+        homeDir: project.homeDir,
+        locator: proposalActivity!.actionLocator!,
+      })
+    ).toMatchObject({
+      status: "resolved",
+      target: { resource: { kind: "proposal", id: proposalId } },
+    });
+  });
+
   it("records committed mutations when a later materialization step fails", async () => {
     const project = await makeProject();
     await mkdir(join(project.rootDir, "instructions"), { recursive: true });

@@ -7,6 +7,7 @@ const path = require("node:path");
 const runtime = require("./fclt-runtime.cjs");
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.FCLT_MCP_TIMEOUT_MS || 60_000);
+const ACTIVITY_ACTION_RESOLVE_CAPABILITY = "activity-action-resolve-v1";
 const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
 const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
@@ -1306,6 +1307,29 @@ async function runFclt(args, cwd, operation) {
           error: "missing_runtime_capability",
           message:
             "The selected fclt runtime does not advertise audit-read-only-v1; typed audit fails closed.",
+          runtime: discovery,
+        },
+        null,
+        2
+      ),
+    };
+  }
+
+  if (
+    operation.action === "activity_resolve" &&
+    !discovery.selected.capabilities?.includes(
+      ACTIVITY_ACTION_RESOLVE_CAPABILITY
+    )
+  ) {
+    return {
+      code: 1,
+      text: JSON.stringify(
+        {
+          schemaVersion: 1,
+          operation,
+          error: "missing_runtime_capability",
+          message:
+            "The selected fclt runtime does not advertise activity-action-resolve-v1; typed activity resolution fails closed.",
           runtime: discovery,
         },
         null,

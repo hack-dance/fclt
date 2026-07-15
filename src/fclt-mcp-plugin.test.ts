@@ -109,7 +109,7 @@ function compatibleStubScript(): string {
   return [
     `#!${process.execPath}`,
     "if (process.argv[2] === 'protocol') {",
-    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['audit-read-only-v1']}));",
+    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['activity-action-resolve-v1','audit-read-only-v1']}));",
     "} else {",
     "  console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
     "}",
@@ -996,6 +996,49 @@ describe("bundled fclt MCP plugin", () => {
       } finally {
         child.kill();
       }
+    }
+  });
+
+  it("fails typed activity resolution closed for runtimes without the resolver capability", async () => {
+    const base = await mkdtemp(join(tmpdir(), "facult-mcp-legacy-resolver-"));
+    const stub = join(base, "fclt-legacy.cjs");
+    const invoked = join(base, "invoked.txt");
+    await Bun.write(stub, legacyProtocolStubScript("2.25.4"));
+    await chmod(stub, 0o755);
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawnConfiguredMcp({
+      env: {
+        FCLT_BIN: stub,
+        FCLT_LEGACY_INVOKED: invoked,
+        HOME: base,
+        PWD: base,
+      },
+      pluginRoot,
+    });
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "activity_resolve",
+              locator: ACTION_LOCATOR,
+            },
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(response.result?.isError).toBe(true);
+      const payload = toolPayload(response) as unknown as { error: string };
+      expect(payload.error).toBe("missing_runtime_capability");
+      expect(await Bun.file(invoked).exists()).toBe(false);
+    } finally {
+      child.kill();
     }
   });
 
