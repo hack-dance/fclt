@@ -23,7 +23,6 @@ import {
 import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
 import { type QuarantineMode, quarantineItems } from "../quarantine";
 import { type AgentAuditReport, runAgentAudit } from "./agent";
-import { fixInlineMcpSecrets, removeFixedInlineSecretFindings } from "./fix";
 import { runStaticAudit } from "./static";
 import {
   applyAuditSuppressionsToAgentReport,
@@ -41,7 +40,56 @@ import {
 import { updateIndexFromAuditReport } from "./update-index";
 
 type InteractiveReviewerTool = "codex" | "claude";
-const AUDIT_RULE_PREFIX_RE = /^(static|agent):/;
+interface AuditTuiActionOption {
+  hint: string;
+  label: string;
+  value: string;
+}
+
+type AuditTuiActionPrompt = (args: {
+  message: string;
+  options: AuditTuiActionOption[];
+}) => Promise<unknown>;
+
+export function auditTuiActionOptions(): AuditTuiActionOption[] {
+  return [
+    {
+      value: "quarantine",
+      label: "Quarantine items",
+      hint: "move/copy to ~/.ai/.facult/quarantine",
+    },
+    {
+      value: "view",
+      label: "Inspect one item",
+      hint: "open finding details",
+    },
+    {
+      value: "view-many",
+      label: "Inspect several items",
+      hint: "review multiple findings together",
+    },
+    {
+      value: "review-ai",
+      label: "Review with AI",
+      hint: "hand off selected findings to Codex or Claude",
+    },
+    {
+      value: "mark-safe",
+      label: "Mark findings safe",
+      hint: "suppress reviewed false positives in future audits",
+    },
+    { value: "exit", label: "Exit", hint: "leave files unchanged" },
+  ];
+}
+
+export async function promptForAuditTuiAction(
+  prompt: AuditTuiActionPrompt = (args) => select(args)
+): Promise<unknown> {
+  return await prompt({
+    message: "What do you want to do next?",
+    options: auditTuiActionOptions(),
+  });
+}
 
 export function parseAuditTuiArgs(argv: string[]): {
   allowLegacyManagedMutation: boolean;
@@ -275,11 +323,11 @@ function buildReviewerPrompt(args: {
     "- Propose the safest order to handle them.",
     "- If a fix is straightforward, suggest or implement it in this session.",
     "- Prefer fixing the canonical `.ai` source once when the same MCP issue appears in multiple tool configs.",
-    "- If an MCP secret needs remediation, use the `fclt audit fix ...` flow before suggesting manual edits.",
+    "- Inline MCP secret mutation is disabled pending a durable transaction protocol; review the exact finding and propose a manual, approval-gated plan.",
     "",
     "Useful `fclt` commands in this repo:",
     "- `fclt show mcp:<name>` to inspect the canonical MCP entry.",
-    "- `fclt audit fix <item>` to move inline MCP secrets into the local canonical overlay.",
+    "- `fclt audit fix <item> --report <exact-report> --dry-run` to verify and preview matching inline-secret findings without writing.",
     "- `fclt audit safe ...` to suppress a reviewed false positive.",
     "- `fclt manage <tool> --dry-run` or `fclt sync [tool] --dry-run` to inspect deprecated managed rendering without changing tool state.",
     "",
@@ -332,16 +380,6 @@ function viewMultipleFindingDetails(items: AuditItemResult[]) {
   });
 
   note(blocks.join("\n\n"), "Selected findings");
-}
-
-function inlineSecretSelectionLabel(selection: {
-  result: AuditItemResult;
-  finding: AuditFinding;
-}): string {
-  const location = selection.finding.location
-    ? ` @ ${selection.finding.location}`
-    : "";
-  return `[${selection.finding.severity.toUpperCase()}] ${selection.result.item}${location}`;
 }
 
 function labelForFindingSelection(args: {
@@ -781,42 +819,7 @@ export async function auditTuiCommand(argv: string[]) {
   log.warn(`Review queue: ${failCount} fail, ${warnCount} warn.`);
 
   while (true) {
-    const action = await select({
-      message: "What do you want to do next?",
-      options: [
-        {
-          value: "quarantine",
-          label: "Quarantine items",
-          hint: "move/copy to ~/.ai/.facult/quarantine",
-        },
-        {
-          value: "view",
-          label: "Inspect one item",
-          hint: "open finding details",
-        },
-        {
-          value: "view-many",
-          label: "Inspect several items",
-          hint: "review multiple findings together",
-        },
-        {
-          value: "review-ai",
-          label: "Review with AI",
-          hint: "hand off selected findings to Codex or Claude",
-        },
-        {
-          value: "fix-inline-secrets",
-          label: "Fix inline MCP secrets",
-          hint: "move secrets into local canonical overlay and re-sync",
-        },
-        {
-          value: "mark-safe",
-          label: "Mark findings safe",
-          hint: "suppress reviewed false positives in future audits",
-        },
-        { value: "exit", label: "Exit", hint: "leave files unchanged" },
-      ],
-    });
+    const action = await promptForAuditTuiAction();
     if (isCancel(action) || action === "exit") {
       outro("Done.");
       return;
@@ -945,137 +948,6 @@ export async function auditTuiCommand(argv: string[]) {
         outro(`${tool} exited with code ${exitCode}.`);
       }
       return;
-    }
-
-    if (action === "fix-inline-secrets") {
-      const candidates = withFindings
-        .flatMap((result) =>
-          result.findings.map((finding) => ({
-            result,
-            finding,
-          }))
-        )
-        .filter(
-          (selection) =>
-            selection.result.type === "mcp" &&
-            selection.finding.ruleId.replace(AUDIT_RULE_PREFIX_RE, "") ===
-              "mcp-env-inline-secret"
-        )
-        .slice(0, 300);
-      if (candidates.length === 0) {
-        log.info("No fixable inline MCP secret findings in the current queue.");
-        continue;
-      }
-
-      const picked = await multiselect({
-        message: "Select inline MCP secret findings to fix",
-        options: candidates.map((candidate, idx) => ({
-          value: String(idx),
-          label: inlineSecretSelectionLabel(candidate),
-          hint: hintForFindingSelection(candidate),
-        })),
-        required: true,
-      });
-      if (isCancel(picked)) {
-        continue;
-      }
-
-      const selected = (picked as string[])
-        .map((value) => candidates[Number(value)])
-        .filter(Boolean) as {
-        result: AuditItemResult;
-        finding: AuditFinding;
-      }[];
-      if (selected.length === 0) {
-        continue;
-      }
-
-      const ok = await confirm({
-        message: `Fix ${selected.length} selected inline MCP secret finding${selected.length === 1 ? "" : "s"}?`,
-        initialValue: true,
-        active: "Fix now",
-        inactive: "Cancel",
-      });
-      if (isCancel(ok) || ok !== true) {
-        continue;
-      }
-
-      const fixResult = await fixInlineMcpSecrets({
-        findings: selected,
-        homeDir: homedir(),
-        allowLegacyManagedMutation: parsedArgs.allowLegacyManagedMutation,
-      });
-      if (fixResult.fixed === 0) {
-        log.warn("No selected findings could be fixed automatically.");
-        for (const skipped of fixResult.skipped.slice(0, 6)) {
-          log.info(`${skipped.label}: ${skipped.reason}`);
-        }
-        continue;
-      }
-
-      staticReport = staticReport
-        ? applyAuditSuppressionsToStaticReport(
-            {
-              ...staticReport,
-              results: removeFixedInlineSecretFindings({
-                results: staticReport.results,
-                fixed: fixResult.fixedSelections,
-              }),
-            },
-            []
-          )
-        : undefined;
-      agentReport = agentReport
-        ? applyAuditSuppressionsToAgentReport(
-            {
-              ...agentReport,
-              results: removeFixedInlineSecretFindings({
-                results: agentReport.results,
-                fixed: fixResult.fixedSelections,
-              }),
-            },
-            []
-          )
-        : undefined;
-      refreshReviewState();
-
-      await updateIndexFromAuditReport({
-        homeDir: homedir(),
-        timestamp: new Date().toISOString(),
-        results: uniqueByKey(
-          mergeStaticAndAgentResults({
-            static: staticReport?.results ?? [],
-            agent: agentReport?.results ?? [],
-          }),
-          keyForResult
-        ),
-      });
-
-      log.success(
-        `Fixed ${fixResult.fixed} inline MCP secret finding${fixResult.fixed === 1 ? "" : "s"}.`
-      );
-      if (fixResult.trackedPath && fixResult.localPath) {
-        log.info(`Tracked MCP config: ${fixResult.trackedPath}`);
-        log.info(`Local MCP overlay: ${fixResult.localPath}`);
-      }
-      if (fixResult.syncedTools.length > 0) {
-        log.info(
-          `Re-synced managed tools: ${fixResult.syncedTools.join(", ")}`
-        );
-      }
-      if (fixResult.riskyManagedOutputs.length > 0) {
-        for (const output of fixResult.riskyManagedOutputs) {
-          log.warn(
-            `${output.path} is ${output.state === "tracked" ? "git-tracked" : "repo-local and not gitignored"}.`
-          );
-        }
-      }
-      if (fixResult.skipped.length > 0) {
-        log.warn(
-          `Skipped ${fixResult.skipped.length} finding${fixResult.skipped.length === 1 ? "" : "s"} that still need manual review.`
-        );
-      }
-      continue;
     }
 
     if (action === "mark-safe") {

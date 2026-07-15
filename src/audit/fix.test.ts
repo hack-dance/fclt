@@ -1,14 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   LEGACY_MANAGED_MUTATION_ENV,
   LEGACY_MANAGED_MUTATION_FLAG,
 } from "../legacy-mutation-policy";
-import { manageTool } from "../manage";
+import { loadManagedState, manageTool } from "../manage";
 import { facultStateDir } from "../paths";
-import { runAuditFix } from "./fix";
+import {
+  AUDIT_FIX_MUTATION_DISABLED_MESSAGE,
+  fixInlineMcpSecrets,
+  runAuditFix,
+} from "./fix";
 import { persistAuditReport } from "./report-persistence";
 import { evaluateStaticAudit, runStaticAudit } from "./static";
 
@@ -62,7 +66,7 @@ async function makeFixBase() {
 
 beforeAll(async () => {
   await makeFixBase();
-});
+}, 30_000);
 
 beforeAll(async () => {
   evaluation = await evaluateStaticAudit({
@@ -76,7 +80,7 @@ beforeAll(async () => {
     mode: "static",
     reportRoot: tempReportRoot,
   });
-});
+}, 30_000);
 
 afterAll(async () => {
   process.exitCode = undefined;
@@ -113,7 +117,7 @@ describe("audit fix", () => {
     expect(await Bun.file(reportPath!).exists()).toBe(true);
   });
 
-  it("rejects deprecated managed-output sync without its explicit mutation flag", async () => {
+  it("fails closed before deprecated managed-output sync can mutate", async () => {
     process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
 
     await expect(
@@ -122,41 +126,44 @@ describe("audit fix", () => {
         cwd: tempHome!,
         homeDir: tempHome!,
       })
-    ).rejects.toThrow("fclt audit fix managed-output sync is a deprecated");
-  });
+    ).rejects.toThrow(AUDIT_FIX_MUTATION_DISABLED_MESSAGE);
+  }, 30_000);
 
-  it("moves inline MCP secrets into a local overlay and keeps future audits clean", async () => {
+  it("preserves canonical, local, and managed bytes for --yes while dry-run remains available", async () => {
     process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
-    const result = await runAuditFix({
-      argv: [
-        "mcp:github",
-        "--report",
-        reportPath!,
-        "--yes",
-        LEGACY_MANAGED_MUTATION_FLAG,
-      ],
+    const trackedPath = join(rootDir!, "mcp", "servers.json");
+    const localPath = join(rootDir!, "mcp", "servers.local.json");
+    const managedState = await loadManagedState(tempHome!, rootDir!);
+    const managedPath = managedState.tools.codex?.mcpConfig;
+    expect(managedPath).toBeString();
+    const trackedBefore = await Bun.file(trackedPath).text();
+    const managedBefore = await Bun.file(managedPath!).text();
+
+    const dryRun = await runAuditFix({
+      argv: ["mcp:github", "--report", reportPath!, "--dry-run"],
       cwd: tempHome!,
       homeDir: tempHome!,
     });
+    expect(dryRun.matched).toBeGreaterThan(0);
+    expect(dryRun.fixed).toBe(0);
 
-    expect(result.fixed).toBeGreaterThan(0);
-    expect(result.trackedPath).toBe(join(rootDir!, "mcp", "servers.json"));
-    expect(result.localPath).toBe(join(rootDir!, "mcp", "servers.local.json"));
+    await expect(
+      runAuditFix({
+        argv: [
+          "mcp:github",
+          "--report",
+          reportPath!,
+          "--yes",
+          LEGACY_MANAGED_MUTATION_FLAG,
+        ],
+        cwd: tempHome!,
+        homeDir: tempHome!,
+      })
+    ).rejects.toThrow(AUDIT_FIX_MUTATION_DISABLED_MESSAGE);
 
-    const tracked = (await Bun.file(result.trackedPath!).json()) as {
-      servers: Record<string, { env?: Record<string, string> }>;
-    };
-    expect(
-      tracked.servers.github?.env?.GITHUB_PERSONAL_ACCESS_TOKEN
-    ).toBeUndefined();
-
-    const local = (await Bun.file(result.localPath!).json()) as {
-      servers: Record<string, { env?: Record<string, string> }>;
-    };
-    expect(local.servers.github?.env?.GITHUB_PERSONAL_ACCESS_TOKEN).toBe(
-      "github_pat_test_1234567890"
-    );
-
+    expect(await Bun.file(trackedPath).text()).toBe(trackedBefore);
+    expect(await Bun.file(localPath).exists()).toBe(false);
+    expect(await Bun.file(managedPath!).text()).toBe(managedBefore);
     expect(await Bun.file(legacyPath!).json()).toEqual({ legacy: true });
 
     const after = await runStaticAudit({
@@ -170,7 +177,56 @@ describe("audit fix", () => {
           (finding) => finding.ruleId === "mcp-env-inline-secret"
         )
       )
-    ).toBe(false);
+    ).toBe(true);
+  }, 30_000);
+
+  it("blocks direct and TUI mutation paths for unsafe existing local overlays", async () => {
+    const result = evaluation!.report.results.find((entry) =>
+      entry.findings.some(
+        (finding) => finding.ruleId === "mcp-env-inline-secret"
+      )
+    );
+    const finding = result?.findings.find(
+      (entry) => entry.ruleId === "mcp-env-inline-secret"
+    );
+    if (!(result && finding)) {
+      throw new Error("Fixture report is missing its inline-secret finding");
+    }
+    const trackedPath = join(rootDir!, "mcp", "servers.json");
+    const localPath = join(rootDir!, "mcp", "servers.local.json");
+    const localContents = `${JSON.stringify(
+      {
+        servers: {
+          github: {
+            env: { FIXTURE_VALUE: "local_overlay_fixture_1234567890" },
+          },
+        },
+      },
+      null,
+      2
+    )}\n`;
+    await Bun.write(localPath, localContents);
+    try {
+      for (const mode of [0o644, 0o666]) {
+        await chmod(localPath, mode);
+        const trackedBefore = await Bun.file(trackedPath).text();
+        const localBefore = await Bun.file(localPath).text();
+
+        await expect(
+          fixInlineMcpSecrets({
+            findings: [{ result, finding }],
+            homeDir: tempHome!,
+            rootDir: rootDir!,
+          })
+        ).rejects.toThrow(AUDIT_FIX_MUTATION_DISABLED_MESSAGE);
+
+        expect(await Bun.file(trackedPath).text()).toBe(trackedBefore);
+        expect(await Bun.file(localPath).text()).toBe(localBefore);
+        expect((await stat(localPath)).mode % 0o1000).toBe(mode);
+      }
+    } finally {
+      await rm(localPath, { force: true });
+    }
   });
 
   it("rejects a verified report from a different mutation root", async () => {
@@ -227,9 +283,7 @@ describe("audit fix", () => {
           cwd: targetHome,
           homeDir: targetHome,
         })
-      ).rejects.toThrow(
-        "Audit fix report does not match the active mutation root"
-      );
+      ).rejects.toThrow(AUDIT_FIX_MUTATION_DISABLED_MESSAGE);
       expect(await Bun.file(targetTrackedPath).text()).toBe(targetBefore);
       expect(
         await Bun.file(join(targetRoot, "mcp", "servers.local.json")).exists()
@@ -239,5 +293,5 @@ describe("audit fix", () => {
       await rm(targetHome, { force: true, recursive: true });
       await rm(isolatedReportRoot, { force: true, recursive: true });
     }
-  }, 15_000);
+  }, 30_000);
 });

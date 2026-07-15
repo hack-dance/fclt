@@ -9,7 +9,7 @@ function printHelp() {
 
 Usage:
   fclt audit [--from <path>] [--no-config-from]
-  fclt audit fix <item> --report <exact-report.json> --yes [--path <path>] [--source <static|agent|combined>]
+  fclt audit fix <item> --report <exact-report.json> --dry-run [--path <path>] [--source <static|agent|combined>]
   fclt audit safe <item> --report <exact-report.json> --yes [--rule <id>] [--location <text>] [--message <text>]
   fclt audit --non-interactive [name|mcp:<name>] [--severity <level>] [--rules <path>] [--from <path>] [--json]
   fclt audit --non-interactive ... --report-root <absolute-existing-directory>
@@ -19,7 +19,8 @@ Usage:
 Safety:
   - Audit evaluation is read-only by default and writes no report or index state.
   - --report-root writes one content-addressed <mode>-<sha256>.json report-and-receipt envelope outside every audited source.
-  - fix/safe require that exact fresh envelope; legacy *-latest.json and detached older pairs never authorize mutation.
+  - safe mutation requires that exact fresh envelope; legacy *-latest.json and detached older pairs never authorize mutation.
+  - fix mutation is disabled pending a durable transaction protocol; exact-report --dry-run remains available.
   - --update-index is a separate explicit mutation of canonical generated state.
   - Report roots that overlap, traverse, alias, or symlink are rejected.
 

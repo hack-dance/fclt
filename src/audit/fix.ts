@@ -1,21 +1,10 @@
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, normalize, resolve } from "node:path";
+import { basename } from "node:path";
 import {
-  assertLegacyManagedMutationAllowed,
   LEGACY_MANAGED_MUTATION_FLAG,
   legacyManagedMutationApproved,
 } from "../legacy-mutation-policy";
-import { loadManagedState, syncManagedTools } from "../manage";
-import {
-  extractServersObject,
-  isInlineMcpSecretValue,
-  loadCanonicalMcpState,
-  stringifyCanonicalMcpServers,
-} from "../mcp-config";
 import { facultContextRootDir } from "../paths";
-import { getGitPathExposure } from "../util/git";
-import { parseJsonLenient } from "../util/json";
 import type { AgentAuditReport } from "./agent";
 import { loadVerifiedAuditReport } from "./report-persistence";
 import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
@@ -25,6 +14,8 @@ type AuditFixSource = "static" | "agent" | "combined";
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
 const INLINE_SECRET_RULE_ID = "mcp-env-inline-secret";
 const ARG_VALUE_SPLIT_RE = /=(.*)/s;
+export const AUDIT_FIX_MUTATION_DISABLED_MESSAGE =
+  "Audit fix mutation is disabled until a durable two-file recovery protocol is available. Run audit fix --dry-run to review matches; no files were changed.";
 
 interface AuditFixArgs {
   all: boolean;
@@ -40,10 +31,6 @@ interface AuditFixArgs {
 interface FindingSelection {
   result: AuditItemResult;
   finding: AuditFinding;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeRuleId(ruleId: string): string {
@@ -185,66 +172,6 @@ function parseInlineSecretLocation(location: string): {
     return null;
   }
   return { configPath, serverName, envKey };
-}
-
-function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
-function ensureServerRecord(
-  servers: Record<string, unknown>,
-  serverName: string
-): Record<string, unknown> {
-  const current = servers[serverName];
-  if (isPlainObject(current)) {
-    return current;
-  }
-  const next: Record<string, unknown> = {};
-  servers[serverName] = next;
-  return next;
-}
-
-function readSecretFromServer(
-  server: Record<string, unknown> | null,
-  envKey: string
-): string | null {
-  if (!server) {
-    return null;
-  }
-  const env = server.env;
-  if (!isPlainObject(env)) {
-    return null;
-  }
-  const value = env[envKey];
-  return isInlineMcpSecretValue(value) ? value : null;
-}
-
-function scrubTrackedServerEnv(
-  server: Record<string, unknown>,
-  envKey: string
-) {
-  const env = server.env;
-  if (!isPlainObject(env)) {
-    return;
-  }
-  delete env[envKey];
-  if (Object.keys(env).length === 0) {
-    server.env = undefined;
-  }
-}
-
-function setLocalServerEnv(args: {
-  localServers: Record<string, unknown>;
-  serverName: string;
-  envKey: string;
-  secretValue: string;
-}) {
-  const server = ensureServerRecord(args.localServers, args.serverName);
-  const env = isPlainObject(server.env)
-    ? (server.env as Record<string, unknown>)
-    : {};
-  env[args.envKey] = args.secretValue;
-  server.env = env;
 }
 
 function findingKey(args: {
@@ -423,7 +350,7 @@ function selectFixableFindings(args: {
   );
 }
 
-export async function fixInlineMcpSecrets(args: {
+export function fixInlineMcpSecrets(args: {
   findings: FindingSelection[];
   homeDir?: string;
   rootDir?: string;
@@ -437,9 +364,6 @@ export async function fixInlineMcpSecrets(args: {
   syncedTools: string[];
   trackedPath: string | null;
 }> {
-  const homeDir = args.homeDir ?? homedir();
-  const rootDir =
-    args.rootDir ?? facultContextRootDir({ home: homeDir, cwd: process.cwd() });
   const selected = args.findings.filter(
     ({ result, finding }) =>
       result.type === "mcp" &&
@@ -447,7 +371,7 @@ export async function fixInlineMcpSecrets(args: {
       typeof finding.location === "string"
   );
   if (selected.length === 0) {
-    return {
+    return Promise.resolve({
       fixed: 0,
       fixedSelections: [],
       localPath: null,
@@ -455,182 +379,10 @@ export async function fixInlineMcpSecrets(args: {
       skipped: [],
       syncedTools: [],
       trackedPath: null,
-    };
-  }
-
-  const managedState = await loadManagedState(homeDir, rootDir);
-  const managedToolsByPath = new Map<string, string>();
-  for (const [tool, entry] of Object.entries(managedState.tools)) {
-    if (entry.mcpConfig) {
-      managedToolsByPath.set(entry.mcpConfig, tool);
-    }
-  }
-
-  const canonical = await loadCanonicalMcpState(rootDir, {
-    includeLocal: true,
-  });
-  const allowedConfigPaths = new Set(
-    [
-      canonical.trackedPath,
-      canonical.localPath,
-      ...Object.values(managedState.tools).map((entry) => entry.mcpConfig),
-    ]
-      .filter((path): path is string => typeof path === "string")
-      .map((path) => normalize(resolve(path)))
-  );
-  for (const selection of selected) {
-    const parsed = selection.finding.location
-      ? parseInlineSecretLocation(selection.finding.location)
-      : null;
-    const resultPath = normalize(resolve(selection.result.path));
-    if (
-      !parsed ||
-      normalize(resolve(parsed.configPath)) !== resultPath ||
-      !allowedConfigPaths.has(resultPath)
-    ) {
-      throw new Error(
-        "Audit fix report does not match the active mutation root"
-      );
-    }
-  }
-  const trackedServers = cloneRecord(canonical.trackedServers);
-  const localServers = cloneRecord(canonical.localServers);
-  const touchedTools = new Set<string>();
-  const fixedSelections: FindingSelection[] = [];
-  const skipped: { label: string; reason: string }[] = [];
-
-  for (const selection of selected) {
-    const parsed = selection.finding.location
-      ? parseInlineSecretLocation(selection.finding.location)
-      : null;
-    const label = `${selection.result.item}:${selection.finding.location ?? selection.result.path}`;
-    if (!parsed) {
-      skipped.push({ label, reason: "could-not-parse-location" });
-      continue;
-    }
-
-    const trackedServer = isPlainObject(trackedServers[parsed.serverName])
-      ? (trackedServers[parsed.serverName] as Record<string, unknown>)
-      : null;
-    const localServer = isPlainObject(localServers[parsed.serverName])
-      ? (localServers[parsed.serverName] as Record<string, unknown>)
-      : null;
-
-    let secretValue =
-      readSecretFromServer(trackedServer, parsed.envKey) ??
-      readSecretFromServer(localServer, parsed.envKey);
-
-    if (!secretValue) {
-      const selectedPathRaw = await Bun.file(selection.result.path)
-        .text()
-        .catch(() => null);
-      if (selectedPathRaw) {
-        try {
-          const parsedConfig = parseJsonLenient(selectedPathRaw);
-          const servers = extractServersObject(parsedConfig);
-          const selectedServer = servers?.[parsed.serverName];
-          secretValue = isPlainObject(selectedServer)
-            ? readSecretFromServer(selectedServer, parsed.envKey)
-            : null;
-        } catch {
-          secretValue = null;
-        }
-      }
-    }
-
-    if (!secretValue) {
-      skipped.push({ label, reason: "no-inline-secret-value-found" });
-      continue;
-    }
-
-    if (!trackedServer) {
-      skipped.push({ label, reason: "server-not-found-in-canonical-store" });
-      continue;
-    }
-
-    scrubTrackedServerEnv(trackedServer, parsed.envKey);
-    setLocalServerEnv({
-      localServers,
-      serverName: parsed.serverName,
-      envKey: parsed.envKey,
-      secretValue,
-    });
-
-    const managedTool = managedToolsByPath.get(selection.result.path);
-    if (managedTool) {
-      touchedTools.add(managedTool);
-    }
-    fixedSelections.push(selection);
-  }
-
-  if (fixedSelections.length === 0) {
-    return {
-      fixed: 0,
-      fixedSelections: [],
-      localPath: null,
-      riskyManagedOutputs: [],
-      skipped,
-      syncedTools: [],
-      trackedPath: null,
-    };
-  }
-
-  if (Object.keys(managedState.tools).length > 0) {
-    assertLegacyManagedMutationAllowed({
-      action: "fclt audit fix managed-output sync",
-      approved: args.allowLegacyManagedMutation,
     });
   }
 
-  await mkdir(dirname(canonical.trackedPath), { recursive: true });
-  await Bun.write(
-    canonical.trackedPath,
-    stringifyCanonicalMcpServers(trackedServers)
-  );
-  await Bun.write(
-    canonical.localPath,
-    stringifyCanonicalMcpServers(localServers)
-  );
-
-  if (Object.keys(managedState.tools).length > 0) {
-    await syncManagedTools({
-      homeDir,
-      rootDir,
-      allowLegacyManagedMutation: true,
-    });
-  }
-
-  const riskyManagedOutputs = (
-    await Promise.all(
-      [...touchedTools]
-        .map((tool) => managedState.tools[tool]?.mcpConfig)
-        .filter((path): path is string => typeof path === "string")
-        .map(async (pathValue) => {
-          const exposure = await getGitPathExposure(pathValue);
-          if (
-            exposure.insideRepo &&
-            (exposure.state === "tracked" || exposure.state === "untracked")
-          ) {
-            return {
-              path: pathValue,
-              state: exposure.state,
-            };
-          }
-          return null;
-        })
-    )
-  ).filter(Boolean) as { path: string; state: "tracked" | "untracked" }[];
-
-  return {
-    fixed: uniqueByKey(fixedSelections, (selection) => findingKey(selection))
-      .length,
-    fixedSelections,
-    localPath: canonical.localPath,
-    riskyManagedOutputs,
-    skipped,
-    syncedTools: [...touchedTools].sort(),
-    trackedPath: canonical.trackedPath,
-  };
+  return Promise.reject(new Error(AUDIT_FIX_MUTATION_DISABLED_MESSAGE));
 }
 
 export function removeFixedInlineSecretFindings(args: {
@@ -756,10 +508,6 @@ export async function runAuditFix(args: {
       trackedPath: null,
     };
   }
-  if (!parsed.yes) {
-    throw new Error("audit fix mutation requires explicit --yes approval");
-  }
-
   const fixed = await fixInlineMcpSecrets({
     findings: selections,
     homeDir,
@@ -782,20 +530,19 @@ export async function runAuditFix(args: {
 }
 
 function printHelp() {
-  console.log(`fclt audit fix — remediate fixable audit findings
+  console.log(`fclt audit fix — preview inline-secret findings
 
 Usage:
-  fclt audit fix <item> --report <exact-report.json> --yes
-  fclt audit fix --item <item> --report <exact-report.json> [--path <path>] [--source <static|agent|combined>] --yes [${LEGACY_MANAGED_MUTATION_FLAG}]
-  fclt audit fix --all --report <exact-report.json> [--report <second-report.json>] [--source <static|agent|combined>] --yes [${LEGACY_MANAGED_MUTATION_FLAG}]
-  fclt audit fix --dry-run ...
+  fclt audit fix <item> --report <exact-report.json> --dry-run
+  fclt audit fix --item <item> --report <exact-report.json> [--path <path>] [--source <static|agent|combined>] --dry-run
+  fclt audit fix --all --report <exact-report.json> [--report <second-report.json>] [--source <static|agent|combined>] --dry-run
 
 Notes:
-  - Currently fixes inline MCP secrets by moving them into a local canonical overlay.
+  - Mutation is temporarily disabled pending a durable two-file recovery protocol.
+  - --dry-run still verifies exact reports and lists matching findings without writing.
   - Requires a fresh, content-hashed report-and-receipt envelope created by --report-root.
   - Legacy static-latest.json and agent-latest.json files never authorize mutation.
-  - Tracked canonical MCP config is scrubbed and managed tool MCP configs are re-synced.
-  - Managed tool copies continue to work, but the canonical secret now lives in *.local.json.
+  - --yes and direct internal fix calls fail closed without writing; the TUI does not offer a Fix action.
 `);
 }
 
@@ -825,29 +572,6 @@ export async function auditFixCommand(
         `Matched ${result.matched} inline MCP secret finding${result.matched === 1 ? "" : "s"} in the ${result.source} audit view.`
       );
       return;
-    }
-
-    console.log(
-      `Fixed ${result.fixed} inline MCP secret finding${result.fixed === 1 ? "" : "s"} in the ${result.source} audit view.`
-    );
-    if (result.trackedPath && result.localPath) {
-      console.log(`Tracked canonical MCP config: ${result.trackedPath}`);
-      console.log(`Local MCP overlay: ${result.localPath}`);
-    }
-    if (result.syncedTools.length > 0) {
-      console.log(`Re-synced managed tools: ${result.syncedTools.join(", ")}`);
-    }
-    if (result.riskyManagedOutputs.length > 0) {
-      for (const output of result.riskyManagedOutputs) {
-        console.warn(
-          `Warning: ${output.path} is ${output.state === "tracked" ? "git-tracked" : "repo-local and not gitignored"}.`
-        );
-      }
-    }
-    if (result.skipped.length > 0) {
-      console.log(
-        `Skipped ${result.skipped.length} finding${result.skipped.length === 1 ? "" : "s"} that could not be fixed automatically.`
-      );
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

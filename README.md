@@ -487,7 +487,7 @@ Audit local capability:
 fclt audit
 fclt audit --non-interactive --severity high
 fclt audit --non-interactive --report-root /absolute/isolated/reports --json
-fclt audit fix mcp:github --report /absolute/isolated/reports/static-<sha256>.json --yes
+fclt audit fix mcp:github --report /absolute/isolated/reports/static-<sha256>.json --dry-run
 ```
 
 Audit evaluation is read-only by default: it does not refresh saved reports or
@@ -498,8 +498,10 @@ intended.
 
 Persisted reports are content-addressed authorization envelopes containing the
 report payload and a receipt that binds its bytes, evaluated source revisions,
-and finding identities in one atomic file. `audit fix` and `audit safe` require
-the exact fresh envelope path and `--yes`; legacy `*-latest.json` files and
+and finding identities in one atomic file. `audit safe` requires the exact
+fresh envelope path and `--yes`. `audit fix --dry-run` uses the same exact
+envelope to preview matches, but fix mutation is disabled pending a durable
+two-file transaction and recovery protocol. Legacy `*-latest.json` files and
 pre-revision-9 detached report/receipt pairs cannot authorize mutation. Rerun
 `fclt audit --report-root ...` to migrate an older explicit report.
 
