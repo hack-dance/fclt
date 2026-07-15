@@ -144,6 +144,106 @@ test("POSIX directory reads enumerate the opened descriptor during pathname swap
   ).resolves.toBeUndefined();
 });
 
+test("POSIX audited source opens reject FIFO replacements without blocking", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const moduleUrl = new URL("./source-provenance.ts", import.meta.url).href;
+  const script = `
+    import { lstat, mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { AuditSourceTracker } from ${JSON.stringify(moduleUrl)};
+
+    const root = await mkdtemp(join(tmpdir(), "fclt-provenance-fifo-swap-"));
+    const requestedDirectory = join(root, "requested-directory");
+    const movedDirectory = join(root, "moved-directory");
+    await mkdir(requestedDirectory);
+    let directorySwapComplete = false;
+    const tracker = new AuditSourceTracker({
+      beforeDirectoryRead: async () => {
+        await rename(requestedDirectory, movedDirectory);
+        const fifo = Bun.spawnSync(["mkfifo", requestedDirectory], {
+          stderr: "pipe",
+          stdout: "pipe",
+        });
+        if (fifo.exitCode !== 0) {
+          throw new Error(new TextDecoder().decode(fifo.stderr));
+        }
+        directorySwapComplete = true;
+      },
+    });
+    try {
+      await tracker.readDirectory(requestedDirectory);
+      process.exit(2);
+    } catch {
+      if (
+        !directorySwapComplete ||
+        !(await lstat(requestedDirectory)).isFIFO() ||
+        tracker.snapshot().evaluatedDirectories.length !== 0
+      ) {
+        process.exit(4);
+      }
+      process.stdout.write("rejected-directory-fifo\\n");
+    }
+
+    const requestedFile = join(root, "requested-file");
+    const movedFile = join(root, "moved-file");
+    await writeFile(requestedFile, "stable\\n");
+    let fileSwapComplete = false;
+    const fileTracker = new AuditSourceTracker({
+      beforeFileOpen: async () => {
+        await rename(requestedFile, movedFile);
+        const fifo = Bun.spawnSync(["mkfifo", requestedFile], {
+          stderr: "pipe",
+          stdout: "pipe",
+        });
+        if (fifo.exitCode !== 0) {
+          throw new Error(new TextDecoder().decode(fifo.stderr));
+        }
+        fileSwapComplete = true;
+      },
+    });
+    try {
+      await fileTracker.read(requestedFile);
+      process.exit(3);
+    } catch {
+      if (
+        !fileSwapComplete ||
+        !(await lstat(requestedFile)).isFIFO() ||
+        fileTracker.snapshot().evaluatedFiles.length !== 0
+      ) {
+        process.exit(5);
+      }
+      process.stdout.write("rejected-file-fifo\\n");
+    }
+  `;
+  const child = Bun.spawn([process.execPath, "-e", script], {
+    env: {
+      ...process.env,
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+    },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const outcome = await Promise.race([
+    child.exited.then((exitCode) => ({ exitCode, timedOut: false as const })),
+    Bun.sleep(2000).then(() => ({ exitCode: null, timedOut: true as const })),
+  ]);
+  if (outcome.timedOut) {
+    child.kill();
+    await child.exited;
+  }
+  const [stderr, stdout] = await Promise.all([
+    new Response(child.stderr).text(),
+    new Response(child.stdout).text(),
+  ]);
+  expect(outcome.timedOut, stderr).toBe(false);
+  expect(outcome.exitCode, stderr).toBe(0);
+  expect(stdout).toContain("rejected-directory-fifo");
+  expect(stdout).toContain("rejected-file-fifo");
+});
+
 test("bounded provenance rejects large, sparse, growing, symlink, and special inputs", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-provenance-bounds-"));
   const large = join(root, "large.bin");

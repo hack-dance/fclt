@@ -449,7 +449,15 @@ function directoryEntriesDigest(entries: Dirent[]): string {
 }
 
 function readOnlyNoFollowFlags(): number {
-  return constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0);
+  if (process.platform === "win32") {
+    return constants.O_RDONLY;
+  }
+  if (!(constants.O_NOFOLLOW && constants.O_NONBLOCK !== undefined)) {
+    throw new Error(
+      "Audited source no-follow nonblocking opens are unsupported"
+    );
+  }
+  return constants.O_RDONLY + constants.O_NOFOLLOW + constants.O_NONBLOCK;
 }
 
 const MAX_LEXICAL_PATH_COMPONENTS = 256;
