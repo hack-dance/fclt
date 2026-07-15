@@ -1825,6 +1825,22 @@ export async function latestEvolutionLoopReport(
   );
 }
 
+async function appendFailedRunHistory(args: {
+  homeDir: string;
+  rootDir: string;
+  report: EvolutionLoopReport;
+  review?: ReconciliationReview | null;
+  configRevision: number;
+}): Promise<void> {
+  try {
+    const { appendActivityHistory } = await import("./activity-history");
+    await appendActivityHistory(args);
+  } catch {
+    // A secondary history-store failure must not hide the failed run's root cause.
+    return;
+  }
+}
+
 async function persistFailedLoopRun(args: {
   homeDir: string;
   rootDir: string;
@@ -1929,6 +1945,13 @@ async function persistFailedLoopRun(args: {
     reportPath,
     recovery:
       "Resolve the reported error, inspect the failed report, and rerun the same bounded window",
+  });
+  await appendFailedRunHistory({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    report,
+    review: args.review,
+    configRevision: args.config.generation,
   });
   return report;
 }
@@ -2178,6 +2201,7 @@ async function runEvolutionLoopScoped(args: {
           facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir),
           `${JSON.stringify(nextState, null, 2)}\n`
         );
+        let historyAttempted = false;
         try {
           await args.onBeforeAuditCommit?.();
           await mkdir(dirname(auditPath), { recursive: true });
@@ -2198,6 +2222,15 @@ async function runEvolutionLoopScoped(args: {
             })}\n`,
             "utf8"
           );
+          historyAttempted = true;
+          const { appendActivityHistory } = await import("./activity-history");
+          await appendActivityHistory({
+            homeDir: args.homeDir,
+            rootDir: args.rootDir,
+            report,
+            review,
+            configRevision: config.generation,
+          });
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
@@ -2206,7 +2239,7 @@ async function runEvolutionLoopScoped(args: {
             {
               attempt: attempts.length + 1,
               ok: false,
-              error: `post-commit audit: ${message}`,
+              error: `post-commit ${historyAttempted ? "history" : "audit"}: ${message}`,
             },
           ];
           const failedReport: EvolutionLoopReport = {
@@ -2241,6 +2274,7 @@ async function runEvolutionLoopScoped(args: {
                   prior.lastSuccessfulScheduledRunAt,
                 lastSuccessfulScheduledConfigGeneration:
                   prior.lastSuccessfulScheduledConfigGeneration,
+                lastSuccessfulCoverageUntil: prior.lastSuccessfulCoverageUntil,
                 lastFailure: {
                   at: generatedAt,
                   message,
@@ -2251,6 +2285,33 @@ async function runEvolutionLoopScoped(args: {
               2
             )}\n`
           );
+          if (historyAttempted) {
+            try {
+              await appendLoopAudit(args, {
+                runId,
+                generatedAt,
+                trigger: report.trigger,
+                status: "failed",
+                generationBefore: report.generationBefore,
+                generationAfter: report.generationAfter,
+                attempts: failedAttempts,
+                mutations: report.mutations,
+                reportPath,
+                recovery:
+                  "Repair activity history storage, inspect the failed report, and rerun the same bounded window",
+              });
+            } catch {
+              // Preserve the authoritative failed report when the audit sink also becomes unavailable.
+            }
+          } else {
+            await appendFailedRunHistory({
+              homeDir: args.homeDir,
+              rootDir: args.rootDir,
+              report: failedReport,
+              review,
+              configRevision: config.generation,
+            });
+          }
           return failedReport;
         }
       }

@@ -22,6 +22,7 @@ Start with [Writeback and evolution](./writeback-evolution.md) for the product's
 - [Managed mode](./managed-mode.md): when to let `fclt` write tool files, and how adoption works.
 - [Security and trust](./security-trust.md): source trust, audit, secrets, and commit hygiene.
 - [Automations](./automations.md): recurring Codex loops for learning review, evolution review, and tool-call audit.
+- [Activity history](./activity-history.md): bounded multi-run timelines, lineage identities, retention, and privacy rules.
 - [Command reference](./reference.md): command groups and common flags.
 - [Roadmap](./roadmap.md): current product gaps and planned work.
 

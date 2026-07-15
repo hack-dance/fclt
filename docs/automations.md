@@ -42,6 +42,7 @@ fclt ai loop enable --project
 fclt ai loop status --project --json
 fclt ai loop run --project --json
 fclt ai loop activity --json
+fclt ai loop history --project --since 2026-01-01T00:00:00Z --json
 fclt ai loop disable --project
 ```
 
@@ -87,6 +88,12 @@ and next actions without absolute machine paths. Use `fclt ai loop activity
 --json` as the default downstream UI contract across Global and every
 configured project, or add `--global`/`--project` to inspect one scope. Use the
 technical loop report only for diagnostics.
+
+Multi-run history is separate from the latest activity snapshot. Each
+non-preview run appends an immutable event segment, and `loop history` provides
+bounded timeline and lineage reads with explicit pagination, retention,
+migration, and degraded-coverage metadata. Downstream interfaces should use
+that command instead of reconstructing history from runtime files.
 
 ## Suggested Cadence
 

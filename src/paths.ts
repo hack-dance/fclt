@@ -568,6 +568,32 @@ export function facultAiEvolutionLoopReportDir(
   );
 }
 
+export function facultAiActivityHistoryDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "evolution",
+    "loop",
+    "history"
+  );
+}
+
+export function facultAiActivityHistoryManifestPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiActivityHistoryDir(home, rootDir), "manifest.json");
+}
+
+export function facultAiActivityHistorySegmentDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiActivityHistoryDir(home, rootDir), "segments");
+}
+
 export function facultAiReconciliationConfigPath(
   home: string = defaultHomeDir(),
   rootDir?: string

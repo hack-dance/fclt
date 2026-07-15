@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { latestActivityFeed } from "./activity";
 import { resolveActivityActionLocator } from "./activity-action";
+import { queryActivityHistory } from "./activity-history";
 import {
   type AiProposalRecord,
   acceptProposal,
@@ -35,6 +36,7 @@ import {
   runEvolutionLoop,
 } from "./evolution-loop";
 import {
+  facultAiActivityHistoryManifestPath,
   facultAiEvolutionLoopAuditPath,
   facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopStatePath,
@@ -45,6 +47,7 @@ import {
 } from "./paths";
 
 const SIGNAL_FAMILY_ID_RE = /^SF-/;
+const COMPLETED_RUN_STATUS_RE = /^(complete|degraded)$/;
 const temporaryRoots: string[] = [];
 
 async function makeProject(): Promise<{
@@ -1129,6 +1132,41 @@ describe("evolution loop", () => {
     });
   });
 
+  it("preserves a failed run when activity history is malformed", async () => {
+    const project = await makeProject();
+    await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["missing-source"],
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const manifestPath = facultAiActivityHistoryManifestPath(
+      project.homeDir,
+      project.rootDir
+    );
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await Bun.write(manifestPath, "{malformed\n");
+
+    const failed = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+
+    expect(failed.status).toBe("failed");
+    expect(failed.attempts).toHaveLength(3);
+    expect(failed.attempts[0]?.error).toContain("missing-source");
+    const history = await queryActivityHistory({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      scope: "project",
+    });
+    expect(history.coverage.scopes[0]).toMatchObject({
+      state: "degraded",
+      detail: "history-manifest-invalid",
+    });
+  });
+
   it("records committed mutations when a later materialization step fails", async () => {
     const project = await makeProject();
     await mkdir(join(project.rootDir, "instructions"), { recursive: true });
@@ -1197,6 +1235,67 @@ describe("evolution loop", () => {
     expect(Object.keys(state.queue)).toHaveLength(failed.queue.length);
     expect(state.lastRunStatus).toBe("failed");
     expect(state.lastFailure.message).toBe("injected audit failure");
+    const history = await queryActivityHistory({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      scope: "project",
+    });
+    expect(history.runs).toEqual([
+      expect.objectContaining({
+        id: failed.runId,
+        status: "failed",
+      }),
+    ]);
+    expect(history.events).toContainEqual(
+      expect.objectContaining({
+        runId: failed.runId,
+        action: "run-recorded",
+      })
+    );
+  });
+
+  it("records a terminal failed audit when committed history persistence fails", async () => {
+    const project = await makeProject();
+    await enableEvolutionLoop({ ...project });
+    const manifestPath = facultAiActivityHistoryManifestPath(
+      project.homeDir,
+      project.rootDir
+    );
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await Bun.write(manifestPath, "{malformed\n");
+
+    const failed = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-04T00:00:00.000Z"),
+    });
+
+    expect(failed.status).toBe("failed");
+    expect(failed.attempts.at(-1)?.error).toContain("post-commit history");
+    const audit = (
+      await readFile(
+        facultAiEvolutionLoopAuditPath(project.homeDir, project.rootDir),
+        "utf8"
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.runId === failed.runId);
+    expect(audit.at(-1)).toMatchObject({
+      runId: failed.runId,
+      status: "failed",
+    });
+    expect(audit.at(-2)?.status).toMatch(COMPLETED_RUN_STATUS_RE);
+    const state = JSON.parse(
+      await readFile(
+        facultAiEvolutionLoopStatePath(project.homeDir, project.rootDir),
+        "utf8"
+      )
+    );
+    expect(state.lastRunStatus).toBe("failed");
+    expect(state.lastSuccessfulCoverageUntil).toBeUndefined();
   });
 
   it("never takes over a live lease and recovers an abandoned lease", async () => {
