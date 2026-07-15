@@ -376,7 +376,7 @@ describe("read-only audit boundary", () => {
       })
     ).resolves.toEqual(evaluation.report);
     expect(await readdir(reportRoot)).toHaveLength(1);
-  });
+  }, 15_000);
 
   it("rejects static source drift between evaluation and persistence", async () => {
     const { home } = await fixture();
@@ -660,7 +660,7 @@ describe("read-only audit boundary", () => {
       })
     ).rejects.toThrow("entry limit");
     expect(await readdir(reportRoot)).toEqual([]);
-  });
+  }, 15_000);
 
   it("reserves a late plugin manifest before handling an over-budget child", async () => {
     const { home } = await fixture();

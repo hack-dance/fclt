@@ -32,6 +32,7 @@ const DIRECTORY_CHANGED_RE = /directory changed/i;
 const ENVELOPE_OR_DIRECTORY_CHANGED_RE =
   /(?:envelope(?: name)?|audit report directory) changed/i;
 const PERMISSION_AMBIGUOUS_RE = /permission-ambiguous/i;
+const REPORT_DIRECTORY_UNSAFE_RE = /report directory is unsafe/i;
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
@@ -219,6 +220,64 @@ describe("adversarial audit report persistence", () => {
     expect(
       auditReportRootPermissionsAreSafe({ mode: 0o755, uid: 42 }, 42)
     ).toBe(true);
+  });
+
+  test("report-root open cannot follow or block on a pathname swap", async () => {
+    const { evaluation } = await fixture();
+    const fifoParent = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-root-open-fifo-")
+    );
+    const fifoRoot = join(fifoParent, "reports");
+    const movedFifoRoot = join(fifoParent, "reports-moved");
+    await mkdir(fifoRoot);
+
+    const fifoAttempt = persistAuditReport({
+      ...evaluation,
+      beforeReportRootOpen: async () => {
+        await rename(fifoRoot, movedFifoRoot);
+        const proc = Bun.spawn(["mkfifo", fifoRoot], {
+          stderr: "pipe",
+          stdout: "pipe",
+        });
+        expect(await proc.exited).toBe(0);
+      },
+      mode: "static",
+      reportRoot: fifoRoot,
+    });
+    await expect(
+      Promise.race([
+        fifoAttempt,
+        Bun.sleep(1000).then(() => {
+          throw new Error("report-root open blocked on a FIFO");
+        }),
+      ])
+    ).rejects.toThrow(REPORT_DIRECTORY_UNSAFE_RE);
+    expect((await lstat(fifoRoot)).isFIFO()).toBe(true);
+    expect(await readdir(movedFifoRoot)).toEqual([]);
+
+    const symlinkParent = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-root-open-symlink-")
+    );
+    const symlinkRoot = join(symlinkParent, "reports");
+    const movedSymlinkRoot = join(symlinkParent, "reports-moved");
+    const externalRoot = await mkdtemp(
+      join(tmpdir(), "fclt-report-adversarial-root-open-external-")
+    );
+    await mkdir(symlinkRoot);
+    await expect(
+      persistAuditReport({
+        ...evaluation,
+        beforeReportRootOpen: async () => {
+          await rename(symlinkRoot, movedSymlinkRoot);
+          await symlink(externalRoot, symlinkRoot);
+        },
+        mode: "static",
+        reportRoot: symlinkRoot,
+      })
+    ).rejects.toThrow(REPORT_DIRECTORY_UNSAFE_RE);
+    expect((await lstat(symlinkRoot)).isSymbolicLink()).toBe(true);
+    expect(await readdir(movedSymlinkRoot)).toEqual([]);
+    expect(await readdir(externalRoot)).toEqual([]);
   });
 
   test("report-root rebinding and pre-commit faults create no artifact", async () => {

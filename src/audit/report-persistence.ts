@@ -312,7 +312,8 @@ interface BoundReportDirectory {
 }
 
 async function openBoundReportDirectory(
-  requestedPath: string
+  requestedPath: string,
+  beforeOpen?: () => Promise<void>
 ): Promise<BoundReportDirectory> {
   const lexicalChain = await captureStableAuditLexicalPathChain(requestedPath);
   const pathMetadata = await lstat(requestedPath).catch(() => null);
@@ -329,6 +330,7 @@ async function openBoundReportDirectory(
     requestedPath,
     "Audit report directory"
   );
+  await beforeOpen?.();
   const handle = await open(
     requestedPath,
     readOnlyDirectoryNoFollowFlags()
@@ -336,7 +338,13 @@ async function openBoundReportDirectory(
   if (!handle) {
     throw new Error(`Exact audit report directory is unsafe: ${requestedPath}`);
   }
-  const metadata = await handle.stat();
+  const metadata = await handle.stat().catch(async () => {
+    await handle.close().catch(() => undefined);
+    return null;
+  });
+  if (!metadata) {
+    throw new Error(`Exact audit report directory is unsafe: ${requestedPath}`);
+  }
   const descriptorPath = await descriptorCanonicalPath(handle.fd).catch(
     () => null
   );
@@ -489,6 +497,8 @@ export async function persistAuditReport(args: {
   auditedRoots: string[];
   /** @internal Adversarial test hook; production callers must not set this. */
   beforeDescriptorCommit?: () => Promise<void>;
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeReportRootOpen?: () => Promise<void>;
   mode: AuditReportMode;
   report: unknown;
   reportRoot: string;
@@ -624,7 +634,11 @@ export async function persistAuditReport(args: {
     );
   }
 
-  const directoryHandle = await open(requestedRoot, constants.O_RDONLY);
+  const reportDirectory = await openBoundReportDirectory(
+    requestedRoot,
+    args.beforeReportRootOpen
+  );
+  const directoryHandle = reportDirectory.handle;
   try {
     const openedMetadata = await directoryHandle.stat();
     if (

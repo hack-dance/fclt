@@ -396,9 +396,29 @@ test("absence proofs reject same-target lexical symlink replacement", async () =
   const tracker = new AuditSourceTracker();
   await tracker.capture(requested);
   const snapshot = tracker.snapshot();
+  const recorded = snapshot.absentPaths[0]!.lexicalChain.find(
+    (component) => component.path === aliasDirectory
+  )!;
 
+  await utimes(root, new Date(1), new Date(1));
   await rm(aliasDirectory);
   await symlink(targetDirectory, aliasDirectory, "dir");
+  const replacementTracker = new AuditSourceTracker();
+  await replacementTracker.capture(requested);
+  const replacement = replacementTracker
+    .snapshot()
+    .absentPaths[0]!.lexicalChain.find(
+      (component) => component.path === aliasDirectory
+    )!;
+  expect(replacement.parentCtimeNs).not.toBe(recorded.parentCtimeNs);
+
+  recorded.birthtimeNs = replacement.birthtimeNs;
+  recorded.ctimeNs = replacement.ctimeNs;
+  recorded.dev = replacement.dev;
+  recorded.ino = replacement.ino;
+  recorded.kind = replacement.kind;
+  recorded.linkTarget = replacement.linkTarget;
+  recomputeValidationContract(snapshot);
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "absent requested path changed"
