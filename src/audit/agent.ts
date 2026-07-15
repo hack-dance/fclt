@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { extractServersObject } from "../mcp-config";
 import {
   facultConfigPath,
   facultRootDir,
@@ -203,36 +204,6 @@ function parseMaxItemsFlag(argv: string[]): number | null {
         throw new Error(`Invalid --max-items value: ${raw}`);
       }
       return Math.floor(n);
-    }
-  }
-  return null;
-}
-
-function extractMcpServersObject(
-  parsed: unknown
-): Record<string, unknown> | null {
-  if (!isPlainObject(parsed)) {
-    return null;
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (isPlainObject(obj.mcpServers)) {
-    return obj.mcpServers as Record<string, unknown>;
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    if (k.endsWith(".mcpServers") && isPlainObject(v)) {
-      return v as Record<string, unknown>;
-    }
-  }
-  if (isPlainObject(obj["mcp.servers"])) {
-    return obj["mcp.servers"] as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.servers)) {
-    return obj.servers as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.mcp)) {
-    const mcp = obj.mcp as Record<string, unknown>;
-    if (isPlainObject(mcp.servers)) {
-      return mcp.servers as Record<string, unknown>;
     }
   }
   return null;
@@ -1402,7 +1373,7 @@ export async function evaluateAgentAudit(opts?: {
       } catch {
         continue;
       }
-      const serversObj = extractMcpServersObject(parsed);
+      const serversObj = extractServersObject(parsed);
       if (!serversObj) {
         continue;
       }

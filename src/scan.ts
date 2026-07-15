@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { extractServersObject } from "./mcp-config";
 import {
   type FacultConfig,
   facultRootDir,
@@ -352,7 +353,7 @@ async function discoverMcpConfig(
     try {
       const text = readText ? await readText(p) : await Bun.file(p).text();
       const parsed = parseJsonLenient(text);
-      const serversObj = extractMcpServersObject(parsed);
+      const serversObj = extractServersObject(parsed);
       if (serversObj) {
         cfg.servers = uniqueSorted(Object.keys(serversObj));
       }
@@ -2017,37 +2018,6 @@ function sha256Hex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-function extractMcpServersObject(
-  parsed: unknown
-): Record<string, unknown> | null {
-  if (!isPlainObject(parsed)) {
-    return null;
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (isPlainObject(obj.mcpServers)) {
-    return obj.mcpServers as Record<string, unknown>;
-  }
-  // Some VS Code-like settings store this under a tool-prefixed key.
-  for (const [k, v] of Object.entries(obj)) {
-    if (k.endsWith(".mcpServers") && isPlainObject(v)) {
-      return v as Record<string, unknown>;
-    }
-  }
-  if (isPlainObject(obj["mcp.servers"])) {
-    return obj["mcp.servers"] as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.servers)) {
-    return obj.servers as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.mcp)) {
-    const mcp = obj.mcp as Record<string, unknown>;
-    if (isPlainObject(mcp.servers)) {
-      return mcp.servers as Record<string, unknown>;
-    }
-  }
-  return null;
-}
-
 function mcpSafeDefinitionText(definition: unknown): string {
   // Best-effort sanitization: include structural fields and env keys, not env values.
   if (!isPlainObject(definition)) {
@@ -2115,7 +2085,7 @@ async function computeMcpDefinitionVariantCounts(
         continue;
       }
 
-      const serversObj = extractMcpServersObject(parsed);
+      const serversObj = extractServersObject(parsed);
       if (!serversObj) {
         continue;
       }

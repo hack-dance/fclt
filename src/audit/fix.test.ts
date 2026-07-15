@@ -541,6 +541,28 @@ describe("audit fix", () => {
     }
   });
 
+  it("uses the report's global canonical root from a project working directory", async () => {
+    const fixture = await makeAuthorizedFixture();
+    const project = join(fixture.home, "project");
+    try {
+      await mkdir(join(project, ".ai", "mcp"), { recursive: true });
+      const result = await runAuditFix({
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: project,
+        homeDir: fixture.home,
+      });
+      expect(result.fixed).toBe(1);
+      expect(await Bun.file(fixture.localPath).exists()).toBe(true);
+      expect(
+        await Bun.file(
+          join(project, ".ai", "mcp", "servers.local.json")
+        ).exists()
+      ).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("keeps the CLI dry-run path zero-write", async () => {
     const trackedPath = join(rootDir!, "mcp", "servers.json");
     const localPath = join(rootDir!, "mcp", "servers.local.json");

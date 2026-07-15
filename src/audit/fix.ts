@@ -2,7 +2,7 @@ import { closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize } from "node:path";
 import { extractServersObject, isInlineMcpSecretValue } from "../mcp-config";
-import { facultContextRootDir } from "../paths";
+import { facultRootDir } from "../paths";
 import { parseJsonLenient } from "../util/json";
 import type { AgentAuditReport } from "./agent";
 import {
@@ -601,12 +601,7 @@ export async function runAuditFix(args: {
     selections: staticSelections,
   });
   const firstBinding = bindings[0]!;
-  const currentRoot = normalize(
-    facultContextRootDir({
-      home: args.homeDir ?? homedir(),
-      cwd: args.cwd,
-    })
-  );
+  const currentRoot = normalize(facultRootDir(args.homeDir ?? homedir()));
   if (currentRoot !== firstBinding.canonicalRootPath) {
     throw new Error(
       "Current audit fix scope does not match the report-authorized canonical root"
