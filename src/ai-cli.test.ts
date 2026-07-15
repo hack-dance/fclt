@@ -195,6 +195,40 @@ describe("ai CLI", () => {
     });
     expect(activityText).not.toContain(tempHome);
 
+    const historyOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "history",
+        "--global",
+        "--since",
+        "2026-01-01T00:00:00.000Z",
+        "--limit",
+        "1",
+        "--json",
+      ]);
+    });
+    expect(historyOut.errors).toEqual([]);
+    const historyText = historyOut.logs.join("\n");
+    expect(JSON.parse(historyText)).toMatchObject({
+      version: 1,
+      kind: "activity-history",
+      mode: "timeline",
+      filters: { scope: "global" },
+      capabilities: { externalMutation: false, export: false },
+      events: [{ type: "run", action: "run-recorded", scopeId: "global" }],
+      page: { limit: 1 },
+    });
+    expect(historyText).not.toContain(tempHome);
+
+    const allHistoryOut = await captureConsole(async () => {
+      await aiCommand(["loop", "history", "--json"]);
+    });
+    expect(allHistoryOut.errors).toEqual([]);
+    expect(JSON.parse(allHistoryOut.logs.join("\n"))).toMatchObject({
+      filters: { scope: "all" },
+      coverage: { configuredScopes: 1 },
+    });
+
     const allActivityOut = await captureConsole(async () => {
       await aiCommand(["loop", "activity", "--json"]);
     });
@@ -270,6 +304,40 @@ describe("ai CLI", () => {
     expect(JSON.parse(allActivityOut.logs.join("\n"))).toMatchObject({
       version: 2,
       feeds: [{ scopeId: "global", feed: { scope: "global" } }],
+    });
+    const allHistoryOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "history",
+        "--all",
+        "--root",
+        rootDir,
+        "--json",
+      ]);
+    });
+    expect(allHistoryOut.errors).toEqual([]);
+    expect(JSON.parse(allHistoryOut.logs.join("\n"))).toMatchObject({
+      kind: "activity-history",
+      filters: { scope: "all" },
+      coverage: { configuredScopes: 1 },
+      runs: [{ scopeId: "global" }],
+    });
+    const globalHistoryOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "history",
+        "--global",
+        "--root",
+        rootDir,
+        "--json",
+      ]);
+    });
+    expect(globalHistoryOut.errors).toEqual([]);
+    expect(JSON.parse(globalHistoryOut.logs.join("\n"))).toMatchObject({
+      kind: "activity-history",
+      filters: { scope: "global" },
+      coverage: { configuredScopes: 1 },
+      runs: [{ scopeId: "global" }],
     });
     const implicitAllActivityOut = await captureConsole(async () => {
       await aiCommand(["loop", "activity", "--root", rootDir, "--json"]);

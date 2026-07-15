@@ -92,6 +92,9 @@ function spawnConfiguredMcp(options?: {
     }
   );
 }
+const CLOSED_FIELD_ERROR_RE =
+  /unknown argument fields|received unsupported fields/;
+const ACTION_LOCATOR = `fclt-act-v1.${"a".repeat(64)}.${"b".repeat(64)}`;
 
 function frame(message: unknown): string {
   const body = JSON.stringify(message);
@@ -106,7 +109,7 @@ function compatibleStubScript(): string {
   return [
     `#!${process.execPath}`,
     "if (process.argv[2] === 'protocol') {",
-    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['audit-read-only-v1']}));",
+    "  console.log(JSON.stringify({schemaVersion:1,packageVersion:'9.9.9',protocol:{version:1,minimumPluginVersion:1,maximumPluginVersion:1},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['activity-action-resolve-v1','audit-read-only-v1']}));",
     "} else {",
     "  console.log(JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(2) }));",
     "}",
@@ -477,6 +480,32 @@ describe("bundled fclt MCP plugin", () => {
       child.stdin.write(
         frame({
           jsonrpc: "2.0",
+          id: 311,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "activity_resolve",
+              locator: ACTION_LOCATOR,
+            },
+          },
+        })
+      );
+      const resolveResponse = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(toolPayload(resolveResponse)).toMatchObject({
+        operation: { preview: false, risk: "read_only" },
+        result: {
+          stdout: {
+            argv: ["ai", "loop", "resolve", ACTION_LOCATOR, "--json"],
+          },
+        },
+      });
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
           id: 32,
           method: "tools/call",
           params: {
@@ -748,7 +777,10 @@ describe("bundled fclt MCP plugin", () => {
       const response = (await readFrame(child.stdout)) as {
         result?: {
           tools?: {
-            inputSchema?: { additionalProperties?: boolean };
+            inputSchema?: {
+              additionalProperties?: boolean;
+              oneOf?: Array<{ additionalProperties?: boolean }>;
+            };
             name?: string;
           }[];
         };
@@ -765,7 +797,12 @@ describe("bundled fclt MCP plugin", () => {
       expect(names).toContain("fclt_automation");
       expect(
         published.every(
-          (tool) => tool.inputSchema?.additionalProperties === false
+          (tool) =>
+            tool.inputSchema?.additionalProperties === false ||
+            tool.inputSchema?.oneOf?.every(
+              (branch: { additionalProperties?: boolean }) =>
+                branch.additionalProperties === false
+            )
         )
       ).toBe(true);
       const workflow = published.find(
@@ -788,18 +825,39 @@ describe("bundled fclt MCP plugin", () => {
       ) as
         | {
             inputSchema?: {
-              properties?: {
-                action?: { enum?: string[] };
-                sourceIds?: { items?: { pattern?: string } };
-              };
+              oneOf?: Array<{
+                additionalProperties?: boolean;
+                properties?: {
+                  action?: { const?: string; enum?: string[] };
+                  locator?: { pattern?: string };
+                  sourceIds?: { items?: { pattern?: string } };
+                };
+                required?: string[];
+              }>;
             };
           }
         | undefined;
-      expect(registry?.inputSchema?.properties?.action?.enum).toEqual(
+      const resolverSchema = registry?.inputSchema?.oneOf?.find(
+        (branch) => branch.properties?.action?.const === "activity_resolve"
+      );
+      const registrySchema = registry?.inputSchema?.oneOf?.find((branch) =>
+        branch.properties?.action?.enum?.includes("reconcile")
+      );
+      expect(registrySchema?.properties?.action?.enum).toEqual(
         expect.arrayContaining(["reconcile_status", "reconcile"])
       );
+      expect(resolverSchema).toMatchObject({
+        additionalProperties: false,
+        required: ["action", "locator"],
+        properties: { action: { const: "activity_resolve" } },
+      });
+      expect(resolverSchema?.properties?.locator?.pattern).toBeDefined();
+      expect(Object.keys(resolverSchema?.properties ?? {}).sort()).toEqual([
+        "action",
+        "locator",
+      ]);
       expect(
-        registry?.inputSchema?.properties?.sourceIds?.items?.pattern
+        registrySchema?.properties?.sourceIds?.items?.pattern
       ).toBeDefined();
       const automation = published.find(
         (tool) => tool.name === "fclt_automation"
@@ -938,6 +996,49 @@ describe("bundled fclt MCP plugin", () => {
       } finally {
         child.kill();
       }
+    }
+  });
+
+  it("fails typed activity resolution closed for runtimes without the resolver capability", async () => {
+    const base = await mkdtemp(join(tmpdir(), "facult-mcp-legacy-resolver-"));
+    const stub = join(base, "fclt-legacy.cjs");
+    const invoked = join(base, "invoked.txt");
+    await Bun.write(stub, legacyProtocolStubScript("2.25.4"));
+    await chmod(stub, 0o755);
+    const pluginRoot = facultBuiltinCodexPluginRoot();
+    const child = spawnConfiguredMcp({
+      env: {
+        FCLT_BIN: stub,
+        FCLT_LEGACY_INVOKED: invoked,
+        HOME: base,
+        PWD: base,
+      },
+      pluginRoot,
+    });
+    try {
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: {
+              action: "activity_resolve",
+              locator: ACTION_LOCATOR,
+            },
+          },
+        })
+      );
+      const response = (await readFrame(child.stdout)) as {
+        result?: { content?: { text?: string }[]; isError?: boolean };
+      };
+      expect(response.result?.isError).toBe(true);
+      const payload = toolPayload(response) as unknown as { error: string };
+      expect(payload.error).toBe("missing_runtime_capability");
+      expect(await Bun.file(invoked).exists()).toBe(false);
+    } finally {
+      child.kill();
     }
   });
 
@@ -1182,6 +1283,55 @@ describe("bundled fclt MCP plugin", () => {
       };
       expect(irrelevant.error?.message).toContain(
         "writeback_add received unsupported fields: expectedOutcome"
+      );
+
+      for (const rawField of [
+        { cwd: "/tmp/unsafe" },
+        { root: "/tmp/unsafe" },
+        { argv: ["ai", "evolve", "apply"] },
+        { endpoint: "https://example.invalid" },
+        { token: "secret" },
+        { tokenEnv: "SECRET_TOKEN" },
+        { credential: "secret" },
+        { approve: true },
+      ]) {
+        child.stdin.write(
+          frame({
+            jsonrpc: "2.0",
+            id: 40,
+            method: "tools/call",
+            params: {
+              name: "fclt_registry",
+              arguments: {
+                action: "activity_resolve",
+                locator: ACTION_LOCATOR,
+                ...rawField,
+              },
+            },
+          })
+        );
+        const rejected = (await readFrame(child.stdout)) as {
+          error?: { message?: string };
+        };
+        expect(rejected.error?.message).toMatch(CLOSED_FIELD_ERROR_RE);
+      }
+
+      child.stdin.write(
+        frame({
+          jsonrpc: "2.0",
+          id: 41,
+          method: "tools/call",
+          params: {
+            name: "fclt_registry",
+            arguments: { action: "activity_resolve" },
+          },
+        })
+      );
+      const missingLocator = (await readFrame(child.stdout)) as {
+        error?: { message?: string };
+      };
+      expect(missingLocator.error?.message).toContain(
+        "fclt_registry requires locator"
       );
     } finally {
       child.kill();
@@ -1520,6 +1670,10 @@ describe("Codex plugin capability matrix", () => {
     const evolutionLoop = matrix.capabilities.find(
       (capability) => capability.id === "evolution_loop.review"
     );
+    const activityResolution = matrix.capabilities.find(
+      (capability) =>
+        capability.id === "evolution_loop.activity_action_resolution"
+    );
 
     expect(new Set(ids).size).toBe(ids.length);
     expect(matrix.generatedFrom.packageVersion).toBe(packageJson.version);
@@ -1558,6 +1712,14 @@ describe("Codex plugin capability matrix", () => {
       disposition: "exposed",
       tool: "fclt_automation",
       actions: ["loop_status", "loop_activity", "loop_preview"],
+    });
+    expect(activityResolution).toMatchObject({
+      risk: "read_only",
+      mcp: {
+        disposition: "exposed",
+        tool: "fclt_registry",
+        action: "activity_resolve",
+      },
     });
   });
 });

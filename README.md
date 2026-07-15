@@ -207,12 +207,23 @@ After the loop runs, read the human activity view or consume its portable JSON:
 ```bash
 fclt ai loop activity --project
 fclt ai loop activity --project --json
+fclt ai loop activity --all --json
+fclt ai loop resolve <activity-action-locator> --json
+fclt ai loop history --project --since 2026-01-01T00:00:00Z --json
 ```
 
 The activity snapshot explains what agents captured, what sources were checked,
 how repeated observations were correlated, the current disposition, linked
 implementation work, and the next action. It is embedded in the immutable loop
 report so later writeback edits cannot rewrite history.
+Aggregate actionable items may carry an opaque locator. Resolution revalidates
+the exact current scope and lifecycle revision and returns a plain-language
+plan without guessing a root or performing a mutation.
+
+Use `loop history` for a bounded multi-run timeline. It returns append-only
+event lineage, opaque cross-scope identities, cursor pagination, and explicit
+snapshot-only, pruned, corrupt, or truncated coverage. The current activity
+snapshot remains the fast default.
 
 ### 3. Inspect existing AI state
 
@@ -584,6 +595,7 @@ Start with:
 - [Built-in pack](./docs/built-in-pack.md): packaged work-unit, writeback, and evolution defaults
 - [Built-in pack upgrades](./docs/pack-upgrades.md): non-destructive refresh behavior for existing `.ai` roots
 - [Codex plugin](./docs/codex-plugin.md): installable Codex skills and MCP tools for fclt workflows
+- [Activity action locators](./docs/activity-action-locators.md): read-only resolution from aggregate activity to one verified current target
 - [Writeback and evolution](./docs/writeback-evolution.md): the feedback-loop workflow and review surfaces
 - [Managed mode](./docs/managed-mode.md): when to let `fclt` write tool files
 - [Roadmap](./docs/roadmap.md): current gaps and planned work

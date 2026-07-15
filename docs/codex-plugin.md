@@ -34,7 +34,8 @@ The plugin exposes:
 - `fclt_workflow`: typed writeback and evolution read/review/lifecycle operations
 - `fclt_sync`: managed-state inspection and dry-run sync preview
 - `fclt_registry`: source search/verification, strict-trust install/update preview,
-  and bounded reconciliation status/review through a closed scope/window/source-id schema
+  bounded reconciliation status/review through a closed scope/window/source-id schema,
+  and read-only resolution of one opaque activity action locator
 - `fclt_audit`: structured, redacted, non-interactive security audit with zero report or index writes
 - `fclt_automation`: read-only autosync status plus scheduled evolution-loop status and preview
 - `fclt_status`

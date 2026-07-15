@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "matrixVersion": 1,
   "generatedFrom": {
-    "packageVersion": "2.25.4",
+    "packageVersion": "2.27.0",
     "pluginVersion": "0.1.2",
     "auditedAt": "2026-07-14T00:00:00Z"
   },
@@ -758,6 +758,23 @@
       "apply": "withheld; enable, disable, scheduled run, and canonical apply remain CLI-only",
       "rollback": "not_applicable",
       "verification": "typed schema, aggregate default plus explicit filters, immutable activity snapshots, bounded targets and HTTP(S) links, no absolute paths, machine state keys, or credential-bearing URLs in portable activity JSON, queue continuity, and zero writes during preview"
+    },
+    {
+      "id": "evolution_loop.activity_action_resolution",
+      "cli": "ai loop resolve <activity-action-locator> --json",
+      "cliAvailability": "available",
+      "mcp": {
+        "disposition": "exposed",
+        "tool": "fclt_registry",
+        "action": "activity_resolve",
+        "reason": "the closed router accepts only one opaque versioned locator; caller-supplied scope, cwd, root, path, argv, endpoint, token, token env, credential, approval, and mutation fields are rejected"
+      },
+      "risk": "read_only",
+      "scope": "verified machine-local Global or project runtime identity selected only by the locator",
+      "preview": "revalidates the latest activity run, queue revision, current resource lifecycle, project/runtime identity, and allowed action class before returning a plain-language plan",
+      "apply": "withheld; version 1 exposes no locator-bound mutation because existing lifecycle commands do not accept the expected locator binding revision",
+      "rollback": "not_applicable; resolution performs zero canonical, tool-home, project, workflow, or external mutation",
+      "verification": "no-write snapshots, duplicate-id and duplicate-worktree isolation, cross-scope replay refusal, moved-root and missing-state refusal, stale lifecycle/run rejection, incompatible-version rejection, raw-field exclusion, and published typed-tool discovery"
     },
     {
       "id": "autosync.mutation",

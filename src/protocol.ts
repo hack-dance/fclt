@@ -35,6 +35,7 @@ export async function protocolReport(): Promise<FcltProtocolReport> {
       executable: process.execPath,
     },
     capabilities: [
+      "activity-action-resolve-v1",
       "audit-read-only-v1",
       "json-output-v1",
       "plugin-runtime-handshake-v1",

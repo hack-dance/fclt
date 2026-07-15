@@ -1,3 +1,15 @@
+## [2.27.0](https://github.com/hack-dance/fclt/compare/v2.26.0...v2.27.0) (2026-07-15)
+
+### Features
+
+* add durable activity history ([#62](https://github.com/hack-dance/fclt/issues/62)) ([1a0080e](https://github.com/hack-dance/fclt/commit/1a0080e40c73971cf72b5d267348b64ce26d500f))
+
+## [2.26.0](https://github.com/hack-dance/fclt/compare/v2.25.4...v2.26.0) (2026-07-15)
+
+### Features
+
+* **activity:** add safe action locators ([#63](https://github.com/hack-dance/fclt/issues/63)) ([693d2ac](https://github.com/hack-dance/fclt/commit/693d2ac71cbe95c8c24f6baec9b5a4359e61113c))
+
 ## [2.25.4](https://github.com/hack-dance/fclt/compare/v2.25.3...v2.25.4) (2026-07-15)
 
 ### Bug Fixes

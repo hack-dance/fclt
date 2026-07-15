@@ -3,6 +3,8 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  facultAiActivityHistoryManifestPath,
+  facultAiActivityHistorySegmentDir,
   facultAiGraphPath,
   facultAiIndexPath,
   facultAiStateDir,
@@ -13,6 +15,7 @@ import {
   facultRootDir,
   facultRuntimeCacheDir,
   legacyFacultAiStateDirs,
+  machineStateProjectScopeId,
   pathIsInsideOrEqual,
   projectRootFromAiRoot,
 } from "./paths";
@@ -116,6 +119,31 @@ describe("paths", () => {
         "writeback",
         "queue.jsonl"
       )
+    );
+  });
+
+  it("stores activity history in runtime state with stable opaque project scope ids", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const rootDir = join(tempHome, "work", "repo", ".ai");
+    const historyDir = join(
+      facultMachineStateDir(tempHome, rootDir),
+      "ai",
+      "project",
+      "evolution",
+      "loop",
+      "history"
+    );
+
+    expect(facultAiActivityHistoryManifestPath(tempHome, rootDir)).toBe(
+      join(historyDir, "manifest.json")
+    );
+    expect(facultAiActivityHistorySegmentDir(tempHome, rootDir)).toBe(
+      join(historyDir, "segments")
+    );
+    expect(machineStateProjectScopeId("example-machine-key")).toBe(
+      "project:4bbe4718dff3fbd0"
     );
   });
 

@@ -303,6 +303,10 @@ export function machineStateProjectKey(
   return `${slug || "project"}-${digest}`;
 }
 
+export function machineStateProjectScopeId(machineKey: string): string {
+  return `project:${createHash("sha256").update(machineKey).digest("hex").slice(0, 16)}`;
+}
+
 export function facultMachineStateDir(
   home: string = defaultHomeDir(),
   rootDir?: string,
@@ -562,6 +566,32 @@ export function facultAiEvolutionLoopReportDir(
     "loop",
     "reports"
   );
+}
+
+export function facultAiActivityHistoryDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    facultAiRuntimeScopeDir(home, rootDir),
+    "evolution",
+    "loop",
+    "history"
+  );
+}
+
+export function facultAiActivityHistoryManifestPath(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiActivityHistoryDir(home, rootDir), "manifest.json");
+}
+
+export function facultAiActivityHistorySegmentDir(
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(facultAiActivityHistoryDir(home, rootDir), "segments");
 }
 
 export function facultAiReconciliationConfigPath(
