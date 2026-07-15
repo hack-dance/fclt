@@ -724,12 +724,25 @@ type CapturedStream = { text: string; truncated: boolean };
 async function drainBoundedStream(
   stream: ReadableStream<Uint8Array>,
   limit: number,
-  onLimit: () => void
+  onLimit: () => void,
+  signal?: AbortSignal
 ): Promise<CapturedStream> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let captured = 0;
   let truncated = false;
+  let cancellation: Promise<void> | undefined;
+  const cancelForAbort = () => {
+    cancellation ??= reader.cancel("agent subprocess interrupted").then(
+      () => undefined,
+      () => undefined
+    );
+  };
+  if (signal?.aborted) {
+    cancelForAbort();
+  } else {
+    signal?.addEventListener("abort", cancelForAbort, { once: true });
+  }
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -748,13 +761,12 @@ async function drainBoundedStream(
           onLimit();
         }
         truncated = true;
-        await reader.cancel("agent subprocess output limit").catch(() => {
-          // The child may close the stream while output-limit cleanup runs.
-        });
         break;
       }
     }
   } finally {
+    signal?.removeEventListener("abort", cancelForAbort);
+    await cancellation;
     reader.releaseLock();
   }
   return {
@@ -765,50 +777,82 @@ async function drainBoundedStream(
   };
 }
 
-async function collectProcessOutput(proc: {
-  exited: Promise<number>;
-  kill: (signal?: number | NodeJS.Signals) => void;
-  stderr: ReadableStream<Uint8Array>;
-  stdout: ReadableStream<Uint8Array>;
-}): Promise<{ code: number; stderr: string; stdout: string }> {
+async function collectProcessOutput(
+  proc: {
+    exited: Promise<number>;
+    kill: (signal?: number | NodeJS.Signals) => void;
+    pid: number;
+    stderr: ReadableStream<Uint8Array>;
+    stdout: ReadableStream<Uint8Array>;
+  },
+  signal?: AbortSignal
+): Promise<{ code: number; stderr: string; stdout: string }> {
   let killedForOutputLimit = false;
   let killed = false;
+  const collectionController = new AbortController();
   const kill = () => {
     if (killed) {
       return;
     }
     killed = true;
+    if (
+      process.platform !== "win32" &&
+      Number.isSafeInteger(proc.pid) &&
+      proc.pid > 0
+    ) {
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+        return;
+      } catch {
+        // Fall through if the detached process group already exited.
+      }
+    }
     try {
       proc.kill("SIGKILL");
     } catch {
       // The process may have exited between the bounded read and termination.
     }
   };
+  const cancelCollection = () => {
+    kill();
+    collectionController.abort();
+  };
   const killForOutputLimit = () => {
     killedForOutputLimit = true;
-    kill();
+    cancelCollection();
   };
+  if (signal?.aborted) {
+    cancelCollection();
+  } else {
+    signal?.addEventListener("abort", cancelCollection, { once: true });
+  }
   const stdoutPromise = drainBoundedStream(
     proc.stdout,
     MAX_SUBPROCESS_OUTPUT_BYTES,
-    killForOutputLimit
+    killForOutputLimit,
+    collectionController.signal
   ).catch((error) => {
-    kill();
+    cancelCollection();
     throw error;
   });
   const stderrPromise = drainBoundedStream(
     proc.stderr,
     MAX_SUBPROCESS_OUTPUT_BYTES,
-    killForOutputLimit
+    killForOutputLimit,
+    collectionController.signal
   ).catch((error) => {
-    kill();
+    cancelCollection();
+    throw error;
+  });
+  const exitedPromise = proc.exited.catch((error) => {
+    cancelCollection();
     throw error;
   });
   const [stdout, stderr, exited] = await Promise.allSettled([
     stdoutPromise,
     stderrPromise,
-    proc.exited,
-  ]);
+    exitedPromise,
+  ]).finally(() => signal?.removeEventListener("abort", cancelCollection));
   if (killedForOutputLimit) {
     throw new AgentAuditRunnerError("agent-subprocess-output-limit");
   }
@@ -989,6 +1033,7 @@ async function runClaude(
         "",
       ],
       cwd: runtimeDir,
+      detached: process.platform !== "win32",
       env: childEnvironment,
       signal: subprocess.signal,
       stdin: new Blob([prompt]),
@@ -996,7 +1041,10 @@ async function runClaude(
       stderr: "pipe",
     });
 
-    const { code, stderr, stdout } = await collectProcessOutput(proc);
+    const { code, stderr, stdout } = await collectProcessOutput(
+      proc,
+      subprocess.signal
+    );
     if (code !== 0) {
       if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
         throw new AgentAuditPreconditionError(
@@ -1079,6 +1127,7 @@ async function runCodex(
         "-",
       ],
       cwd: dir,
+      detached: process.platform !== "win32",
       env: childEnvironment,
       signal: subprocess.signal,
       stdin: new Blob([prompt]),
@@ -1086,7 +1135,10 @@ async function runCodex(
       stderr: "pipe",
     });
 
-    const { code, stderr, stdout } = await collectProcessOutput(proc);
+    const { code, stderr, stdout } = await collectProcessOutput(
+      proc,
+      subprocess.signal
+    );
     if (code !== 0) {
       if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
         throw new AgentAuditPreconditionError(

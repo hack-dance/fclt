@@ -21,6 +21,8 @@ import {
 import { persistAuditReport } from "./report-persistence";
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
+const AUDIT_DISCOVERY_DRIFT_RE =
+  /Audit (?:source discovery changed during evaluation|directory changed between reads:)/;
 
 async function writeFile(p: string, content: string) {
   await mkdir(dirname(p), { recursive: true });
@@ -422,7 +424,7 @@ test("agent audit rejects a previously undiscovered top-level skill added during
         return { output: { passed: true, findings: [], notes: "ok" } };
       },
     })
-  ).rejects.toThrow("Audit source discovery changed during evaluation");
+  ).rejects.toThrow(AUDIT_DISCOVERY_DRIFT_RE);
 });
 
 test("agent audit aborts after final discovery before snapshot validation", async () => {
@@ -1015,7 +1017,9 @@ function hostileAgentFixture(args: {
         ":args_done",
         'if "%mode%"=="nonzero" (echo %hostile% & echo %hostile% 1>&2 & exit /b 7)',
         'if "%mode%"=="auth" (echo %hostile% & echo authentication required %hostile% 1>&2 & exit /b 9)',
-        'if "%mode%"=="hang" (set /p "=%hostile%" <nul & set /p "=%hostile%" <nul 1>&2 & "%SystemRoot%\\System32\\ping.exe" -n 61 127.0.0.1 >nul & exit /b 0)',
+        // Windows child-tree termination is not assumed. Keep the inherited-pipe
+        // descendant longer than the test ceiling but bound its orphan lifetime.
+        'if "%mode%"=="hang" (set /p "=%hostile%" <nul & set /p "=%hostile%" <nul 1>&2 & "%SystemRoot%\\System32\\ping.exe" -n 11 127.0.0.1 >nul & exit /b 0)',
         'if "%mode%"=="parse" goto parse_output',
         "goto echo_output",
         ":parse_output",
@@ -1055,6 +1059,8 @@ function hostileAgentFixture(args: {
       "done",
       'if [ "$mode" = "nonzero" ]; then printf "%s\\n" "$hostile"; printf "%s\\n" "$hostile" >&2; exit 7; fi',
       'if [ "$mode" = "auth" ]; then printf "%s\\n" "$hostile"; printf "authentication required %s\\n" "$hostile" >&2; exit 9; fi',
+      // Keep a real descendant alive with inherited pipes. Timeout cleanup must
+      // close both readers and terminate the detached POSIX process group.
       'if [ "$mode" = "hang" ]; then printf "%s" "$hostile"; printf "%s" "$hostile" >&2; sleep 60; exit 0; fi',
       'if [ "$mode" = "parse" ]; then',
       '  if [ "$tool" = "codex" ]; then printf "{invalid:%s" "$hostile" > "$out_path"; else printf "{invalid:%s\\n" "$hostile"; fi',
