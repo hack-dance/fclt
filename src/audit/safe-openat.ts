@@ -211,7 +211,8 @@ interface DirectoryStreamSymbols {
   close: (fd: number) => number;
   closedir: (directory: Pointer) => number;
   dup: (fd: number) => number;
-  fdopendir: (fd: number) => Pointer;
+  fdopendir?: (fd: number) => Pointer;
+  fdopendir$INODE64?: (fd: number) => Pointer;
   readdir?: (directory: Pointer) => Pointer;
   readdir$INODE64?: (directory: Pointer) => Pointer;
   rewinddir: (directory: Pointer) => void;
@@ -250,14 +251,22 @@ interface PrivateFileMutationSymbols extends DirectoryMutationSymbols {
   write: (fd: number, buffer: Pointer, length: number) => number | bigint;
 }
 
-export function darwinReaddirSymbol(
+export function darwinDirectoryStreamSymbols(
   architecture: string = process.arch
-): "readdir" | "readdir$INODE64" {
-  // Intel macOS still exports the legacy 32-bit-inode `readdir` ABI. Native
-  // callers are redirected to the modern dirent layout by the SDK symbol
-  // alias, which FFI must select explicitly. Apple Silicon only exposes the
-  // modern ABI under the unsuffixed symbol.
-  return architecture === "x64" ? "readdir$INODE64" : "readdir";
+): {
+  fdopendir: "fdopendir" | "fdopendir$INODE64";
+  readdir: "readdir" | "readdir$INODE64";
+} {
+  // Intel macOS still exports legacy 32-bit-inode directory-stream ABIs.
+  // Native callers are redirected to the modern dirent layout by the SDK
+  // aliases, which FFI must select explicitly as a pair. Apple Silicon only
+  // exposes the modern ABI under the unsuffixed symbols.
+  return architecture === "x64"
+    ? {
+        fdopendir: "fdopendir$INODE64",
+        readdir: "readdir$INODE64",
+      }
+    : { fdopendir: "fdopendir", readdir: "readdir" };
 }
 
 function directoryStreamLibrary(): DirectoryStreamLibrary {
@@ -266,12 +275,15 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
     dup: { args: [FFIType.i32], returns: FFIType.i32 },
-    fdopendir: { args: [FFIType.i32], returns: FFIType.ptr },
     rewinddir: { args: [FFIType.ptr], returns: FFIType.void },
   };
   if (process.platform === "darwin") {
-    const readdirSymbol = darwinReaddirSymbol();
-    definitions[readdirSymbol] = {
+    const directorySymbols = darwinDirectoryStreamSymbols();
+    definitions[directorySymbols.fdopendir] = {
+      args: [FFIType.i32],
+      returns: FFIType.ptr,
+    };
+    definitions[directorySymbols.readdir] = {
       args: [FFIType.ptr],
       returns: FFIType.ptr,
     };
@@ -284,12 +296,14 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
       closedir: (directory) => symbols.closedir(directory),
       dup: (fileDescriptor) => symbols.dup(fileDescriptor),
       errnoPointer: () => symbols.__error!(),
-      fdopendir: (fileDescriptor) => symbols.fdopendir(fileDescriptor),
-      readdir: (directory) => symbols[readdirSymbol]!(directory),
+      fdopendir: (fileDescriptor) =>
+        symbols[directorySymbols.fdopendir]!(fileDescriptor),
+      readdir: (directory) => symbols[directorySymbols.readdir]!(directory),
       rewinddir: (directory) => symbols.rewinddir(directory),
     };
   }
   if (process.platform === "linux") {
+    definitions.fdopendir = { args: [FFIType.i32], returns: FFIType.ptr };
     definitions.readdir = { args: [FFIType.ptr], returns: FFIType.ptr };
     definitions.__errno_location = { args: [], returns: FFIType.ptr };
     const libc = openSystemLibc(configuration, definitions);
@@ -300,7 +314,7 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
       closedir: (directory) => symbols.closedir(directory),
       dup: (fileDescriptor) => symbols.dup(fileDescriptor),
       errnoPointer: () => symbols.__errno_location!(),
-      fdopendir: (fileDescriptor) => symbols.fdopendir(fileDescriptor),
+      fdopendir: (fileDescriptor) => symbols.fdopendir!(fileDescriptor),
       readdir: (directory) => symbols.readdir!(directory),
       rewinddir: (directory) => symbols.rewinddir(directory),
     };

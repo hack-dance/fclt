@@ -5,15 +5,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   auditReportPersistenceSupported,
-  darwinReaddirSymbol,
+  darwinDirectoryStreamSymbols,
   linuxLibcCandidates,
   readDirectoryEntriesAt,
   resolveLinuxLibcPath,
 } from "./safe-openat";
 
 test("Darwin directory reads select the SDK inode ABI for each architecture", () => {
-  expect(darwinReaddirSymbol("x64")).toBe("readdir$INODE64");
-  expect(darwinReaddirSymbol("arm64")).toBe("readdir");
+  expect(darwinDirectoryStreamSymbols("x64")).toEqual({
+    fdopendir: "fdopendir$INODE64",
+    readdir: "readdir$INODE64",
+  });
+  expect(darwinDirectoryStreamSymbols("arm64")).toEqual({
+    fdopendir: "fdopendir",
+    readdir: "readdir",
+  });
 });
 
 test("Linux libc candidates cover Bun-supported glibc and musl runtimes", () => {
