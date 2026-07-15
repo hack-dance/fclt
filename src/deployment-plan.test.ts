@@ -11,7 +11,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   buildDeploymentPlan,
   type DeploymentPlanV1,
@@ -20,6 +20,7 @@ import {
 } from "./deployment-plan";
 
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
+const DESTINATION_IDENTITY_RE = /^physical-path-v1:.+/;
 const SOURCE_DIR_SUFFIX_RE = /\/src$/;
 const DOLLAR = "$";
 
@@ -170,6 +171,7 @@ describe("immutable per-asset deployment planning", () => {
     expect(first.binding.destination.path).toBe(
       join(fixture.targetRoot, "instructions", "WORK_UNITS.md")
     );
+    expect(first.binding.destination.identity).toMatch(DESTINATION_IDENTITY_RE);
     expect(first.hashes.source).toBe(first.hashes.desired);
     expect(first.hashes.current).toBeNull();
     expect(first.ownerMode).toBe("unowned");
@@ -471,6 +473,117 @@ describe("immutable per-asset deployment planning", () => {
     ).rejects.toThrow("Orphaned deployment ownership claim");
   });
 
+  it("uses one ownership identity through a portable realpath alias", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+
+    const aliasRoot = join(
+      dirname(fixture.root),
+      `${basename(fixture.root)}-alias`
+    );
+    await symlink(fixture.root, aliasRoot);
+    const before = await snapshotTree(fixture.root);
+    const aliasPlan = await buildDeploymentPlan({
+      ...planOptions(fixture),
+      expectedCurrentHash: undefined,
+      targetRoot: join(aliasRoot, "codex-home"),
+    });
+    const after = await snapshotTree(fixture.root);
+
+    expect(after).toEqual(before);
+    expect(aliasPlan.binding.destination.path).not.toBe(
+      initial.binding.destination.path
+    );
+    expect(aliasPlan.binding.destination.identity).toBe(
+      initial.binding.destination.identity
+    );
+    expect(aliasPlan.ownerMode).toBe("fclt-owned");
+    expect(aliasPlan.rollbackTarget).toEqual(initial.rollbackTarget);
+    expect(aliasPlan.operations.writes).toEqual([]);
+    expect(
+      aliasPlan.operations.reads.find(
+        (read) => read.kind === "deployment-state"
+      )?.path
+    ).toBe(deploymentStateWrite(initial).path);
+  });
+
+  it("coalesces case-only destination aliases on case-insensitive filesystems", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+
+    const originalPath = initial.binding.destination.path;
+    const caseAliasPath = join(
+      fixture.targetRoot,
+      "instructions",
+      "work_units.md"
+    );
+    const [originalStat, aliasStat] = await Promise.all([
+      lstat(originalPath),
+      lstat(caseAliasPath).catch(() => null),
+    ]);
+    if (
+      !aliasStat ||
+      originalStat.dev !== aliasStat.dev ||
+      originalStat.ino !== aliasStat.ino
+    ) {
+      return;
+    }
+
+    const before = await snapshotTree(fixture.root);
+    const aliasPlan = await buildDeploymentPlan({
+      ...planOptions(fixture),
+      destination: "instructions/work_units.md",
+      expectedCurrentHash: undefined,
+    });
+    const after = await snapshotTree(fixture.root);
+
+    expect(after).toEqual(before);
+    expect(aliasPlan.binding.destination.identity).toBe(
+      initial.binding.destination.identity
+    );
+    expect(aliasPlan.ownerMode).toBe("fclt-owned");
+    expect(aliasPlan.operations.writes).toEqual([]);
+  });
+
+  it("supports multiple target roots in one shared deployment state root", async () => {
+    const fixture = await createFixture();
+    const first = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(first);
+
+    const secondTargetRoot = join(fixture.root, "second-codex-home");
+    await mkdir(secondTargetRoot);
+    const secondOptions = {
+      ...planOptions(fixture),
+      targetRoot: secondTargetRoot,
+    };
+    const beforeSecondPlan = await snapshotTree(fixture.root);
+    const second = await buildDeploymentPlan(secondOptions);
+    const afterSecondPlan = await snapshotTree(fixture.root);
+
+    expect(afterSecondPlan).toEqual(beforeSecondPlan);
+    expect(second.ownerMode).toBe("unowned");
+    expect(second.binding.destination.identity).not.toBe(
+      first.binding.destination.identity
+    );
+    expect(deploymentStateWrite(second).path).not.toBe(
+      deploymentStateWrite(first).path
+    );
+    await materializePlanFixture(second);
+
+    const firstNoOp = await buildDeploymentPlan({
+      ...planOptions(fixture),
+      expectedCurrentHash: undefined,
+    });
+    const secondNoOp = await buildDeploymentPlan({
+      ...secondOptions,
+      expectedCurrentHash: undefined,
+    });
+    expect(firstNoOp.operations.writes).toEqual([]);
+    expect(secondNoOp.operations.writes).toEqual([]);
+  });
+
   it("fails closed on path traversal and symlink escape", async () => {
     const fixture = await createFixture();
     await expect(
@@ -486,6 +599,15 @@ describe("immutable per-asset deployment planning", () => {
     await expect(buildDeploymentPlan(planOptions(fixture))).rejects.toThrow(
       "traverses a symlink"
     );
+
+    const blocked = await createFixture();
+    await Bun.write(join(blocked.targetRoot, "blocked"), "not a directory\n");
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(blocked),
+        destination: "blocked/WORK_UNITS.md",
+      })
+    ).rejects.toThrow("identity cannot be established safely");
   });
 
   it("fails closed on unsupported adapter versions, unresolved variables, and lossy translation", async () => {

@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { getAdapter } from "./adapters";
 
 declare const FCLT_COMPILED_VERSION: string | undefined;
@@ -14,6 +21,7 @@ const PATH_SEPARATOR_RE = /[\\/]/;
 const DEPLOYMENT_PLAN_SCHEMA_VERSION = 1 as const;
 const DEPLOYMENT_STATE_SCHEMA_VERSION = 1 as const;
 const PACKAGE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const DESTINATION_IDENTITY_PREFIX = "physical-path-v1:";
 
 export type DeploymentAssetKind = "instruction" | "snippet";
 export type DeploymentOwnerMode = "fclt-owned" | "unowned";
@@ -37,6 +45,7 @@ export interface DeploymentStateV1 {
   planSchemaVersion: 1;
   binding: {
     assetCanonicalRef: string;
+    destinationIdentity: string;
     destinationPath: string;
     tool: string;
     adapterVersion: string;
@@ -64,6 +73,7 @@ export interface DeploymentPlanV1 {
       root: string;
       relativePath: string;
       path: string;
+      identity: string;
     };
   };
   hashes: {
@@ -261,6 +271,68 @@ async function assertContainedPath(args: {
   return candidate;
 }
 
+async function canonicalPhysicalPath(
+  pathValue: string,
+  label: string
+): Promise<string> {
+  const absolute = resolve(pathValue);
+  const missingSegments: string[] = [];
+  let cursor = absolute;
+  let stat = await lstat(cursor).catch(() => null);
+  while (!stat) {
+    const parent = dirname(cursor);
+    if (parent === cursor) {
+      throw new Error(`${label} identity cannot be established safely.`);
+    }
+    missingSegments.unshift(basename(cursor));
+    cursor = parent;
+    stat = await lstat(cursor).catch(() => null);
+  }
+  if (
+    stat.isSymbolicLink() ||
+    (missingSegments.length > 0 && !stat.isDirectory())
+  ) {
+    throw new Error(`${label} identity cannot be established safely.`);
+  }
+  let canonicalAncestor: string;
+  try {
+    canonicalAncestor = await realpath(cursor);
+  } catch {
+    throw new Error(`${label} identity cannot be established safely.`);
+  }
+  return join(canonicalAncestor, ...missingSegments);
+}
+
+function physicalPathIdentity(canonicalPath: string): string {
+  const portablePath = canonicalPath
+    .replace(/\\/g, "/")
+    .normalize("NFC")
+    .toLowerCase();
+  return `${DESTINATION_IDENTITY_PREFIX}${portablePath}`;
+}
+
+async function resolveDestinationIdentity(args: {
+  destinationPath: string;
+  label: string;
+  targetRoot?: string;
+}): Promise<string> {
+  const canonicalDestination = await canonicalPhysicalPath(
+    args.destinationPath,
+    args.label
+  );
+  if (args.targetRoot) {
+    const canonicalRoot = await canonicalPhysicalPath(
+      args.targetRoot,
+      "Target root"
+    );
+    const rel = relative(canonicalRoot, canonicalDestination);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error(`${args.label} escapes its physical root.`);
+    }
+  }
+  return physicalPathIdentity(canonicalDestination);
+}
+
 async function readRegularFileOrNull(args: {
   label: string;
   path: string;
@@ -362,6 +434,12 @@ function parseDeploymentState(args: {
     !SHA256_RE.test(parsed.desiredHash) ||
     !isPlainObject(parsed.binding) ||
     typeof parsed.binding.assetCanonicalRef !== "string" ||
+    typeof parsed.binding.destinationIdentity !== "string" ||
+    !parsed.binding.destinationIdentity.startsWith(
+      DESTINATION_IDENTITY_PREFIX
+    ) ||
+    parsed.binding.destinationIdentity.length ===
+      DESTINATION_IDENTITY_PREFIX.length ||
     typeof parsed.binding.destinationPath !== "string" ||
     typeof parsed.binding.tool !== "string" ||
     typeof parsed.binding.adapterVersion !== "string" ||
@@ -386,12 +464,12 @@ function parseDeploymentState(args: {
 }
 
 function destinationOwnershipId(
-  binding: Pick<DeploymentStateV1["binding"], "destinationPath" | "tool">
+  binding: Pick<DeploymentStateV1["binding"], "destinationIdentity" | "tool">
 ): string {
   return createHash("sha256")
     .update(
       stableJson({
-        destinationPath: binding.destinationPath,
+        destinationIdentity: binding.destinationIdentity,
         tool: binding.tool,
       })
     )
@@ -414,7 +492,6 @@ async function scanDeploymentStates(args: {
   expectedPath: string;
   requestedBinding: DeploymentStateV1["binding"];
   stateRoot: string;
-  targetRoot: string;
 }): Promise<{
   directoryHash: string | null;
   existing: ScannedDeploymentState | null;
@@ -450,11 +527,6 @@ async function scanDeploymentStates(args: {
       throw new Error(`Deployment state disappeared during planning: ${path}`);
     }
     const state = parseDeploymentState({ bytes, path });
-    await assertContainedPath({
-      label: "Recorded deployment destination",
-      path: state.binding.destinationPath,
-      root: args.targetRoot,
-    });
     if (state.rollbackTarget.kind === "snapshot") {
       await assertContainedPath({
         label: "Recorded rollback snapshot",
@@ -472,9 +544,20 @@ async function scanDeploymentStates(args: {
   const claims = records.filter(
     (record) =>
       record.state.binding.tool === args.requestedBinding.tool &&
-      record.state.binding.destinationPath ===
-        args.requestedBinding.destinationPath
+      record.state.binding.destinationIdentity ===
+        args.requestedBinding.destinationIdentity
   );
+  for (const claim of claims) {
+    const recordedIdentity = await resolveDestinationIdentity({
+      destinationPath: claim.state.binding.destinationPath,
+      label: "Recorded deployment destination",
+    });
+    if (recordedIdentity !== claim.state.binding.destinationIdentity) {
+      throw new Error(
+        `Deployment state has a corrupt destination identity: ${claim.path}`
+      );
+    }
+  }
   if (claims.length > 1) {
     throw new Error(
       "Conflicting deployment ownership claims exist for the destination."
@@ -610,6 +693,11 @@ export async function buildDeploymentPlan(
     path: join(targetRoot, destinationRelativePath),
     root: targetRoot,
   });
+  const destinationIdentity = await resolveDestinationIdentity({
+    destinationPath,
+    label: "Destination path",
+    targetRoot,
+  });
   const currentBytes = await readRegularFileOrNull({
     label: "Current target",
     path: destinationPath,
@@ -649,6 +737,7 @@ export async function buildDeploymentPlan(
   const stateBinding: DeploymentStateV1["binding"] = {
     adapterVersion: options.adapterVersion,
     assetCanonicalRef: asset.canonicalRef,
+    destinationIdentity,
     destinationPath,
     tool: options.tool,
   };
@@ -668,7 +757,6 @@ export async function buildDeploymentPlan(
     expectedPath: statePath,
     requestedBinding: stateBinding,
     stateRoot,
-    targetRoot,
   });
   const existingStateRecord = stateScan.existing;
   const existingState = existingStateRecord?.state ?? null;
@@ -752,7 +840,7 @@ export async function buildDeploymentPlan(
   const desiredState: DeploymentStateV1 = {
     schemaVersion: DEPLOYMENT_STATE_SCHEMA_VERSION,
     planSchemaVersion: DEPLOYMENT_PLAN_SCHEMA_VERSION,
-    binding: stateBinding,
+    binding: existingState?.binding ?? stateBinding,
     desiredHash,
     ownerMode: "fclt-owned",
     rollbackTarget,
@@ -863,6 +951,7 @@ export async function buildDeploymentPlan(
         root: targetRoot,
         relativePath: destinationRelativePath,
         path: destinationPath,
+        identity: destinationIdentity,
       },
     },
     hashes: {
