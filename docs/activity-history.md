@@ -38,8 +38,10 @@ field carries the concrete transition, such as `repeated`, `task`, `defer`,
 Every event references one recorded run. The run record carries scope, trigger,
 status, loop revision, config revision, reconciliation window, and coverage
 counts. Resource events carry only the changed field and bounded safe context.
-Consumers should join on `runId` and `resource.id`; they should not infer
-lineage from titles or internal IDs.
+Consumers should join events to run records on the composite `(scopeId,
+runId)` key because run IDs are only unique within a scope. Resource lineage
+joins use `resource.id`; consumers should not infer lineage from titles or
+internal IDs.
 
 When correlation merges or another transition supersedes a prior resource,
 `relatedResourceIds` contains the opaque successor identity. This keeps branch
