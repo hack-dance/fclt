@@ -1513,6 +1513,14 @@ async function readScope(args: {
       right.id.localeCompare(left.id)
   );
   for (const record of segments) {
+    const recordedAt = dateValue(record.recordedAt);
+    if (
+      (args.query.since && recordedAt < dateValue(args.query.since)) ||
+      (args.query.until && recordedAt > dateValue(args.query.until)) ||
+      (args.cursor && recordedAt > dateValue(args.cursor.recordedAt))
+    ) {
+      continue;
+    }
     if (args.budget.remaining <= 0) {
       scanLimitReached = true;
       break;
@@ -1707,13 +1715,25 @@ export async function queryActivityHistory(
   const limit = validateQuery(query);
   const cursor = parseCursor(query.cursor);
   const discovered = await scopeDescriptors(query);
-  const budget = { remaining: MAX_QUERY_SCANNED_EVENTS };
+  const selectedDescriptors = discovered.descriptors.filter(
+    (descriptor) => !query.scopeId || descriptor.id === query.scopeId
+  );
+  const perScopeBudget = Math.max(
+    1,
+    Math.floor(
+      MAX_QUERY_SCANNED_EVENTS / Math.max(selectedDescriptors.length, 1)
+    )
+  );
   const reads: ScopeRead[] = [];
-  for (const descriptor of discovered.descriptors) {
-    if (query.scopeId && descriptor.id !== query.scopeId) {
-      continue;
-    }
-    reads.push(await readScope({ descriptor, query, cursor, budget }));
+  for (const descriptor of selectedDescriptors) {
+    reads.push(
+      await readScope({
+        descriptor,
+        query,
+        cursor,
+        budget: { remaining: perScopeBudget },
+      })
+    );
   }
   const sortedEvents = reads
     .flatMap((read) => read.events)
