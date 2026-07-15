@@ -1,3 +1,9 @@
+## [2.25.1](https://github.com/hack-dance/fclt/compare/v2.25.0...v2.25.1) (2026-07-15)
+
+### Bug Fixes
+
+* make fclt audit truly read-only ([#61](https://github.com/hack-dance/fclt/issues/61)) ([cceb87f](https://github.com/hack-dance/fclt/commit/cceb87f588b65bea77519835d637a14f9a4587b2))
+
 ## Unreleased
 
 ### Security
