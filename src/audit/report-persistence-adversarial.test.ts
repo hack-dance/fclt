@@ -378,7 +378,7 @@ describe("adversarial audit report persistence", () => {
     ).resolves.toEqual(evaluation.report);
   });
 
-  test("same-content concurrency is idempotent and source conflicts preserve the winner", async () => {
+  test("same-content concurrency is idempotent and distinct source envelopes coexist", async () => {
     const { evaluation } = await fixture();
     const reportRoot = await mkdtemp(
       join(tmpdir(), "fclt-report-adversarial-idempotent-")
@@ -396,14 +396,14 @@ describe("adversarial audit report persistence", () => {
     expect(await readdir(reportRoot)).toHaveLength(1);
 
     const other = await fixture();
-    await expect(
-      persistAuditReport({
-        ...other.evaluation,
-        mode: "static",
-        report: evaluation.report,
-        reportRoot,
-      })
-    ).rejects.toThrow("collision");
+    const otherPath = await persistAuditReport({
+      ...other.evaluation,
+      mode: "static",
+      report: evaluation.report,
+      reportRoot,
+    });
+    expect(otherPath).not.toBe(paths[0]);
+    expect(await readdir(reportRoot)).toHaveLength(2);
     await expect(
       loadVerifiedAuditReport({ reportPath: paths[0]! })
     ).resolves.toEqual(evaluation.report);
@@ -693,10 +693,16 @@ describe("adversarial audit report persistence", () => {
       .update(stableJson(sourceSnapshot))
       .digest("hex");
     await writePrivateJson(reportPath, envelope);
-
-    await expect(loadVerifiedAuditReport({ reportPath })).rejects.toThrow(
-      "overlaps an audited source"
+    const modifiedContents = await readFile(reportPath, "utf8");
+    const modifiedPath = join(
+      placedRoot,
+      `static-${createHash("sha256").update(modifiedContents).digest("hex")}.json`
     );
+    await rename(reportPath, modifiedPath);
+
+    await expect(
+      loadVerifiedAuditReport({ reportPath: modifiedPath })
+    ).rejects.toThrow("overlaps an audited source");
   });
 
   test("loader binds the exact parent descriptor, permissions, and final child name", async () => {

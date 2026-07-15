@@ -328,7 +328,7 @@ describe("audit fix", () => {
           cwd: fixture.home,
           homeDir: fixture.home,
         })
-      ).rejects.toThrow("do not match the report");
+      ).rejects.toThrow("schema or revision is unsupported");
       expect(await Bun.file(fixture.localPath).exists()).toBe(false);
     } finally {
       await fixture.cleanup();
@@ -409,7 +409,7 @@ describe("audit fix", () => {
     );
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("Audit evaluated context changed");
+    expect(result.stderr).toContain("Audit requested path changed");
     expect(await Bun.file(localPath).exists()).toBe(true);
     expect(await Bun.file(managedToolPath).text()).toBe(managedToolBefore);
   });
