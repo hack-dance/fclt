@@ -324,7 +324,9 @@ jobs:
           git push origin HEAD:main
 
   publish-npm:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # npm provenance rejects self-hosted runners, including Blacksmith.
+    # Keep this trust-sensitive publish step on a GitHub-hosted runner.
+    runs-on: ubuntu-latest
     needs: [semantic-release, publish-assets]
     if: needs.semantic-release.outputs.released == 'true'
     steps:
