@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
   issues: write
   pull-requests: write
 
@@ -327,6 +326,9 @@ jobs:
     # npm provenance rejects self-hosted runners, including Blacksmith.
     # Keep this trust-sensitive publish step on a GitHub-hosted runner.
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     needs: [semantic-release, publish-assets]
     if: needs.semantic-release.outputs.released == 'true'
     steps:
