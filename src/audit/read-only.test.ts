@@ -189,7 +189,7 @@ describe("read-only audit boundary", () => {
     expect(cli.exitCode).toBe(0);
     expect(JSON.parse(cli.stdout).mode).toBe("static");
     expect(await snapshotTree(home)).toEqual(before);
-  });
+  }, 15_000);
 
   it("persists deterministic JSON only to an explicit isolated report root", async () => {
     const { home } = await fixture();

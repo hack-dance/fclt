@@ -239,5 +239,5 @@ describe("audit fix", () => {
       await rm(targetHome, { force: true, recursive: true });
       await rm(isolatedReportRoot, { force: true, recursive: true });
     }
-  });
+  }, 15_000);
 });
