@@ -319,14 +319,19 @@ fclt deploy plan \
 content-addressed JSON plan fails closed on stale hashes, unsupported adapters, unresolved
 variables, lossy translation, corrupt ownership state, and path escape. Ownership is keyed by the
 exact tool and destination, so an asset or adapter change cannot silently claim an already-owned
-path. Destination identity preserves the realpath-canonical spelling, while a separate case-folded
-key detects collisions. True filesystem aliases share ownership; distinct case-only files fail
-closed as ambiguous instead of borrowing each other's state. A shared state root may contain
-multiple target roots; unrelated records are structurally validated but do not inherit the current
-plan's target boundary. Persisted destination and rollback paths must be absolute, normalized, and
-safe. Existing rollback targets are preserved, and snapshot targets must still match their recorded
-hash. Ownership transfer is reserved for a future explicit migration command. This slice has no
-apply subcommand.
+path. The primary identity losslessly encodes platform path semantics and the verified canonical
+path. A separate slash-, Unicode-, and case-normalized key detects portability collisions without
+conflating distinct physical paths. True filesystem aliases share ownership; ambiguous case,
+separator, or normalization collisions fail closed. Every persisted identity is recomputed before
+records are grouped. Canonical, target, state, and snapshot files are read twice through bounded
+no-follow descriptors and must retain the same device/inode, metadata, bytes, canonical identity,
+and physical containment. Platforms without a usable no-follow primitive fail closed. A shared
+state root may contain multiple target roots; unrelated records are structurally validated but do
+not inherit the current plan's target boundary. Persisted destination and rollback paths must be
+absolute, normalized, and safe. Existing rollback targets are preserved, and snapshot targets must
+still match their recorded hash. Ownership transfer is reserved for a future explicit migration
+command. This slice has no apply subcommand; any future executor must repeat the safe reads and
+reverify every plan hash immediately before mutation.
 
 ```bash
 fclt setup codex-plugin
