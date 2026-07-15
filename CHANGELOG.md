@@ -1,3 +1,9 @@
+## [2.27.2](https://github.com/hack-dance/fclt/compare/v2.27.1...v2.27.2) (2026-07-15)
+
+### Bug Fixes
+
+* **audit:** bind MCP remediation commit ([11538f7](https://github.com/hack-dance/fclt/commit/11538f7c5588affc288724a20dc26f931a550c43))
+
 ## [2.27.1](https://github.com/hack-dance/fclt/compare/v2.27.0...v2.27.1) (2026-07-15)
 
 ### Bug Fixes
