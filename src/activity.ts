@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -18,6 +17,7 @@ import {
   facultAiEvolutionLoopReportDir,
   facultAiEvolutionLoopStatePath,
   facultLocalStateRoot,
+  machineStateProjectScopeId,
   withFacultRootScope,
 } from "./paths";
 import { reconciliationReviewById } from "./reconciliation";
@@ -1306,10 +1306,6 @@ async function latestGlobalActivity(args: {
   );
 }
 
-function projectScopeId(machineKey: string): string {
-  return `project:${createHash("sha256").update(machineKey).digest("hex").slice(0, 16)}`;
-}
-
 async function mapConcurrent<T, R>(
   values: T[],
   concurrency: number,
@@ -1388,7 +1384,7 @@ async function configuredProjectActivity(args: { homeDir: string }): Promise<{
         activity: omitted
           ? null
           : await latestProjectActivityFromLoopDir(project.loopDir),
-        id: projectScopeId(project.entry.name),
+        id: machineStateProjectScopeId(project.entry.name),
         omitted,
       };
     }
