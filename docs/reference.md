@@ -81,11 +81,15 @@ fclt deploy plan --asset instruction:<name>|snippet:<path> \
 
 This is a read-only, one-asset/one-destination planning boundary. It emits a deterministic,
 content-addressed plan and has no executor. The planner scans canonical ownership records and
-allows at most one claim for the exact tool and destination. Existing rollback targets survive
-no-op and update replans; recorded snapshots are required and hash-verified. Asset or adapter
-ownership transfer fails closed until a separate, explicitly reviewed migration command exists.
-Use isolated roots while this boundary is being proven; broad managed apply remains deprecated and
-contained.
+allows at most one claim for the exact tool and physical destination. Physical identity uses the
+nearest existing ancestor's realpath and a portable case-folded path key; case-only names are
+therefore reserved as one ownership destination even on case-sensitive systems. Shared state roots
+may hold records for multiple target roots. Every record remains structurally validated, while
+target-path semantic validation is scoped to matching physical identity claims. Existing rollback
+targets survive no-op and update replans; recorded snapshots are required and hash-verified. Asset
+or adapter ownership transfer fails closed until a separate, explicitly reviewed migration command
+exists. Use isolated roots while this boundary is being proven; broad managed apply remains
+deprecated and contained.
 
 ## Legacy managed mode
 
