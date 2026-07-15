@@ -49,6 +49,8 @@ This roadmap tracks remaining product direction for `fclt`.
 
 4. Extend immutable per-asset deployment planning beyond the first Codex instruction/snippet slice.
    - Keep planning read-only and exact-bound while adapters are added.
+   - Add an explicit destination ownership migration/transfer contract before allowing asset or
+     adapter claims to move.
    - Build an apply executor only after transaction, approval, receipt, and recovery contracts exist.
    - Keep deprecated broad managed mutation contained.
 

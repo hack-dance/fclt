@@ -1,18 +1,19 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getAdapter } from "./adapters";
-import { packageVersion } from "./status";
+
+declare const FCLT_COMPILED_VERSION: string | undefined;
 
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
 const SECRET_VARIABLE_RE = /^secret:([A-Z_][A-Z0-9_]*)$/;
-const VARIABLE_RE = /\$\{([^}]+)\}/g;
 const ONE_PASSWORD_REFERENCE_RE = /op:\/\/[A-Za-z0-9._~%/-]+/g;
 const SAFE_RELATIVE_SEGMENT_RE = /^[A-Za-z0-9._/-]+$/;
 const MARKDOWN_SUFFIX_RE = /\.md$/;
 const PATH_SEPARATOR_RE = /[\\/]/;
 const DEPLOYMENT_PLAN_SCHEMA_VERSION = 1 as const;
 const DEPLOYMENT_STATE_SCHEMA_VERSION = 1 as const;
+const PACKAGE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 export type DeploymentAssetKind = "instruction" | "snippet";
 export type DeploymentOwnerMode = "fclt-owned" | "unowned";
@@ -83,6 +84,7 @@ export interface DeploymentPlanV1 {
       kind:
         | "canonical-source"
         | "current-target"
+        | "ownership-directory"
         | "deployment-state"
         | "rollback-snapshot";
       path: string;
@@ -290,15 +292,23 @@ function collectSecretReferences(
   const environmentNames = new Set<string>();
   const onePasswordReferences = new Set<string>();
 
-  for (const match of text.matchAll(VARIABLE_RE)) {
-    const expression = match[1] ?? "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf("${", cursor);
+    if (start < 0) {
+      break;
+    }
+    const end = text.indexOf("}", start + 2);
+    if (end < 0) {
+      throwInterpolationError(text, start);
+    }
+    const expression = text.slice(start + 2, end);
     const secret = SECRET_VARIABLE_RE.exec(expression);
     if (!secret?.[1]) {
-      throw new Error(
-        `Unresolved variable in desired content: \${${expression}}`
-      );
+      throwInterpolationError(text, start);
     }
     environmentNames.add(secret[1]);
+    cursor = end + 1;
   }
   for (const match of text.matchAll(ONE_PASSWORD_REFERENCE_RE)) {
     if (match[0]) {
@@ -314,9 +324,18 @@ function collectSecretReferences(
   return references;
 }
 
+function throwInterpolationError(text: string, offset: number): never {
+  const before = text.slice(0, offset);
+  const line = before.split("\n").length;
+  const lastNewline = before.lastIndexOf("\n");
+  const column = offset - lastNewline;
+  throw new Error(
+    `Invalid interpolation at line ${line}, column ${column} (expression redacted).`
+  );
+}
+
 function parseDeploymentState(args: {
   bytes: Uint8Array;
-  expectedBinding: DeploymentStateV1["binding"];
   path: string;
 }): DeploymentStateV1 {
   let parsed: unknown;
@@ -342,17 +361,18 @@ function parseDeploymentState(args: {
     typeof parsed.desiredHash !== "string" ||
     !SHA256_RE.test(parsed.desiredHash) ||
     !isPlainObject(parsed.binding) ||
-    stableJson(parsed.binding) !== stableJson(args.expectedBinding) ||
+    typeof parsed.binding.assetCanonicalRef !== "string" ||
+    typeof parsed.binding.destinationPath !== "string" ||
+    typeof parsed.binding.tool !== "string" ||
+    typeof parsed.binding.adapterVersion !== "string" ||
     !isPlainObject(parsed.rollbackTarget)
   ) {
-    throw new Error(
-      `Deployment state is corrupt or does not match the binding: ${args.path}`
-    );
+    throw new Error(`Deployment state is corrupt: ${args.path}`);
   }
   const rollback = parsed.rollbackTarget;
   const validRollback =
     (rollback.kind === "absent" &&
-      rollback.path === args.expectedBinding.destinationPath) ||
+      rollback.path === parsed.binding.destinationPath) ||
     (rollback.kind === "snapshot" &&
       typeof rollback.path === "string" &&
       typeof rollback.expectedHash === "string" &&
@@ -365,11 +385,171 @@ function parseDeploymentState(args: {
   return parsed as unknown as DeploymentStateV1;
 }
 
-function bindingId(binding: DeploymentStateV1["binding"]): string {
+function destinationOwnershipId(
+  binding: Pick<DeploymentStateV1["binding"], "destinationPath" | "tool">
+): string {
   return createHash("sha256")
-    .update(stableJson(binding))
+    .update(
+      stableJson({
+        destinationPath: binding.destinationPath,
+        tool: binding.tool,
+      })
+    )
     .digest("hex")
     .slice(0, 24);
+}
+
+export function serializeDeploymentState(state: DeploymentStateV1): string {
+  return `${stableJson(state)}\n`;
+}
+
+interface ScannedDeploymentState {
+  hash: string;
+  path: string;
+  state: DeploymentStateV1;
+}
+
+async function scanDeploymentStates(args: {
+  directory: string;
+  expectedPath: string;
+  requestedBinding: DeploymentStateV1["binding"];
+  stateRoot: string;
+  targetRoot: string;
+}): Promise<{
+  directoryHash: string | null;
+  existing: ScannedDeploymentState | null;
+  records: ScannedDeploymentState[];
+}> {
+  const stat = await lstat(args.directory).catch(() => null);
+  if (!stat) {
+    return { directoryHash: null, existing: null, records: [] };
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(
+      `Deployment state directory must be a non-symlink directory: ${args.directory}`
+    );
+  }
+
+  const records: ScannedDeploymentState[] = [];
+  for (const entry of (await readdir(args.directory)).sort()) {
+    if (!entry.endsWith(".json")) {
+      throw new Error(
+        `Unexpected entry in deployment state directory: ${join(args.directory, entry)}`
+      );
+    }
+    const path = await assertContainedPath({
+      label: "Deployment state record",
+      path: join(args.directory, entry),
+      root: args.directory,
+    });
+    const bytes = await readRegularFileOrNull({
+      label: "Deployment state",
+      path,
+    });
+    if (!bytes) {
+      throw new Error(`Deployment state disappeared during planning: ${path}`);
+    }
+    const state = parseDeploymentState({ bytes, path });
+    await assertContainedPath({
+      label: "Recorded deployment destination",
+      path: state.binding.destinationPath,
+      root: args.targetRoot,
+    });
+    if (state.rollbackTarget.kind === "snapshot") {
+      await assertContainedPath({
+        label: "Recorded rollback snapshot",
+        path: state.rollbackTarget.path,
+        root: args.stateRoot,
+      });
+    }
+    records.push({
+      hash: sha256(bytes),
+      path,
+      state,
+    });
+  }
+
+  const claims = records.filter(
+    (record) =>
+      record.state.binding.tool === args.requestedBinding.tool &&
+      record.state.binding.destinationPath ===
+        args.requestedBinding.destinationPath
+  );
+  if (claims.length > 1) {
+    throw new Error(
+      "Conflicting deployment ownership claims exist for the destination."
+    );
+  }
+  const existing = claims[0] ?? null;
+  const recordAtAuthoritativePath = records.find(
+    (record) => record.path === args.expectedPath
+  );
+  if (recordAtAuthoritativePath && !existing) {
+    throw new Error(
+      "Authoritative destination state path is occupied by an orphaned ownership claim."
+    );
+  }
+  if (existing && existing.path !== args.expectedPath) {
+    throw new Error(
+      "Orphaned deployment ownership claim exists outside the authoritative destination state path."
+    );
+  }
+  if (
+    existing &&
+    (existing.state.binding.assetCanonicalRef !==
+      args.requestedBinding.assetCanonicalRef ||
+      existing.state.binding.adapterVersion !==
+        args.requestedBinding.adapterVersion)
+  ) {
+    throw new Error(
+      "Destination ownership transfer requires a future explicit migration/transfer command; implicit transfer is not supported."
+    );
+  }
+
+  const manifest = records.map((record) => ({
+    hash: record.hash,
+    path: record.path,
+  }));
+  return {
+    directoryHash: sha256(stableJson(manifest)),
+    existing,
+    records,
+  };
+}
+
+async function authoritativePlannerVersion(
+  explicitVersion?: string
+): Promise<string> {
+  let authoritative: unknown =
+    typeof FCLT_COMPILED_VERSION === "string"
+      ? FCLT_COMPILED_VERSION
+      : undefined;
+  if (authoritative === undefined) {
+    const packagePath = resolve(import.meta.dir, "..", "package.json");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(packagePath, "utf8")) as unknown;
+    } catch {
+      throw new Error("Authoritative fclt planner version is unavailable.");
+    }
+    authoritative = isPlainObject(parsed) ? parsed.version : undefined;
+  }
+  if (
+    typeof authoritative !== "string" ||
+    !PACKAGE_VERSION_RE.test(authoritative)
+  ) {
+    throw new Error("Authoritative fclt planner version is invalid.");
+  }
+  if (
+    explicitVersion !== undefined &&
+    (!PACKAGE_VERSION_RE.test(explicitVersion) ||
+      explicitVersion !== authoritative)
+  ) {
+    throw new Error(
+      "Explicit planner version does not match the authoritative fclt version."
+    );
+  }
+  return authoritative;
 }
 
 export async function buildDeploymentPlan(
@@ -472,62 +652,27 @@ export async function buildDeploymentPlan(
     destinationPath,
     tool: options.tool,
   };
-  const id = bindingId(stateBinding);
-  const snapshotPath = currentHash
-    ? await assertContainedPath({
-        label: "Rollback snapshot path",
-        path: join(
-          stateRoot,
-          "rollback",
-          id,
-          currentHash.slice("sha256:".length)
-        ),
-        root: stateRoot,
-      })
-    : null;
-  const rollbackTarget: DeploymentStateV1["rollbackTarget"] = snapshotPath
-    ? {
-        kind: "snapshot",
-        path: snapshotPath,
-        expectedHash: currentHash as string,
-      }
-    : { kind: "absent", path: destinationPath };
-  const snapshotBytes = snapshotPath
-    ? await readRegularFileOrNull({
-        label: "Rollback snapshot",
-        path: snapshotPath,
-      })
-    : null;
-  const snapshotHash = snapshotBytes ? sha256(snapshotBytes) : null;
-  if (snapshotHash && snapshotHash !== currentHash) {
-    throw new Error(
-      "Rollback snapshot tamper detected: content hash does not match its binding."
-    );
-  }
-  const statePath = await assertContainedPath({
-    label: "Deployment state path",
-    path: join(stateRoot, "deployments", `${id}.json`),
+  const ownershipId = destinationOwnershipId(stateBinding);
+  const deploymentsDirectory = await assertContainedPath({
+    label: "Deployment state directory",
+    path: join(stateRoot, "deployments"),
     root: stateRoot,
   });
-  const stateBytes = await readRegularFileOrNull({
-    label: "Deployment state",
-    path: statePath,
+  const statePath = await assertContainedPath({
+    label: "Deployment state path",
+    path: join(deploymentsDirectory, `${ownershipId}.json`),
+    root: stateRoot,
   });
-  const stateHash = stateBytes ? sha256(stateBytes) : null;
-  const existingState = stateBytes
-    ? parseDeploymentState({
-        bytes: stateBytes,
-        expectedBinding: stateBinding,
-        path: statePath,
-      })
-    : null;
-  if (existingState?.rollbackTarget.kind === "snapshot") {
-    await assertContainedPath({
-      label: "Existing rollback snapshot path",
-      path: existingState.rollbackTarget.path,
-      root: stateRoot,
-    });
-  }
+  const stateScan = await scanDeploymentStates({
+    directory: deploymentsDirectory,
+    expectedPath: statePath,
+    requestedBinding: stateBinding,
+    stateRoot,
+    targetRoot,
+  });
+  const existingStateRecord = stateScan.existing;
+  const existingState = existingStateRecord?.state ?? null;
+  const stateHash = existingStateRecord?.hash ?? null;
   const ownerMode: DeploymentOwnerMode = existingState
     ? "fclt-owned"
     : "unowned";
@@ -546,6 +691,64 @@ export async function buildDeploymentPlan(
     );
   }
 
+  let rollbackTarget: DeploymentStateV1["rollbackTarget"];
+  let snapshotHash: string | null = null;
+  let snapshotRequired = false;
+  if (existingState) {
+    rollbackTarget = existingState.rollbackTarget;
+    if (rollbackTarget.kind === "snapshot") {
+      const snapshotPath = await assertContainedPath({
+        label: "Existing rollback snapshot path",
+        path: rollbackTarget.path,
+        root: stateRoot,
+      });
+      const snapshotBytes = await readRegularFileOrNull({
+        label: "Rollback snapshot",
+        path: snapshotPath,
+      });
+      if (!snapshotBytes) {
+        throw new Error(
+          "Rollback snapshot is missing for the owned destination."
+        );
+      }
+      snapshotHash = sha256(snapshotBytes);
+      if (snapshotHash !== rollbackTarget.expectedHash) {
+        throw new Error(
+          "Rollback snapshot tamper detected: content hash does not match deployment state."
+        );
+      }
+      snapshotRequired = true;
+    }
+  } else if (currentHash) {
+    const snapshotPath = await assertContainedPath({
+      label: "Rollback snapshot path",
+      path: join(
+        stateRoot,
+        "rollback",
+        ownershipId,
+        currentHash.slice("sha256:".length)
+      ),
+      root: stateRoot,
+    });
+    const snapshotBytes = await readRegularFileOrNull({
+      label: "Rollback snapshot",
+      path: snapshotPath,
+    });
+    snapshotHash = snapshotBytes ? sha256(snapshotBytes) : null;
+    if (snapshotHash && snapshotHash !== currentHash) {
+      throw new Error(
+        "Rollback snapshot tamper detected: content hash does not match its destination binding."
+      );
+    }
+    rollbackTarget = {
+      kind: "snapshot",
+      path: snapshotPath,
+      expectedHash: currentHash,
+    };
+  } else {
+    rollbackTarget = { kind: "absent", path: destinationPath };
+  }
+
   const desiredState: DeploymentStateV1 = {
     schemaVersion: DEPLOYMENT_STATE_SCHEMA_VERSION,
     planSchemaVersion: DEPLOYMENT_PLAN_SCHEMA_VERSION,
@@ -554,7 +757,7 @@ export async function buildDeploymentPlan(
     ownerMode: "fclt-owned",
     rollbackTarget,
   };
-  const desiredStateHash = sha256(`${stableJson(desiredState)}\n`);
+  const desiredStateHash = sha256(serializeDeploymentState(desiredState));
 
   const reads: DeploymentPlanV1["operations"]["reads"] = [
     {
@@ -570,25 +773,46 @@ export async function buildDeploymentPlan(
       expectedHash: currentHash,
     },
     {
-      kind: "deployment-state",
-      path: statePath,
+      kind: "ownership-directory",
+      path: deploymentsDirectory,
       required: false,
-      expectedHash: stateHash,
+      expectedHash: stateScan.directoryHash,
     },
+    ...stateScan.records.map((record) => ({
+      kind: "deployment-state" as const,
+      path: record.path,
+      required: true,
+      expectedHash: record.hash,
+    })),
+    ...(existingStateRecord
+      ? []
+      : [
+          {
+            kind: "deployment-state" as const,
+            path: statePath,
+            required: false,
+            expectedHash: null,
+          },
+        ]),
   ];
-  if (snapshotPath) {
+  if (rollbackTarget.kind === "snapshot") {
     reads.push({
       kind: "rollback-snapshot",
-      path: snapshotPath,
-      required: false,
+      path: rollbackTarget.path,
+      required: snapshotRequired,
       expectedHash: snapshotHash,
     });
   }
   const writes: DeploymentPlanV1["operations"]["writes"] = [];
-  if (snapshotPath && currentHash && snapshotHash === null) {
+  if (
+    !existingState &&
+    rollbackTarget.kind === "snapshot" &&
+    currentHash &&
+    snapshotHash === null
+  ) {
     writes.push({
       kind: "rollback-snapshot",
-      path: snapshotPath,
+      path: rollbackTarget.path,
       contentSource: { kind: "path", path: destinationPath },
       expectedCurrentHash: null,
       desiredHash: currentHash,
@@ -617,11 +841,15 @@ export async function buildDeploymentPlan(
     });
   }
 
+  const plannerVersion = await authoritativePlannerVersion(
+    options.plannerVersion
+  );
+
   const planBody = {
     schemaVersion: DEPLOYMENT_PLAN_SCHEMA_VERSION,
     planner: {
       name: "fclt" as const,
-      version: options.plannerVersion ?? (await packageVersion()),
+      version: plannerVersion,
     },
     binding: {
       asset: {
