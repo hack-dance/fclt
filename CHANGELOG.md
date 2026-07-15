@@ -1,3 +1,9 @@
+## [2.27.1](https://github.com/hack-dance/fclt/compare/v2.27.0...v2.27.1) (2026-07-15)
+
+### Bug Fixes
+
+* flush large activity output ([#72](https://github.com/hack-dance/fclt/issues/72)) ([feee9de](https://github.com/hack-dance/fclt/commit/feee9de82bf8cfde24ddf42929452d84fe80e79a))
+
 ## [2.27.0](https://github.com/hack-dance/fclt/compare/v2.26.0...v2.27.0) (2026-07-15)
 
 ### Features
