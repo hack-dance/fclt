@@ -319,12 +319,14 @@ fclt deploy plan \
 content-addressed JSON plan fails closed on stale hashes, unsupported adapters, unresolved
 variables, lossy translation, corrupt ownership state, and path escape. Ownership is keyed by the
 exact tool and destination, so an asset or adapter change cannot silently claim an already-owned
-path. Destination identity is realpath-canonical and conservatively case-folded, so case-only or
-filesystem-alias paths cannot create a second claim. A shared state root may contain multiple target
-roots; unrelated records are structurally validated but do not inherit the current plan's target
-boundary. Existing rollback targets are preserved, and snapshot targets must still match their
-recorded hash. Ownership transfer is reserved for a future explicit migration command. This slice
-has no apply subcommand.
+path. Destination identity preserves the realpath-canonical spelling, while a separate case-folded
+key detects collisions. True filesystem aliases share ownership; distinct case-only files fail
+closed as ambiguous instead of borrowing each other's state. A shared state root may contain
+multiple target roots; unrelated records are structurally validated but do not inherit the current
+plan's target boundary. Persisted destination and rollback paths must be absolute, normalized, and
+safe. Existing rollback targets are preserved, and snapshot targets must still match their recorded
+hash. Ownership transfer is reserved for a future explicit migration command. This slice has no
+apply subcommand.
 
 ```bash
 fclt setup codex-plugin

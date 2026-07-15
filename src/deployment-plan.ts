@@ -5,6 +5,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  normalize as normalizePath,
   relative,
   resolve,
 } from "node:path";
@@ -21,7 +22,8 @@ const PATH_SEPARATOR_RE = /[\\/]/;
 const DEPLOYMENT_PLAN_SCHEMA_VERSION = 1 as const;
 const DEPLOYMENT_STATE_SCHEMA_VERSION = 1 as const;
 const PACKAGE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const DESTINATION_IDENTITY_PREFIX = "physical-path-v1:";
+const DESTINATION_IDENTITY_PREFIX = "physical-path-v2:";
+const DESTINATION_COLLISION_KEY_PREFIX = "case-folded-path-v1:";
 
 export type DeploymentAssetKind = "instruction" | "snippet";
 export type DeploymentOwnerMode = "fclt-owned" | "unowned";
@@ -45,6 +47,7 @@ export interface DeploymentStateV1 {
   planSchemaVersion: 1;
   binding: {
     assetCanonicalRef: string;
+    destinationCollisionKey: string;
     destinationIdentity: string;
     destinationPath: string;
     tool: string;
@@ -73,6 +76,7 @@ export interface DeploymentPlanV1 {
       root: string;
       relativePath: string;
       path: string;
+      collisionKey: string;
       identity: string;
     };
   };
@@ -271,11 +275,26 @@ async function assertContainedPath(args: {
   return candidate;
 }
 
+function validatePersistedAbsolutePath(
+  pathValue: string,
+  label: string
+): string {
+  if (
+    !pathValue ||
+    pathValue.includes("\0") ||
+    !isAbsolute(pathValue) ||
+    normalizePath(pathValue) !== pathValue
+  ) {
+    throw new Error(`${label} must be an absolute normalized safe path.`);
+  }
+  return pathValue;
+}
+
 async function canonicalPhysicalPath(
   pathValue: string,
   label: string
 ): Promise<string> {
-  const absolute = resolve(pathValue);
+  const absolute = validatePersistedAbsolutePath(pathValue, label);
   const missingSegments: string[] = [];
   let cursor = absolute;
   let stat = await lstat(cursor).catch(() => null);
@@ -303,19 +322,26 @@ async function canonicalPhysicalPath(
   return join(canonicalAncestor, ...missingSegments);
 }
 
-function physicalPathIdentity(canonicalPath: string): string {
-  const portablePath = canonicalPath
-    .replace(/\\/g, "/")
-    .normalize("NFC")
-    .toLowerCase();
-  return `${DESTINATION_IDENTITY_PREFIX}${portablePath}`;
+interface PhysicalDestinationIdentity {
+  collisionKey: string;
+  identity: string;
+}
+
+function physicalPathIdentities(
+  canonicalPath: string
+): PhysicalDestinationIdentity {
+  const portablePath = canonicalPath.replace(/\\/g, "/").normalize("NFC");
+  return {
+    collisionKey: `${DESTINATION_COLLISION_KEY_PREFIX}${portablePath.toLowerCase()}`,
+    identity: `${DESTINATION_IDENTITY_PREFIX}${portablePath}`,
+  };
 }
 
 async function resolveDestinationIdentity(args: {
   destinationPath: string;
   label: string;
   targetRoot?: string;
-}): Promise<string> {
+}): Promise<PhysicalDestinationIdentity> {
   const canonicalDestination = await canonicalPhysicalPath(
     args.destinationPath,
     args.label
@@ -330,7 +356,7 @@ async function resolveDestinationIdentity(args: {
       throw new Error(`${args.label} escapes its physical root.`);
     }
   }
-  return physicalPathIdentity(canonicalDestination);
+  return physicalPathIdentities(canonicalDestination);
 }
 
 async function readRegularFileOrNull(args: {
@@ -410,6 +436,7 @@ function parseDeploymentState(args: {
   bytes: Uint8Array;
   path: string;
 }): DeploymentStateV1 {
+  validatePersistedAbsolutePath(args.path, "Deployment state record path");
   let parsed: unknown;
   try {
     parsed = JSON.parse(decodeUtf8(args.bytes, "Deployment state")) as unknown;
@@ -434,6 +461,12 @@ function parseDeploymentState(args: {
     !SHA256_RE.test(parsed.desiredHash) ||
     !isPlainObject(parsed.binding) ||
     typeof parsed.binding.assetCanonicalRef !== "string" ||
+    typeof parsed.binding.destinationCollisionKey !== "string" ||
+    !parsed.binding.destinationCollisionKey.startsWith(
+      DESTINATION_COLLISION_KEY_PREFIX
+    ) ||
+    parsed.binding.destinationCollisionKey.length ===
+      DESTINATION_COLLISION_KEY_PREFIX.length ||
     typeof parsed.binding.destinationIdentity !== "string" ||
     !parsed.binding.destinationIdentity.startsWith(
       DESTINATION_IDENTITY_PREFIX
@@ -447,14 +480,23 @@ function parseDeploymentState(args: {
   ) {
     throw new Error(`Deployment state is corrupt: ${args.path}`);
   }
+  const destinationPath = validatePersistedAbsolutePath(
+    parsed.binding.destinationPath,
+    "Persisted destination path"
+  );
   const rollback = parsed.rollbackTarget;
-  const validRollback =
-    (rollback.kind === "absent" &&
-      rollback.path === parsed.binding.destinationPath) ||
-    (rollback.kind === "snapshot" &&
-      typeof rollback.path === "string" &&
-      typeof rollback.expectedHash === "string" &&
-      SHA256_RE.test(rollback.expectedHash));
+  let validRollback = false;
+  if (typeof rollback.path === "string") {
+    const rollbackPath = validatePersistedAbsolutePath(
+      rollback.path,
+      "Persisted rollback path"
+    );
+    validRollback =
+      (rollback.kind === "absent" && rollbackPath === destinationPath) ||
+      (rollback.kind === "snapshot" &&
+        typeof rollback.expectedHash === "string" &&
+        SHA256_RE.test(rollback.expectedHash));
+  }
   if (!validRollback) {
     throw new Error(
       `Deployment state has an invalid or escaped rollback target: ${args.path}`
@@ -541,22 +583,36 @@ async function scanDeploymentStates(args: {
     });
   }
 
-  const claims = records.filter(
+  const collisionSet = records.filter(
     (record) =>
       record.state.binding.tool === args.requestedBinding.tool &&
-      record.state.binding.destinationIdentity ===
-        args.requestedBinding.destinationIdentity
+      record.state.binding.destinationCollisionKey ===
+        args.requestedBinding.destinationCollisionKey
   );
-  for (const claim of claims) {
+  for (const record of collisionSet) {
     const recordedIdentity = await resolveDestinationIdentity({
-      destinationPath: claim.state.binding.destinationPath,
+      destinationPath: record.state.binding.destinationPath,
       label: "Recorded deployment destination",
     });
-    if (recordedIdentity !== claim.state.binding.destinationIdentity) {
+    if (
+      recordedIdentity.identity !== record.state.binding.destinationIdentity ||
+      recordedIdentity.collisionKey !==
+        record.state.binding.destinationCollisionKey
+    ) {
       throw new Error(
-        `Deployment state has a corrupt destination identity: ${claim.path}`
+        `Deployment state has a corrupt destination identity: ${record.path}`
       );
     }
+  }
+  const claims = collisionSet.filter(
+    (record) =>
+      record.state.binding.destinationIdentity ===
+      args.requestedBinding.destinationIdentity
+  );
+  if (collisionSet.length !== claims.length) {
+    throw new Error(
+      "Case-folded destination collision is ambiguous across distinct physical paths."
+    );
   }
   if (claims.length > 1) {
     throw new Error(
@@ -693,7 +749,10 @@ export async function buildDeploymentPlan(
     path: join(targetRoot, destinationRelativePath),
     root: targetRoot,
   });
-  const destinationIdentity = await resolveDestinationIdentity({
+  const {
+    collisionKey: destinationCollisionKey,
+    identity: destinationIdentity,
+  } = await resolveDestinationIdentity({
     destinationPath,
     label: "Destination path",
     targetRoot,
@@ -737,6 +796,7 @@ export async function buildDeploymentPlan(
   const stateBinding: DeploymentStateV1["binding"] = {
     adapterVersion: options.adapterVersion,
     assetCanonicalRef: asset.canonicalRef,
+    destinationCollisionKey,
     destinationIdentity,
     destinationPath,
     tool: options.tool,
@@ -951,6 +1011,7 @@ export async function buildDeploymentPlan(
         root: targetRoot,
         relativePath: destinationRelativePath,
         path: destinationPath,
+        collisionKey: destinationCollisionKey,
         identity: destinationIdentity,
       },
     },
