@@ -359,9 +359,9 @@ test("requested paths bind a symlink replacement through its parent generation",
     (component) => component.path === aliasDirectory
   )!;
 
-  await utimes(root, new Date(1), new Date(1));
   await rm(aliasDirectory);
   await symlink(targetDirectory, aliasDirectory, "dir");
+  await utimes(root, new Date(1), new Date(1));
   const replacementTracker = new AuditSourceTracker();
   await replacementTracker.read(requested);
   const replacement = replacementTracker
@@ -369,7 +369,7 @@ test("requested paths bind a symlink replacement through its parent generation",
     .requestedPaths[0]!.lexicalChain.find(
       (component) => component.path === aliasDirectory
     )!;
-  expect(replacement.parentCtimeNs).not.toBe(recorded.parentCtimeNs);
+  expect(replacement.parentMtimeNs).not.toBe(recorded.parentMtimeNs);
 
   recorded.birthtimeNs = replacement.birthtimeNs;
   recorded.ctimeNs = replacement.ctimeNs;
@@ -400,9 +400,9 @@ test("absence proofs reject same-target lexical symlink replacement", async () =
     (component) => component.path === aliasDirectory
   )!;
 
-  await utimes(root, new Date(1), new Date(1));
   await rm(aliasDirectory);
   await symlink(targetDirectory, aliasDirectory, "dir");
+  await utimes(root, new Date(1), new Date(1));
   const replacementTracker = new AuditSourceTracker();
   await replacementTracker.capture(requested);
   const replacement = replacementTracker
@@ -410,7 +410,7 @@ test("absence proofs reject same-target lexical symlink replacement", async () =
     .absentPaths[0]!.lexicalChain.find(
       (component) => component.path === aliasDirectory
     )!;
-  expect(replacement.parentCtimeNs).not.toBe(recorded.parentCtimeNs);
+  expect(replacement.parentMtimeNs).not.toBe(recorded.parentMtimeNs);
 
   recorded.birthtimeNs = replacement.birthtimeNs;
   recorded.ctimeNs = replacement.ctimeNs;

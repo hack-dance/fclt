@@ -9,6 +9,7 @@ import {
   rm,
   symlink,
   truncate,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -221,6 +222,10 @@ test("absence operations retain their first lexical ancestor observation", async
         replaced = true;
         await rm(alias);
         await symlink(target, alias, "dir");
+        // Some CI filesystems reuse symlink inodes and expose coarse ctime
+        // resolution. Force an observable parent-generation change instead of
+        // depending on two immediate replacements landing in different ticks.
+        await utimes(root, new Date(1), new Date(1));
       },
     });
 
