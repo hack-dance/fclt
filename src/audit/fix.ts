@@ -189,6 +189,7 @@ function findingKey(args: {
   return [
     args.result.type,
     args.result.item,
+    args.result.path,
     parsed?.serverName ?? "",
     parsed?.envKey ?? "",
     normalizeRuleId(args.finding.ruleId),

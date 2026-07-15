@@ -405,6 +405,61 @@ describe("audit fix", () => {
     }
   });
 
+  it("refuses duplicate findings that require different source transactions", async () => {
+    const home = await makeTempHome();
+    const root = join(home, ".ai");
+    const mcpRoot = join(root, "mcp");
+    const canonicalPath = join(mcpRoot, "servers.json");
+    const legacyPath = join(mcpRoot, "mcp.json");
+    const localPath = join(mcpRoot, "servers.local.json");
+    const reportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-fix-duplicate-")
+    );
+    try {
+      const server = (secret: string) => ({
+        servers: {
+          github: {
+            command: "fixture-command",
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: secret },
+          },
+        },
+      });
+      await writeJson(canonicalPath, server("canonical_secret_1234567890"));
+      await writeJson(legacyPath, server("legacy_secret_1234567890"));
+      const audit = await evaluateStaticAudit({
+        argv: [],
+        cwd: home,
+        from: [root],
+        homeDir: home,
+        includeConfigFrom: false,
+        minSeverity: "high",
+      });
+      const exactReportPath = await persistAuditReport({
+        ...audit,
+        mode: "static",
+        reportRoot,
+      });
+      const canonicalBefore = await Bun.file(canonicalPath).text();
+      const legacyBefore = await Bun.file(legacyPath).text();
+
+      await expect(
+        runAuditFix({
+          argv: ["mcp:github", "--report", exactReportPath, "--yes"],
+          cwd: home,
+          homeDir: home,
+        })
+      ).rejects.toThrow(
+        "Selected findings do not share one exact bound MCP transaction"
+      );
+      expect(await Bun.file(canonicalPath).text()).toBe(canonicalBefore);
+      expect(await Bun.file(legacyPath).text()).toBe(legacyBefore);
+      expect(await Bun.file(localPath).exists()).toBe(false);
+    } finally {
+      await rm(home, { force: true, recursive: true });
+      await rm(reportRoot, { force: true, recursive: true });
+    }
+  });
+
   it("secures an existing readable local destination to owner-only mode", async () => {
     const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
       localMode: 0o644,
