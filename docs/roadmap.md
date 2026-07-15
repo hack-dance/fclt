@@ -47,10 +47,10 @@ This roadmap tracks remaining product direction for `fclt`.
    - Keep vendor integrations export-based and optional rather than adding credentials to core.
    - Make renamed-source and unavailable-source recovery easier to understand.
 
-4. Add a structured sync plan.
-   - Group writes, updates, removals, skips, conflicts, and repairs.
-   - Expose the same plan as JSON.
-   - Explain source refs and policy reasons.
+4. Extend immutable per-asset deployment planning beyond the first Codex instruction/snippet slice.
+   - Keep planning read-only and exact-bound while adapters are added.
+   - Build an apply executor only after transaction, approval, receipt, and recovery contracts exist.
+   - Keep deprecated broad managed mutation contained.
 
 5. Improve project onboarding.
    - Add a primary `fclt init project` flow.

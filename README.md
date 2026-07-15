@@ -288,6 +288,26 @@ Broad managed mode is deprecated and contained by default because it can own or 
 tool-home surfaces without a transaction receipt. Keep using inventory and previews while the
 per-asset deployment replacement is built.
 
+Build a read-only plan for one exact canonical asset and one exact destination:
+
+```bash
+fclt deploy plan \
+  --asset instruction:WORK_UNITS \
+  --destination instructions/WORK_UNITS.md \
+  --tool codex \
+  --adapter-version v1 \
+  --root /tmp/fclt-proof/.ai \
+  --target-root /tmp/fclt-proof/codex-home \
+  --state-root /tmp/fclt-proof/state \
+  --scope global \
+  --expected-current-hash absent \
+  --json
+```
+
+`deploy plan` reads canonical, target, and ownership state directly and never writes them. The
+content-addressed JSON plan fails closed on stale hashes, unsupported adapters, unresolved
+variables, lossy translation, corrupt ownership state, and path escape. It has no apply subcommand.
+
 ```bash
 fclt setup codex-plugin
 fclt manage codex --dry-run
@@ -543,6 +563,7 @@ fclt index [--force]
 Legacy managed-mode inspection:
 
 ```bash
+fclt deploy plan --help
 fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
 fclt manage <tool> --dry-run
 fclt sync [tool] --dry-run
