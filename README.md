@@ -309,18 +309,23 @@ content-addressed JSON plan fails closed on stale hashes, unsupported adapters, 
 variables, lossy translation, corrupt ownership state, and path escape. Ownership is keyed by the
 exact tool and destination, so an asset or adapter change cannot silently claim an already-owned
 path. The primary identity losslessly encodes platform path semantics and the verified canonical
-path. A separate slash-, Unicode-, and case-normalized key detects portability collisions without
-conflating distinct physical paths. True filesystem aliases share ownership; ambiguous case,
-separator, or normalization collisions fail closed. Every persisted identity is recomputed before
-records are grouped. Canonical, target, state, and snapshot files are read twice through bounded
-no-follow descriptors and must retain the same device/inode, metadata, bytes, canonical identity,
-and physical containment. Platforms without a usable no-follow primitive fail closed. A shared
-state root may contain multiple target roots; unrelated records are structurally validated but do
-not inherit the current plan's target boundary. Persisted destination and rollback paths must be
-absolute, normalized, and safe. Existing rollback targets are preserved, and snapshot targets must
-still match their recorded hash. Ownership transfer is reserved for a future explicit migration
-command. This slice has no apply subcommand; any future executor must repeat the safe reads and
-reverify every plan hash immediately before mutation.
+path. A separate v2 portability key applies separator normalization, NFC, and the full default
+Unicode case fold pinned by `unicode-case-folding@1.1.1`; it detects collisions without conflating
+distinct physical paths. True filesystem aliases share ownership; ambiguous case, separator, or
+normalization collisions fail closed. Older collision-key contracts require an explicit future
+migration. Every persisted identity is recomputed before records are grouped, and unknown keys are
+rejected at every level of the exact ownership-state schema. Canonical, target, and snapshot files
+are read twice through bounded no-follow descriptors and must retain the same device/inode,
+metadata, bytes, canonical identity, and physical containment. The deployment-state directory is
+opened once with no-follow directory semantics; enumeration and record opens stay bound to that
+descriptor. Its scan is limited to 128 entries, 256 KiB per record, and 4 MiB total. Platforms
+without the descriptor-relative primitives fail closed. A shared state root may contain multiple
+target roots; unrelated records are structurally validated but do not inherit the current plan's
+target boundary. Persisted destination and rollback paths must be absolute, normalized, and safe.
+Existing rollback targets are preserved, and snapshot targets must still match their recorded
+hash. Ownership transfer is reserved for a future explicit migration command. This slice has no
+apply subcommand; any future executor must repeat the safe reads and reverify every plan hash
+immediately before mutation.
 
 ```bash
 fclt setup codex-plugin

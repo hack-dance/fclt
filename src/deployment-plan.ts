@@ -1,10 +1,16 @@
+import { CString, dlopen, read as ffiRead, type Pointer } from "bun:ffi";
 import { createHash } from "node:crypto";
-import { type BigIntStats, constants } from "node:fs";
+import {
+  type BigIntStats,
+  closeSync,
+  constants,
+  fstatSync,
+  readSync,
+} from "node:fs";
 import {
   type FileHandle,
   lstat,
   open,
-  readdir,
   readFile,
   realpath,
 } from "node:fs/promises";
@@ -17,6 +23,7 @@ import {
   relative,
   resolve,
 } from "node:path";
+import { caseFold } from "unicode-case-folding";
 import { getAdapter } from "./adapters";
 
 declare const FCLT_COMPILED_VERSION: string | undefined;
@@ -31,8 +38,12 @@ const DEPLOYMENT_PLAN_SCHEMA_VERSION = 1 as const;
 const DEPLOYMENT_STATE_SCHEMA_VERSION = 1 as const;
 const PACKAGE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const DESTINATION_IDENTITY_PREFIX = "physical-path-v3:";
-const DESTINATION_COLLISION_KEY_PREFIX = "case-folded-path-v1:";
+const DESTINATION_COLLISION_KEY_PREFIX =
+  "case-folded-path-v2:unicode-case-folding@1.1.1:";
 const MAX_PLANNING_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_DEPLOYMENT_STATE_RECORD_BYTES = 256 * 1024;
+const MAX_DEPLOYMENT_STATE_TOTAL_BYTES = 4 * 1024 * 1024;
+const MAX_DEPLOYMENT_STATE_RECORDS = 128;
 
 export type DeploymentAssetKind = "instruction" | "snippet";
 export type DeploymentOwnerMode = "fclt-owned" | "unowned";
@@ -162,6 +173,18 @@ interface ParsedAssetSelector {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[]
+): boolean {
+  const actualKeys = Object.keys(value).sort();
+  const sortedExpectedKeys = [...expectedKeys].sort();
+  return (
+    actualKeys.length === sortedExpectedKeys.length &&
+    actualKeys.every((key, index) => key === sortedExpectedKeys[index])
+  );
 }
 
 function sha256(value: Uint8Array | string): string {
@@ -348,10 +371,11 @@ function physicalPathIdentities(
   canonicalPath: string
 ): PhysicalDestinationIdentity {
   const portablePath = canonicalPath.replace(/\\/g, "/").normalize("NFC");
+  const foldedPortablePath = caseFold(portablePath).normalize("NFC");
   const pathSemantics = process.platform === "win32" ? "win32" : "posix";
   const losslessPath = Buffer.from(canonicalPath, "utf8").toString("base64url");
   return {
-    collisionKey: `${DESTINATION_COLLISION_KEY_PREFIX}${portablePath.toLowerCase()}`,
+    collisionKey: `${DESTINATION_COLLISION_KEY_PREFIX}${foldedPortablePath}`,
     identity: `${DESTINATION_IDENTITY_PREFIX}${pathSemantics}:${losslessPath}`,
   };
 }
@@ -436,15 +460,175 @@ function stableReadFlags(): number {
   return constants.O_RDONLY + noFollow + nonBlocking + closeOnExec;
 }
 
-function assertStableRegularFileStat(stat: BigIntStats, label: string): number {
+const NATIVE_DIRECTORY_FUNCTIONS = {
+  closedir: { args: ["ptr"], returns: "i32" },
+  dup: { args: ["i32"], returns: "i32" },
+  fdopendir: { args: ["i32"], returns: "ptr" },
+  memset: { args: ["ptr", "i32", "u64"], returns: "ptr" },
+  openat: { args: ["i32", "ptr", "i32"], returns: "i32" },
+  readdir: { args: ["ptr"], returns: "ptr" },
+  rewinddir: { args: ["ptr"], returns: "void" },
+} as const;
+
+function unsupportedDirectoryScan(): never {
+  throw new Error(
+    "Safe deployment-state directory scans are unsupported on this platform."
+  );
+}
+
+function openNativeDirectoryLibrary() {
+  try {
+    if (process.platform === "darwin") {
+      const library = dlopen("/usr/lib/libSystem.B.dylib", {
+        ...NATIVE_DIRECTORY_FUNCTIONS,
+        __error: { args: [], returns: "ptr" },
+      } as const);
+      return {
+        close: () => library.close(),
+        errnoPointer: () => library.symbols.__error(),
+        symbols: library.symbols,
+      };
+    }
+    if (process.platform === "linux") {
+      const library = dlopen("libc.so.6", {
+        ...NATIVE_DIRECTORY_FUNCTIONS,
+        __errno_location: { args: [], returns: "ptr" },
+      } as const);
+      return {
+        close: () => library.close(),
+        errnoPointer: () => library.symbols.__errno_location(),
+        symbols: library.symbols,
+      };
+    }
+    return unsupportedDirectoryScan();
+  } catch {
+    return unsupportedDirectoryScan();
+  }
+}
+
+type NativeDirectoryLibrary = ReturnType<typeof openNativeDirectoryLibrary>;
+
+function stableDirectoryFlags(): number {
+  const directory = constants.O_DIRECTORY;
+  const noFollow = constants.O_NOFOLLOW;
+  if (
+    typeof directory !== "number" ||
+    directory === 0 ||
+    typeof noFollow !== "number" ||
+    noFollow === 0
+  ) {
+    throw new Error(
+      "Safe deployment-state directory scans are unsupported on this platform."
+    );
+  }
+  const extendedConstants = constants as typeof constants & {
+    O_CLOEXEC?: number;
+  };
+  const closeOnExec = extendedConstants.O_CLOEXEC ?? 0;
+  return constants.O_RDONLY + directory + noFollow + closeOnExec;
+}
+
+function directoryEntryNameOffset(): number {
+  if (process.platform === "darwin") {
+    return 21;
+  }
+  if (process.platform === "linux") {
+    return 19;
+  }
+  throw new Error(
+    "Safe deployment-state directory scans are unsupported on this platform."
+  );
+}
+
+function readDirectoryEntriesFromDescriptor(args: {
+  directory: string;
+  handle: FileHandle;
+  native: NativeDirectoryLibrary;
+}): string[] {
+  const duplicate = args.native.symbols.dup(args.handle.fd);
+  if (duplicate < 0) {
+    throw new Error("Deployment state directory cannot be enumerated safely.");
+  }
+  let stream: Pointer | null = null;
+  try {
+    stream = args.native.symbols.fdopendir(duplicate);
+    if (!stream) {
+      closeSync(duplicate);
+      throw new Error(
+        "Deployment state directory cannot be enumerated safely."
+      );
+    }
+    args.native.symbols.rewinddir(stream);
+    const errnoPointer = args.native.errnoPointer();
+    if (!errnoPointer) {
+      throw new Error(
+        "Deployment state directory cannot be enumerated safely."
+      );
+    }
+    const entries: string[] = [];
+    while (true) {
+      args.native.symbols.memset(errnoPointer, 0, 4);
+      const entryPointer = args.native.symbols.readdir(stream);
+      if (!entryPointer) {
+        if (ffiRead.i32(errnoPointer) !== 0) {
+          throw new Error(
+            "Deployment state directory cannot be enumerated safely."
+          );
+        }
+        break;
+      }
+      const entry = new CString(
+        entryPointer,
+        directoryEntryNameOffset()
+      ).toString();
+      if (entry === "." || entry === "..") {
+        continue;
+      }
+      if (
+        !entry ||
+        entry.includes("\0") ||
+        entry.includes("/") ||
+        entry.includes("\\") ||
+        entry.includes("\uFFFD")
+      ) {
+        throw new Error(
+          `Unsafe entry in deployment state directory: ${args.directory}`
+        );
+      }
+      entries.push(entry);
+      if (entries.length > MAX_DEPLOYMENT_STATE_RECORDS) {
+        throw new Error(
+          `Deployment state directory exceeds the ${MAX_DEPLOYMENT_STATE_RECORDS}-record limit.`
+        );
+      }
+    }
+    const closeResult = args.native.symbols.closedir(stream);
+    stream = null;
+    if (closeResult !== 0) {
+      throw new Error("Deployment state directory cannot be closed safely.");
+    }
+    return entries.sort();
+  } catch (error) {
+    if (stream) {
+      args.native.symbols.closedir(stream);
+    }
+    throw error;
+  }
+}
+
+function assertStableRegularFileStat(
+  stat: BigIntStats,
+  label: string,
+  maxBytes = MAX_PLANNING_FILE_BYTES
+): number {
   if (!stat.isFile() || stat.ino <= 0n || stat.dev < 0n) {
     throw new Error(
       `${label} must expose a stable regular-file identity for planning.`
     );
   }
-  if (stat.size < 0n || stat.size > BigInt(MAX_PLANNING_FILE_BYTES)) {
+  if (stat.size < 0n || stat.size > BigInt(maxBytes)) {
     throw new Error(
-      `${label} exceeds the ${MAX_PLANNING_FILE_BYTES}-byte planning read limit.`
+      `${label} exceeds the ${maxBytes}-byte planning read limit.`
     );
   }
   return Number(stat.size);
@@ -472,6 +656,33 @@ async function readDescriptorBytes(args: {
   const extra = Buffer.alloc(1);
   const trailing = await args.handle.read(extra, 0, 1, args.size);
   if (trailing.bytesRead !== 0) {
+    throw new Error(`${args.label} changed while it was being read.`);
+  }
+  return bytes;
+}
+
+function readRawDescriptorBytes(args: {
+  descriptor: number;
+  label: string;
+  size: number;
+}): Uint8Array {
+  const bytes = Buffer.alloc(args.size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const bytesRead = readSync(
+      args.descriptor,
+      bytes,
+      offset,
+      bytes.length - offset,
+      offset
+    );
+    if (bytesRead === 0) {
+      throw new Error(`${args.label} changed while it was being read.`);
+    }
+    offset += bytesRead;
+  }
+  const extra = Buffer.alloc(1);
+  if (readSync(args.descriptor, extra, 0, 1, args.size) !== 0) {
     throw new Error(`${args.label} changed while it was being read.`);
   }
   return bytes;
@@ -523,6 +734,101 @@ async function verifyStableReadPath(args: {
     physicalPathIdentities(canonicalPath).identity !== args.expectedIdentity
   ) {
     throw new Error(`${args.label} physical identity changed during planning.`);
+  }
+}
+
+async function verifyStableDirectoryPath(args: {
+  descriptorStat: BigIntStats;
+  directory: string;
+  root: string;
+}): Promise<void> {
+  const pathStat = await lstat(args.directory, { bigint: true }).catch(
+    () => null
+  );
+  if (
+    !pathStat?.isDirectory() ||
+    pathStat.isSymbolicLink() ||
+    !stableFileIdentityMatches(args.descriptorStat, pathStat)
+  ) {
+    throw new Error("Deployment state directory changed during planning.");
+  }
+  let canonicalDirectory: string;
+  try {
+    canonicalDirectory = await realpath(args.directory);
+  } catch {
+    throw new Error("Deployment state directory changed during planning.");
+  }
+  const canonicalRoot = await canonicalPhysicalPath(
+    args.root,
+    "Deployment state root"
+  );
+  const rel = relative(canonicalRoot, canonicalDirectory);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Deployment state directory escapes its physical root.");
+  }
+  const canonicalStat = await lstat(canonicalDirectory, {
+    bigint: true,
+  }).catch(() => null);
+  if (
+    !(
+      canonicalStat?.isDirectory() &&
+      stableFileIdentityMatches(args.descriptorStat, canonicalStat)
+    )
+  ) {
+    throw new Error("Deployment state directory changed during planning.");
+  }
+}
+
+async function readAnchoredRegularFile(args: {
+  directory: string;
+  directoryHandle: FileHandle;
+  entry: string;
+  native: NativeDirectoryLibrary;
+  root: string;
+}): Promise<Uint8Array> {
+  const label = "Deployment state";
+  const descriptor = args.native.symbols.openat(
+    args.directoryHandle.fd,
+    Buffer.from(`${args.entry}\0`),
+    stableReadFlags()
+  );
+  if (descriptor < 0) {
+    throw new Error(
+      `${label} must be openable through its anchored directory as a regular non-symlink file.`
+    );
+  }
+  const path = join(args.directory, args.entry);
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const size = assertStableRegularFileStat(
+      before,
+      label,
+      MAX_DEPLOYMENT_STATE_RECORD_BYTES
+    );
+    const firstRead = readRawDescriptorBytes({ descriptor, label, size });
+    const middle = fstatSync(descriptor, { bigint: true });
+    if (!stableStatMatches(before, middle)) {
+      throw new Error(`${label} changed while it was being read.`);
+    }
+    const secondRead = readRawDescriptorBytes({ descriptor, label, size });
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !(
+        stableStatMatches(middle, after) &&
+        Buffer.from(firstRead).equals(secondRead)
+      )
+    ) {
+      throw new Error(`${label} changed while it was being read.`);
+    }
+    await verifyStableReadPath({
+      descriptorStat: after,
+      label,
+      path,
+      root: args.root,
+    });
+    return firstRead;
+  } finally {
+    closeSync(descriptor);
   }
 }
 
@@ -676,12 +982,29 @@ function parseDeploymentState(args: {
     );
   }
   if (
+    !hasExactKeys(parsed, [
+      "schemaVersion",
+      "planSchemaVersion",
+      "binding",
+      "desiredHash",
+      "ownerMode",
+      "rollbackTarget",
+    ]) ||
     parsed.planSchemaVersion !== DEPLOYMENT_PLAN_SCHEMA_VERSION ||
     parsed.ownerMode !== "fclt-owned" ||
     typeof parsed.desiredHash !== "string" ||
     !SHA256_RE.test(parsed.desiredHash) ||
     !isPlainObject(parsed.binding) ||
+    !hasExactKeys(parsed.binding, [
+      "assetCanonicalRef",
+      "destinationCollisionKey",
+      "destinationIdentity",
+      "destinationPath",
+      "tool",
+      "adapterVersion",
+    ]) ||
     typeof parsed.binding.assetCanonicalRef !== "string" ||
+    !parsed.binding.assetCanonicalRef ||
     typeof parsed.binding.destinationCollisionKey !== "string" ||
     !parsed.binding.destinationCollisionKey.startsWith(
       DESTINATION_COLLISION_KEY_PREFIX
@@ -696,7 +1019,9 @@ function parseDeploymentState(args: {
       DESTINATION_IDENTITY_PREFIX.length ||
     typeof parsed.binding.destinationPath !== "string" ||
     typeof parsed.binding.tool !== "string" ||
+    !parsed.binding.tool ||
     typeof parsed.binding.adapterVersion !== "string" ||
+    !parsed.binding.adapterVersion ||
     !isPlainObject(parsed.rollbackTarget)
   ) {
     throw new Error(`Deployment state is corrupt: ${args.path}`);
@@ -706,24 +1031,51 @@ function parseDeploymentState(args: {
     "Persisted destination path"
   );
   const rollback = parsed.rollbackTarget;
-  let validRollback = false;
+  let rollbackTarget: DeploymentStateV1["rollbackTarget"] | null = null;
   if (typeof rollback.path === "string") {
     const rollbackPath = validatePersistedAbsolutePath(
       rollback.path,
       "Persisted rollback path"
     );
-    validRollback =
-      (rollback.kind === "absent" && rollbackPath === destinationPath) ||
-      (rollback.kind === "snapshot" &&
-        typeof rollback.expectedHash === "string" &&
-        SHA256_RE.test(rollback.expectedHash));
+    if (
+      rollback.kind === "absent" &&
+      hasExactKeys(rollback, ["kind", "path"]) &&
+      rollbackPath === destinationPath
+    ) {
+      rollbackTarget = { kind: "absent", path: rollbackPath };
+    } else if (
+      rollback.kind === "snapshot" &&
+      hasExactKeys(rollback, ["kind", "path", "expectedHash"]) &&
+      typeof rollback.expectedHash === "string" &&
+      SHA256_RE.test(rollback.expectedHash)
+    ) {
+      rollbackTarget = {
+        expectedHash: rollback.expectedHash,
+        kind: "snapshot",
+        path: rollbackPath,
+      };
+    }
   }
-  if (!validRollback) {
+  if (!rollbackTarget) {
     throw new Error(
       `Deployment state has an invalid or escaped rollback target: ${args.path}`
     );
   }
-  return parsed as unknown as DeploymentStateV1;
+  return {
+    binding: {
+      adapterVersion: parsed.binding.adapterVersion,
+      assetCanonicalRef: parsed.binding.assetCanonicalRef,
+      destinationCollisionKey: parsed.binding.destinationCollisionKey,
+      destinationIdentity: parsed.binding.destinationIdentity,
+      destinationPath,
+      tool: parsed.binding.tool,
+    },
+    desiredHash: parsed.desiredHash,
+    ownerMode: "fclt-owned",
+    planSchemaVersion: DEPLOYMENT_PLAN_SCHEMA_VERSION,
+    rollbackTarget,
+    schemaVersion: DEPLOYMENT_STATE_SCHEMA_VERSION,
+  };
 }
 
 function destinationOwnershipId(
@@ -752,6 +1104,7 @@ interface ScannedDeploymentState {
 }
 
 async function scanDeploymentStates(args: {
+  afterEnumerationForTest?: () => Promise<void>;
   directory: string;
   expectedPath: string;
   requestedBinding: DeploymentStateV1["binding"];
@@ -761,37 +1114,113 @@ async function scanDeploymentStates(args: {
   existing: ScannedDeploymentState | null;
   records: ScannedDeploymentState[];
 }> {
-  const stat = await lstat(args.directory, { bigint: true }).catch(() => null);
-  if (!stat) {
+  const directoryFlags = stableDirectoryFlags();
+  const native = openNativeDirectoryLibrary();
+  let initialPathStat: BigIntStats | null;
+  try {
+    initialPathStat = await lstat(args.directory, { bigint: true });
+  } catch (error) {
+    if (!isErrnoException(error, "ENOENT")) {
+      native.close();
+      throw new Error(
+        `Deployment state directory cannot be inspected safely: ${args.directory}`
+      );
+    }
+    initialPathStat = null;
+  }
+  if (!initialPathStat) {
+    native.close();
     return { directoryHash: null, existing: null, records: [] };
   }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+  if (!initialPathStat.isDirectory() || initialPathStat.isSymbolicLink()) {
+    native.close();
     throw new Error(
       `Deployment state directory must be a non-symlink directory: ${args.directory}`
     );
   }
 
   const records: ScannedDeploymentState[] = [];
-  const entries = (await readdir(args.directory)).sort();
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) {
-      throw new Error(
-        `Unexpected entry in deployment state directory: ${join(args.directory, entry)}`
-      );
+  const rawRecords: Array<{ bytes: Uint8Array; path: string }> = [];
+  let directoryHandle: FileHandle;
+  try {
+    directoryHandle = await open(args.directory, directoryFlags);
+  } catch {
+    native.close();
+    throw new Error(
+      `Deployment state directory must be openable as a non-symlink directory: ${args.directory}`
+    );
+  }
+  try {
+    const descriptorStat = await directoryHandle.stat({ bigint: true });
+    if (
+      !(
+        descriptorStat.isDirectory() &&
+        stableStatMatches(initialPathStat, descriptorStat)
+      )
+    ) {
+      throw new Error("Deployment state directory changed during planning.");
     }
-    const path = await assertContainedPath({
-      label: "Deployment state record",
-      path: join(args.directory, entry),
-      root: args.directory,
+    await verifyStableDirectoryPath({
+      descriptorStat,
+      directory: args.directory,
+      root: args.stateRoot,
     });
-    const bytes = await readRegularFileOrNull({
-      label: "Deployment state",
-      path,
-      root: args.directory,
+    const entries = readDirectoryEntriesFromDescriptor({
+      directory: args.directory,
+      handle: directoryHandle,
+      native,
     });
-    if (!bytes) {
-      throw new Error(`Deployment state disappeared during planning: ${path}`);
+    await args.afterEnumerationForTest?.();
+    let totalBytes = 0;
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) {
+        throw new Error(
+          `Unexpected entry in deployment state directory: ${join(args.directory, entry)}`
+        );
+      }
+      const path = join(args.directory, entry);
+      const bytes = await readAnchoredRegularFile({
+        directory: args.directory,
+        directoryHandle,
+        entry,
+        native,
+        root: args.directory,
+      });
+      totalBytes += bytes.byteLength;
+      if (totalBytes > MAX_DEPLOYMENT_STATE_TOTAL_BYTES) {
+        throw new Error(
+          `Deployment state records exceed the ${MAX_DEPLOYMENT_STATE_TOTAL_BYTES}-byte aggregate limit.`
+        );
+      }
+      rawRecords.push({ bytes, path });
     }
+
+    const afterEntries = readDirectoryEntriesFromDescriptor({
+      directory: args.directory,
+      handle: directoryHandle,
+      native,
+    });
+    const afterStat = await directoryHandle.stat({ bigint: true });
+    if (
+      !stableStatMatches(descriptorStat, afterStat) ||
+      stableJson(entries) !== stableJson(afterEntries)
+    ) {
+      throw new Error("Deployment state directory changed during planning.");
+    }
+    await verifyStableDirectoryPath({
+      descriptorStat: afterStat,
+      directory: args.directory,
+      root: args.stateRoot,
+    });
+  } finally {
+    try {
+      await directoryHandle.close();
+    } finally {
+      native.close();
+    }
+  }
+
+  for (const { bytes, path } of rawRecords) {
     const state = parseDeploymentState({ bytes, path });
     const physicalIdentity = await resolveDestinationIdentity({
       destinationPath: state.binding.destinationPath,
@@ -818,19 +1247,6 @@ async function scanDeploymentStates(args: {
       physicalIdentity,
       state,
     });
-  }
-
-  const afterEntries = (await readdir(args.directory)).sort();
-  const afterStat = await lstat(args.directory, { bigint: true }).catch(
-    () => null
-  );
-  if (
-    !afterStat?.isDirectory() ||
-    afterStat.isSymbolicLink() ||
-    !stableStatMatches(stat, afterStat) ||
-    stableJson(entries) !== stableJson(afterEntries)
-  ) {
-    throw new Error("Deployment state directory changed during planning.");
   }
 
   const collisionSet = records.filter(
@@ -889,6 +1305,23 @@ async function scanDeploymentStates(args: {
     existing,
     records,
   };
+}
+
+/** Deterministic seam for deployment-state directory replacement tests. */
+export async function scanDeploymentStateDirectoryForTest(args: {
+  afterEnumeration: () => Promise<void>;
+  directory: string;
+  expectedPath: string;
+  requestedBinding: DeploymentStateV1["binding"];
+  stateRoot: string;
+}): Promise<void> {
+  await scanDeploymentStates({
+    afterEnumerationForTest: args.afterEnumeration,
+    directory: args.directory,
+    expectedPath: args.expectedPath,
+    requestedBinding: args.requestedBinding,
+    stateRoot: args.stateRoot,
+  });
 }
 
 async function authoritativePlannerVersion(

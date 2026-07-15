@@ -82,20 +82,24 @@ fclt deploy plan --asset instruction:<name>|snippet:<path> \
 This is a read-only, one-asset/one-destination planning boundary. It emits a deterministic,
 content-addressed plan and has no executor. The planner scans canonical ownership records and
 allows at most one claim for the exact tool and physical destination. Primary identity is a
-lossless, platform-qualified encoding of the verified canonical path. Slash, Unicode, and case
-normalization apply only to a separate portability collision key: true aliases resolve to one
-physical identity, while distinct paths in the same collision class fail closed. The planner
-recomputes both identities for every structurally safe state record before filtering or grouping.
-Canonical, target, state-record, and rollback-snapshot files are limited to 16 MiB and read twice
-through a no-follow descriptor. Device/inode, metadata, bytes, canonical identity, and physical-root
-containment must remain stable; platforms without a usable no-follow primitive fail closed. Shared
-state roots may hold records for multiple target roots. Persisted destination and rollback paths
-must be non-empty, NUL-free, absolute, and normalized before they can be resolved or reused.
-Existing rollback targets survive no-op and update replans; recorded snapshots are required and
-hash-verified. Asset or adapter ownership transfer fails closed until a separate, explicitly
-reviewed migration command exists. Use isolated roots while this boundary is being proven; broad
-managed apply remains deprecated and contained. This slice has no executor. Any future executor
-must repeat the same safe reads and reverify every recorded plan hash immediately before mutation.
+lossless, platform-qualified encoding of the verified canonical path. The separate v2 portability
+collision key applies slash normalization, NFC, and the full default Unicode case fold pinned by
+`unicode-case-folding@1.1.1`: true aliases resolve to one physical identity, while distinct paths in
+the same collision class fail closed. Older key contracts require explicit migration. The planner
+recomputes both identities for every structurally safe state record before filtering or grouping,
+and the persisted schema rejects unknown root, binding, and rollback fields. Canonical, target, and
+rollback-snapshot files are limited to 16 MiB and read twice through a no-follow descriptor.
+Deployment-state enumeration and record opens are anchored to one no-follow directory descriptor;
+the scan allows at most 128 entries, 256 KiB per record, and 4 MiB in aggregate. Device/inode,
+metadata, bytes, canonical identity, and physical-root containment must remain stable; platforms
+without the required descriptor-relative primitives fail closed. Shared state roots may hold
+records for multiple target roots. Persisted destination and rollback paths must be non-empty,
+NUL-free, absolute, and normalized before they can be resolved or reused. Existing rollback targets
+survive no-op and update replans; recorded snapshots are required and hash-verified. Asset or
+adapter ownership transfer fails closed until a separate, explicitly reviewed migration command
+exists. Use isolated roots while this boundary is being proven; broad managed apply remains
+deprecated and contained. This slice has no executor. Any future executor must repeat the same safe
+reads and reverify every recorded plan hash immediately before mutation.
 
 ## Legacy managed mode
 

@@ -19,13 +19,15 @@ import {
   type DeploymentPlanV1,
   type DeploymentStateV1,
   readStableRegularFileForTest,
+  scanDeploymentStateDirectoryForTest,
   serializeDeploymentState,
 } from "./deployment-plan";
 
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
 const DESTINATION_IDENTITY_RE =
   /^physical-path-v3:(?:posix|win32):[A-Za-z0-9_-]+$/;
-const DESTINATION_COLLISION_KEY_RE = /^case-folded-path-v1:.+/;
+const DESTINATION_COLLISION_KEY_RE =
+  /^case-folded-path-v2:unicode-case-folding@1\.1\.1:.+/;
 const SOURCE_DIR_SUFFIX_RE = /\/src$/;
 const DOLLAR = "$";
 
@@ -122,6 +124,39 @@ async function materializePlanFixture(
         serializeDeploymentState(write.contentSource.state)
       );
     }
+  }
+}
+
+async function expectDeterministicReadOnlyFailure(args: {
+  action: () => Promise<unknown>;
+  message: string;
+  root: string;
+}): Promise<void> {
+  const before = await snapshotTree(args.root);
+  const messages: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await args.action();
+      throw new Error("Expected planning to fail closed");
+    } catch (error) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+      messages.push(error.message);
+      if (!error.message.includes(args.message)) {
+        throw new Error(
+          `Expected failure containing ${args.message}, received ${error.message}`
+        );
+      }
+    }
+  }
+  if (messages[1] !== messages[0]) {
+    throw new Error("Repeated fail-closed planning was not deterministic");
+  }
+  if (
+    JSON.stringify(await snapshotTree(args.root)) !== JSON.stringify(before)
+  ) {
+    throw new Error("Fail-closed planning mutated the fixture tree");
   }
 }
 
@@ -309,6 +344,113 @@ describe("immutable per-asset deployment planning", () => {
     await expect(buildDeploymentPlan(planOptions(fixture))).rejects.toThrow(
       "Deployment state is corrupt JSON"
     );
+  });
+
+  it("rejects unknown persisted-state keys at root, binding, and rollback levels", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+    const variants: unknown[] = [
+      { ...stateWrite.state, unexpectedRoot: true },
+      {
+        ...stateWrite.state,
+        binding: { ...stateWrite.state.binding, unexpectedBinding: true },
+      },
+      {
+        ...stateWrite.state,
+        rollbackTarget: {
+          ...stateWrite.state.rollbackTarget,
+          unexpectedRollback: true,
+        },
+      },
+    ];
+    for (const variant of variants) {
+      await Bun.write(stateWrite.path, `${JSON.stringify(variant)}\n`);
+      await expectDeterministicReadOnlyFailure({
+        action: async () =>
+          await buildDeploymentPlan({
+            ...planOptions(fixture),
+            expectedCurrentHash: undefined,
+          }),
+        message: "Deployment state",
+        root: fixture.root,
+      });
+    }
+  });
+
+  it("bounds deployment-state directory entry count before ownership selection", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+    const directory = dirname(stateWrite.path);
+    for (let index = 0; index < 128; index += 1) {
+      await Bun.write(
+        join(directory, `extra-${index.toString().padStart(3, "0")}.json`),
+        serializeDeploymentState(stateWrite.state)
+      );
+    }
+    await expectDeterministicReadOnlyFailure({
+      action: async () =>
+        await buildDeploymentPlan({
+          ...planOptions(fixture),
+          expectedCurrentHash: undefined,
+        }),
+      message: "exceeds the 128-record limit",
+      root: fixture.root,
+    });
+  });
+
+  it("bounds each deployment-state record before retaining or parsing it", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+    const serialized = serializeDeploymentState(stateWrite.state);
+    await Bun.write(stateWrite.path, `${serialized}${" ".repeat(256 * 1024)}`);
+    await expectDeterministicReadOnlyFailure({
+      action: async () =>
+        await buildDeploymentPlan({
+          ...planOptions(fixture),
+          expectedCurrentHash: undefined,
+        }),
+      message: "exceeds the 262144-byte planning read limit",
+      root: fixture.root,
+    });
+  });
+
+  it("bounds cumulative deployment-state bytes across duplicate and unowned records", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+    const directory = dirname(stateWrite.path);
+    const unownedTargetRoot = join(fixture.root, "unowned-codex-home");
+    await mkdir(unownedTargetRoot);
+    const unownedPlan = await buildDeploymentPlan({
+      ...planOptions(fixture),
+      targetRoot: unownedTargetRoot,
+    });
+    const serialized = serializeDeploymentState(
+      deploymentStateWrite(unownedPlan).state
+    );
+    const recordBytes = `${serialized}${" ".repeat(245_000 - serialized.length)}`;
+    for (let index = 0; index < 18; index += 1) {
+      await Bun.write(
+        join(directory, `aggregate-${index.toString().padStart(2, "0")}.json`),
+        recordBytes
+      );
+    }
+    await expectDeterministicReadOnlyFailure({
+      action: async () =>
+        await buildDeploymentPlan({
+          ...planOptions(fixture),
+          expectedCurrentHash: undefined,
+        }),
+      message: "exceed the 4194304-byte aggregate limit",
+      root: fixture.root,
+    });
   });
 
   it("rejects relative, cwd-dependent, unnormalized, and NUL persisted paths", async () => {
@@ -727,6 +869,62 @@ describe("immutable per-asset deployment planning", () => {
     expect(await snapshotTree(fixture.root)).toEqual(before);
   });
 
+  it("uses pinned full Unicode folding for sharp-s, sigma classes, and normalization interactions", async () => {
+    const collisionClasses = [
+      ["tool-Straße", "tool-STRASSE"],
+      ["tool-Σ", "tool-σ", "tool-ς"],
+      ["tool-Straße-é", "tool-STRASSE-e\u0301"],
+    ];
+    for (const names of collisionClasses) {
+      const fixture = await createFixture();
+      const roots = names.map((name) => join(fixture.root, name));
+      for (const root of roots) {
+        await mkdir(root, { recursive: true });
+      }
+      const plans: Readonly<DeploymentPlanV1>[] = [];
+      for (const targetRoot of roots) {
+        plans.push(
+          await buildDeploymentPlan({
+            ...planOptions(fixture),
+            targetRoot,
+          })
+        );
+      }
+      expect(
+        new Set(plans.map((plan) => plan.binding.destination.collisionKey)).size
+      ).toBe(1);
+      for (const plan of plans) {
+        expect(plan.binding.destination.collisionKey).toMatch(
+          DESTINATION_COLLISION_KEY_RE
+        );
+      }
+
+      const initialPlan = plans[0];
+      if (!initialPlan) {
+        throw new Error("Expected a Unicode collision-class fixture plan");
+      }
+      await materializePlanFixture(initialPlan);
+      for (let index = 1; index < plans.length; index += 1) {
+        if (
+          plans[index]?.binding.destination.identity ===
+          initialPlan.binding.destination.identity
+        ) {
+          continue;
+        }
+        await expectDeterministicReadOnlyFailure({
+          action: async () =>
+            await buildDeploymentPlan({
+              ...planOptions(fixture),
+              expectedCurrentHash: undefined,
+              targetRoot: roots[index] ?? "",
+            }),
+          message: "Case-folded destination collision is ambiguous",
+          root: fixture.root,
+        });
+      }
+    }
+  });
+
   it("coalesces case-only destination aliases on case-insensitive filesystems", async () => {
     const fixture = await createFixture();
     const initial = await buildDeploymentPlan(planOptions(fixture));
@@ -833,7 +1031,8 @@ describe("immutable per-asset deployment planning", () => {
       ...stateWrite.state,
       binding: {
         ...stateWrite.state.binding,
-        destinationCollisionKey: "case-folded-path-v1:corrupt",
+        destinationCollisionKey:
+          "case-folded-path-v2:unicode-case-folding@1.1.1:corrupt",
       },
     };
     await Bun.write(stateWrite.path, serializeDeploymentState(corruptState));
@@ -883,6 +1082,53 @@ describe("immutable per-asset deployment planning", () => {
     });
     expect(firstNoOp.operations.writes).toEqual([]);
     expect(secondNoOp.operations.writes).toEqual([]);
+  });
+
+  it("anchors state enumeration and record opens against whole-directory substitution", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+    const directory = dirname(stateWrite.path);
+    const parkedDirectory = join(fixture.stateRoot, "parked-deployments");
+    const substituteDirectory = join(
+      fixture.stateRoot,
+      "substitute-deployments"
+    );
+    const activeSubstitute = join(fixture.stateRoot, "active-substitute");
+    const substitutedState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      desiredHash: `sha256:${"0".repeat(64)}`,
+    };
+    await mkdir(substituteDirectory);
+    await Bun.write(
+      join(substituteDirectory, basename(stateWrite.path)),
+      serializeDeploymentState(substitutedState)
+    );
+    const before = await snapshotTree(fixture.root);
+    let swapped = false;
+    try {
+      await expect(
+        scanDeploymentStateDirectoryForTest({
+          afterEnumeration: async () => {
+            await rename(directory, parkedDirectory);
+            await rename(substituteDirectory, directory);
+            swapped = true;
+          },
+          directory,
+          expectedPath: stateWrite.path,
+          requestedBinding: stateWrite.state.binding,
+          stateRoot: fixture.stateRoot,
+        })
+      ).rejects.toThrow("Deployment state path changed during planning");
+    } finally {
+      if (swapped) {
+        await rename(directory, activeSubstitute);
+        await rename(parkedDirectory, directory);
+        await rename(activeSubstitute, substituteDirectory);
+      }
+    }
+    expect(await snapshotTree(fixture.root)).toEqual(before);
   });
 
   it("rejects descriptor replacement races for every planner file role", async () => {
