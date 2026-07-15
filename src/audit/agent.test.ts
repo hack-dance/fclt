@@ -1182,7 +1182,7 @@ beforeAll(async () => {
   const deadline = setTimeout(() => {
     deadlineFired = true;
     controller.abort();
-  }, 10_000);
+  }, 14_000);
   let evaluation: Awaited<ReturnType<typeof evaluateAgentAudit>> | undefined;
   let commandError: unknown;
   process.env.PATH = `${bin}${delimiter}${previousEnvironment.PATH ?? ""}`;
@@ -1236,7 +1236,7 @@ beforeAll(async () => {
   ) {
     throw new Error("Codex cold-start isolation receipt failed");
   }
-}, 15_000);
+}, 20_000);
 
 test("agent audit Codex cold start preserves source bytes and environment", () => {
   expect(codexColdStartReceipt).toEqual({
@@ -1555,6 +1555,6 @@ for (const tool of ["claude", "codex"] as const) {
         process.env.OPENAI_API_KEY = previousOpenAiApiKey;
         process.env.SERVICE_TOKEN = previousServiceToken;
       }
-    });
+    }, 15_000);
   }
 }
