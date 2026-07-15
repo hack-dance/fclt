@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname } from "node:path";
+import { basename, dirname, normalize, resolve } from "node:path";
 import {
   assertLegacyManagedMutationAllowed,
   LEGACY_MANAGED_MUTATION_FLAG,
@@ -469,6 +469,30 @@ export async function fixInlineMcpSecrets(args: {
   const canonical = await loadCanonicalMcpState(rootDir, {
     includeLocal: true,
   });
+  const allowedConfigPaths = new Set(
+    [
+      canonical.trackedPath,
+      canonical.localPath,
+      ...Object.values(managedState.tools).map((entry) => entry.mcpConfig),
+    ]
+      .filter((path): path is string => typeof path === "string")
+      .map((path) => normalize(resolve(path)))
+  );
+  for (const selection of selected) {
+    const parsed = selection.finding.location
+      ? parseInlineSecretLocation(selection.finding.location)
+      : null;
+    const resultPath = normalize(resolve(selection.result.path));
+    if (
+      !parsed ||
+      normalize(resolve(parsed.configPath)) !== resultPath ||
+      !allowedConfigPaths.has(resultPath)
+    ) {
+      throw new Error(
+        "Audit fix report does not match the active mutation root"
+      );
+    }
+  }
   const trackedServers = cloneRecord(canonical.trackedServers);
   const localServers = cloneRecord(canonical.localServers);
   const touchedTools = new Set<string>();

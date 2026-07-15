@@ -352,7 +352,6 @@ async function readSkillBundle(
   let text = skillText;
   text = sanitizeEnvAssignments(redactPossibleSecrets(text));
 
-  await sourceTracker.readDirectory(skillDir);
   const candidates: { path: string; rel: string }[] = [];
   let visited = 0;
   const visit = async (
@@ -362,7 +361,9 @@ async function readSkillBundle(
     if (relativeParts.length > MAX_SUPPORT_DEPTH) {
       throw new Error(`Skill supporting files exceed depth limit: ${skillDir}`);
     }
-    const entries = await sourceTracker.readDirectory(directory);
+    const entries = await sourceTracker.readDirectory(directory, {
+      maxEntries: MAX_SUPPORT_ENTRIES - visited,
+    });
     if (entries === null) {
       return;
     }
@@ -722,7 +723,8 @@ type CapturedStream = { text: string; truncated: boolean };
 
 async function drainBoundedStream(
   stream: ReadableStream<Uint8Array>,
-  limit: number
+  limit: number,
+  onLimit: () => void
 ): Promise<CapturedStream> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
@@ -742,6 +744,9 @@ async function drainBoundedStream(
         captured += kept.byteLength;
       }
       if (value.byteLength > remaining) {
+        if (!truncated) {
+          onLimit();
+        }
         truncated = true;
       }
     }
@@ -762,13 +767,27 @@ async function collectProcessOutput(proc: {
   stderr: ReadableStream<Uint8Array>;
   stdout: ReadableStream<Uint8Array>;
 }): Promise<{ code: number; stderr: string; stdout: string }> {
+  let killedForOutputLimit = false;
+  const killForOutputLimit = () => {
+    if (killedForOutputLimit) {
+      return;
+    }
+    killedForOutputLimit = true;
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // The process may have exited between the bounded read and termination.
+    }
+  };
   const stdoutPromise = drainBoundedStream(
     proc.stdout,
-    MAX_SUBPROCESS_OUTPUT_BYTES
+    MAX_SUBPROCESS_OUTPUT_BYTES,
+    killForOutputLimit
   );
   const stderrPromise = drainBoundedStream(
     proc.stderr,
-    MAX_SUBPROCESS_OUTPUT_BYTES
+    MAX_SUBPROCESS_OUTPUT_BYTES,
+    killForOutputLimit
   );
   try {
     const [stdout, stderr, code] = await Promise.all([

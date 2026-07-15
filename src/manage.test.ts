@@ -53,6 +53,7 @@ async function writeCodexPluginStub(args: {
   installedMutation?:
     | "aggregate-oversize"
     | "growing-file"
+    | "hardlink"
     | "oversize-file"
     | "path-too-long"
     | "sparse-file"
@@ -69,7 +70,7 @@ async function writeCodexPluginStub(args: {
     [
       `#!${process.execPath}`,
       `import { spawn } from "node:child_process";`,
-      `import { appendFileSync, chmodSync, closeSync, cpSync, existsSync, ftruncateSync, mkdirSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
+      `import { appendFileSync, chmodSync, closeSync, cpSync, existsSync, ftruncateSync, linkSync, mkdirSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
       `import { dirname, join } from "node:path";`,
       `const home = ${JSON.stringify(args.home)};`,
       `const selectedVersion = ${JSON.stringify(args.selectedVersion)};`,
@@ -86,6 +87,10 @@ async function writeCodexPluginStub(args: {
       `  cpSync(join(home, "plugins", "fclt"), installedPath, { recursive: true });`,
       `  if (installedMutation === "symlink") {`,
       `    symlinkSync(join(installedPath, "scripts"), join(installedPath, "unexpected-link"));`,
+      `  } else if (installedMutation === "hardlink") {`,
+      `    const outside = join(home, "outside-hardlink");`,
+      `    writeFileSync(outside, "externally mutable executable input\\n");`,
+      `    linkSync(outside, join(installedPath, "unexpected-hardlink"));`,
       `  } else if (installedMutation === "unreadable-subtree") {`,
       `    const unreadable = join(installedPath, "unexpected-private");`,
       "    mkdirSync(unreadable);",
@@ -3277,6 +3282,18 @@ describe("syncManagedTools", () => {
     expect(result.codexInstall.status).toBe("failed");
     expect(result.codexInstall.stderr).toContain(
       "plugin payload contains a symbolic link at unexpected-link"
+    );
+    expect(await readFile(join(home, "codex-args.txt"), "utf8")).toContain(
+      "plugin\nlist\n--marketplace\nlocal\n--json"
+    );
+  });
+
+  it("rejects an installed plugin tree containing a hard-linked file", async () => {
+    const { home, result } = await setupMutatedCodexPlugin("hardlink");
+
+    expect(result.codexInstall.status).toBe("failed");
+    expect(result.codexInstall.stderr).toContain(
+      "plugin payload contains a hard-linked file at unexpected-hardlink"
     );
     expect(await readFile(join(home, "codex-args.txt"), "utf8")).toContain(
       "plugin\nlist\n--marketplace\nlocal\n--json"

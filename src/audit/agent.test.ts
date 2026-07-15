@@ -7,6 +7,7 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   stat,
   symlink,
 } from "node:fs/promises";
@@ -239,6 +240,56 @@ test("agent audit binds deterministic supporting-file bytes", async () => {
   ).toMatch(SHA256_RE);
 });
 
+test("agent audit enforces the support-entry budget before materialization", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-agent-support-limit-"));
+  const home = join(dir, "home");
+  const skillDir = join(home, ".ai", "skills", "bounded-skill");
+  const referencesDir = join(skillDir, "references");
+  await writeFile(join(skillDir, "SKILL.md"), "Hello\n");
+  await mkdir(referencesDir, { recursive: true });
+  try {
+    for (let start = 0; start < 2048; start += 128) {
+      await Promise.all(
+        Array.from({ length: 128 }, (_, offset) =>
+          Bun.write(join(referencesDir, `${start + offset}.txt`), "")
+        )
+      );
+    }
+    let runnerCalls = 0;
+    const exactLimit = await runAgentAudit({
+      argv: ["bounded-skill", "--with", "claude", "--max-items", "1"],
+      cwd: dir,
+      homeDir: home,
+      runner: () => {
+        runnerCalls += 1;
+        return Promise.resolve({
+          output: { passed: true, findings: [], notes: "ok" },
+        });
+      },
+    });
+    expect(exactLimit.results[0]?.passed).toBe(true);
+    expect(runnerCalls).toBe(1);
+
+    await Bun.write(join(referencesDir, "overflow.txt"), "");
+    await expect(
+      runAgentAudit({
+        argv: ["bounded-skill", "--with", "claude", "--max-items", "1"],
+        cwd: dir,
+        homeDir: home,
+        runner: () => {
+          runnerCalls += 1;
+          return Promise.resolve({
+            output: { passed: true, findings: [], notes: "ok" },
+          });
+        },
+      })
+    ).rejects.toThrow("Audit discovery tree exceeds entry limit");
+    expect(runnerCalls).toBe(1);
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
 test("agent audit rejects supporting-file drift before persistence", async () => {
   const { dir, home, supportA } = await supportingFileFixture();
 
@@ -437,7 +488,7 @@ for (const tool of ["claude", "codex"] as const) {
           `const profileDir = ${JSON.stringify(tool)} === "codex" ? process.env.CODEX_HOME : process.env.CLAUDE_CONFIG_DIR;`,
           `const authEnvironmentPresent = ${JSON.stringify(tool)} === "codex" ? Boolean(process.env.OPENAI_API_KEY) : Boolean(process.env.ANTHROPIC_API_KEY);`,
           `writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, authEnvironmentPresent, credentialPresent: existsSync(credentialPath), cwd: process.cwd(), envKeys: Object.keys(process.env).sort(), profileEntries: readdirSync(profileDir).sort(), env: { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } }));`,
-          `if (existsSync(${JSON.stringify(pipeFloodMarker)})) { const chunk = "x".repeat(65536); for (let i = 0; i < 20; i += 1) { if (!process.stderr.write(chunk)) await new Promise((resolve) => process.stderr.once("drain", resolve)); } }`,
+          `if (existsSync(${JSON.stringify(pipeFloodMarker)})) { const chunk = "x".repeat(65536); for (let i = 0; i < 20; i += 1) { if (!process.stderr.write(chunk)) await new Promise((resolve) => process.stderr.once("drain", resolve)); } await new Promise(() => {}); }`,
           tool === "codex"
             ? `writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify({ passed: true, findings: [], notes: "ok" }));`
             : `console.log(JSON.stringify({ structured_output: { passed: true, findings: [], notes: "ok" }, modelUsage: { stub: {} } }));`,

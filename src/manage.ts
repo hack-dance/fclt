@@ -1471,6 +1471,7 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
+    left.nlink === right.nlink &&
     left.mode === right.mode &&
     left.size === right.size &&
     left.mtimeMs === right.mtimeMs &&
@@ -1641,6 +1642,11 @@ async function hashStrictDirectoryTree(
         if (!(beforeRead.isFile() && sameFileIdentity(childStat, beforeRead))) {
           throw new Error(
             `plugin payload file changed before read at ${childRelativePath}`
+          );
+        }
+        if (beforeRead.nlink !== 1) {
+          throw new Error(
+            `plugin payload contains a hard-linked file at ${childRelativePath}`
           );
         }
         if (!(Number.isSafeInteger(beforeRead.size) && beforeRead.size >= 0)) {

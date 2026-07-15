@@ -172,4 +172,72 @@ describe("audit fix", () => {
       )
     ).toBe(false);
   });
+
+  it("rejects a verified report from a different mutation root", async () => {
+    const sourceHome = await makeTempHome();
+    const targetHome = await makeTempHome();
+    const sourceRoot = join(sourceHome, ".ai");
+    const targetRoot = join(targetHome, ".ai");
+    const isolatedReportRoot = await mkdtemp(
+      join(tmpdir(), "fclt-audit-fix-cross-root-")
+    );
+    try {
+      for (const [candidateRoot, marker] of [
+        [sourceRoot, "source_fixture_value_1234567890"],
+        [targetRoot, "target_fixture_value_1234567890"],
+      ] as const) {
+        await writeJson(join(candidateRoot, "mcp", "servers.json"), {
+          servers: {
+            github: {
+              command: "fixture-command",
+              env: { GITHUB_PERSONAL_ACCESS_TOKEN: marker },
+            },
+          },
+        });
+        await manageTool("codex", {
+          allowLegacyManagedMutation: true,
+          homeDir: dirname(candidateRoot),
+          rootDir: candidateRoot,
+        });
+      }
+
+      const sourceEvaluation = await evaluateStaticAudit({
+        argv: [],
+        cwd: sourceHome,
+        homeDir: sourceHome,
+        minSeverity: "high",
+      });
+      const sourceReportPath = await persistAuditReport({
+        ...sourceEvaluation,
+        mode: "static",
+        reportRoot: isolatedReportRoot,
+      });
+      const targetTrackedPath = join(targetRoot, "mcp", "servers.json");
+      const targetBefore = await Bun.file(targetTrackedPath).text();
+
+      await expect(
+        runAuditFix({
+          argv: [
+            "mcp:github",
+            "--report",
+            sourceReportPath,
+            "--yes",
+            LEGACY_MANAGED_MUTATION_FLAG,
+          ],
+          cwd: targetHome,
+          homeDir: targetHome,
+        })
+      ).rejects.toThrow(
+        "Audit fix report does not match the active mutation root"
+      );
+      expect(await Bun.file(targetTrackedPath).text()).toBe(targetBefore);
+      expect(
+        await Bun.file(join(targetRoot, "mcp", "servers.local.json")).exists()
+      ).toBe(false);
+    } finally {
+      await rm(sourceHome, { force: true, recursive: true });
+      await rm(targetHome, { force: true, recursive: true });
+      await rm(isolatedReportRoot, { force: true, recursive: true });
+    }
+  });
 });
