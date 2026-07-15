@@ -1,3 +1,9 @@
+## [2.25.2](https://github.com/hack-dance/fclt/compare/v2.25.1...v2.25.2) (2026-07-15)
+
+### Bug Fixes
+
+* select Darwin x64 inode ABI ([#66](https://github.com/hack-dance/fclt/issues/66)) ([d9617d2](https://github.com/hack-dance/fclt/commit/d9617d267a75f982148674f034fc887b2e6b85b3))
+
 ## [2.25.1](https://github.com/hack-dance/fclt/compare/v2.25.0...v2.25.1) (2026-07-15)
 
 ### Bug Fixes
