@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { latestActivityFeed } from "./activity";
 import { resolveActivityActionLocator } from "./activity-action";
+import { queryActivityHistory } from "./activity-history";
 import {
   type AiProposalRecord,
   acceptProposal,
@@ -1197,6 +1198,23 @@ describe("evolution loop", () => {
     expect(Object.keys(state.queue)).toHaveLength(failed.queue.length);
     expect(state.lastRunStatus).toBe("failed");
     expect(state.lastFailure.message).toBe("injected audit failure");
+    const history = await queryActivityHistory({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      scope: "project",
+    });
+    expect(history.runs).toEqual([
+      expect.objectContaining({
+        id: failed.runId,
+        status: "failed",
+      }),
+    ]);
+    expect(history.events).toContainEqual(
+      expect.objectContaining({
+        runId: failed.runId,
+        action: "run-recorded",
+      })
+    );
   });
 
   it("never takes over a live lease and recovers an abandoned lease", async () => {

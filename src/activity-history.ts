@@ -952,11 +952,18 @@ async function readBoundedJson(
   pathValue: string,
   maxBytes: number
 ): Promise<unknown> {
+  return JSON.parse(await readBoundedText(pathValue, maxBytes)) as unknown;
+}
+
+async function readBoundedText(
+  pathValue: string,
+  maxBytes: number
+): Promise<string> {
   const info = await lstat(pathValue);
   if (!info.isFile() || info.isSymbolicLink() || info.size > maxBytes) {
     throw new Error("Activity history file is not a bounded regular file");
   }
-  return JSON.parse(await readFile(pathValue, "utf8")) as unknown;
+  return await readFile(pathValue, "utf8");
 }
 
 async function fileExists(pathValue: string): Promise<boolean> {
@@ -1139,7 +1146,7 @@ export async function appendActivityHistory(args: {
     ) {
       throw error;
     }
-    const existing = await readFile(segmentPath, "utf8");
+    const existing = await readBoundedText(segmentPath, MAX_SEGMENT_BYTES);
     if (sha256(existing) !== sha256(body)) {
       throw new Error(
         "Activity history run identity conflicts with existing content"
@@ -1527,7 +1534,7 @@ async function readScope(args: {
     }
     try {
       const pathValue = join(args.descriptor.segmentDir, record.file);
-      const raw = await readFile(pathValue, "utf8");
+      const raw = await readBoundedText(pathValue, MAX_SEGMENT_BYTES);
       if (
         Buffer.byteLength(raw) > MAX_SEGMENT_BYTES ||
         sha256(raw) !== record.checksum

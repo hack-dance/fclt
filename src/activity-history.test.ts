@@ -5,7 +5,9 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -791,6 +793,30 @@ describe("activity history", () => {
     expect(corrupt.coverage.scopes[0]).toMatchObject({
       state: "degraded",
       corruptSegments: 1,
+    });
+
+    await appendRun({
+      home,
+      rootDir: globalRoot,
+      index: 2,
+      recordedAt: "2026-07-01T01:00:00.000Z",
+      items: [],
+    });
+    const segmentNames = await readdir(segmentDir);
+    const linkedSegmentName = segmentNames.find((name) => name !== segmentName);
+    const linkedSegmentPath = join(segmentDir, linkedSegmentName!);
+    const linkedTargetPath = `${linkedSegmentPath}.target`;
+    await rename(linkedSegmentPath, linkedTargetPath);
+    await symlink(linkedTargetPath, linkedSegmentPath);
+    const substituted = await queryActivityHistory({
+      homeDir: home,
+      rootDir: globalRoot,
+      scope: "global",
+      since: "2026-07-01T00:00:00.000Z",
+    });
+    expect(substituted.coverage.scopes[0]).toMatchObject({
+      state: "degraded",
+      corruptSegments: 2,
     });
 
     for (let index = 0; index < 51; index += 1) {

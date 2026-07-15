@@ -2186,6 +2186,7 @@ async function runEvolutionLoopScoped(args: {
           facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir),
           `${JSON.stringify(nextState, null, 2)}\n`
         );
+        let historyAttempted = false;
         try {
           await args.onBeforeAuditCommit?.();
           await mkdir(dirname(auditPath), { recursive: true });
@@ -2206,6 +2207,7 @@ async function runEvolutionLoopScoped(args: {
             })}\n`,
             "utf8"
           );
+          historyAttempted = true;
           const { appendActivityHistory } = await import("./activity-history");
           await appendActivityHistory({
             homeDir: args.homeDir,
@@ -2267,6 +2269,18 @@ async function runEvolutionLoopScoped(args: {
               2
             )}\n`
           );
+          if (!historyAttempted) {
+            const { appendActivityHistory } = await import(
+              "./activity-history"
+            );
+            await appendActivityHistory({
+              homeDir: args.homeDir,
+              rootDir: args.rootDir,
+              report: failedReport,
+              review,
+              configRevision: config.generation,
+            });
+          }
           return failedReport;
         }
       }
