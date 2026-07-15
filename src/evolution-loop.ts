@@ -1825,6 +1825,22 @@ export async function latestEvolutionLoopReport(
   );
 }
 
+async function appendFailedRunHistory(args: {
+  homeDir: string;
+  rootDir: string;
+  report: EvolutionLoopReport;
+  review?: ReconciliationReview | null;
+  configRevision: number;
+}): Promise<void> {
+  try {
+    const { appendActivityHistory } = await import("./activity-history");
+    await appendActivityHistory(args);
+  } catch {
+    // A secondary history-store failure must not hide the failed run's root cause.
+    return;
+  }
+}
+
 async function persistFailedLoopRun(args: {
   homeDir: string;
   rootDir: string;
@@ -1930,8 +1946,7 @@ async function persistFailedLoopRun(args: {
     recovery:
       "Resolve the reported error, inspect the failed report, and rerun the same bounded window",
   });
-  const { appendActivityHistory } = await import("./activity-history");
-  await appendActivityHistory({
+  await appendFailedRunHistory({
     homeDir: args.homeDir,
     rootDir: args.rootDir,
     report,
@@ -2270,10 +2285,7 @@ async function runEvolutionLoopScoped(args: {
             )}\n`
           );
           if (!historyAttempted) {
-            const { appendActivityHistory } = await import(
-              "./activity-history"
-            );
-            await appendActivityHistory({
+            await appendFailedRunHistory({
               homeDir: args.homeDir,
               rootDir: args.rootDir,
               report: failedReport,

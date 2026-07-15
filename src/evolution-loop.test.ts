@@ -36,6 +36,7 @@ import {
   runEvolutionLoop,
 } from "./evolution-loop";
 import {
+  facultAiActivityHistoryManifestPath,
   facultAiEvolutionLoopAuditPath,
   facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopStatePath,
@@ -1127,6 +1128,41 @@ describe("evolution loop", () => {
     ).toMatchObject({
       status: "resolved",
       target: { resource: { kind: "proposal", id: proposalId } },
+    });
+  });
+
+  it("preserves a failed run when activity history is malformed", async () => {
+    const project = await makeProject();
+    await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["missing-source"],
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const manifestPath = facultAiActivityHistoryManifestPath(
+      project.homeDir,
+      project.rootDir
+    );
+    await mkdir(dirname(manifestPath), { recursive: true });
+    await Bun.write(manifestPath, "{malformed\n");
+
+    const failed = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+
+    expect(failed.status).toBe("failed");
+    expect(failed.attempts).toHaveLength(3);
+    expect(failed.attempts[0]?.error).toContain("missing-source");
+    const history = await queryActivityHistory({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      scope: "project",
+    });
+    expect(history.coverage.scopes[0]).toMatchObject({
+      state: "degraded",
+      detail: "history-manifest-invalid",
     });
   });
 
