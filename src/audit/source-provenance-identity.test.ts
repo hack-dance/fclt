@@ -319,7 +319,7 @@ test("requested paths reject same-target lexical symlink replacement", async () 
   expect(snapshot.evaluatedFiles[0]?.path).toBe(await realpath(target));
 
   await rm(aliasDirectory);
-  await symlink(targetDirectory, aliasDirectory, "dir");
+  await symlink("target", aliasDirectory, "dir");
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "requested path changed"
@@ -343,7 +343,7 @@ test("absence proofs reject same-target lexical symlink replacement", async () =
   const snapshot = tracker.snapshot();
 
   await rm(aliasDirectory);
-  await symlink(targetDirectory, aliasDirectory, "dir");
+  await symlink("target", aliasDirectory, "dir");
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "absent requested path changed"

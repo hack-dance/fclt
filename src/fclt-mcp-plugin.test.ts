@@ -848,6 +848,7 @@ describe("bundled fclt MCP plugin", () => {
     const pluginRoot = facultBuiltinCodexPluginRoot();
     const child = spawnConfiguredMcp({
       env: {
+        BUN_INSTALL: join(base, "bun-install"),
         FACULT_ROOT_DIR: join(home, ".ai"),
         FCLT_BIN: wrapper,
         HOME: home,

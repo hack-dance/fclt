@@ -30,7 +30,7 @@ const READ_DRIFT_RE = /grew|changed while reading/;
 const TIMESTAMP_SCHEMA_RE = /timestamp|provenance|schema/i;
 const DIRECTORY_CHANGED_RE = /directory changed/i;
 const ENVELOPE_OR_DIRECTORY_CHANGED_RE =
-  /(?:envelope name|audit report directory) changed/i;
+  /(?:envelope(?: name)?|audit report directory) changed/i;
 const PERMISSION_AMBIGUOUS_RE = /permission-ambiguous/i;
 
 function stableJson(value: unknown): string {
