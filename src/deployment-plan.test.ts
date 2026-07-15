@@ -1204,7 +1204,7 @@ describe("immutable per-asset deployment planning", () => {
           path,
           root,
         })
-      ).rejects.toThrow(`${label} changed`);
+      ).rejects.toThrow(new RegExp(`${label}(?: path)? changed`));
       expect((await lstat(path)).isSymbolicLink()).toBe(true);
       await expect(
         readStableRegularFileForTest({
