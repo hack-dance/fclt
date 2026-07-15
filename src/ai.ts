@@ -31,6 +31,7 @@ import {
   withFacultRootScope,
 } from "./paths";
 import { redactReconciliationText } from "./reconciliation-adapters";
+import { writeCliOutput } from "./util/cli-output";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -3118,7 +3119,7 @@ async function loopCommand(argv: string[]) {
           homeDir,
           globalRootDir,
         });
-        console.log(
+        await writeCliOutput(
           json ? JSON.stringify(result, null, 2) : renderActivitySet(result)
         );
         return;
@@ -3131,7 +3132,7 @@ async function loopCommand(argv: string[]) {
       if (!result) {
         throw new Error("No evolution loop report has been recorded");
       }
-      console.log(
+      await writeCliOutput(
         json ? JSON.stringify(result, null, 2) : renderActivityFeed(result)
       );
       return;
@@ -3206,7 +3207,7 @@ async function loopCommand(argv: string[]) {
         },
         async () => await queryActivityHistory(queryArgs)
       );
-      console.log(
+      await writeCliOutput(
         json ? JSON.stringify(result, null, 2) : renderActivityHistory(result)
       );
       return;
