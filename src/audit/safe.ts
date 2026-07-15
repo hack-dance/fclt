@@ -66,6 +66,30 @@ function suppressionStorePathFromReceipt(receipt: AuditReportReceipt): string {
   return matches[0]!;
 }
 
+function suppressionStoreExpectedSha256(
+  receipt: AuditReportReceipt,
+  storePath: string
+): string | null {
+  const absent = receipt.sourceSnapshot.absentPaths.some(
+    (entry) => entry.requestedPath === storePath
+  );
+  const requested = receipt.sourceSnapshot.requestedPaths.find(
+    (entry) => entry.requestedPath === storePath && entry.kind === "file"
+  );
+  const evaluated = requested
+    ? receipt.sourceSnapshot.evaluatedFiles.find(
+        (entry) => entry.path === requested.canonicalPath
+      )
+    : undefined;
+  if (absent && !requested && !evaluated) {
+    return null;
+  }
+  if (!(requested && evaluated) || absent) {
+    throw new Error("Audit report suppression store identity is ambiguous");
+  }
+  return evaluated.sha256;
+}
+
 async function activeSuppressionStorePath(homeDir: string): Promise<string> {
   const readOptionalText = async (path: string): Promise<string | null> =>
     (await Bun.file(path).exists()) ? Bun.file(path).text() : null;
@@ -467,6 +491,7 @@ export async function runAuditSafe(args: {
   let staticReport: StaticAuditReport | null = null;
   let agentReport: AgentAuditReport | null = null;
   let suppressionStorePath: string | null = null;
+  let expectedSuppressionStoreSha256: string | null | undefined;
   for (const reportPath of parsed.reportPaths) {
     const envelope = await loadVerifiedAuditReportEnvelope<
       StaticAuditReport | AgentAuditReport
@@ -475,6 +500,10 @@ export async function runAuditSafe(args: {
     const reportSuppressionStorePath = suppressionStorePathFromReceipt(
       envelope.receipt
     );
+    const reportExpectedSuppressionStoreSha256 = suppressionStoreExpectedSha256(
+      envelope.receipt,
+      reportSuppressionStorePath
+    );
     if (
       suppressionStorePath !== null &&
       suppressionStorePath !== reportSuppressionStorePath
@@ -482,6 +511,13 @@ export async function runAuditSafe(args: {
       throw new Error("Exact audit reports bind different suppression stores");
     }
     suppressionStorePath = reportSuppressionStorePath;
+    if (
+      expectedSuppressionStoreSha256 !== undefined &&
+      expectedSuppressionStoreSha256 !== reportExpectedSuppressionStoreSha256
+    ) {
+      throw new Error("Exact audit reports bind different suppression states");
+    }
+    expectedSuppressionStoreSha256 = reportExpectedSuppressionStoreSha256;
     if (report.mode === "static") {
       if (staticReport) {
         throw new Error("Only one exact static audit report may be supplied");
@@ -569,6 +605,7 @@ export async function runAuditSafe(args: {
 
   const saved = await recordAuditSuppressions({
     homeDir,
+    expectedPriorSha256: expectedSuppressionStoreSha256,
     selected: uniqueSelections,
     note: parsed.note,
     storePath: suppressionStorePath!,

@@ -1,6 +1,23 @@
-import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from "bun:ffi";
-import { randomUUID } from "node:crypto";
-import { constants, type Dirent, fstatSync } from "node:fs";
+import {
+  dlopen,
+  type FFIFunction,
+  FFIType,
+  type Pointer,
+  ptr,
+  toArrayBuffer,
+} from "bun:ffi";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  type Dirent,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+  type Stats,
+} from "node:fs";
+import { isAbsolute, normalize, parse, relative, sep } from "node:path";
 
 const DIRECTORY_ENTRY_TYPES = {
   blockDevice: 6,
@@ -37,6 +54,39 @@ interface DirectoryStreamLibrary {
   fdopendir: (fileDescriptor: number) => Pointer | null;
   readdir: (directory: Pointer) => Pointer | null;
   rewinddir: (directory: Pointer) => void;
+}
+
+interface PrivateFileSnapshot {
+  contents: string;
+  metadata: Stats;
+}
+
+interface DirectoryMutationSymbols {
+  __errno_location?: () => Pointer;
+  __error?: () => Pointer;
+  close: (fd: number) => number;
+  mkdirat: (directoryFd: number, name: Pointer, mode: number) => number;
+  openat: (
+    directoryFd: number,
+    name: Pointer,
+    flags: number,
+    mode: number
+  ) => number;
+}
+
+interface PrivateFileMutationSymbols extends DirectoryMutationSymbols {
+  fchmod: (fd: number, mode: number) => number;
+  flock: (fd: number, operation: number) => number;
+  fsync: (fd: number) => number;
+  read: (fd: number, buffer: Pointer, length: number) => number | bigint;
+  renameat: (
+    oldDirectoryFd: number,
+    oldName: Pointer,
+    newDirectoryFd: number,
+    newName: Pointer
+  ) => number;
+  unlinkat: (directoryFd: number, name: Pointer, flags: number) => number;
+  write: (fd: number, buffer: Pointer, length: number) => number | bigint;
 }
 
 function directoryStreamLibrary(): DirectoryStreamLibrary {
@@ -205,6 +255,13 @@ export function readDirectoryEntriesAt(args: {
 
 function permissionBits(mode: number): number {
   return mode % 0o1000;
+}
+
+function groupOrOtherWritable(mode: number): boolean {
+  const permissions = permissionBits(mode);
+  const group = Math.floor(permissions / 8) % 8;
+  const other = permissions % 8;
+  return Math.floor(group / 2) % 2 === 1 || Math.floor(other / 2) % 2 === 1;
 }
 
 function platformConfiguration(): {
@@ -440,6 +497,383 @@ export function writeExclusiveAt(args: {
       libc.symbols.close(fd);
     }
     libc.symbols.unlinkat(args.directoryFd, ptr(temporaryName), 0);
+    libc.close();
+  }
+}
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return (
+    right.isFile() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.uid === right.uid &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.ctimeMs === right.ctimeMs &&
+    left.mtimeMs === right.mtimeMs
+  );
+}
+
+function privateMutableFileIsSafe(metadata: Stats, maxBytes: number): boolean {
+  const expectedOwner = process.getuid?.();
+  return (
+    metadata.isFile() &&
+    metadata.nlink === 1 &&
+    expectedOwner !== undefined &&
+    metadata.uid === expectedOwner &&
+    !groupOrOtherWritable(metadata.mode) &&
+    Number.isSafeInteger(metadata.size) &&
+    metadata.size >= 0 &&
+    metadata.size <= maxBytes
+  );
+}
+
+function privateDirectoryComponentIsSafe(metadata: Stats): boolean {
+  const expectedOwner = process.getuid?.();
+  return (
+    metadata.isDirectory() &&
+    (metadata.uid === 0 || metadata.uid === expectedOwner) &&
+    !groupOrOtherWritable(metadata.mode)
+  );
+}
+
+export function openOrCreatePrivateDirectory(directoryPath: string): number {
+  if (
+    !isAbsolute(directoryPath) ||
+    normalize(directoryPath) !== directoryPath ||
+    !auditReportPersistenceSupported()
+  ) {
+    throw new Error("Private directory path must be canonical and supported");
+  }
+  const configuration = platformConfiguration();
+  const definitions: Record<string, FFIFunction> = {
+    close: { args: [FFIType.i32], returns: FFIType.i32 },
+    mkdirat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+      returns: FFIType.i32,
+    },
+    openat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
+      returns: FFIType.i32,
+    },
+  };
+  const libc = dlopen(configuration.library, definitions);
+  const symbols = libc.symbols as unknown as DirectoryMutationSymbols;
+  const root = parse(directoryPath).root;
+  const segments = relative(root, directoryPath).split(sep).filter(Boolean);
+  const directoryFlags =
+    constants.O_RDONLY +
+    (constants.O_DIRECTORY ?? 0) +
+    (constants.O_NOFOLLOW ?? 0) +
+    ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ?? 0);
+  let currentFd = openSync(root, directoryFlags);
+  try {
+    if (!privateDirectoryComponentIsSafe(fstatSync(currentFd))) {
+      throw new Error("Private directory root is unsafe");
+    }
+    for (const segment of segments) {
+      const name = Buffer.from(`${segment}\0`);
+      let nextFd = symbols.openat(currentFd, ptr(name), directoryFlags, 0);
+      if (nextFd < 0) {
+        symbols.mkdirat(currentFd, ptr(name), 0o700);
+        nextFd = symbols.openat(currentFd, ptr(name), directoryFlags, 0);
+      }
+      if (nextFd < 0) {
+        throw new Error(`Could not open private directory: ${segment}`);
+      }
+      if (!privateDirectoryComponentIsSafe(fstatSync(nextFd))) {
+        symbols.close(nextFd);
+        throw new Error(`Private directory component is unsafe: ${segment}`);
+      }
+      closeSync(currentFd);
+      currentFd = nextFd;
+    }
+    const descriptorMetadata = fstatSync(currentFd);
+    const pathMetadata = lstatSync(directoryPath);
+    if (
+      pathMetadata.isSymbolicLink() ||
+      !privateDirectoryComponentIsSafe(pathMetadata) ||
+      descriptorMetadata.dev !== pathMetadata.dev ||
+      descriptorMetadata.ino !== pathMetadata.ino ||
+      realpathSync(directoryPath) !== directoryPath
+    ) {
+      throw new Error("Private directory changed while it was opened");
+    }
+    const result = currentFd;
+    currentFd = -1;
+    return result;
+  } finally {
+    if (currentFd >= 0) {
+      closeSync(currentFd);
+    }
+    libc.close();
+  }
+}
+
+export async function replacePrivateFileAt(args: {
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeCommit?: () => Promise<void>;
+  directoryFd: number;
+  expectedPriorSha256?: string | null;
+  fileName: string;
+  maxBytes: number;
+  transform: (contents: string | null) => string;
+}): Promise<{ contents: string; previousContents: string | null }> {
+  if (
+    args.fileName.includes("/") ||
+    args.fileName.includes("\\") ||
+    args.fileName === "." ||
+    args.fileName === ".."
+  ) {
+    throw new Error(
+      "Descriptor-relative private file names must be one segment"
+    );
+  }
+  const configuration = platformConfiguration();
+  const definitions: Record<string, FFIFunction> = {
+    close: { args: [FFIType.i32], returns: FFIType.i32 },
+    fchmod: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    fsync: { args: [FFIType.i32], returns: FFIType.i32 },
+    openat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
+      returns: FFIType.i32,
+    },
+    read: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.u64],
+      returns: FFIType.i64,
+    },
+    renameat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    unlinkat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+      returns: FFIType.i32,
+    },
+    write: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.u64],
+      returns: FFIType.i64,
+    },
+  };
+  definitions[process.platform === "darwin" ? "__error" : "__errno_location"] =
+    { args: [], returns: FFIType.ptr };
+  const libc = dlopen(configuration.library, definitions);
+  const symbols = libc.symbols as unknown as PrivateFileMutationSymbols;
+  const errnoPointer =
+    process.platform === "darwin"
+      ? symbols.__error!()
+      : symbols.__errno_location!();
+  const errno = new DataView(toArrayBuffer(errnoPointer!, 0, 4));
+  const name = Buffer.from(`${args.fileName}\0`);
+  const lockName = Buffer.from(`.${args.fileName}.lock\0`);
+  const temporaryName = Buffer.from(`.${args.fileName}.${randomUUID()}.tmp\0`);
+  let lockFd = -1;
+  let temporaryFd = -1;
+
+  const openExisting = (): number | null => {
+    errno.setInt32(0, 0, true);
+    const fd = symbols.openat(
+      args.directoryFd,
+      ptr(name),
+      safeExistingOpenFlags(),
+      0
+    );
+    if (fd >= 0) {
+      return fd;
+    }
+    if (errno.getInt32(0, true) === 2) {
+      return null;
+    }
+    throw new Error(
+      `Descriptor-relative private file open failed closed: ${args.fileName}`
+    );
+  };
+  const readExisting = (): PrivateFileSnapshot | null => {
+    const fd = openExisting();
+    if (fd === null) {
+      return null;
+    }
+    try {
+      const before = fstatSync(fd);
+      if (!privateMutableFileIsSafe(before, args.maxBytes)) {
+        throw new Error(`Private file is unsafe: ${args.fileName}`);
+      }
+      const bytes = Buffer.alloc(before.size + 1);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const count = Number(
+          symbols.read(fd, ptr(bytes, offset), bytes.length - offset)
+        );
+        if (count < 0) {
+          throw new Error(`Could not read private file: ${args.fileName}`);
+        }
+        if (count === 0) {
+          break;
+        }
+        offset += count;
+      }
+      if (offset !== before.size) {
+        throw new Error(`Private file changed while reading: ${args.fileName}`);
+      }
+      const after = fstatSync(fd);
+      if (!sameFileIdentity(before, after)) {
+        throw new Error(`Private file changed while reading: ${args.fileName}`);
+      }
+      return {
+        contents: new TextDecoder("utf-8", { fatal: true }).decode(
+          bytes.subarray(0, offset)
+        ),
+        metadata: before,
+      };
+    } catch (error) {
+      if (error instanceof TypeError) {
+        throw new Error(`Private file is not UTF-8: ${args.fileName}`);
+      }
+      throw error;
+    } finally {
+      symbols.close(fd);
+    }
+  };
+  const assertUnchanged = (previous: PrivateFileSnapshot | null): void => {
+    const current = readExisting();
+    if (previous === null) {
+      if (current !== null) {
+        throw new Error(
+          `Private file appeared during update: ${args.fileName}`
+        );
+      }
+      return;
+    }
+    if (
+      current === null ||
+      !sameFileIdentity(previous.metadata, current.metadata) ||
+      previous.contents !== current.contents
+    ) {
+      throw new Error(`Private file changed during update: ${args.fileName}`);
+    }
+  };
+
+  try {
+    lockFd = symbols.openat(
+      args.directoryFd,
+      ptr(lockName),
+      constants.O_RDWR +
+        constants.O_CREAT +
+        (constants.O_NOFOLLOW ?? 0) +
+        ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ??
+          0),
+      0o600
+    );
+    if (
+      lockFd < 0 ||
+      symbols.fchmod(lockFd, 0o600) !== 0 ||
+      !privateMutableFileIsSafe(fstatSync(lockFd), args.maxBytes) ||
+      symbols.flock(lockFd, 6) !== 0
+    ) {
+      throw new Error(
+        `Private file update is already active: ${args.fileName}`
+      );
+    }
+    const currentLockFd = symbols.openat(
+      args.directoryFd,
+      ptr(lockName),
+      safeExistingOpenFlags(),
+      0
+    );
+    if (currentLockFd < 0) {
+      throw new Error(`Private file lock changed: ${args.fileName}`);
+    }
+    try {
+      if (!sameFileIdentity(fstatSync(lockFd), fstatSync(currentLockFd))) {
+        throw new Error(`Private file lock changed: ${args.fileName}`);
+      }
+    } finally {
+      symbols.close(currentLockFd);
+    }
+
+    const previous = readExisting();
+    const priorSha256 = previous
+      ? createHash("sha256").update(previous.contents).digest("hex")
+      : null;
+    if (
+      args.expectedPriorSha256 !== undefined &&
+      priorSha256 !== args.expectedPriorSha256
+    ) {
+      throw new Error(
+        `Private file no longer matches its receipt: ${args.fileName}`
+      );
+    }
+    const contents = args.transform(previous?.contents ?? null);
+    if (Buffer.byteLength(contents) > args.maxBytes) {
+      throw new Error(`Private file exceeds byte limit: ${args.fileName}`);
+    }
+    temporaryFd = symbols.openat(
+      args.directoryFd,
+      ptr(temporaryName),
+      configuration.createExclusive,
+      0o600
+    );
+    if (temporaryFd < 0 || symbols.fchmod(temporaryFd, 0o600) !== 0) {
+      throw new Error(
+        `Descriptor-relative private temporary creation failed: ${args.fileName}`
+      );
+    }
+    const bytes = Buffer.from(contents);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = Number(
+        symbols.write(temporaryFd, ptr(bytes, offset), bytes.length - offset)
+      );
+      if (count <= 0) {
+        throw new Error(`Could not write private file: ${args.fileName}`);
+      }
+      offset += count;
+    }
+    if (symbols.fsync(temporaryFd) !== 0) {
+      throw new Error(`Could not sync private file: ${args.fileName}`);
+    }
+    const temporaryMetadata = fstatSync(temporaryFd);
+    if (!privateMutableFileIsSafe(temporaryMetadata, args.maxBytes)) {
+      throw new Error(`Private temporary file is unsafe: ${args.fileName}`);
+    }
+    symbols.close(temporaryFd);
+    temporaryFd = -1;
+
+    await args.beforeCommit?.();
+    assertUnchanged(previous);
+    if (symbols.fsync(args.directoryFd) !== 0) {
+      throw new Error(`Could not sync private directory: ${args.fileName}`);
+    }
+    if (
+      symbols.renameat(
+        args.directoryFd,
+        ptr(temporaryName),
+        args.directoryFd,
+        ptr(name)
+      ) !== 0
+    ) {
+      throw new Error(
+        `Could not atomically replace private file: ${args.fileName}`
+      );
+    }
+    symbols.fsync(args.directoryFd);
+    const committed = readExisting();
+    if (committed?.contents !== contents) {
+      throw new Error(
+        `Private file commit verification failed: ${args.fileName}`
+      );
+    }
+    return { contents, previousContents: previous?.contents ?? null };
+  } finally {
+    if (lockFd >= 0) {
+      symbols.close(lockFd);
+    }
+    if (temporaryFd >= 0) {
+      symbols.close(temporaryFd);
+    }
+    symbols.unlinkat(args.directoryFd, ptr(temporaryName), 0);
     libc.close();
   }
 }

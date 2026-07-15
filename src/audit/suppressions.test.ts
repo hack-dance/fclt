@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, rm } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -115,5 +122,134 @@ describe("audit suppressions", () => {
     expect(second.added).toBe(0);
     expect(stored).toHaveLength(1);
     expect(stored[0]?.note).toBe("Local-only test fixture");
+  });
+
+  it("never follows a suppression-store symlink", async () => {
+    tempHome = await makeTempHome();
+    const storePath = join(
+      tempHome,
+      ".ai",
+      ".facult",
+      "audit",
+      "suppressions.json"
+    );
+    const victimPath = join(tempHome, "victim.txt");
+    await mkdir(join(storePath, ".."), { recursive: true });
+    await writeFile(victimPath, "untouched\n");
+    await symlink(victimPath, storePath);
+    const result: AuditItemResult = {
+      item: "alpha",
+      type: "skill",
+      path: "/tmp/alpha",
+      passed: false,
+      findings: [
+        {
+          severity: "medium",
+          ruleId: "non-https-url",
+          message: "Safe in local dev",
+        },
+      ],
+    };
+
+    await expect(
+      recordAuditSuppressions({
+        homeDir: tempHome,
+        selected: [{ result, finding: result.findings[0]! }],
+        storePath,
+      })
+    ).rejects.toThrow("open failed closed");
+    expect(await readFile(victimPath, "utf8")).toBe("untouched\n");
+  });
+
+  it("rejects a parent swap before the descriptor-relative commit", async () => {
+    tempHome = await makeTempHome();
+    const stateRoot = join(tempHome, ".ai", ".facult");
+    const storeDirectory = join(stateRoot, "audit");
+    const movedDirectory = join(stateRoot, "audit-moved");
+    const replacementDirectory = join(stateRoot, "audit-replacement");
+    const storePath = join(storeDirectory, "suppressions.json");
+    await mkdir(storeDirectory, { recursive: true });
+    await mkdir(replacementDirectory);
+    const result: AuditItemResult = {
+      item: "alpha",
+      type: "skill",
+      path: "/tmp/alpha",
+      passed: false,
+      findings: [
+        {
+          severity: "medium",
+          ruleId: "non-https-url",
+          message: "Safe in local dev",
+        },
+      ],
+    };
+
+    await expect(
+      recordAuditSuppressions({
+        beforeStoreCommit: async () => {
+          await rename(storeDirectory, movedDirectory);
+          await rename(replacementDirectory, storeDirectory);
+        },
+        homeDir: tempHome,
+        selected: [{ result, finding: result.findings[0]! }],
+        storePath,
+      })
+    ).rejects.toThrow("directory changed");
+    expect(
+      await Bun.file(join(movedDirectory, "suppressions.json")).exists()
+    ).toBe(false);
+    expect(await Bun.file(storePath).exists()).toBe(false);
+  });
+
+  it("fails a concurrent writer closed and preserves both entries on retry", async () => {
+    tempHome = await makeTempHome();
+    let releaseFirst: (() => void) | undefined;
+    let markFirstLocked: (() => void) | undefined;
+    const firstLocked = new Promise<void>((resolve) => {
+      markFirstLocked = resolve;
+    });
+    const firstMayCommit = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const result = (item: string): AuditItemResult => ({
+      item,
+      type: "skill",
+      path: `/tmp/${item}`,
+      passed: false,
+      findings: [
+        {
+          severity: "medium",
+          ruleId: "non-https-url",
+          message: "Safe in local dev",
+        },
+      ],
+    });
+    const alpha = result("alpha");
+    const beta = result("beta");
+    const first = recordAuditSuppressions({
+      beforeStoreCommit: async () => {
+        markFirstLocked?.();
+        await firstMayCommit;
+      },
+      homeDir: tempHome,
+      selected: [{ result: alpha, finding: alpha.findings[0]! }],
+    });
+    await firstLocked;
+
+    await expect(
+      recordAuditSuppressions({
+        homeDir: tempHome,
+        selected: [{ result: beta, finding: beta.findings[0]! }],
+      })
+    ).rejects.toThrow("already active");
+    releaseFirst?.();
+    await first;
+    await recordAuditSuppressions({
+      homeDir: tempHome,
+      selected: [{ result: beta, finding: beta.findings[0]! }],
+    });
+
+    const stored = await loadAuditSuppressions(tempHome);
+    expect(stored.map((entry) => entry.item).sort()).toEqual(["alpha", "beta"]);
   });
 });
