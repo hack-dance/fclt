@@ -252,7 +252,7 @@ describe("read-only audit boundary", () => {
     const reportPath = await exactReportPath(reportRoot);
     const envelope = JSON.parse(await readFile(reportPath, "utf8"));
     expect(envelope.report).toEqual(report);
-    expect(envelope.receipt.reportRevision).toBe(10);
+    expect(envelope.receipt.reportRevision).toBe(11);
     await expect(loadVerifiedAuditReport({ reportPath })).resolves.toEqual(
       report
     );

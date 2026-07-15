@@ -1,12 +1,28 @@
-import { basename } from "node:path";
+import { closeSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, normalize } from "node:path";
+import { extractServersObject, isInlineMcpSecretValue } from "../mcp-config";
+import { facultContextRootDir } from "../paths";
+import { parseJsonLenient } from "../util/json";
 import type { AgentAuditReport } from "./agent";
-import { loadVerifiedAuditReport } from "./report-persistence";
+import {
+  type AuditMcpRemediationBinding,
+  auditFindingIdentity,
+  loadVerifiedAuditReportEnvelope,
+  type VerifiedAuditReportEnvelope,
+} from "./report-persistence";
+import {
+  openBoundPrivateSubdirectory,
+  replaceBoundPrivateFilePairAt,
+} from "./safe-openat";
+import { validateAuditSourceSnapshot } from "./source-provenance";
 import type { AuditFinding, AuditItemResult, StaticAuditReport } from "./types";
 
 type AuditFixSource = "static" | "agent" | "combined";
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
 const INLINE_SECRET_RULE_ID = "mcp-env-inline-secret";
 const ARG_VALUE_SPLIT_RE = /=(.*)/s;
+const MAX_MCP_CONFIG_BYTES = 2 * 1024 * 1024;
 
 interface AuditFixArgs {
   all: boolean;
@@ -337,11 +353,144 @@ function selectFixableFindings(args: {
   );
 }
 
-export const AUDIT_FIX_MUTATION_DISABLED_MESSAGE =
-  "audit fix mutation is temporarily disabled until exact reports bind the MCP source and destination through the mutation commit; use --dry-run to inspect matches and remediate manually";
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function transformBoundMcpConfigs(args: {
+  bindings: AuditMcpRemediationBinding[];
+  destinationContents: string | null;
+  sourceContents: string;
+}): { destinationContents: string; sourceContents: string } {
+  const sourceRoot = parseJsonLenient(args.sourceContents);
+  if (!isPlainObject(sourceRoot)) {
+    throw new Error("Bound MCP source is not a JSON object");
+  }
+  const sourceServers = extractServersObject(sourceRoot);
+  if (!sourceServers) {
+    throw new Error("Bound MCP source has no servers object");
+  }
+  const destinationRoot: Record<string, unknown> = args.destinationContents
+    ? (() => {
+        const parsed = parseJsonLenient(args.destinationContents);
+        if (!(isPlainObject(parsed) && extractServersObject(parsed))) {
+          throw new Error("Bound MCP destination has no servers object");
+        }
+        return parsed;
+      })()
+    : { servers: {} };
+  const destinationServers = extractServersObject(destinationRoot)!;
+
+  for (const binding of args.bindings) {
+    const sourceServer = sourceServers[binding.serverName];
+    if (!isPlainObject(sourceServer)) {
+      throw new Error(
+        `Bound MCP source server is missing: ${binding.serverName}`
+      );
+    }
+    const sourceEnv = sourceServer.env;
+    if (!isPlainObject(sourceEnv)) {
+      throw new Error(`Bound MCP source env is missing: ${binding.serverName}`);
+    }
+    const secret = sourceEnv[binding.envKey];
+    if (!isInlineMcpSecretValue(secret)) {
+      throw new Error(
+        `Bound MCP source secret changed: ${binding.serverName}:${binding.envKey}`
+      );
+    }
+
+    const currentDestinationServer = destinationServers[binding.serverName];
+    if (
+      currentDestinationServer !== undefined &&
+      !isPlainObject(currentDestinationServer)
+    ) {
+      throw new Error(
+        `Bound MCP destination server is invalid: ${binding.serverName}`
+      );
+    }
+    const destinationServer = currentDestinationServer ?? {};
+    const currentDestinationEnv = destinationServer.env;
+    if (
+      currentDestinationEnv !== undefined &&
+      !isPlainObject(currentDestinationEnv)
+    ) {
+      throw new Error(
+        `Bound MCP destination env is invalid: ${binding.serverName}`
+      );
+    }
+    if (
+      currentDestinationEnv &&
+      Object.hasOwn(currentDestinationEnv, binding.envKey) &&
+      currentDestinationEnv[binding.envKey] !== secret
+    ) {
+      throw new Error(
+        `Bound MCP destination secret conflicts: ${binding.serverName}:${binding.envKey}`
+      );
+    }
+    destinationServer.env = {
+      ...(currentDestinationEnv ?? {}),
+      [binding.envKey]: secret,
+    };
+    destinationServers[binding.serverName] = destinationServer;
+    Reflect.deleteProperty(sourceEnv, binding.envKey);
+    if (Object.keys(sourceEnv).length === 0) {
+      Reflect.deleteProperty(sourceServer, "env");
+    }
+  }
+
+  return {
+    destinationContents: `${JSON.stringify(destinationRoot, null, 2)}\n`,
+    sourceContents: `${JSON.stringify(sourceRoot, null, 2)}\n`,
+  };
+}
+
+function exactStaticBindings(args: {
+  envelope: VerifiedAuditReportEnvelope<StaticAuditReport>;
+  selections: FindingSelection[];
+}): AuditMcpRemediationBinding[] {
+  const byIdentity = new Map(
+    args.envelope.receipt.remediationBindings.map((binding) => [
+      binding.findingIdentity,
+      binding,
+    ])
+  );
+  const bindings = args.selections.map((selection) => {
+    const identity = auditFindingIdentity(selection);
+    const binding = byIdentity.get(identity);
+    if (!binding) {
+      throw new Error(
+        "Selected finding has no exact report-authorized remediation binding"
+      );
+    }
+    return binding;
+  });
+  const first = bindings[0];
+  if (
+    !first ||
+    bindings.some(
+      (binding) =>
+        binding.canonicalRootPath !== first.canonicalRootPath ||
+        binding.sourcePath !== first.sourcePath ||
+        binding.destinationPath !== first.destinationPath
+    )
+  ) {
+    throw new Error(
+      "Selected findings do not share one exact bound MCP transaction"
+    );
+  }
+  return bindings;
+}
 
 export async function runAuditFix(args: {
+  /** @internal Adversarial test hook; production callers must not set this. */
+  afterBoundOpen?: () => Promise<void>;
+  /** @internal Adversarial test hook; production callers must not set this. */
+  afterReportValidation?: () => Promise<void>;
   argv: string[];
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeSourceCommit?: () => Promise<void>;
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeSourceValidation?: () => Promise<void>;
   homeDir?: string;
   cwd?: string;
 }): Promise<{
@@ -358,15 +507,23 @@ export async function runAuditFix(args: {
 
   let staticReport: StaticAuditReport | null = null;
   let agentReport: AgentAuditReport | null = null;
+  let staticEnvelope: VerifiedAuditReportEnvelope<StaticAuditReport> | null =
+    null;
   for (const reportPath of parsed.reportPaths) {
-    const report = await loadVerifiedAuditReport<
+    const envelope = await loadVerifiedAuditReportEnvelope<
       StaticAuditReport | AgentAuditReport
-    >({ reportPath });
+    >({
+      beforeSourceValidation: args.beforeSourceValidation,
+      reportPath,
+    });
+    const report = envelope.report;
     if (report.mode === "static") {
       if (staticReport) {
         throw new Error("Only one exact static audit report may be supplied");
       }
       staticReport = report;
+      staticEnvelope =
+        envelope as VerifiedAuditReportEnvelope<StaticAuditReport>;
     } else {
       if (agentReport) {
         throw new Error("Only one exact agent audit report may be supplied");
@@ -422,21 +579,122 @@ export async function runAuditFix(args: {
   if (!parsed.yes) {
     throw new Error("audit fix mutation requires explicit --yes approval");
   }
-  throw new Error(AUDIT_FIX_MUTATION_DISABLED_MESSAGE);
+  if (source === "agent" || !staticReport || !staticEnvelope) {
+    throw new Error(
+      "Audit fix mutation requires an exact static report with remediation bindings"
+    );
+  }
+
+  const staticSelections = selectFixableFindings({
+    results: staticReport.results,
+    filters: parsed,
+  });
+  if (staticSelections.length === 0) {
+    throw new Error(
+      "No exact static finding authorizes the requested MCP mutation"
+    );
+  }
+  const bindings = exactStaticBindings({
+    envelope: staticEnvelope,
+    selections: staticSelections,
+  });
+  const firstBinding = bindings[0]!;
+  const currentRoot = normalize(
+    facultContextRootDir({
+      home: args.homeDir ?? homedir(),
+      cwd: args.cwd,
+    })
+  );
+  if (currentRoot !== firstBinding.canonicalRootPath) {
+    throw new Error(
+      "Current audit fix scope does not match the report-authorized canonical root"
+    );
+  }
+
+  const snapshot = staticEnvelope.receipt.sourceSnapshot;
+  const rootIdentity = snapshot.evaluatedDirectories.find(
+    (identity) => identity.path === firstBinding.canonicalRootPath
+  );
+  const mcpRoot = dirname(firstBinding.sourcePath);
+  const directoryIdentity = snapshot.evaluatedDirectories.find(
+    (identity) => identity.path === mcpRoot
+  );
+  const sourceIdentity = snapshot.evaluatedFiles.find(
+    (identity) => identity.path === firstBinding.sourcePath
+  );
+  const destinationIdentity =
+    snapshot.evaluatedFiles.find(
+      (identity) => identity.path === firstBinding.destinationPath
+    ) ?? null;
+  if (
+    !(rootIdentity && directoryIdentity && sourceIdentity) ||
+    mcpRoot !== join(firstBinding.canonicalRootPath, "mcp")
+  ) {
+    throw new Error("Audit remediation binding has incomplete object identity");
+  }
+
+  if (args.afterReportValidation) {
+    await args.afterReportValidation();
+  }
+  const bound = openBoundPrivateSubdirectory({
+    directoryIdentity,
+    directoryName: "mcp",
+    rootIdentity,
+    rootPath: firstBinding.canonicalRootPath,
+  });
+  try {
+    if (args.afterBoundOpen) {
+      await args.afterBoundOpen();
+    }
+    await validateAuditSourceSnapshot(snapshot);
+    await replaceBoundPrivateFilePairAt({
+      beforeSourceCommit: args.beforeSourceCommit,
+      destinationIdentity,
+      destinationName: basename(firstBinding.destinationPath),
+      directoryFd: bound.directoryFd,
+      directoryIdentity,
+      maxBytes: MAX_MCP_CONFIG_BYTES,
+      rootFd: bound.rootFd,
+      rootIdentity,
+      rootPath: firstBinding.canonicalRootPath,
+      sourceIdentity,
+      sourceName: basename(firstBinding.sourcePath),
+      transform: (sourceContents, destinationContents) =>
+        transformBoundMcpConfigs({
+          bindings,
+          destinationContents,
+          sourceContents,
+        }),
+    });
+  } finally {
+    closeSync(bound.directoryFd);
+    closeSync(bound.rootFd);
+  }
+
+  return {
+    fixed: bindings.length,
+    localPath: firstBinding.destinationPath,
+    matched: selections.length,
+    riskyManagedOutputs: [],
+    skipped: [],
+    source,
+    syncedTools: [],
+    trackedPath: firstBinding.sourcePath,
+  };
 }
 
 function printHelp() {
-  console.log(`fclt audit fix — inspect fixable audit findings
+  console.log(`fclt audit fix — remediate exact report-authorized findings
 
 Usage:
   fclt audit fix <item> --report <exact-report.json> --dry-run
-  fclt audit fix --item <item> --report <exact-report.json> [--path <path>] [--source <static|agent|combined>] --dry-run
-  fclt audit fix --all --report <exact-report.json> [--report <second-report.json>] [--source <static|agent|combined>] --dry-run
+  fclt audit fix --item <item> --report <exact-report.json> [--path <path>] [--source <static|agent|combined>] --yes
+  fclt audit fix --all --report <exact-report.json> [--report <second-report.json>] [--source <static|agent|combined>] --yes
 
 Notes:
   - Dry-run inspection remains available for exact persisted reports.
-  - Automated MCP mutation is temporarily disabled and --yes fails closed.
-  - Mutation remains disabled until exact source/destination objects stay descriptor-bound through commit.
+  - Mutation requires explicit --yes approval and an exact static remediation binding.
+  - Source and destination objects remain descriptor-bound and are revalidated at commit.
   - Requires a fresh, content-hashed report-and-receipt envelope created by --report-root.
   - Legacy static-latest.json and agent-latest.json files never authorize mutation.
 `);

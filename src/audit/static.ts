@@ -29,6 +29,7 @@ import { parseJsonLenient } from "../util/json";
 import {
   type AuditEvaluation,
   auditedRootsFromScan,
+  buildMcpRemediationBindings,
   parseReportRootFlag,
   persistAuditReport,
 } from "./report-persistence";
@@ -820,6 +821,11 @@ export async function evaluateStaticAudit(opts?: {
     auditedRoots.push(rulesPath, dirname(rulesPath));
   }
   await sourceTracker.protect(Array.from(new Set(auditedRoots)).sort());
+  const canonicalMcpRoot = join(canonicalRoot, "mcp");
+  await sourceTracker.capture(canonicalRoot);
+  await sourceTracker.capture(canonicalMcpRoot);
+  await sourceTracker.capture(join(canonicalMcpRoot, "servers.local.json"));
+  await sourceTracker.capture(join(canonicalMcpRoot, "mcp.local.json"));
   for (const source of res.sources) {
     for (const pathValue of [
       ...source.evidence,
@@ -1225,8 +1231,14 @@ export async function evaluateStaticAudit(opts?: {
   }
   const sourceSnapshot = sourceTracker.snapshot();
   await validateAuditSourceSnapshot(sourceSnapshot);
+  const remediationBindings = buildMcpRemediationBindings({
+    canonicalRootPath: canonicalRoot,
+    report,
+    sourceSnapshot,
+  });
   return {
     auditedRoots: Array.from(new Set(auditedRoots)).sort(),
+    remediationBindings,
     report,
     sourceSnapshot,
   };
@@ -1306,6 +1318,7 @@ export async function staticAuditCommand(argv: string[]) {
       reportPath = await persistAuditReport({
         auditedRoots: evaluation.auditedRoots,
         mode: "static",
+        remediationBindings: evaluation.remediationBindings,
         report: evaluation.report,
         reportRoot,
         sourceSnapshot: evaluation.sourceSnapshot,

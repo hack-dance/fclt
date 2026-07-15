@@ -17,7 +17,9 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  AUDIT_READ_ONLY_CAPABILITY,
   AUDIT_REPORT_MAX_ENVELOPE_BYTES,
+  AUDIT_REPORT_REVISION,
   auditReportRootPermissionsAreSafe,
   loadVerifiedAuditReport,
   persistAuditReport,
@@ -59,14 +61,35 @@ async function fixture() {
   ).toISOString();
   const report = { mode: "static" as const, results: [], timestamp };
   const reportContents = `${JSON.stringify(report, null, 2)}\n`;
+  const sourceSnapshot = tracker.snapshot();
+  const receipt = {
+    schemaVersion: 6,
+    capability: AUDIT_READ_ONLY_CAPABILITY,
+    reportRevision: AUDIT_REPORT_REVISION,
+    mode: "static",
+    persistedAt: timestamp,
+    reportTimestamp: timestamp,
+    reportSha256: createHash("sha256").update(reportContents).digest("hex"),
+    sourceIdentitySha256: createHash("sha256")
+      .update(stableJson(sourceSnapshot))
+      .digest("hex"),
+    sourceSnapshot,
+    findingIdentities: [],
+    remediationBindings: [],
+  } as const;
+  const envelopeContents = `${JSON.stringify(
+    { schemaVersion: 1, receipt, report },
+    null,
+    2
+  )}\n`;
   const reportFileName = `static-${createHash("sha256")
-    .update(reportContents)
+    .update(envelopeContents)
     .digest("hex")}.json`;
   return {
     evaluation: {
       auditedRoots: [sourceRoot],
       report,
-      sourceSnapshot: tracker.snapshot(),
+      sourceSnapshot,
     },
     reportFileName,
     sourceRoot,
@@ -472,8 +495,8 @@ describe("adversarial audit report persistence", () => {
       null,
       2
     ).replace(
-      '"receipt": {\n    "schemaVersion": 5,',
-      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 5,'
+      '"receipt": {\n    "schemaVersion": 6,',
+      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 6,'
     )}\n`;
     await writeFile(reportPath, duplicateReceiptKey);
     await chmod(reportPath, 0o600);

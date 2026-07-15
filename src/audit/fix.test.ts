@@ -1,24 +1,29 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   buildCompiledCliFixture,
   type CompiledCliFixture,
 } from "../../test/compiled-cli-fixture";
-import { LEGACY_MANAGED_MUTATION_ENV } from "../legacy-mutation-policy";
 import { saveManagedState } from "../manage";
-import { facultStateDir } from "../paths";
 import { runAuditFix } from "./fix";
 import { persistAuditReport } from "./report-persistence";
 import { evaluateStaticAudit } from "./static";
 
 const ORIGINAL_HOME = process.env.HOME;
-const ORIGINAL_LEGACY_MUTATION_ENV = process.env[LEGACY_MANAGED_MUTATION_ENV];
 let tempHome: string | null = null;
 let tempReportRoot: string | null = null;
 let evaluation: Awaited<ReturnType<typeof evaluateStaticAudit>> | null = null;
-let legacyPath: string | null = null;
 let managedHome: string | null = null;
 let managedReportPath: string | null = null;
 let managedReportRoot: string | null = null;
@@ -116,9 +121,47 @@ async function makeFixBase() {
       },
     },
   });
+}
 
-  legacyPath = join(facultStateDir(tempHome), "audit", "static-latest.json");
-  await writeJson(legacyPath, { legacy: true });
+async function makeAuthorizedFixture(marker = "fixture_secret_1234567890") {
+  const home = await makeTempHome();
+  const root = join(home, ".ai");
+  const trackedPath = join(root, "mcp", "servers.json");
+  const localPath = join(root, "mcp", "servers.local.json");
+  await writeJson(trackedPath, {
+    servers: {
+      github: {
+        command: "fixture-command",
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: marker },
+      },
+    },
+  });
+  const audit = await evaluateStaticAudit({
+    argv: [],
+    cwd: home,
+    from: [root],
+    homeDir: home,
+    includeConfigFrom: false,
+    minSeverity: "high",
+  });
+  const reportRoot = await mkdtemp(join(tmpdir(), "fclt-audit-fix-exact-"));
+  const exactReportPath = await persistAuditReport({
+    ...audit,
+    mode: "static",
+    reportRoot,
+  });
+  return {
+    cleanup: async () => {
+      await rm(home, { force: true, recursive: true });
+      await rm(reportRoot, { force: true, recursive: true });
+    },
+    exactReportPath,
+    home,
+    localPath,
+    reportRoot,
+    root,
+    trackedPath,
+  };
 }
 
 beforeAll(async () => {
@@ -201,11 +244,9 @@ afterAll(async () => {
   managedReportPath = null;
   managedRoot = null;
   evaluation = null;
-  legacyPath = null;
   reportPath = null;
   rootDir = null;
   process.env.HOME = ORIGINAL_HOME;
-  process.env[LEGACY_MANAGED_MUTATION_ENV] = ORIGINAL_LEGACY_MUTATION_ENV;
 });
 
 afterAll(async () => {
@@ -230,22 +271,20 @@ describe("audit fix", () => {
     expect(await Bun.file(reportPath!).exists()).toBe(true);
   });
 
-  it("fails closed before deprecated managed-output sync", async () => {
-    process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
+  it("remediates only canonical MCP files and preserves managed tool bytes", async () => {
     const managedToolPath = join(managedHome!, ".codex", "mcp.json");
     const managedToolBefore = await Bun.file(managedToolPath).text();
 
-    await expect(
-      runAuditFix({
-        argv: ["mcp:github", "--report", managedReportPath!, "--yes"],
-        cwd: managedHome!,
-        homeDir: managedHome!,
-      })
-    ).rejects.toThrow("audit fix mutation is temporarily disabled");
+    const result = await runAuditFix({
+      argv: ["mcp:github", "--report", managedReportPath!, "--yes"],
+      cwd: managedHome!,
+      homeDir: managedHome!,
+    });
+    expect(result.fixed).toBe(1);
     expect(await Bun.file(managedToolPath).text()).toBe(managedToolBefore);
     expect(
       await Bun.file(join(managedRoot!, "mcp", "servers.local.json")).exists()
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("reports exact matches in dry-run mode without changing MCP state", async () => {
@@ -264,23 +303,81 @@ describe("audit fix", () => {
     expect(await Bun.file(localPath).exists()).toBe(false);
   });
 
-  it("disables inline MCP mutation with zero writes", async () => {
-    process.env[LEGACY_MANAGED_MUTATION_ENV] = undefined;
-    const trackedPath = join(rootDir!, "mcp", "servers.json");
-    const localPath = join(rootDir!, "mcp", "servers.local.json");
-    const trackedBefore = await Bun.file(trackedPath).text();
+  it("rejects a receipt binding that does not match its exact finding", async () => {
+    const fixture = await makeAuthorizedFixture();
+    try {
+      const envelope = (await Bun.file(fixture.exactReportPath).json()) as {
+        receipt: {
+          remediationBindings: Array<{ envKey: string }>;
+        };
+      };
+      const binding = envelope.receipt.remediationBindings[0];
+      expect(binding).toBeDefined();
+      if (!binding) {
+        throw new Error("Expected an exact remediation binding fixture");
+      }
+      binding.envKey = "DIFFERENT_TOKEN";
+      await Bun.write(
+        fixture.exactReportPath,
+        `${JSON.stringify(envelope, null, 2)}\n`
+      );
+      await chmod(fixture.exactReportPath, 0o600);
+      await expect(
+        runAuditFix({
+          argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+          cwd: fixture.home,
+          homeDir: fixture.home,
+        })
+      ).rejects.toThrow("do not match the report");
+      expect(await Bun.file(fixture.localPath).exists()).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 
-    await expect(
-      runAuditFix({
-        argv: ["mcp:github", "--report", reportPath!, "--yes"],
-        cwd: tempHome!,
-        homeDir: tempHome!,
-      })
-    ).rejects.toThrow("audit fix mutation is temporarily disabled");
-
-    expect(await Bun.file(trackedPath).text()).toBe(trackedBefore);
-    expect(await Bun.file(localPath).exists()).toBe(false);
-    expect(await Bun.file(legacyPath!).json()).toEqual({ legacy: true });
+  it("moves the exact secret, preserves reports, and leaves a clean future audit", async () => {
+    const fixture = await makeAuthorizedFixture();
+    try {
+      const reportBefore = await readFile(fixture.exactReportPath, "utf8");
+      const result = await runAuditFix({
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect(result.fixed).toBe(1);
+      expect(result.trackedPath).toBe(fixture.trackedPath);
+      expect(result.localPath).toBe(fixture.localPath);
+      expect(await Bun.file(fixture.trackedPath).json()).toEqual({
+        servers: { github: { command: "fixture-command" } },
+      });
+      expect(await Bun.file(fixture.localPath).json()).toEqual({
+        servers: {
+          github: {
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+            },
+          },
+        },
+      });
+      expect(await readFile(fixture.exactReportPath, "utf8")).toBe(
+        reportBefore
+      );
+      const future = await evaluateStaticAudit({
+        argv: [],
+        cwd: fixture.home,
+        from: [fixture.root],
+        homeDir: fixture.home,
+        includeConfigFrom: false,
+        minSeverity: "high",
+      });
+      expect(
+        future.report.results.flatMap((entry) => entry.findings)
+      ).not.toContainEqual(
+        expect.objectContaining({ ruleId: "mcp-env-inline-secret" })
+      );
+    } finally {
+      await fixture.cleanup();
+    }
   });
 
   it("keeps the CLI dry-run path zero-write", async () => {
@@ -300,11 +397,10 @@ describe("audit fix", () => {
     expect(await Bun.file(localPath).exists()).toBe(false);
   });
 
-  it("makes the CLI --yes path reject before any MCP or tool write", async () => {
+  it("rejects replay of a report after its authorized source changed", async () => {
     const trackedPath = join(managedRoot!, "mcp", "servers.json");
     const localPath = join(managedRoot!, "mcp", "servers.local.json");
     const managedToolPath = join(managedHome!, ".codex", "mcp.json");
-    const trackedBefore = await Bun.file(trackedPath).text();
     const managedToolBefore = await Bun.file(managedToolPath).text();
     const result = await runFixCli(
       ["mcp:github", "--report", managedReportPath!, "--yes"],
@@ -313,11 +409,8 @@ describe("audit fix", () => {
     );
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain(
-      "audit fix mutation is temporarily disabled"
-    );
-    expect(await Bun.file(trackedPath).text()).toBe(trackedBefore);
-    expect(await Bun.file(localPath).exists()).toBe(false);
+    expect(result.stderr).toContain("Audit evaluated context changed");
+    expect(await Bun.file(localPath).exists()).toBe(true);
     expect(await Bun.file(managedToolPath).text()).toBe(managedToolBefore);
   });
 
@@ -366,7 +459,7 @@ describe("audit fix", () => {
           cwd: targetHome,
           homeDir: targetHome,
         })
-      ).rejects.toThrow("audit fix mutation is temporarily disabled");
+      ).rejects.toThrow("does not match the report-authorized canonical root");
       expect(await Bun.file(targetTrackedPath).text()).toBe(targetBefore);
       expect(
         await Bun.file(join(targetRoot, "mcp", "servers.local.json")).exists()
@@ -382,25 +475,27 @@ describe("audit fix", () => {
     const trackedPath = join(rootDir!, "mcp", "servers.json");
     const original = await Bun.file(trackedPath).text();
     try {
-      await writeJson(trackedPath, {
-        servers: {
-          github: {
-            command: "drifted-command",
-            env: {
-              GITHUB_PERSONAL_ACCESS_TOKEN: "drifted_fixture_value_1234567890",
-            },
-          },
-        },
-      });
-      const drifted = await Bun.file(trackedPath).text();
-
       await expect(
         runAuditFix({
           argv: ["mcp:github", "--report", reportPath!, "--yes"],
+          beforeSourceValidation: async () => {
+            await writeJson(trackedPath, {
+              servers: {
+                github: {
+                  command: "drifted-command",
+                  env: {
+                    GITHUB_PERSONAL_ACCESS_TOKEN:
+                      "drifted_fixture_value_1234567890",
+                  },
+                },
+              },
+            });
+          },
           cwd: tempHome!,
           homeDir: tempHome!,
         })
       ).rejects.toThrow("Audit evaluated context changed");
+      const drifted = await Bun.file(trackedPath).text();
 
       expect(await Bun.file(trackedPath).text()).toBe(drifted);
       expect(
@@ -408,6 +503,164 @@ describe("audit fix", () => {
       ).toBe(false);
     } finally {
       await Bun.write(trackedPath, original);
+    }
+  });
+
+  it("does not rewrite an unchanged replacement at the before-open seam", async () => {
+    const fixture = await makeAuthorizedFixture();
+    const movedPath = `${fixture.trackedPath}.moved`;
+    try {
+      const replacement = `${JSON.stringify(
+        {
+          servers: {
+            github: {
+              command: "replacement-command",
+              env: {
+                GITHUB_PERSONAL_ACCESS_TOKEN: "replacement_secret_1234567890",
+              },
+            },
+          },
+        },
+        null,
+        2
+      )}\n`;
+      await expect(
+        runAuditFix({
+          afterReportValidation: async () => {
+            await rename(fixture.trackedPath, movedPath);
+            await Bun.write(fixture.trackedPath, replacement);
+          },
+          argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+          cwd: fixture.home,
+          homeDir: fixture.home,
+        })
+      ).rejects.toThrow();
+      expect(await Bun.file(fixture.trackedPath).text()).toBe(replacement);
+      expect(await Bun.file(fixture.localPath).exists()).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("fails closed on an ancestor swap after the directory is bound", async () => {
+    const fixture = await makeAuthorizedFixture();
+    const mcpRoot = join(fixture.root, "mcp");
+    const movedRoot = join(fixture.root, "mcp.moved");
+    try {
+      await expect(
+        runAuditFix({
+          afterBoundOpen: async () => {
+            await rename(mcpRoot, movedRoot);
+            await writeJson(join(mcpRoot, "servers.json"), {
+              servers: {
+                github: {
+                  command: "replacement-command",
+                  env: {
+                    GITHUB_PERSONAL_ACCESS_TOKEN:
+                      "replacement_secret_1234567890",
+                  },
+                },
+              },
+            });
+          },
+          argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+          cwd: fixture.home,
+          homeDir: fixture.home,
+        })
+      ).rejects.toThrow();
+      expect(await Bun.file(join(mcpRoot, "servers.json")).json()).toEqual(
+        expect.objectContaining({
+          servers: expect.objectContaining({
+            github: expect.objectContaining({
+              command: "replacement-command",
+            }),
+          }),
+        })
+      );
+      expect(
+        await Bun.file(join(movedRoot, "servers.local.json")).exists()
+      ).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("rolls back the destination when the final source commit is interrupted", async () => {
+    const fixture = await makeAuthorizedFixture();
+    try {
+      const trackedBefore = await Bun.file(fixture.trackedPath).text();
+      await expect(
+        runAuditFix({
+          argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+          beforeSourceCommit: () => {
+            throw new Error("injected final commit interruption");
+          },
+          cwd: fixture.home,
+          homeDir: fixture.home,
+        })
+      ).rejects.toThrow("injected final commit interruption");
+      expect(await Bun.file(fixture.trackedPath).text()).toBe(trackedBefore);
+      expect(await Bun.file(fixture.localPath).exists()).toBe(false);
+      expect(
+        (await readdir(join(fixture.root, "mcp"))).some((name) =>
+          name.endsWith(".tmp")
+        )
+      ).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("fails closed on source permission drift after bound open", async () => {
+    const fixture = await makeAuthorizedFixture();
+    try {
+      const trackedBefore = await Bun.file(fixture.trackedPath).text();
+      await expect(
+        runAuditFix({
+          afterBoundOpen: async () => {
+            await chmod(fixture.trackedPath, 0o666);
+          },
+          argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+          cwd: fixture.home,
+          homeDir: fixture.home,
+        })
+      ).rejects.toThrow();
+      expect(await Bun.file(fixture.trackedPath).text()).toBe(trackedBefore);
+      expect(await Bun.file(fixture.localPath).exists()).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("fails closed without blocking when a FIFO replaces the bound source", async () => {
+    const fixture = await makeAuthorizedFixture();
+    const movedPath = `${fixture.trackedPath}.moved`;
+    try {
+      const attempt = runAuditFix({
+        afterReportValidation: async () => {
+          await rename(fixture.trackedPath, movedPath);
+          const proc = Bun.spawn(["mkfifo", fixture.trackedPath], {
+            stderr: "pipe",
+            stdout: "pipe",
+          });
+          expect(await proc.exited).toBe(0);
+        },
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      await expect(
+        Promise.race([
+          attempt,
+          Bun.sleep(1000).then(() => {
+            throw new Error("audit fix blocked on FIFO replacement");
+          }),
+        ])
+      ).rejects.toThrow();
+      expect((await lstat(fixture.trackedPath)).isFIFO()).toBe(true);
+      expect(await Bun.file(fixture.localPath).exists()).toBe(false);
+    } finally {
+      await fixture.cleanup();
     }
   });
 });
