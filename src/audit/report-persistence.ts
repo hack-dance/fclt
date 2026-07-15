@@ -101,6 +101,23 @@ interface PersistedAuditEnvelope {
   report: unknown;
 }
 
+export interface VerifiedAuditReportEnvelope<TReport> {
+  receipt: AuditReportReceipt;
+  report: TReport;
+}
+
+export interface LoadVerifiedAuditReportArgs {
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeEnvelopeReadChunk?: (bytesRead: number) => Promise<void>;
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeEnvelopeReturn?: () => Promise<void>;
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeSourceValidation?: () => Promise<void>;
+  expectedMode?: AuditReportMode;
+  now?: number;
+  reportPath: string;
+}
+
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -742,23 +759,15 @@ function canonicalEnvelopeContents(envelope: PersistedAuditEnvelope): string {
   return `${JSON.stringify(canonical, null, 2)}\n`;
 }
 
-export async function loadVerifiedAuditReport<
+export async function loadVerifiedAuditReportEnvelope<
   TReport extends {
     mode: AuditReportMode;
     timestamp: string;
     results: AuditItemResult[];
   },
->(args: {
-  /** @internal Adversarial test hook; production callers must not set this. */
-  beforeEnvelopeReadChunk?: (bytesRead: number) => Promise<void>;
-  /** @internal Adversarial test hook; production callers must not set this. */
-  beforeEnvelopeReturn?: () => Promise<void>;
-  /** @internal Adversarial test hook; production callers must not set this. */
-  beforeSourceValidation?: () => Promise<void>;
-  expectedMode?: AuditReportMode;
-  now?: number;
-  reportPath: string;
-}): Promise<TReport> {
+>(
+  args: LoadVerifiedAuditReportArgs
+): Promise<VerifiedAuditReportEnvelope<TReport>> {
   if (!isAbsolute(args.reportPath) || hasTraversalSegment(args.reportPath)) {
     throw new Error(
       "--report requires an exact absolute path without traversal segments"
@@ -927,11 +936,21 @@ export async function loadVerifiedAuditReport<
       receipt.sourceSnapshot,
       reportDirectory.canonicalPath
     );
-    return report;
+    return { receipt, report };
   } finally {
     if (reportFd >= 0) {
       closeSync(reportFd);
     }
     await reportDirectory.handle.close().catch(() => undefined);
   }
+}
+
+export async function loadVerifiedAuditReport<
+  TReport extends {
+    mode: AuditReportMode;
+    timestamp: string;
+    results: AuditItemResult[];
+  },
+>(args: LoadVerifiedAuditReportArgs): Promise<TReport> {
+  return (await loadVerifiedAuditReportEnvelope<TReport>(args)).report;
 }

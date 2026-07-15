@@ -113,6 +113,36 @@ test("Windows provenance binds directories without POSIX directory descriptors",
   ).resolves.toBeUndefined();
 });
 
+test("POSIX directory reads enumerate the opened descriptor during pathname swaps", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "fclt-provenance-dir-swap-"));
+  const requestedContainer = join(parent, "requested-container");
+  const movedContainer = join(parent, "moved-container");
+  const replacementContainer = join(parent, "replacement-container");
+  const requested = join(requestedContainer, "nested");
+  const replacement = join(replacementContainer, "nested");
+  await mkdir(requested, { recursive: true });
+  await mkdir(replacement, { recursive: true });
+  await writeFile(join(requested, "original.txt"), "original\n");
+  await writeFile(join(replacement, "replacement.txt"), "replacement\n");
+
+  const tracker = new AuditSourceTracker({
+    afterDirectoryOpen: async () => {
+      await rename(requestedContainer, movedContainer);
+      await rename(replacementContainer, requestedContainer);
+    },
+    afterDirectoryEnumeration: async () => {
+      await rename(requestedContainer, replacementContainer);
+      await rename(movedContainer, requestedContainer);
+    },
+  });
+
+  const entries = await tracker.readDirectory(requested);
+  expect(entries?.map((entry) => entry.name)).toEqual(["original.txt"]);
+  await expect(
+    validateAuditSourceSnapshot(tracker.snapshot())
+  ).resolves.toBeUndefined();
+});
+
 test("bounded provenance rejects large, sparse, growing, symlink, and special inputs", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-provenance-bounds-"));
   const large = join(root, "large.bin");

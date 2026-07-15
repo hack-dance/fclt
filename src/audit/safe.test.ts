@@ -2,14 +2,20 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { facultStateDir } from "../paths";
 import type { AgentAuditReport } from "./agent";
 import { persistAuditReport } from "./report-persistence";
 import { auditSafeCommand, runAuditSafe } from "./safe";
-import { captureAuditSourceSnapshot } from "./source-provenance";
+import {
+  AuditSourceTracker,
+  captureAuditSourceSnapshot,
+} from "./source-provenance";
 import { loadAuditSuppressions } from "./suppressions";
 import type { StaticAuditReport } from "./types";
 
 const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_FACULT_ROOT_DIR = process.env.FACULT_ROOT_DIR;
+const ORIGINAL_FACULT_ROOT_SCOPE = process.env.FACULT_ROOT_SCOPE;
 let tempHome: string | null = null;
 
 async function makeTempHome(): Promise<string> {
@@ -27,6 +33,7 @@ async function writeExactReports(args: {
   homeDir: string;
   staticReport?: StaticAuditReport;
   agentReport?: AgentAuditReport;
+  suppressionStorePath?: string;
 }): Promise<string[]> {
   const reportRoot = join(
     tmpdir(),
@@ -34,9 +41,13 @@ async function writeExactReports(args: {
   );
   await mkdir(reportRoot);
   const paths: string[] = [];
-  const sourceSnapshot = await captureAuditSourceSnapshot({
-    protectedRoots: [args.homeDir],
-  });
+  const suppressionStorePath =
+    args.suppressionStorePath ??
+    join(facultStateDir(args.homeDir), "audit", "suppressions.json");
+  const tracker = new AuditSourceTracker();
+  await tracker.protect([args.homeDir]);
+  await tracker.capture(suppressionStorePath);
+  const sourceSnapshot = tracker.snapshot();
   if (args.staticReport) {
     args.staticReport.timestamp = new Date().toISOString();
     paths.push(
@@ -71,6 +82,16 @@ afterEach(async () => {
   }
   tempHome = null;
   process.env.HOME = ORIGINAL_HOME;
+  if (ORIGINAL_FACULT_ROOT_DIR === undefined) {
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_DIR");
+  } else {
+    process.env.FACULT_ROOT_DIR = ORIGINAL_FACULT_ROOT_DIR;
+  }
+  if (ORIGINAL_FACULT_ROOT_SCOPE === undefined) {
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_SCOPE");
+  } else {
+    process.env.FACULT_ROOT_SCOPE = ORIGINAL_FACULT_ROOT_SCOPE;
+  }
 });
 
 describe("audit safe", () => {
@@ -282,6 +303,101 @@ describe("audit safe", () => {
 
     expect(result.source).toBe("combined");
     expect(result.matched).toBe(1);
+  });
+
+  it("writes suppressions to the exact scoped store bound by the report", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const projectRoot = join(tempHome, "project", ".ai");
+    const defaultStorePath = join(
+      tempHome,
+      ".ai",
+      ".facult",
+      "audit",
+      "suppressions.json"
+    );
+    await mkdir(projectRoot, { recursive: true });
+    process.env.FACULT_ROOT_DIR = projectRoot;
+    process.env.FACULT_ROOT_SCOPE = "project";
+    const scopedStorePath = join(
+      facultStateDir(tempHome, projectRoot),
+      "audit",
+      "suppressions.json"
+    );
+    const [reportPath] = await writeExactReports({
+      homeDir: tempHome,
+      suppressionStorePath: scopedStorePath,
+      staticReport: {
+        timestamp: "2026-03-26T17:00:00.000Z",
+        mode: "static",
+        results: [
+          {
+            item: "alpha",
+            type: "skill",
+            path: "/tmp/alpha",
+            passed: false,
+            findings: [
+              {
+                severity: "medium",
+                ruleId: "non-https-url",
+                message: "Safe in local dev",
+              },
+            ],
+          },
+        ],
+        summary: {
+          totalItems: 1,
+          totalFindings: 1,
+          flaggedItems: 1,
+          bySeverity: { critical: 0, high: 0, medium: 1, low: 0 },
+        },
+      },
+    });
+
+    process.env.FACULT_ROOT_DIR = join(tempHome, "other", ".ai");
+    process.env.FACULT_ROOT_SCOPE = "global";
+    await expect(
+      runAuditSafe({
+        argv: ["alpha", "--report", reportPath!, "--yes"],
+        homeDir: tempHome,
+      })
+    ).rejects.toThrow("does not match the active audit scope");
+    expect(
+      await loadAuditSuppressions(
+        tempHome,
+        undefined,
+        undefined,
+        undefined,
+        scopedStorePath
+      )
+    ).toHaveLength(0);
+
+    process.env.FACULT_ROOT_DIR = projectRoot;
+    process.env.FACULT_ROOT_SCOPE = "project";
+    const result = await runAuditSafe({
+      argv: ["alpha", "--report", reportPath!, "--yes"],
+      homeDir: tempHome,
+    });
+
+    expect(result.added).toBe(1);
+    expect(
+      await loadAuditSuppressions(
+        tempHome,
+        undefined,
+        undefined,
+        undefined,
+        scopedStorePath
+      )
+    ).toHaveLength(1);
+    expect(
+      await loadAuditSuppressions(
+        tempHome,
+        undefined,
+        undefined,
+        undefined,
+        defaultStorePath
+      )
+    ).toHaveLength(0);
   });
 
   it("supports a direct non-interactive audit safe command", async () => {

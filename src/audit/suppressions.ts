@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { type FacultConfig, facultStateDir } from "../paths";
 import type { AgentAuditReport } from "./agent";
 import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
@@ -67,6 +67,22 @@ function suppressionsPath(
   );
 }
 
+function exactSuppressionStorePath(args: {
+  config?: FacultConfig | null;
+  homeDir: string;
+  rootDir?: string;
+  storePath?: string;
+}): string {
+  const path =
+    args.storePath ?? suppressionsPath(args.homeDir, args.rootDir, args.config);
+  if (!isAbsolute(path) || normalize(resolve(path)) !== path) {
+    throw new Error(
+      "Audit suppression store path must be canonical and absolute"
+    );
+  }
+  return path;
+}
+
 export function createAuditSuppressionEntry(args: {
   result: AuditItemResult;
   finding: AuditFinding;
@@ -99,9 +115,15 @@ async function loadAuditSuppressionStore(
   homeDir: string,
   readOptionalText?: (path: string) => Promise<string | null>,
   rootDir?: string,
-  config?: FacultConfig | null
+  config?: FacultConfig | null,
+  storePath?: string
 ): Promise<AuditSuppressionStore> {
-  const path = suppressionsPath(homeDir, rootDir, config);
+  const path = exactSuppressionStorePath({
+    config,
+    homeDir,
+    rootDir,
+    storePath,
+  });
   const text = readOptionalText
     ? await readOptionalText(path)
     : (await Bun.file(path).exists())
@@ -142,10 +164,20 @@ async function loadAuditSuppressionStore(
 
 async function writeAuditSuppressionStore(
   homeDir: string,
-  store: AuditSuppressionStore
+  store: AuditSuppressionStore,
+  options?: {
+    config?: FacultConfig | null;
+    rootDir?: string;
+    storePath?: string;
+  }
 ) {
-  const path = suppressionsPath(homeDir);
-  await mkdir(join(facultStateDir(homeDir), "audit"), { recursive: true });
+  const path = exactSuppressionStorePath({
+    config: options?.config,
+    homeDir,
+    rootDir: options?.rootDir,
+    storePath: options?.storePath,
+  });
+  await mkdir(dirname(path), { recursive: true });
   await Bun.write(path, `${JSON.stringify(store, null, 2)}\n`);
 }
 
@@ -153,10 +185,17 @@ export async function loadAuditSuppressions(
   homeDir = homedir(),
   readOptionalText?: (path: string) => Promise<string | null>,
   rootDir?: string,
-  config?: FacultConfig | null
+  config?: FacultConfig | null,
+  storePath?: string
 ): Promise<AuditSuppressionEntry[]> {
   return (
-    await loadAuditSuppressionStore(homeDir, readOptionalText, rootDir, config)
+    await loadAuditSuppressionStore(
+      homeDir,
+      readOptionalText,
+      rootDir,
+      config,
+      storePath
+    )
   ).entries;
 }
 
@@ -164,9 +203,16 @@ export async function recordAuditSuppressions(args: {
   selected: { result: AuditItemResult; finding: AuditFinding }[];
   homeDir?: string;
   note?: string;
+  storePath?: string;
 }): Promise<{ added: number; total: number }> {
   const homeDir = args.homeDir ?? homedir();
-  const store = await loadAuditSuppressionStore(homeDir);
+  const store = await loadAuditSuppressionStore(
+    homeDir,
+    undefined,
+    undefined,
+    undefined,
+    args.storePath
+  );
   const next = new Map(store.entries.map((entry) => [entry.key, entry]));
   const createdAt = new Date().toISOString();
 
@@ -181,11 +227,15 @@ export async function recordAuditSuppressions(args: {
   }
 
   const entries = [...next.values()].sort((a, b) => a.key.localeCompare(b.key));
-  await writeAuditSuppressionStore(homeDir, {
-    version: 1,
-    updatedAt: createdAt,
-    entries,
-  });
+  await writeAuditSuppressionStore(
+    homeDir,
+    {
+      version: 1,
+      updatedAt: createdAt,
+      entries,
+    },
+    { storePath: args.storePath }
+  );
 
   return {
     added: Math.max(0, entries.length - store.entries.length),

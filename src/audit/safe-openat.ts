@@ -1,6 +1,207 @@
-import { dlopen, FFIType, ptr } from "bun:ffi";
+import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from "bun:ffi";
 import { randomUUID } from "node:crypto";
-import { constants, fstatSync } from "node:fs";
+import { constants, type Dirent, fstatSync } from "node:fs";
+
+const DIRECTORY_ENTRY_TYPES = {
+  blockDevice: 6,
+  characterDevice: 2,
+  directory: 4,
+  fifo: 1,
+  file: 8,
+  socket: 12,
+  symlink: 10,
+} as const;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+function directoryEntry(args: { name: string; type: number }): Dirent {
+  const isType = (type: number): boolean => args.type === type;
+  return {
+    isBlockDevice: () => isType(DIRECTORY_ENTRY_TYPES.blockDevice),
+    isCharacterDevice: () => isType(DIRECTORY_ENTRY_TYPES.characterDevice),
+    isDirectory: () => isType(DIRECTORY_ENTRY_TYPES.directory),
+    isFIFO: () => isType(DIRECTORY_ENTRY_TYPES.fifo),
+    isFile: () => isType(DIRECTORY_ENTRY_TYPES.file),
+    isSocket: () => isType(DIRECTORY_ENTRY_TYPES.socket),
+    isSymbolicLink: () => isType(DIRECTORY_ENTRY_TYPES.symlink),
+    name: args.name,
+    parentPath: "",
+  };
+}
+
+interface DirectoryStreamLibrary {
+  close: () => void;
+  closeFileDescriptor: (fileDescriptor: number) => number;
+  closedir: (directory: Pointer) => number;
+  dup: (fileDescriptor: number) => number;
+  errnoPointer: () => Pointer;
+  fdopendir: (fileDescriptor: number) => Pointer | null;
+  readdir: (directory: Pointer) => Pointer | null;
+  rewinddir: (directory: Pointer) => void;
+}
+
+function directoryStreamLibrary(): DirectoryStreamLibrary {
+  const commonSymbols = {
+    close: { args: [FFIType.i32], returns: FFIType.i32 },
+    closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
+    dup: { args: [FFIType.i32], returns: FFIType.i32 },
+    fdopendir: { args: [FFIType.i32], returns: FFIType.ptr },
+    readdir: { args: [FFIType.ptr], returns: FFIType.ptr },
+    rewinddir: { args: [FFIType.ptr], returns: FFIType.void },
+  } as const;
+  if (process.platform === "darwin") {
+    const libc = dlopen("/usr/lib/libSystem.B.dylib", {
+      ...commonSymbols,
+      __error: { args: [], returns: FFIType.ptr },
+    });
+    return {
+      close: () => libc.close(),
+      closeFileDescriptor: (fileDescriptor) =>
+        libc.symbols.close(fileDescriptor),
+      closedir: (directory) => libc.symbols.closedir(directory),
+      dup: (fileDescriptor) => libc.symbols.dup(fileDescriptor),
+      errnoPointer: () => libc.symbols.__error()!,
+      fdopendir: (fileDescriptor) => libc.symbols.fdopendir(fileDescriptor),
+      readdir: (directory) => libc.symbols.readdir(directory),
+      rewinddir: (directory) => libc.symbols.rewinddir(directory),
+    };
+  }
+  if (process.platform === "linux") {
+    const libc = dlopen("libc.so.6", {
+      ...commonSymbols,
+      __errno_location: { args: [], returns: FFIType.ptr },
+    });
+    return {
+      close: () => libc.close(),
+      closeFileDescriptor: (fileDescriptor) =>
+        libc.symbols.close(fileDescriptor),
+      closedir: (directory) => libc.symbols.closedir(directory),
+      dup: (fileDescriptor) => libc.symbols.dup(fileDescriptor),
+      errnoPointer: () => libc.symbols.__errno_location()!,
+      fdopendir: (fileDescriptor) => libc.symbols.fdopendir(fileDescriptor),
+      readdir: (directory) => libc.symbols.readdir(directory),
+      rewinddir: (directory) => libc.symbols.rewinddir(directory),
+    };
+  }
+  throw new Error(
+    `Descriptor-bound directory enumeration is unavailable on ${process.platform}`
+  );
+}
+
+function directoryEntryLayout(): {
+  nameLengthOffset: number | null;
+  nameOffset: number;
+  recordLengthOffset: number;
+  typeOffset: number;
+} {
+  return process.platform === "darwin"
+    ? {
+        nameLengthOffset: 18,
+        nameOffset: 21,
+        recordLengthOffset: 16,
+        typeOffset: 20,
+      }
+    : {
+        nameLengthOffset: null,
+        nameOffset: 19,
+        recordLengthOffset: 16,
+        typeOffset: 18,
+      };
+}
+
+export function readDirectoryEntriesAt(args: {
+  directoryFd: number;
+  maxEntries: number;
+}): Dirent[] {
+  const libc = directoryStreamLibrary();
+  const duplicatedFd = libc.dup(args.directoryFd);
+  if (duplicatedFd < 0) {
+    libc.close();
+    throw new Error("Descriptor-bound directory duplication failed closed");
+  }
+  const directory = libc.fdopendir(duplicatedFd);
+  if (!directory) {
+    libc.closeFileDescriptor(duplicatedFd);
+    libc.close();
+    throw new Error("Descriptor-bound directory open failed closed");
+  }
+  const errno = new DataView(toArrayBuffer(libc.errnoPointer(), 0, 4));
+  const layout = directoryEntryLayout();
+  const entries: Dirent[] = [];
+  let failure: unknown;
+  let closeResult = 0;
+  try {
+    while (true) {
+      errno.setInt32(0, 0, true);
+      const entryPointer = libc.readdir(directory);
+      if (!entryPointer) {
+        if (errno.getInt32(0, true) !== 0) {
+          throw new Error("Descriptor-bound directory read failed closed");
+        }
+        break;
+      }
+      const header = new DataView(
+        toArrayBuffer(entryPointer, 0, layout.nameOffset)
+      );
+      const recordLength = header.getUint16(layout.recordLengthOffset, true);
+      const maxNameLength = recordLength - layout.nameOffset;
+      const nameLength =
+        layout.nameLengthOffset === null
+          ? maxNameLength
+          : header.getUint16(layout.nameLengthOffset, true);
+      if (
+        recordLength <= layout.nameOffset ||
+        nameLength <= 0 ||
+        nameLength > maxNameLength
+      ) {
+        throw new Error("Descriptor-bound directory entry is malformed");
+      }
+      const nameBytes = new Uint8Array(
+        toArrayBuffer(entryPointer, layout.nameOffset, nameLength)
+      );
+      const terminatorIndex = nameBytes.indexOf(0);
+      const exactNameBytes =
+        terminatorIndex < 0
+          ? nameBytes
+          : nameBytes.subarray(0, terminatorIndex);
+      if (exactNameBytes.length === 0) {
+        throw new Error("Descriptor-bound directory entry has an empty name");
+      }
+      let name: string;
+      try {
+        name = UTF8_DECODER.decode(exactNameBytes);
+      } catch {
+        throw new Error("Descriptor-bound directory entry name is not UTF-8");
+      }
+      if (name === "." || name === "..") {
+        continue;
+      }
+      if (entries.length >= args.maxEntries) {
+        throw new Error("Audit discovery tree exceeds entry limit");
+      }
+      entries.push(
+        directoryEntry({
+          name,
+          type: header.getUint8(layout.typeOffset),
+        })
+      );
+    }
+  } catch (error) {
+    failure = error;
+  } finally {
+    libc.rewinddir(directory);
+    closeResult = libc.closedir(directory);
+    libc.close();
+  }
+  if (failure !== undefined) {
+    throw failure;
+  }
+  if (closeResult !== 0) {
+    throw new Error("Descriptor-bound directory close failed closed");
+  }
+  return entries.sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+  );
+}
 
 function permissionBits(mode: number): number {
   return mode % 0o1000;

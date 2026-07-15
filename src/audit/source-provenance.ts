@@ -12,6 +12,7 @@ import {
   sep,
 } from "node:path";
 import { getGitPathExposure } from "../util/git";
+import { readDirectoryEntriesAt } from "./safe-openat";
 
 const SHA256_RE = /^[a-f0-9]{64}$/;
 const NON_NEGATIVE_DECIMAL_RE = /^(?:0|[1-9]\d*)$/;
@@ -865,6 +866,12 @@ export class AuditSourceTracker {
 
   readonly #beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
 
+  readonly #afterDirectoryOpen?: (args: { path: string }) => Promise<void>;
+
+  readonly #afterDirectoryEnumeration?: (args: {
+    path: string;
+  }) => Promise<void>;
+
   readonly #beforeFileOpen?: (args: { path: string }) => Promise<void>;
 
   readonly #beforeReadChunk?: (args: {
@@ -876,6 +883,8 @@ export class AuditSourceTracker {
     beforeAbsentProof?: (args: { path: string }) => Promise<void>;
     beforeDerivedContextEvaluation?: (args: { path: string }) => Promise<void>;
     beforeDirectoryRead?: (args: { path: string }) => Promise<void>;
+    afterDirectoryOpen?: (args: { path: string }) => Promise<void>;
+    afterDirectoryEnumeration?: (args: { path: string }) => Promise<void>;
     beforeFileOpen?: (args: { path: string }) => Promise<void>;
     beforeReadChunk?: (args: {
       bytesRead: number;
@@ -887,6 +896,8 @@ export class AuditSourceTracker {
     this.#beforeDerivedContextEvaluation =
       options?.beforeDerivedContextEvaluation;
     this.#beforeDirectoryRead = options?.beforeDirectoryRead;
+    this.#afterDirectoryOpen = options?.afterDirectoryOpen;
+    this.#afterDirectoryEnumeration = options?.afterDirectoryEnumeration;
     this.#beforeFileOpen = options?.beforeFileOpen;
     this.#beforeReadChunk = options?.beforeReadChunk;
     this.#platform = options?.platform ?? process.platform;
@@ -1209,7 +1220,16 @@ export class AuditSourceTracker {
             `Audit directory changed while it was opened: ${requested}`
           );
         }
-        entries = await readBoundedDirectoryEntries(requested, maxEntries);
+        await this.#afterDirectoryOpen?.({ path: canonical });
+        entries = readDirectoryEntriesAt({
+          directoryFd: handle.fd,
+          maxEntries,
+        });
+        const stableEntries = readDirectoryEntriesAt({
+          directoryFd: handle.fd,
+          maxEntries,
+        });
+        await this.#afterDirectoryEnumeration?.({ path: canonical });
         const openedAfter = await handle.stat();
         after = await lstat(requested);
         const canonicalAfter = await realpath(requested);
@@ -1224,19 +1244,27 @@ export class AuditSourceTracker {
             `Audit directory changed while it was read: ${canonical}`
           );
         }
+        const entriesSha256 = directoryEntriesDigest(entries);
+        if (directoryEntriesDigest(stableEntries) !== entriesSha256) {
+          throw new Error(
+            `Audit directory changed while it was read: ${canonical}`
+          );
+        }
       } finally {
         await handle.close();
       }
     }
-    const stableEntries = await readBoundedDirectoryEntries(
-      requested,
-      maxEntries
-    );
     const entriesSha256 = directoryEntriesDigest(entries);
-    if (directoryEntriesDigest(stableEntries) !== entriesSha256) {
-      throw new Error(
-        `Audit directory changed while it was read: ${canonical}`
+    if (this.#platform === "win32") {
+      const stableEntries = await readBoundedDirectoryEntries(
+        requested,
+        maxEntries
       );
+      if (directoryEntriesDigest(stableEntries) !== entriesSha256) {
+        throw new Error(
+          `Audit directory changed while it was read: ${canonical}`
+        );
+      }
     }
     const stableMetadata = await lstat(requested);
     if (

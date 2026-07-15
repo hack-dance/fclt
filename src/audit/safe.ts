@@ -1,7 +1,17 @@
 import { homedir } from "node:os";
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
+import {
+  facultConfigPath,
+  facultRootDir,
+  facultStateDir,
+  legacyExternalFacultStateDir,
+  parseFacultConfigText,
+} from "../paths";
 import type { AgentAuditReport } from "./agent";
-import { loadVerifiedAuditReport } from "./report-persistence";
+import {
+  type AuditReportReceipt,
+  loadVerifiedAuditReportEnvelope,
+} from "./report-persistence";
 import { loadAuditSuppressions, recordAuditSuppressions } from "./suppressions";
 import type {
   AuditFinding,
@@ -35,6 +45,48 @@ interface FindingSelection {
 }
 
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
+
+function suppressionStorePathFromReceipt(receipt: AuditReportReceipt): string {
+  const requestedPaths = [
+    ...receipt.sourceSnapshot.requestedPaths.map(
+      (entry) => entry.requestedPath
+    ),
+    ...receipt.sourceSnapshot.absentPaths.map((entry) => entry.requestedPath),
+  ];
+  const matches = Array.from(new Set(requestedPaths)).filter(
+    (path) =>
+      basename(path) === "suppressions.json" &&
+      basename(dirname(path)) === "audit"
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      "Audit report does not bind exactly one suppression store path"
+    );
+  }
+  return matches[0]!;
+}
+
+async function activeSuppressionStorePath(homeDir: string): Promise<string> {
+  const readOptionalText = async (path: string): Promise<string | null> =>
+    (await Bun.file(path).exists()) ? Bun.file(path).text() : null;
+  const preferredConfigText = await readOptionalText(facultConfigPath(homeDir));
+  const legacyConfigText = await readOptionalText(
+    join(legacyExternalFacultStateDir(homeDir), "config.json")
+  );
+  const exactConfig =
+    (preferredConfigText === null
+      ? null
+      : parseFacultConfigText(preferredConfigText)) ??
+    (legacyConfigText === null
+      ? null
+      : parseFacultConfigText(legacyConfigText));
+  const canonicalRoot = facultRootDir(homeDir, exactConfig);
+  return join(
+    facultStateDir(homeDir, canonicalRoot, exactConfig),
+    "audit",
+    "suppressions.json"
+  );
+}
 
 function normalizeRuleId(ruleId: string): string {
   return ruleId.replace(RULE_ID_PREFIX_RE, "");
@@ -414,10 +466,22 @@ export async function runAuditSafe(args: {
   const homeDir = args.homeDir ?? homedir();
   let staticReport: StaticAuditReport | null = null;
   let agentReport: AgentAuditReport | null = null;
+  let suppressionStorePath: string | null = null;
   for (const reportPath of parsed.reportPaths) {
-    const report = await loadVerifiedAuditReport<
+    const envelope = await loadVerifiedAuditReportEnvelope<
       StaticAuditReport | AgentAuditReport
     >({ reportPath });
+    const report = envelope.report;
+    const reportSuppressionStorePath = suppressionStorePathFromReceipt(
+      envelope.receipt
+    );
+    if (
+      suppressionStorePath !== null &&
+      suppressionStorePath !== reportSuppressionStorePath
+    ) {
+      throw new Error("Exact audit reports bind different suppression stores");
+    }
+    suppressionStorePath = reportSuppressionStorePath;
     if (report.mode === "static") {
       if (staticReport) {
         throw new Error("Only one exact static audit report may be supplied");
@@ -436,6 +500,11 @@ export async function runAuditSafe(args: {
     staticReport,
     agentReport,
   });
+  if (suppressionStorePath !== (await activeSuppressionStorePath(homeDir))) {
+    throw new Error(
+      "Audit report suppression store does not match the active audit scope"
+    );
+  }
   if (
     (source === "static" && !staticReport) ||
     (source === "agent" && !agentReport) ||
@@ -478,7 +547,15 @@ export async function runAuditSafe(args: {
   }
 
   if (parsed.dryRun) {
-    const totalSuppressions = (await loadAuditSuppressions(homeDir)).length;
+    const totalSuppressions = (
+      await loadAuditSuppressions(
+        homeDir,
+        undefined,
+        undefined,
+        undefined,
+        suppressionStorePath!
+      )
+    ).length;
     return {
       added: 0,
       matched: uniqueSelections.length,
@@ -494,6 +571,7 @@ export async function runAuditSafe(args: {
     homeDir,
     selected: uniqueSelections,
     note: parsed.note,
+    storePath: suppressionStorePath!,
   });
   return {
     added: saved.added,
