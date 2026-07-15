@@ -3199,12 +3199,13 @@ async function loopCommand(argv: string[]) {
         limit: parseIntegerFlag(commandArgs, "--limit"),
         cursor: parseStringFlag(commandArgs, "--cursor"),
       } as const;
-      const result = allScopes
-        ? await withFacultRootScope(
-            { rootDir: historyRootDir, scope: "global" },
-            async () => await queryActivityHistory(queryArgs)
-          )
-        : await queryActivityHistory(queryArgs);
+      const result = await withFacultRootScope(
+        {
+          rootDir: historyRootDir,
+          scope: allScopes ? "global" : loopScope,
+        },
+        async () => await queryActivityHistory(queryArgs)
+      );
       console.log(
         json ? JSON.stringify(result, null, 2) : renderActivityHistory(result)
       );

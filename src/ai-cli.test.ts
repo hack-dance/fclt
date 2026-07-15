@@ -322,6 +322,23 @@ describe("ai CLI", () => {
       coverage: { configuredScopes: 1 },
       runs: [{ scopeId: "global" }],
     });
+    const globalHistoryOut = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "history",
+        "--global",
+        "--root",
+        rootDir,
+        "--json",
+      ]);
+    });
+    expect(globalHistoryOut.errors).toEqual([]);
+    expect(JSON.parse(globalHistoryOut.logs.join("\n"))).toMatchObject({
+      kind: "activity-history",
+      filters: { scope: "global" },
+      coverage: { configuredScopes: 1 },
+      runs: [{ scopeId: "global" }],
+    });
     const implicitAllActivityOut = await captureConsole(async () => {
       await aiCommand(["loop", "activity", "--root", rootDir, "--json"]);
     });
