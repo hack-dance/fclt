@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -15,6 +15,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import {
+  buildCompiledCliFixture,
+  type CompiledCliFixture,
+} from "../../test/compiled-cli-fixture";
+import {
   auditPathsOverlap,
   loadVerifiedAuditReport,
   persistAuditReport,
@@ -25,6 +29,9 @@ import { evaluateStaticAudit, runStaticAudit } from "./static";
 
 const SOURCE_APPEARANCE_RE =
   /appeared after evaluation|evaluated directory changed/;
+// CLI aggregate tests may allow 30s for fixture/assertion work, but the child
+// process itself remains independently bounded at 15s.
+const CLI_CHILD_TIMEOUT_MS = 15_000;
 const INVALID_PLUGIN_KINDS = [
   "missing",
   "symlink",
@@ -44,6 +51,16 @@ const INVALID_PLUGIN_ERROR_RES: Record<
   outside: /outside the plugin cache/,
   symlink: /must not be a symlink/,
 };
+let cliFixture: CompiledCliFixture | null = null;
+
+beforeAll(async () => {
+  cliFixture = await buildCompiledCliFixture();
+}, 15_000);
+
+afterAll(async () => {
+  await cliFixture?.cleanup();
+  cliFixture = null;
+});
 
 async function writeFile(
   path: string,
@@ -96,25 +113,43 @@ async function fixture(): Promise<{ base: string; home: string }> {
 
 async function runAuditCli(args: string[], home: string) {
   const proc = Bun.spawn({
-    cmd: [process.execPath, join(import.meta.dir, "..", "index.ts"), ...args],
+    cmd: [cliFixture!.entryPath, ...args],
     cwd: home,
     env: {
       ...process.env,
+      APPDATA: join(dirname(home), "appdata"),
       BUN_INSTALL: join(dirname(home), "bun-install"),
       BUN_INSTALL_CACHE_DIR: join(dirname(home), "bun-cache"),
-      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(
+        dirname(home),
+        "bun-runtime-cache"
+      ),
+      CLAUDE_CONFIG_DIR: join(dirname(home), "claude-config"),
+      CODEX_HOME: join(dirname(home), "codex-home"),
+      FACULT_CACHE_DIR: join(dirname(home), "facult-cache"),
+      FACULT_LOCAL_STATE_DIR: join(dirname(home), "facult-state"),
       FACULT_ROOT_DIR: join(home, ".ai"),
+      FACULT_ROOT_SCOPE: "global",
       HOME: home,
+      LOCALAPPDATA: join(dirname(home), "local-appdata"),
+      XDG_CACHE_HOME: join(dirname(home), "xdg-cache"),
+      XDG_CONFIG_HOME: join(dirname(home), "xdg-config"),
+      XDG_STATE_HOME: join(dirname(home), "xdg-state"),
     },
     stderr: "pipe",
     stdout: "pipe",
   });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { exitCode, stderr, stdout };
+  const timeout = setTimeout(() => proc.kill(), CLI_CHILD_TIMEOUT_MS);
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    return { exitCode, stderr, stdout };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function exactReportPath(
@@ -192,7 +227,7 @@ describe("read-only audit boundary", () => {
     expect(cli.exitCode).toBe(0);
     expect(JSON.parse(cli.stdout).mode).toBe("static");
     expect(await snapshotTree(home)).toEqual(before);
-  }, 15_000);
+  }, 30_000);
 
   it("persists deterministic JSON only to an explicit isolated report root", async () => {
     const { home } = await fixture();
@@ -223,7 +258,7 @@ describe("read-only audit boundary", () => {
     );
     expect(await readdir(reportRoot)).toHaveLength(1);
     expect(await snapshotTree(home)).toEqual(before);
-  }, 15_000);
+  }, 30_000);
 
   it("persists safely when an explicit rules path is relative", async () => {
     const { base, home } = await fixture();
@@ -257,7 +292,7 @@ describe("read-only audit boundary", () => {
       JSON.parse(cli.stdout)
     );
     expect(await snapshotTree(home)).toEqual(before);
-  }, 15_000);
+  }, 30_000);
 
   it("updates generated audit annotations only in explicit mutation mode", async () => {
     const { home } = await fixture();
@@ -297,7 +332,7 @@ describe("read-only audit boundary", () => {
     expect(index.skills.review.lastAuditAt).toBe(
       JSON.parse(cli.stdout).timestamp
     );
-  });
+  }, 30_000);
 
   it("rejects overlap, traversal, symlink aliases, and unresolved roots", async () => {
     const { base, home } = await fixture();
@@ -681,82 +716,105 @@ describe("read-only audit boundary", () => {
       join(home, ".claude", "plugins", "installed_plugins.json"),
       `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
     );
-    const evaluation = await evaluateStaticAudit({
-      argv: [],
-      cwd: home,
-      from: [home],
-      homeDir: home,
-      includeConfigFrom: false,
+    const auditedRoot = join(home, ".ai");
+    const tracker = new AuditSourceTracker();
+    await tracker.protect([auditedRoot, pluginRoot]);
+    await tracker.captureTree(pluginRoot, {
+      rejectUnsupportedEntries: true,
     });
 
     await expect(
       persistAuditReport({
-        ...evaluation,
+        auditedRoots: [auditedRoot, pluginRoot],
         beforeDescriptorCommit: async () => {
           await rm(sentinelPath);
           await symlink("missing-target", sentinelPath);
           // Root + a-child + 254 siblings consumes the complete 256-entry
           // budget. Reaching this symlink first would report "unsupported".
-          for (let index = 0; index < 254; index += 1) {
-            await Bun.write(
-              join(pluginRoot, `z-late-${index.toString().padStart(4, "0")}`),
-              ""
-            );
-          }
+          await Promise.all(
+            Array.from({ length: 254 }, (_, index) =>
+              Bun.write(
+                join(pluginRoot, `z-late-${index.toString().padStart(4, "0")}`),
+                ""
+              )
+            )
+          );
         },
         mode: "static",
+        report: {
+          mode: "static",
+          results: [],
+          timestamp: "2026-01-01T00:00:00.000Z",
+        },
         reportRoot,
+        sourceSnapshot: tracker.snapshot(),
       })
     ).rejects.toThrow("entry limit");
     expect(await readdir(reportRoot)).toEqual([]);
   });
 
-  it("rejects late drift anywhere in a discovered Claude plugin tree", async () => {
-    const { home } = await fixture();
-    const pluginRoot = join(
-      home,
-      ".claude",
-      "plugins",
-      "cache",
-      "external-plugin-drift"
-    );
-    const hooksPath = join(pluginRoot, "hooks", "hooks.json");
-    const assetsPath = join(pluginRoot, "assets");
-    const reportRoot = await mkdtemp(
-      join(tmpdir(), "fclt-audit-plugin-drift-")
-    );
-    await writeFile(hooksPath, "{}\n");
-    await writeFile(join(assetsPath, "context.md"), "stable\n");
-    await writeFile(
-      join(home, ".claude", "plugins", "installed_plugins.json"),
-      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
-    );
-    const evaluation = await evaluateStaticAudit({
-      argv: [],
-      cwd: home,
-      from: [home],
-      homeDir: home,
-      includeConfigFrom: false,
+  describe("discovered Claude plugin late drift", () => {
+    let assetsPath: string | null = null;
+    let base: string | null = null;
+    let evaluation: Awaited<ReturnType<typeof evaluateStaticAudit>> | null =
+      null;
+    let reportRoot: string | null = null;
+
+    beforeAll(async () => {
+      const fixtureRoot = await fixture();
+      base = fixtureRoot.base;
+      const pluginRoot = join(
+        fixtureRoot.home,
+        ".claude",
+        "plugins",
+        "cache",
+        "external-plugin-drift"
+      );
+      const hooksPath = join(pluginRoot, "hooks", "hooks.json");
+      assetsPath = join(pluginRoot, "assets");
+      reportRoot = join(base, "reports");
+      await mkdir(reportRoot);
+      await writeFile(hooksPath, "{}\n");
+      await writeFile(join(assetsPath, "context.md"), "stable\n");
+      await writeFile(
+        join(fixtureRoot.home, ".claude", "plugins", "installed_plugins.json"),
+        `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+      );
+      evaluation = await evaluateStaticAudit({
+        argv: [],
+        cwd: fixtureRoot.home,
+        from: [join(fixtureRoot.home, ".ai")],
+        homeDir: fixtureRoot.home,
+        includeConfigFrom: false,
+      });
+    }, 15_000);
+
+    afterAll(async () => {
+      if (base) {
+        await rm(base, { force: true, recursive: true });
+      }
     });
 
-    await expect(
-      persistAuditReport({
-        ...evaluation,
-        beforeDescriptorCommit: async () => {
-          await writeFile(join(assetsPath, "context.md"), "changed\n");
-        },
-        mode: "static",
-        reportRoot,
-      })
-    ).rejects.toThrow("captured tree changed");
-    expect(await readdir(reportRoot)).toEqual([]);
+    it("rejects late drift anywhere in the tree", async () => {
+      await expect(
+        persistAuditReport({
+          ...evaluation!,
+          beforeDescriptorCommit: async () => {
+            await writeFile(join(assetsPath!, "context.md"), "changed\n");
+          },
+          mode: "static",
+          reportRoot: reportRoot!,
+        })
+      ).rejects.toThrow("captured tree changed");
+      expect(await readdir(reportRoot!)).toEqual([]);
+    });
   });
 
-  it("fails closed for invalid authoritative Claude plugin install paths", async () => {
-    if (process.platform === "win32") {
-      return;
-    }
-    for (const invalidKind of INVALID_PLUGIN_KINDS) {
+  for (const invalidKind of INVALID_PLUGIN_KINDS) {
+    it(`fails closed for an authoritative Claude plugin ${invalidKind} install path`, async () => {
+      if (process.platform === "win32") {
+        return;
+      }
       const { base, home } = await fixture();
       const cacheRoot = join(home, ".claude", "plugins", "cache");
       const reportRoot = await mkdtemp(
@@ -813,39 +871,59 @@ describe("read-only audit boundary", () => {
           await chmod(inaccessiblePath, 0o700);
         }
       }
-    }
-  });
-
-  it("rejects an authoritative Claude plugin tree that disappears after discovery", async () => {
-    const { home } = await fixture();
-    const pluginRoot = join(
-      home,
-      ".claude",
-      "plugins",
-      "cache",
-      "disappearing-plugin"
-    );
-    const reportRoot = await mkdtemp(
-      join(tmpdir(), "fclt-audit-plugin-disappears-")
-    );
-    await writeFile(join(pluginRoot, "assets", "context.md"), "stable\n");
-    await writeFile(
-      join(home, ".claude", "plugins", "installed_plugins.json"),
-      `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
-    );
-    const evaluation = await evaluateStaticAudit({
-      argv: [],
-      cwd: home,
-      from: [home],
-      homeDir: home,
-      includeConfigFrom: false,
     });
-    await rm(pluginRoot, { force: true, recursive: true });
+  }
 
-    await expect(
-      persistAuditReport({ ...evaluation, mode: "static", reportRoot })
-    ).rejects.toThrow();
-    expect(await readdir(reportRoot)).toEqual([]);
+  describe("authoritative Claude plugin disappearance", () => {
+    let base: string | null = null;
+    let evaluation: Awaited<ReturnType<typeof evaluateStaticAudit>> | null =
+      null;
+    let pluginRoot: string | null = null;
+    let reportRoot: string | null = null;
+
+    beforeAll(async () => {
+      const fixtureRoot = await fixture();
+      base = fixtureRoot.base;
+      pluginRoot = join(
+        fixtureRoot.home,
+        ".claude",
+        "plugins",
+        "cache",
+        "disappearing-plugin"
+      );
+      reportRoot = join(base, "reports");
+      await mkdir(reportRoot);
+      await writeFile(join(pluginRoot, "assets", "context.md"), "stable\n");
+      await writeFile(
+        join(fixtureRoot.home, ".claude", "plugins", "installed_plugins.json"),
+        `${JSON.stringify({ plugins: { review: [{ installPath: pluginRoot }] } })}\n`
+      );
+      evaluation = await evaluateStaticAudit({
+        argv: [],
+        cwd: fixtureRoot.home,
+        from: [fixtureRoot.home],
+        homeDir: fixtureRoot.home,
+        includeConfigFrom: false,
+      });
+    }, 15_000);
+
+    afterAll(async () => {
+      if (base) {
+        await rm(base, { force: true, recursive: true });
+      }
+    });
+
+    it("rejects before creating an artifact", async () => {
+      await rm(pluginRoot!, { force: true, recursive: true });
+      await expect(
+        persistAuditReport({
+          ...evaluation!,
+          mode: "static",
+          reportRoot: reportRoot!,
+        })
+      ).rejects.toThrow();
+      expect(await readdir(reportRoot!)).toEqual([]);
+    });
   });
 
   it("rejects persistence above a source path proven absent during evaluation", async () => {

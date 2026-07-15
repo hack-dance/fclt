@@ -16,10 +16,6 @@ import {
   text,
 } from "@clack/prompts";
 import { buildIndex } from "../index-builder";
-import {
-  LEGACY_MANAGED_MUTATION_FLAG,
-  legacyManagedMutationApproved,
-} from "../legacy-mutation-policy";
 import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
 import { type QuarantineMode, quarantineItems } from "../quarantine";
 import { type AgentAuditReport, runAgentAudit } from "./agent";
@@ -92,12 +88,10 @@ export async function promptForAuditTuiAction(
 }
 
 export function parseAuditTuiArgs(argv: string[]): {
-  allowLegacyManagedMutation: boolean;
   from: string[];
   noConfigFrom: boolean;
 } {
   return {
-    allowLegacyManagedMutation: legacyManagedMutationApproved({ argv }),
     from: parseFromFlags(argv),
     noConfigFrom: argv.includes("--no-config-from"),
   };
@@ -291,7 +285,7 @@ function findingsSummary(findings: AuditFinding[]): string {
     .join("\n");
 }
 
-function buildReviewerPrompt(args: {
+export function buildReviewerPrompt(args: {
   items: AuditItemResult[];
   reviewMode: "static" | "agent" | "combined";
   cwd: string;
@@ -321,13 +315,14 @@ function buildReviewerPrompt(args: {
     "- Validate whether each finding is real, stale, or acceptable.",
     "- Group related issues when the same fix addresses multiple findings.",
     "- Propose the safest order to handle them.",
-    "- If a fix is straightforward, suggest or implement it in this session.",
+    "- If a fix is straightforward and does not change MCP config or secrets, suggest or implement it in this session.",
     "- Prefer fixing the canonical `.ai` source once when the same MCP issue appears in multiple tool configs.",
-    "- Inline MCP secret mutation is disabled pending a durable transaction protocol; review the exact finding and propose a manual, approval-gated plan.",
+    "- If an MCP secret needs remediation, use `fclt audit fix ... --dry-run` only to inspect exact matches, then propose the manual remediation.",
+    "- Do not mutate MCP config or secrets without explicit user approval.",
     "",
     "Useful `fclt` commands in this repo:",
     "- `fclt show mcp:<name>` to inspect the canonical MCP entry.",
-    "- `fclt audit fix <item> --report <exact-report> --dry-run` to verify and preview matching inline-secret findings without writing.",
+    "- `fclt audit fix <item> --report <exact-report> --dry-run` to inspect inline MCP secret matches without writing.",
     "- `fclt audit safe ...` to suppress a reviewed false positive.",
     "- `fclt manage <tool> --dry-run` or `fclt sync [tool] --dry-run` to inspect deprecated managed rendering without changing tool state.",
     "",
@@ -435,7 +430,7 @@ function printHelp() {
 Usage:
   fclt audit tui
   fclt audit tui --from <path> [--from <path> ...]
-  fclt audit tui --no-config-from [${LEGACY_MANAGED_MUTATION_FLAG}]
+  fclt audit tui --no-config-from
 
 Notes:
   - This is an interactive wizard (TTY required).

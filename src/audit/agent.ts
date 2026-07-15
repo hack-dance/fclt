@@ -748,6 +748,10 @@ async function drainBoundedStream(
           onLimit();
         }
         truncated = true;
+        await reader.cancel("agent subprocess output limit").catch(() => {
+          // The child may close the stream while output-limit cleanup runs.
+        });
+        break;
       }
     }
   } finally {
@@ -768,46 +772,60 @@ async function collectProcessOutput(proc: {
   stdout: ReadableStream<Uint8Array>;
 }): Promise<{ code: number; stderr: string; stdout: string }> {
   let killedForOutputLimit = false;
-  const killForOutputLimit = () => {
-    if (killedForOutputLimit) {
+  let killed = false;
+  const kill = () => {
+    if (killed) {
       return;
     }
-    killedForOutputLimit = true;
+    killed = true;
     try {
       proc.kill("SIGKILL");
     } catch {
       // The process may have exited between the bounded read and termination.
     }
   };
+  const killForOutputLimit = () => {
+    killedForOutputLimit = true;
+    kill();
+  };
   const stdoutPromise = drainBoundedStream(
     proc.stdout,
     MAX_SUBPROCESS_OUTPUT_BYTES,
     killForOutputLimit
-  );
+  ).catch((error) => {
+    kill();
+    throw error;
+  });
   const stderrPromise = drainBoundedStream(
     proc.stderr,
     MAX_SUBPROCESS_OUTPUT_BYTES,
     killForOutputLimit
-  );
-  try {
-    const [stdout, stderr, code] = await Promise.all([
-      stdoutPromise,
-      stderrPromise,
-      proc.exited,
-    ]);
-    if (stdout.truncated || stderr.truncated) {
-      throw new AgentAuditRunnerError("agent-subprocess-output-limit");
-    }
-    return { code, stderr: stderr.text, stdout: stdout.text };
-  } catch (error) {
-    try {
-      proc.kill();
-    } catch {
-      // The process may already have exited or been terminated by its AbortSignal.
-    }
-    await Promise.allSettled([stdoutPromise, stderrPromise, proc.exited]);
+  ).catch((error) => {
+    kill();
     throw error;
+  });
+  const [stdout, stderr, exited] = await Promise.allSettled([
+    stdoutPromise,
+    stderrPromise,
+    proc.exited,
+  ]);
+  if (killedForOutputLimit) {
+    throw new AgentAuditRunnerError("agent-subprocess-output-limit");
   }
+  if (stdout.status === "rejected") {
+    throw stdout.reason;
+  }
+  if (stderr.status === "rejected") {
+    throw stderr.reason;
+  }
+  if (exited.status === "rejected") {
+    throw exited.reason;
+  }
+  return {
+    code: exited.value,
+    stderr: stderr.value.text,
+    stdout: stdout.value.text,
+  };
 }
 
 async function readBoundedChildOutput(path: string): Promise<string> {
@@ -880,9 +898,23 @@ async function readBoundedChildOutput(path: string): Promise<string> {
 function runnerSignal(
   signal: AbortSignal | undefined,
   timeoutMs: number
-): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+): { dispose: () => void; signal: AbortSignal } {
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else {
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref?.();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abortFromCaller);
+    },
+  };
 }
 
 function normalizeRunnerError(args: {
@@ -905,16 +937,25 @@ function normalizeRunnerError(args: {
   throw new AgentAuditRunnerError("agent-subprocess-failed");
 }
 
-async function makeAgentRuntimeDir(tempRoot?: string): Promise<string> {
+/** @internal Exported for transactional setup fault tests. */
+export async function makeAgentRuntimeDir(
+  tempRoot?: string,
+  beforeSubdirectoryCreate?: (path: string) => Promise<void>
+): Promise<string> {
   const root = tempRoot ?? tmpdir();
   await mkdir(root, { recursive: true });
   const runtimeDir = await mkdtemp(join(root, "facult-agent-audit-"));
-  await Promise.all([
-    mkdir(join(runtimeDir, "home"), { recursive: true }),
-    mkdir(join(runtimeDir, "claude-config"), { recursive: true }),
-    mkdir(join(runtimeDir, "codex-home"), { recursive: true }),
-  ]);
-  return runtimeDir;
+  try {
+    for (const name of ["home", "claude-config", "codex-home"]) {
+      const path = join(runtimeDir, name);
+      await beforeSubdirectoryCreate?.(path);
+      await mkdir(path, { recursive: true });
+    }
+    return runtimeDir;
+  } catch (error) {
+    await rm(runtimeDir, { force: true, recursive: true });
+    throw error;
+  }
 }
 
 async function runClaude(
@@ -926,7 +967,7 @@ async function runClaude(
   timeoutMs = AGENT_SUBPROCESS_TIMEOUT_MS
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const runtimeDir = await makeAgentRuntimeDir(tempRoot);
-  const subprocessSignal = runnerSignal(signal, timeoutMs);
+  const subprocess = runnerSignal(signal, timeoutMs);
   try {
     await assertSupportedAuthenticationMode({
       homeDir: profileHome,
@@ -949,7 +990,7 @@ async function runClaude(
       ],
       cwd: runtimeDir,
       env: childEnvironment,
-      signal: subprocessSignal,
+      signal: subprocess.signal,
       stdin: new Blob([prompt]),
       stdout: "pipe",
       stderr: "pipe",
@@ -990,9 +1031,10 @@ async function runClaude(
     normalizeRunnerError({
       error,
       externalSignal: signal,
-      subprocessSignal,
+      subprocessSignal: subprocess.signal,
     });
   } finally {
+    subprocess.dispose();
     await rm(runtimeDir, { recursive: true, force: true });
   }
 }
@@ -1006,7 +1048,7 @@ async function runCodex(
   timeoutMs = AGENT_SUBPROCESS_TIMEOUT_MS
 ): Promise<{ output: PerItemOutput; model?: string }> {
   const dir = await makeAgentRuntimeDir(tempRoot);
-  const subprocessSignal = runnerSignal(signal, timeoutMs);
+  const subprocess = runnerSignal(signal, timeoutMs);
   const schemaPath = join(dir, "schema.json");
   const outPath = join(dir, "last-message.txt");
   try {
@@ -1038,7 +1080,7 @@ async function runCodex(
       ],
       cwd: dir,
       env: childEnvironment,
-      signal: subprocessSignal,
+      signal: subprocess.signal,
       stdin: new Blob([prompt]),
       stdout: "pipe",
       stderr: "pipe",
@@ -1076,9 +1118,10 @@ async function runCodex(
     normalizeRunnerError({
       error,
       externalSignal: signal,
-      subprocessSignal,
+      subprocessSignal: subprocess.signal,
     });
   } finally {
+    subprocess.dispose();
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -1139,6 +1182,8 @@ export async function evaluateAgentAudit(opts?: {
     item: string;
     path: string;
   }) => void;
+  /** @internal Test hook for the abort boundary after final discovery. */
+  afterFinalDiscovery?: () => Promise<void>;
 }): Promise<AuditEvaluation<AgentAuditReport>> {
   const argv = opts?.argv ?? [];
   const evaluationSensitiveValues = sensitiveEnvironmentValues();
@@ -1624,12 +1669,22 @@ export async function evaluateAgentAudit(opts?: {
     )
   );
 
+  if (opts?.signal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
   const finalScan = await scan(argv, scanOptions);
+  await opts?.afterFinalDiscovery?.();
+  if (opts?.signal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
   if (scanDiscoveryIdentity(finalScan) !== discoveryIdentity) {
     throw new Error("Audit source discovery changed during evaluation");
   }
   const sourceSnapshot = sourceTracker.snapshot();
   await validateAuditSourceSnapshot(sourceSnapshot);
+  if (opts?.signal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
   return { auditedRoots, report, sourceSnapshot };
 }
 

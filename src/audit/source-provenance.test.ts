@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
+import { constants } from "node:fs";
 import {
   appendFile,
   chmod,
   mkdir,
   mkdtemp,
+  open,
   realpath,
   rename,
   rm,
@@ -15,7 +17,12 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
+  auditNativeLibraryCandidates,
+  selectFirstAvailableNativeLibrary,
+} from "./safe-openat";
+import {
   AuditSourceTracker,
+  auditReadOnlyNoFollowFlags,
   validateAuditSourceSnapshot,
 } from "./source-provenance";
 
@@ -112,6 +119,148 @@ test("Windows provenance binds directories without POSIX directory descriptors",
   await expect(
     validateAuditSourceSnapshot(snapshot, { platform: "win32" })
   ).resolves.toBeUndefined();
+});
+
+test("Windows provenance binds regular files without POSIX no-follow flags", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-win32-file-"));
+  try {
+    const filePath = join(root, "config.json");
+    await writeFile(filePath, '{"stable":true}\n');
+    const tracker = new AuditSourceTracker({ platform: "win32" });
+
+    expect(await tracker.readText(filePath)).toBe('{"stable":true}\n');
+    const snapshot = tracker.snapshot();
+
+    expect(snapshot.evaluatedFiles).toHaveLength(1);
+    expect(snapshot.evaluatedFiles[0]?.path).toBe(await realpath(filePath));
+    await expect(
+      validateAuditSourceSnapshot(snapshot, { platform: "win32" })
+    ).resolves.toBeUndefined();
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("Windows regular-file flags do not require POSIX no-follow support", () => {
+  const unavailablePosixFlags = {
+    noFollow: 0,
+    nonblock: 0,
+    readOnly: 0,
+  };
+  expect(auditReadOnlyNoFollowFlags("win32", unavailablePosixFlags)).toBe(0);
+  expect(() =>
+    auditReadOnlyNoFollowFlags("linux", unavailablePosixFlags)
+  ).toThrow("no-follow nonblocking opens are unsupported");
+});
+
+test("POSIX provenance rejects a FIFO swapped in before a directory open without blocking", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const mkfifo = Bun.which("mkfifo");
+  if (!mkfifo) {
+    throw new Error("mkfifo is required for the POSIX FIFO fixture");
+  }
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-fifo-swap-"));
+  const requested = join(root, "requested");
+  const moved = join(root, "moved");
+  await mkdir(requested);
+  await writeFile(join(requested, "entry"), "stable\n");
+  let swapped = false;
+  const tracker = new AuditSourceTracker({
+    beforeDirectoryRead: async () => {
+      if (swapped) {
+        return;
+      }
+      await rename(requested, moved);
+      const child = Bun.spawn({
+        cmd: [mkfifo, requested],
+        stderr: "ignore",
+        stdout: "ignore",
+      });
+      if ((await child.exited) !== 0) {
+        throw new Error("Could not create the FIFO swap fixture");
+      }
+      swapped = true;
+    },
+  });
+  try {
+    const readOutcome = tracker.readDirectory(requested).then(
+      () => "resolved" as const,
+      () => "rejected" as const
+    );
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      readOutcome,
+      new Promise<"timeout">((resolveTimeout) => {
+        guard = setTimeout(() => resolveTimeout("timeout"), 1000);
+      }),
+    ]).finally(() => {
+      if (guard) {
+        clearTimeout(guard);
+      }
+    });
+    if (outcome === "timeout") {
+      const writer = await open(
+        requested,
+        constants.O_WRONLY + constants.O_NONBLOCK
+      );
+      await writer.close();
+      let cleanupGuard: ReturnType<typeof setTimeout> | undefined;
+      const cleanupOutcome = await Promise.race([
+        readOutcome,
+        new Promise<"cleanup-timeout">((resolveTimeout) => {
+          cleanupGuard = setTimeout(
+            () => resolveTimeout("cleanup-timeout"),
+            1000
+          );
+        }),
+      ]).finally(() => {
+        if (cleanupGuard) {
+          clearTimeout(cleanupGuard);
+        }
+      });
+      expect(cleanupOutcome).toBe("rejected");
+    }
+    expect(outcome).toBe("rejected");
+  } finally {
+    await rm(requested, { force: true });
+    if (swapped) {
+      await rename(moved, requested);
+    }
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("Linux descriptor operations fall back from glibc to musl and otherwise fail closed", () => {
+  const candidates = auditNativeLibraryCandidates("linux", "x64");
+  expect(candidates[0]).toBe("libc.so.6");
+  expect(candidates).toContain("libc.musl-x86_64.so.1");
+  expect(auditNativeLibraryCandidates("linux", "arm64")).toContain(
+    "/lib/ld-musl-aarch64.so.1"
+  );
+
+  const attempts: string[] = [];
+  const selected = selectFirstAvailableNativeLibrary({
+    candidates,
+    open: (candidate) => {
+      attempts.push(candidate);
+      if (candidate === "libc.so.6") {
+        throw new Error("fixture glibc missing");
+      }
+      return candidate;
+    },
+  });
+  expect(selected).toBe("libc.musl-x86_64.so.1");
+  expect(attempts).toEqual(["libc.so.6", "libc.musl-x86_64.so.1"]);
+  expect(() =>
+    selectFirstAvailableNativeLibrary({
+      candidates: ["missing-libc"],
+      open: () => {
+        throw new Error("fixture missing");
+      },
+    })
+  ).toThrow("no compatible system C library");
 });
 
 test("POSIX directory reads enumerate the opened descriptor during pathname swaps", async () => {

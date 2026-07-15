@@ -152,10 +152,10 @@ Compatibility note: older releases refreshed
 `.ai/.facult/audit/*-latest.json` and generated index audit annotations during
 every audit. Those implicit writes are removed. Legacy saved `*-latest.json`
 reports remain inspection artifacts only; they do not authorize `audit safe`
-or `audit fix`. `audit safe` mutation requires an exact fresh content-addressed
-report, its receipt, and explicit `--yes` approval. `audit fix` mutation is
-disabled pending a durable two-file transaction and recovery protocol; its
-exact-report `--dry-run` remains available for verified previews.
+or the former automated `audit fix` path. `audit safe` mutations require an
+exact fresh content-addressed report, its receipt, and explicit `--yes`
+approval. `audit fix` is limited to zero-write `--dry-run` inspection pending
+mutation-time descriptor binding.
 
 Root cause of the old behavior: the static and agent library runners wrote
 their latest reports before returning; both non-interactive CLI wrappers then

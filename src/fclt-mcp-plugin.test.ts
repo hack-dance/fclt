@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
@@ -13,6 +13,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  buildCompiledCliFixture,
+  type CompiledCliFixture,
+} from "../test/compiled-cli-fixture";
 import { facultBuiltinCodexPluginRoot } from "./builtin";
 
 const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
@@ -24,6 +28,16 @@ const MCP_CONFIG_PATH = join(
   ".mcp.json"
 );
 const { NODE_OPTIONS: _ambientNodeOptions, ...MCP_BASE_ENV } = process.env;
+let cliFixture: CompiledCliFixture | null = null;
+
+beforeAll(async () => {
+  cliFixture = await buildCompiledCliFixture();
+}, 15_000);
+
+afterAll(async () => {
+  await cliFixture?.cleanup();
+  cliFixture = null;
+});
 const MCP_CONFIG = JSON.parse(readFileSync(MCP_CONFIG_PATH, "utf8")) as {
   mcpServers?: {
     fclt?: {
@@ -819,7 +833,6 @@ describe("bundled fclt MCP plugin", () => {
   it("keeps the typed audit entry byte-for-byte read-only", async () => {
     const base = await mkdtemp(join(tmpdir(), "facult-mcp-audit-"));
     const home = join(base, "home");
-    const wrapper = join(base, "fclt-wrapper.cjs");
     await writeFile(
       join(home, ".ai", "skills", "review", "SKILL.md"),
       "Review safely.\n"
@@ -832,29 +845,29 @@ describe("bundled fclt MCP plugin", () => {
       join(home, ".ai", ".facult", "ai", "index.json"),
       `${JSON.stringify({ version: 1, updatedAt: "protected", skills: {} })}\n`
     );
-    await Bun.write(
-      wrapper,
-      [
-        `#!${process.execPath}`,
-        `import { spawnSync } from "node:child_process";`,
-        `const result = spawnSync(process.execPath, [${JSON.stringify(join(import.meta.dir, "index.ts"))}, ...process.argv.slice(2)], { env: process.env, stdio: "inherit" });`,
-        "process.exit(result.status ?? 1);",
-        "",
-      ].join("\n")
-    );
-    await chmod(wrapper, 0o755);
-
     const before = await snapshotTree(home);
     const pluginRoot = facultBuiltinCodexPluginRoot();
     const child = spawnConfiguredMcp({
       env: {
+        APPDATA: join(base, "appdata"),
         BUN_INSTALL: join(base, "bun-install"),
         BUN_INSTALL_CACHE_DIR: join(base, "bun-cache"),
-        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(base, "bun-runtime-cache"),
+        CLAUDE_CONFIG_DIR: join(base, "claude-config"),
+        CODEX_HOME: join(base, "codex-home"),
+        FACULT_CACHE_DIR: join(base, "facult-cache"),
+        FACULT_LOCAL_STATE_DIR: join(base, "facult-state"),
         FACULT_ROOT_DIR: join(home, ".ai"),
-        FCLT_BIN: wrapper,
+        FACULT_ROOT_SCOPE: "global",
+        FCLT_BIN: cliFixture!.entryPath,
+        FCLT_PLUGIN_RUNTIME_DIR: join(base, "plugin-runtime"),
+        FCLT_SYSTEM_PATHS: "",
         HOME: home,
+        LOCALAPPDATA: join(base, "local-appdata"),
         PWD: home,
+        XDG_CACHE_HOME: join(base, "xdg-cache"),
+        XDG_CONFIG_HOME: join(base, "xdg-config"),
+        XDG_STATE_HOME: join(base, "xdg-state"),
       },
       pluginRoot,
     });
@@ -882,7 +895,9 @@ describe("bundled fclt MCP plugin", () => {
     } finally {
       child.kill();
     }
-  });
+    // This is the Bun aggregate timeout only. The shipped MCP command timeout
+    // and the byte-for-byte zero-write assertions above remain unchanged.
+  }, 15_000);
 
   it("fails typed audit closed for protocol-v1 runtimes without the read-only capability", async () => {
     for (const version of ["2.24.1", "2.24.0"]) {

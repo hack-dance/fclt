@@ -30,6 +30,68 @@ const DIRECTORY_ENTRY_TYPES = {
 } as const;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
+const MUSL_ARCH_NAMES: Partial<Record<string, readonly string[]>> = {
+  arm: ["armhf", "armv7"],
+  arm64: ["aarch64"],
+  ia32: ["i386", "i686"],
+  ppc64: ["powerpc64le", "ppc64le"],
+  riscv64: ["riscv64"],
+  s390x: ["s390x"],
+  x64: ["x86_64"],
+};
+
+export function auditNativeLibraryCandidates(
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch
+): string[] {
+  if (platform === "darwin") {
+    return ["/usr/lib/libSystem.B.dylib"];
+  }
+  if (platform !== "linux") {
+    return [];
+  }
+  const candidates = ["libc.so.6"];
+  for (const muslArchitecture of MUSL_ARCH_NAMES[architecture] ?? []) {
+    candidates.push(
+      `libc.musl-${muslArchitecture}.so.1`,
+      `/lib/ld-musl-${muslArchitecture}.so.1`,
+      `/usr/lib/libc.musl-${muslArchitecture}.so.1`
+    );
+  }
+  return candidates;
+}
+
+export function selectFirstAvailableNativeLibrary<T>(args: {
+  candidates: readonly string[];
+  open: (candidate: string) => T;
+}): T {
+  for (const candidate of args.candidates) {
+    try {
+      return args.open(candidate);
+    } catch {
+      // Try the next known system C library name without trusting loader text.
+    }
+  }
+  throw new Error(
+    "Descriptor-bound audit operations are unavailable: no compatible system C library was found"
+  );
+}
+
+function openNativeLibrary<T extends Record<string, FFIFunction>>(
+  definitions: T
+) {
+  const candidates = auditNativeLibraryCandidates();
+  if (candidates.length === 0) {
+    throw new Error(
+      `Descriptor-bound audit operations are unavailable on ${process.platform}`
+    );
+  }
+  return selectFirstAvailableNativeLibrary({
+    candidates,
+    open: (candidate) => dlopen(candidate, definitions),
+  });
+}
+
 function directoryEntry(args: { name: string; type: number }): Dirent {
   const isType = (type: number): boolean => args.type === type;
   return {
@@ -99,7 +161,7 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
     rewinddir: { args: [FFIType.ptr], returns: FFIType.void },
   } as const;
   if (process.platform === "darwin") {
-    const libc = dlopen("/usr/lib/libSystem.B.dylib", {
+    const libc = openNativeLibrary({
       ...commonSymbols,
       __error: { args: [], returns: FFIType.ptr },
     });
@@ -116,7 +178,7 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
     };
   }
   if (process.platform === "linux") {
-    const libc = dlopen("libc.so.6", {
+    const libc = openNativeLibrary({
       ...commonSymbols,
       __errno_location: { args: [], returns: FFIType.ptr },
     });
@@ -266,16 +328,14 @@ function groupOrOtherWritable(mode: number): boolean {
 
 function platformConfiguration(): {
   createExclusive: number;
-  library: string;
 } {
   if (process.platform === "darwin") {
     return {
       createExclusive: 0xa_01,
-      library: "/usr/lib/libSystem.B.dylib",
     };
   }
   if (process.platform === "linux") {
-    return { createExclusive: 0xc1, library: "libc.so.6" };
+    return { createExclusive: 0xc1 };
   }
   throw new Error(
     `Audit report persistence is unavailable on ${process.platform}: safe descriptor-relative creation is unsupported`
@@ -297,8 +357,7 @@ export function openReadOnlyAt(args: {
       "Descriptor-relative report names must be single path segments"
     );
   }
-  const configuration = platformConfiguration();
-  const libc = dlopen(configuration.library, {
+  const libc = openNativeLibrary({
     openat: {
       args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
       returns: FFIType.i32,
@@ -333,7 +392,7 @@ export function writeExclusiveAt(args: {
     );
   }
   const configuration = platformConfiguration();
-  const libc = dlopen(configuration.library, {
+  const libc = openNativeLibrary({
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     fchmod: {
       args: [FFIType.i32, FFIType.i32],
@@ -559,7 +618,6 @@ export function openOrCreatePrivateDirectory(
   ) {
     throw new Error("Private directory path must be canonical and supported");
   }
-  const configuration = platformConfiguration();
   const definitions: Record<string, FFIFunction> = {
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     mkdirat: {
@@ -571,12 +629,13 @@ export function openOrCreatePrivateDirectory(
       returns: FFIType.i32,
     },
   };
-  const libc = dlopen(configuration.library, definitions);
+  const libc = openNativeLibrary(definitions);
   const symbols = libc.symbols as unknown as DirectoryMutationSymbols;
   const directoryFlags =
     constants.O_RDONLY +
     (constants.O_DIRECTORY ?? 0) +
     (constants.O_NOFOLLOW ?? 0) +
+    (constants.O_NONBLOCK ?? 0) +
     ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ?? 0);
   let currentFd = openSync(binding.ancestorPath, directoryFlags);
   try {
@@ -679,7 +738,7 @@ export async function replacePrivateFileAt(args: {
   };
   definitions[process.platform === "darwin" ? "__error" : "__errno_location"] =
     { args: [], returns: FFIType.ptr };
-  const libc = dlopen(configuration.library, definitions);
+  const libc = openNativeLibrary(definitions);
   const symbols = libc.symbols as unknown as PrivateFileMutationSymbols;
   const errnoPointer =
     process.platform === "darwin"

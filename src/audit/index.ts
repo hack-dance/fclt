@@ -19,8 +19,8 @@ Usage:
 Safety:
   - Audit evaluation is read-only by default and writes no report or index state.
   - --report-root writes one content-addressed <mode>-<sha256>.json report-and-receipt envelope outside every audited source.
-  - safe mutation requires that exact fresh envelope; legacy *-latest.json and detached older pairs never authorize mutation.
-  - fix mutation is disabled pending a durable transaction protocol; exact-report --dry-run remains available.
+  - safe requires that exact fresh envelope; legacy *-latest.json and detached older pairs never authorize mutation.
+  - fix supports exact-report dry-run inspection only; automated MCP mutation fails closed pending a descriptor-bound exact-source/destination commit design.
   - --update-index is a separate explicit mutation of canonical generated state.
   - Report roots that overlap, traverse, alias, or symlink are rejected.
 

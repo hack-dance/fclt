@@ -499,11 +499,11 @@ intended.
 Persisted reports are content-addressed authorization envelopes containing the
 report payload and a receipt that binds its bytes, evaluated source revisions,
 and finding identities in one atomic file. `audit safe` requires the exact
-fresh envelope path and `--yes`. `audit fix --dry-run` uses the same exact
-envelope to preview matches, but fix mutation is disabled pending a durable
-two-file transaction and recovery protocol. Legacy `*-latest.json` files and
-pre-revision-9 detached report/receipt pairs cannot authorize mutation. Rerun
-`fclt audit --report-root ...` to migrate an older explicit report.
+fresh envelope path and `--yes`; legacy `*-latest.json` files and pre-revision-9
+detached report/receipt pairs cannot authorize mutation. `audit fix` currently
+supports exact-report `--dry-run` inspection only. Automated MCP mutation fails
+closed pending descriptor-bound source and destination authorization through
+the final commit boundary.
 
 Keep tracked MCP config secret-free. Use local overlays such as `mcp/servers.local.json` for machine-specific secrets.
 

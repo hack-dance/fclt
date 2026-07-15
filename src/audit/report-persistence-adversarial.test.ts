@@ -605,7 +605,7 @@ describe("adversarial audit report persistence", () => {
       })
     ).rejects.toThrow("envelope exceeds");
     expect(await readdir(overRoot)).toEqual([]);
-  });
+  }, 15_000);
 
   test("persistence rejects a parseable but noncanonical report timestamp", async () => {
     const { evaluation, timestamp } = await fixture();

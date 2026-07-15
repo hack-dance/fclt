@@ -448,8 +448,43 @@ function directoryEntriesDigest(entries: Dirent[]): string {
   );
 }
 
-function readOnlyNoFollowFlags(): number {
-  return constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0);
+/** @internal Exported for platform-contract tests. */
+export function auditReadOnlyNoFollowFlags(
+  platform: NodeJS.Platform = process.platform,
+  values: {
+    noFollow?: number;
+    nonblock?: number;
+    readOnly: number;
+  } = {
+    noFollow: constants.O_NOFOLLOW,
+    nonblock: constants.O_NONBLOCK,
+    readOnly: constants.O_RDONLY,
+  }
+): number {
+  const { noFollow, nonblock, readOnly } = values;
+  if (platform === "win32") {
+    return readOnly;
+  }
+  if (
+    typeof noFollow !== "number" ||
+    !Number.isInteger(noFollow) ||
+    noFollow <= 0 ||
+    typeof nonblock !== "number" ||
+    !Number.isInteger(nonblock) ||
+    nonblock <= 0
+  ) {
+    throw new Error("Audit no-follow nonblocking opens are unsupported");
+  }
+  return readOnly + noFollow + nonblock;
+}
+
+function readOnlyDirectoryNoFollowFlags(
+  platform: NodeJS.Platform = process.platform
+): number {
+  if (!constants.O_DIRECTORY) {
+    throw new Error("Audit no-follow directory opens are unsupported");
+  }
+  return auditReadOnlyNoFollowFlags(platform) + constants.O_DIRECTORY;
 }
 
 const MAX_LEXICAL_PATH_COMPONENTS = 256;
@@ -746,7 +781,7 @@ async function captureStablePhysicalPathIdentity(
       size: after.size,
     };
   }
-  const handle = await open(requested, readOnlyNoFollowFlags());
+  const handle = await open(requested, auditReadOnlyNoFollowFlags(platform));
   try {
     const opened = await handle.stat();
     const after = await lstat(requested);
@@ -784,6 +819,7 @@ async function readStableRegularFile(
       path: string;
     }) => Promise<void>;
     maxBytes?: number;
+    platform?: NodeJS.Platform;
   }
 ): Promise<{ bytes: Buffer; identity: AuditEvaluatedFileIdentity }> {
   const requested = normalize(resolve(pathValue));
@@ -794,7 +830,10 @@ async function readStableRegularFile(
     );
   }
   await options?.beforeFileOpen?.({ path: requested });
-  const handle = await open(requested, readOnlyNoFollowFlags());
+  const handle = await open(
+    requested,
+    auditReadOnlyNoFollowFlags(options?.platform)
+  );
   try {
     const before = await handle.stat();
     const canonical = await realpath(requested);
@@ -1055,7 +1094,10 @@ export class AuditSourceTracker {
         this.#protectedRoots.set(canonical, identity);
         continue;
       }
-      const handle = await open(requested, readOnlyNoFollowFlags());
+      const handle = await open(
+        requested,
+        auditReadOnlyNoFollowFlags(this.#platform)
+      );
       try {
         const metadata = await handle.stat();
         const kind = metadata.isFile()
@@ -1109,6 +1151,7 @@ export class AuditSourceTracker {
       beforeFileOpen: this.#beforeFileOpen,
       beforeReadChunk: this.#beforeReadChunk,
       maxBytes: options?.maxBytes,
+      platform: this.#platform,
     });
     const lexicalAfter = await captureLexicalPathChainOnce(requested, false);
     assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
@@ -1242,7 +1285,10 @@ export class AuditSourceTracker {
         );
       }
     } else {
-      const handle = await open(requested, readOnlyNoFollowFlags());
+      const handle = await open(
+        requested,
+        readOnlyDirectoryNoFollowFlags(this.#platform)
+      );
       try {
         const openedBefore = await handle.stat();
         canonical = await realpath(requested);
@@ -2370,9 +2416,10 @@ export async function validateAuditSourceSnapshot(
       }
       return;
     }
-    const handle = await open(root.path, readOnlyNoFollowFlags()).catch(
-      () => null
-    );
+    const handle = await open(
+      root.path,
+      auditReadOnlyNoFollowFlags(platform)
+    ).catch(() => null);
     if (!handle) {
       throw new Error(`Audit source root changed: ${root.path}`);
     }
@@ -2476,6 +2523,7 @@ export async function validateAuditSourceSnapshot(
     }
     const { identity } = await readStableRegularFile(expected.path, {
       maxBytes: Math.max(expected.size, 1),
+      platform,
     }).catch(() => ({
       identity: null,
     }));

@@ -1,21 +1,12 @@
-import { homedir } from "node:os";
 import { basename } from "node:path";
-import {
-  LEGACY_MANAGED_MUTATION_FLAG,
-  legacyManagedMutationApproved,
-} from "../legacy-mutation-policy";
-import { facultContextRootDir } from "../paths";
 import type { AgentAuditReport } from "./agent";
 import { loadVerifiedAuditReport } from "./report-persistence";
-import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
 import type { AuditFinding, AuditItemResult, StaticAuditReport } from "./types";
 
 type AuditFixSource = "static" | "agent" | "combined";
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
 const INLINE_SECRET_RULE_ID = "mcp-env-inline-secret";
 const ARG_VALUE_SPLIT_RE = /=(.*)/s;
-export const AUDIT_FIX_MUTATION_DISABLED_MESSAGE =
-  "Audit fix mutation is disabled until a durable two-file recovery protocol is available. Run audit fix --dry-run to review matches; no files were changed.";
 
 interface AuditFixArgs {
   all: boolean;
@@ -82,10 +73,6 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
       args.yes = true;
       continue;
     }
-    if (arg === LEGACY_MANAGED_MUTATION_FLAG) {
-      continue;
-    }
-
     if (
       arg === "--source" ||
       arg === "--item" ||
@@ -350,81 +337,8 @@ function selectFixableFindings(args: {
   );
 }
 
-export function fixInlineMcpSecrets(args: {
-  findings: FindingSelection[];
-  homeDir?: string;
-  rootDir?: string;
-  allowLegacyManagedMutation?: boolean;
-}): Promise<{
-  fixed: number;
-  fixedSelections: FindingSelection[];
-  localPath: string | null;
-  riskyManagedOutputs: { path: string; state: "tracked" | "untracked" }[];
-  skipped: { label: string; reason: string }[];
-  syncedTools: string[];
-  trackedPath: string | null;
-}> {
-  const selected = args.findings.filter(
-    ({ result, finding }) =>
-      result.type === "mcp" &&
-      normalizeRuleId(finding.ruleId) === INLINE_SECRET_RULE_ID &&
-      typeof finding.location === "string"
-  );
-  if (selected.length === 0) {
-    return Promise.resolve({
-      fixed: 0,
-      fixedSelections: [],
-      localPath: null,
-      riskyManagedOutputs: [],
-      skipped: [],
-      syncedTools: [],
-      trackedPath: null,
-    });
-  }
-
-  return Promise.reject(new Error(AUDIT_FIX_MUTATION_DISABLED_MESSAGE));
-}
-
-export function removeFixedInlineSecretFindings(args: {
-  results: AuditItemResult[];
-  fixed: FindingSelection[];
-}): AuditItemResult[] {
-  const fixedKeys = new Set(
-    args.fixed.map((selection) => findingKey(selection))
-  );
-  if (fixedKeys.size === 0) {
-    return args.results;
-  }
-
-  return args.results.map((result) => {
-    const findings = result.findings.filter((finding) => {
-      if (normalizeRuleId(finding.ruleId) !== INLINE_SECRET_RULE_ID) {
-        return true;
-      }
-      const parsed = finding.location
-        ? parseInlineSecretLocation(finding.location)
-        : null;
-      if (!parsed) {
-        return true;
-      }
-      return !fixedKeys.has(
-        [
-          result.type,
-          result.item,
-          parsed.serverName,
-          parsed.envKey,
-          INLINE_SECRET_RULE_ID,
-        ].join("\0")
-      );
-    });
-    const status = computeStoredAuditStatus(findings);
-    return {
-      ...result,
-      findings,
-      passed: isStoredAuditStatusPassed(status),
-    };
-  });
-}
+export const AUDIT_FIX_MUTATION_DISABLED_MESSAGE =
+  "audit fix mutation is temporarily disabled until exact reports bind the MCP source and destination through the mutation commit; use --dry-run to inspect matches and remediate manually";
 
 export async function runAuditFix(args: {
   argv: string[];
@@ -441,9 +355,6 @@ export async function runAuditFix(args: {
   trackedPath: string | null;
 }> {
   const parsed = parseAuditFixArgs(args.argv);
-  const homeDir = args.homeDir ?? homedir();
-  const cwd = args.cwd ?? process.cwd();
-  const rootDir = facultContextRootDir({ home: homeDir, cwd });
 
   let staticReport: StaticAuditReport | null = null;
   let agentReport: AgentAuditReport | null = null;
@@ -508,29 +419,14 @@ export async function runAuditFix(args: {
       trackedPath: null,
     };
   }
-  const fixed = await fixInlineMcpSecrets({
-    findings: selections,
-    homeDir,
-    rootDir,
-    allowLegacyManagedMutation: legacyManagedMutationApproved({
-      argv: args.argv,
-    }),
-  });
-
-  return {
-    fixed: fixed.fixed,
-    localPath: fixed.localPath,
-    matched: selections.length,
-    riskyManagedOutputs: fixed.riskyManagedOutputs,
-    skipped: fixed.skipped,
-    source,
-    syncedTools: fixed.syncedTools,
-    trackedPath: fixed.trackedPath,
-  };
+  if (!parsed.yes) {
+    throw new Error("audit fix mutation requires explicit --yes approval");
+  }
+  throw new Error(AUDIT_FIX_MUTATION_DISABLED_MESSAGE);
 }
 
 function printHelp() {
-  console.log(`fclt audit fix — preview inline-secret findings
+  console.log(`fclt audit fix — inspect fixable audit findings
 
 Usage:
   fclt audit fix <item> --report <exact-report.json> --dry-run
@@ -538,11 +434,11 @@ Usage:
   fclt audit fix --all --report <exact-report.json> [--report <second-report.json>] [--source <static|agent|combined>] --dry-run
 
 Notes:
-  - Mutation is temporarily disabled pending a durable two-file recovery protocol.
-  - --dry-run still verifies exact reports and lists matching findings without writing.
+  - Dry-run inspection remains available for exact persisted reports.
+  - Automated MCP mutation is temporarily disabled and --yes fails closed.
+  - Mutation remains disabled until exact source/destination objects stay descriptor-bound through commit.
   - Requires a fresh, content-hashed report-and-receipt envelope created by --report-root.
   - Legacy static-latest.json and agent-latest.json files never authorize mutation.
-  - --yes and direct internal fix calls fail closed without writing; the TUI does not offer a Fix action.
 `);
 }
 
@@ -567,12 +463,9 @@ export async function auditFixCommand(
       return;
     }
 
-    if (argv.includes("--dry-run")) {
-      console.log(
-        `Matched ${result.matched} inline MCP secret finding${result.matched === 1 ? "" : "s"} in the ${result.source} audit view.`
-      );
-      return;
-    }
+    console.log(
+      `Matched ${result.matched} inline MCP secret finding${result.matched === 1 ? "" : "s"} in the ${result.source} audit view.`
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
