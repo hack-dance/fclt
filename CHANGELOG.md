@@ -1,3 +1,9 @@
+## [2.25.3](https://github.com/hack-dance/fclt/compare/v2.25.2...v2.25.3) (2026-07-15)
+
+### Bug Fixes
+
+* bind Darwin x64 directory stream ABI ([65d92d3](https://github.com/hack-dance/fclt/commit/65d92d35d036c352fc3a4213e11e84a3b8297f9a))
+
 ## [2.25.2](https://github.com/hack-dance/fclt/compare/v2.25.1...v2.25.2) (2026-07-15)
 
 ### Bug Fixes
