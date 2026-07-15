@@ -48,8 +48,10 @@ describe("audit TUI arguments", () => {
       reviewMode: "static",
     });
 
-    expect(prompt).toContain("--dry-run` only to inspect exact matches");
-    expect(prompt).toContain("then propose the manual remediation");
+    expect(prompt).toContain(
+      "--dry-run`; use the same exact report with `--yes`"
+    );
+    expect(prompt).toContain("only after explicit user approval");
     expect(prompt).toContain(
       "Do not mutate MCP config or secrets without explicit user approval"
     );

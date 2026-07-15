@@ -115,8 +115,8 @@ as a separate explicit mutation.
 
 Verified-envelope loading is descriptor-bound and bounded before allocation.
 Oversize, sparse, growing, multiply linked, non-private, or identity-changing
-envelopes fail closed before they can authorize `audit safe` mutation or an
-`audit fix --dry-run` preview.
+envelopes fail closed before they can authorize `audit safe`, an `audit fix`
+mutation, or a zero-write fix preview.
 
 Persistence currently requires native descriptor-relative `openat`/`linkat`
 support (macOS or Linux). Other platforms fail closed rather than falling back
@@ -152,10 +152,14 @@ Compatibility note: older releases refreshed
 `.ai/.facult/audit/*-latest.json` and generated index audit annotations during
 every audit. Those implicit writes are removed. Legacy saved `*-latest.json`
 reports remain inspection artifacts only; they do not authorize `audit safe`
-or the former automated `audit fix` path. `audit safe` mutations require an
+or `audit fix`. `audit safe` mutations require an
 exact fresh content-addressed report, its receipt, and explicit `--yes`
-approval. `audit fix` is limited to zero-write `--dry-run` inspection pending
-mutation-time descriptor binding.
+approval. `audit fix --dry-run` remains zero-write. Supported `audit fix --yes`
+remediation holds the exact report-authorized canonical MCP source and local
+destination open with no-follow descriptors, stages owner-only bytes, and
+revalidates object identity, permissions, ancestors, source bytes, and the
+outside-Git policy at the atomic commit boundary. Drift, replacement, or
+cross-root redirection fails closed with rollback and no external artifacts.
 
 Root cause of the old behavior: the static and agent library runners wrote
 their latest reports before returning; both non-interactive CLI wrappers then
@@ -164,19 +168,21 @@ runners; and the typed MCP audit routed to the non-interactive CLI. Read-only
 entry points therefore shared persistence code instead of merely evaluating
 the scanned source.
 
-Suppress or preview reviewed findings:
+Suppress, preview, or remediate reviewed findings:
 
 ```bash
 fclt audit safe mcp:github --rule static:mcp-env-inline-secret --note "reviewed" \
   --report /absolute/isolated/audit-reports/static-<sha256>.json --yes
 fclt audit fix mcp:github \
   --report /absolute/isolated/audit-reports/static-<sha256>.json --dry-run
+fclt audit fix mcp:github \
+  --report /absolute/isolated/audit-reports/static-<sha256>.json --yes
 ```
 
 Receipts fail closed when their schema/capability revision, report hash,
 finding identities, source path identity or content revision, or 15-minute
 freshness window does not match. Supply both exact reports with repeated
-`--report` for a combined static/agent safe action or fix dry-run.
+`--report` for a combined static/agent safe action or fix selection.
 
 ## Secrets
 
