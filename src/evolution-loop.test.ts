@@ -1113,7 +1113,8 @@ describe("evolution loop", () => {
       now: () => new Date("2026-01-03T01:00:00.000Z"),
     });
     const proposalActivity = failed.activity?.items.find(
-      (item) => item.technical.proposalId === proposalId
+      (item) =>
+        item.kind === "proposal" && item.technical.proposalId === proposalId
     );
     expect(failed.status).toBe("failed");
     expect(proposalActivity?.actionLocator).toBeDefined();
