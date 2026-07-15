@@ -3186,7 +3186,7 @@ async function loopCommand(argv: string[]) {
           `Unknown activity history event type: ${invalidEventType}`
         );
       }
-      const result = await queryActivityHistory({
+      const queryArgs = {
         homeDir,
         rootDir: historyRootDir,
         scope: allScopes ? "all" : loopScope,
@@ -3198,7 +3198,13 @@ async function loopCommand(argv: string[]) {
           eventTypes as import("./activity-history").ActivityHistoryEventType[],
         limit: parseIntegerFlag(commandArgs, "--limit"),
         cursor: parseStringFlag(commandArgs, "--cursor"),
-      });
+      } as const;
+      const result = allScopes
+        ? await withFacultRootScope(
+            { rootDir: historyRootDir, scope: "global" },
+            async () => await queryActivityHistory(queryArgs)
+          )
+        : await queryActivityHistory(queryArgs);
       console.log(
         json ? JSON.stringify(result, null, 2) : renderActivityHistory(result)
       );
