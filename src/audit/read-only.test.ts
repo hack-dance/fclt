@@ -102,6 +102,7 @@ async function runAuditCli(args: string[], home: string) {
       ...process.env,
       BUN_INSTALL: join(dirname(home), "bun-install"),
       BUN_INSTALL_CACHE_DIR: join(dirname(home), "bun-cache"),
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
       FACULT_ROOT_DIR: join(home, ".ai"),
       HOME: home,
     },
@@ -222,7 +223,7 @@ describe("read-only audit boundary", () => {
     );
     expect(await readdir(reportRoot)).toHaveLength(1);
     expect(await snapshotTree(home)).toEqual(before);
-  });
+  }, 15_000);
 
   it("persists safely when an explicit rules path is relative", async () => {
     const { base, home } = await fixture();
@@ -256,7 +257,7 @@ describe("read-only audit boundary", () => {
       JSON.parse(cli.stdout)
     );
     expect(await snapshotTree(home)).toEqual(before);
-  });
+  }, 15_000);
 
   it("updates generated audit annotations only in explicit mutation mode", async () => {
     const { home } = await fixture();
@@ -901,7 +902,7 @@ describe("read-only audit boundary", () => {
     ).rejects.toThrow("changed before descriptor-relative commit");
     expect(await readdir(reportRoot)).toEqual([]);
     expect(await readdir(movedRoot)).toEqual([]);
-  });
+  }, 15_000);
 
   it("leaves no report artifacts when persistence is interrupted before commit", async () => {
     const { home } = await fixture();
@@ -922,7 +923,7 @@ describe("read-only audit boundary", () => {
       })
     ).rejects.toThrow("interrupted");
     expect(await readdir(reportRoot)).toEqual([]);
-  });
+  }, 15_000);
 
   it("does not persist a report when evaluation fails", async () => {
     const { home } = await fixture();

@@ -850,6 +850,7 @@ describe("bundled fclt MCP plugin", () => {
       env: {
         BUN_INSTALL: join(base, "bun-install"),
         BUN_INSTALL_CACHE_DIR: join(base, "bun-cache"),
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
         FACULT_ROOT_DIR: join(home, ".ai"),
         FCLT_BIN: wrapper,
         HOME: home,
