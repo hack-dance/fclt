@@ -1,4 +1,3 @@
-import { CString, dlopen, read as ffiRead, type Pointer } from "bun:ffi";
 import { createHash } from "node:crypto";
 import {
   type BigIntStats,
@@ -25,6 +24,7 @@ import {
 } from "node:path";
 import { caseFold } from "unicode-case-folding";
 import { getAdapter } from "./adapters";
+import { openReadOnlyAt, readDirectoryEntriesAt } from "./audit/safe-openat";
 
 declare const FCLT_COMPILED_VERSION: string | undefined;
 
@@ -460,54 +460,6 @@ function stableReadFlags(): number {
   return constants.O_RDONLY + noFollow + nonBlocking + closeOnExec;
 }
 
-const NATIVE_DIRECTORY_FUNCTIONS = {
-  closedir: { args: ["ptr"], returns: "i32" },
-  dup: { args: ["i32"], returns: "i32" },
-  fdopendir: { args: ["i32"], returns: "ptr" },
-  memset: { args: ["ptr", "i32", "u64"], returns: "ptr" },
-  openat: { args: ["i32", "ptr", "i32"], returns: "i32" },
-  readdir: { args: ["ptr"], returns: "ptr" },
-  rewinddir: { args: ["ptr"], returns: "void" },
-} as const;
-
-function unsupportedDirectoryScan(): never {
-  throw new Error(
-    "Safe deployment-state directory scans are unsupported on this platform."
-  );
-}
-
-function openNativeDirectoryLibrary() {
-  try {
-    if (process.platform === "darwin") {
-      const library = dlopen("/usr/lib/libSystem.B.dylib", {
-        ...NATIVE_DIRECTORY_FUNCTIONS,
-        __error: { args: [], returns: "ptr" },
-      } as const);
-      return {
-        close: () => library.close(),
-        errnoPointer: () => library.symbols.__error(),
-        symbols: library.symbols,
-      };
-    }
-    if (process.platform === "linux") {
-      const library = dlopen("libc.so.6", {
-        ...NATIVE_DIRECTORY_FUNCTIONS,
-        __errno_location: { args: [], returns: "ptr" },
-      } as const);
-      return {
-        close: () => library.close(),
-        errnoPointer: () => library.symbols.__errno_location(),
-        symbols: library.symbols,
-      };
-    }
-    return unsupportedDirectoryScan();
-  } catch {
-    return unsupportedDirectoryScan();
-  }
-}
-
-type NativeDirectoryLibrary = ReturnType<typeof openNativeDirectoryLibrary>;
-
 function stableDirectoryFlags(): number {
   const directory = constants.O_DIRECTORY;
   const noFollow = constants.O_NOFOLLOW;
@@ -528,92 +480,33 @@ function stableDirectoryFlags(): number {
   return constants.O_RDONLY + directory + noFollow + closeOnExec;
 }
 
-function directoryEntryNameOffset(): number {
-  if (process.platform === "darwin") {
-    return 21;
-  }
-  if (process.platform === "linux") {
-    return 19;
-  }
-  throw new Error(
-    "Safe deployment-state directory scans are unsupported on this platform."
-  );
-}
-
 function readDirectoryEntriesFromDescriptor(args: {
   directory: string;
   handle: FileHandle;
-  native: NativeDirectoryLibrary;
 }): string[] {
-  const duplicate = args.native.symbols.dup(args.handle.fd);
-  if (duplicate < 0) {
-    throw new Error("Deployment state directory cannot be enumerated safely.");
-  }
-  let stream: Pointer | null = null;
-  try {
-    stream = args.native.symbols.fdopendir(duplicate);
-    if (!stream) {
-      closeSync(duplicate);
+  const entries = readDirectoryEntriesAt({
+    directoryFd: args.handle.fd,
+    maxEntries: MAX_DEPLOYMENT_STATE_RECORDS + 1,
+  }).map((entry) => entry.name);
+  for (const entry of entries) {
+    if (
+      !entry ||
+      entry.includes("\0") ||
+      entry.includes("/") ||
+      entry.includes("\\") ||
+      entry.includes("\uFFFD")
+    ) {
       throw new Error(
-        "Deployment state directory cannot be enumerated safely."
+        `Unsafe entry in deployment state directory: ${args.directory}`
       );
     }
-    args.native.symbols.rewinddir(stream);
-    const errnoPointer = args.native.errnoPointer();
-    if (!errnoPointer) {
-      throw new Error(
-        "Deployment state directory cannot be enumerated safely."
-      );
-    }
-    const entries: string[] = [];
-    while (true) {
-      args.native.symbols.memset(errnoPointer, 0, 4);
-      const entryPointer = args.native.symbols.readdir(stream);
-      if (!entryPointer) {
-        if (ffiRead.i32(errnoPointer) !== 0) {
-          throw new Error(
-            "Deployment state directory cannot be enumerated safely."
-          );
-        }
-        break;
-      }
-      const entry = new CString(
-        entryPointer,
-        directoryEntryNameOffset()
-      ).toString();
-      if (entry === "." || entry === "..") {
-        continue;
-      }
-      if (
-        !entry ||
-        entry.includes("\0") ||
-        entry.includes("/") ||
-        entry.includes("\\") ||
-        entry.includes("\uFFFD")
-      ) {
-        throw new Error(
-          `Unsafe entry in deployment state directory: ${args.directory}`
-        );
-      }
-      entries.push(entry);
-      if (entries.length > MAX_DEPLOYMENT_STATE_RECORDS) {
-        throw new Error(
-          `Deployment state directory exceeds the ${MAX_DEPLOYMENT_STATE_RECORDS}-record limit.`
-        );
-      }
-    }
-    const closeResult = args.native.symbols.closedir(stream);
-    stream = null;
-    if (closeResult !== 0) {
-      throw new Error("Deployment state directory cannot be closed safely.");
-    }
-    return entries.sort();
-  } catch (error) {
-    if (stream) {
-      args.native.symbols.closedir(stream);
-    }
-    throw error;
   }
+  if (entries.length > MAX_DEPLOYMENT_STATE_RECORDS) {
+    throw new Error(
+      `Deployment state directory exceeds the ${MAX_DEPLOYMENT_STATE_RECORDS}-record limit.`
+    );
+  }
+  return entries;
 }
 
 function assertStableRegularFileStat(
@@ -783,16 +676,16 @@ async function readAnchoredRegularFile(args: {
   directory: string;
   directoryHandle: FileHandle;
   entry: string;
-  native: NativeDirectoryLibrary;
   root: string;
 }): Promise<Uint8Array> {
   const label = "Deployment state";
-  const descriptor = args.native.symbols.openat(
-    args.directoryHandle.fd,
-    Buffer.from(`${args.entry}\0`),
-    stableReadFlags()
-  );
-  if (descriptor < 0) {
+  let descriptor: number;
+  try {
+    descriptor = openReadOnlyAt({
+      directoryFd: args.directoryHandle.fd,
+      fileName: args.entry,
+    });
+  } catch {
     throw new Error(
       `${label} must be openable through its anchored directory as a regular non-symlink file.`
     );
@@ -1115,13 +1008,11 @@ async function scanDeploymentStates(args: {
   records: ScannedDeploymentState[];
 }> {
   const directoryFlags = stableDirectoryFlags();
-  const native = openNativeDirectoryLibrary();
   let initialPathStat: BigIntStats | null;
   try {
     initialPathStat = await lstat(args.directory, { bigint: true });
   } catch (error) {
     if (!isErrnoException(error, "ENOENT")) {
-      native.close();
       throw new Error(
         `Deployment state directory cannot be inspected safely: ${args.directory}`
       );
@@ -1129,11 +1020,9 @@ async function scanDeploymentStates(args: {
     initialPathStat = null;
   }
   if (!initialPathStat) {
-    native.close();
     return { directoryHash: null, existing: null, records: [] };
   }
   if (!initialPathStat.isDirectory() || initialPathStat.isSymbolicLink()) {
-    native.close();
     throw new Error(
       `Deployment state directory must be a non-symlink directory: ${args.directory}`
     );
@@ -1145,7 +1034,6 @@ async function scanDeploymentStates(args: {
   try {
     directoryHandle = await open(args.directory, directoryFlags);
   } catch {
-    native.close();
     throw new Error(
       `Deployment state directory must be openable as a non-symlink directory: ${args.directory}`
     );
@@ -1168,7 +1056,6 @@ async function scanDeploymentStates(args: {
     const entries = readDirectoryEntriesFromDescriptor({
       directory: args.directory,
       handle: directoryHandle,
-      native,
     });
     await args.afterEnumerationForTest?.();
     let totalBytes = 0;
@@ -1183,7 +1070,6 @@ async function scanDeploymentStates(args: {
         directory: args.directory,
         directoryHandle,
         entry,
-        native,
         root: args.directory,
       });
       totalBytes += bytes.byteLength;
@@ -1198,7 +1084,6 @@ async function scanDeploymentStates(args: {
     const afterEntries = readDirectoryEntriesFromDescriptor({
       directory: args.directory,
       handle: directoryHandle,
-      native,
     });
     const afterStat = await directoryHandle.stat({ bigint: true });
     if (
@@ -1213,11 +1098,7 @@ async function scanDeploymentStates(args: {
       root: args.stateRoot,
     });
   } finally {
-    try {
-      await directoryHandle.close();
-    } finally {
-      native.close();
-    }
+    await directoryHandle.close();
   }
 
   for (const { bytes, path } of rawRecords) {
