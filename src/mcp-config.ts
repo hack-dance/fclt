@@ -25,6 +25,33 @@ export function isInlineMcpSecretValue(value: unknown): value is string {
   return true;
 }
 
+export function extractAuditMcpServersObject(
+  parsed: unknown
+): Record<string, unknown> | null {
+  if (!isPlainObject(parsed)) {
+    return null;
+  }
+  const raw = parsed as Record<string, unknown>;
+  if (isPlainObject(raw.mcpServers)) {
+    return raw.mcpServers;
+  }
+  for (const [key, value] of Object.entries(raw)) {
+    if (key.endsWith(".mcpServers") && isPlainObject(value)) {
+      return value;
+    }
+  }
+  if (isPlainObject(raw["mcp.servers"])) {
+    return raw["mcp.servers"];
+  }
+  if (isPlainObject(raw.servers)) {
+    return raw.servers;
+  }
+  if (isPlainObject(raw.mcp) && isPlainObject(raw.mcp.servers)) {
+    return raw.mcp.servers;
+  }
+  return null;
+}
+
 export function extractServersObject(
   parsed: unknown
 ): Record<string, unknown> | null {
@@ -34,7 +61,7 @@ export function extractServersObject(
   const raw = parsed as Record<string, unknown>;
   for (const [key, value] of Object.entries(raw)) {
     if (key.endsWith(".mcpServers") && isPlainObject(value)) {
-      return value as Record<string, unknown>;
+      return value;
     }
   }
   const servers =

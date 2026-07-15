@@ -9,7 +9,10 @@ import {
 } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
-import { isInlineMcpSecretValue } from "../mcp-config";
+import {
+  extractAuditMcpServersObject,
+  isInlineMcpSecretValue,
+} from "../mcp-config";
 import {
   facultConfigPath,
   facultContextRootDir,
@@ -398,36 +401,6 @@ function shouldApplyRule(
     return true;
   }
   return t === target;
-}
-
-function extractMcpServersObject(
-  parsed: unknown
-): Record<string, unknown> | null {
-  if (!isPlainObject(parsed)) {
-    return null;
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (isPlainObject(obj.mcpServers)) {
-    return obj.mcpServers as Record<string, unknown>;
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    if (k.endsWith(".mcpServers") && isPlainObject(v)) {
-      return v as Record<string, unknown>;
-    }
-  }
-  if (isPlainObject(obj["mcp.servers"])) {
-    return obj["mcp.servers"] as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.servers)) {
-    return obj.servers as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.mcp)) {
-    const mcp = obj.mcp as Record<string, unknown>;
-    if (isPlainObject(mcp.servers)) {
-      return mcp.servers as Record<string, unknown>;
-    }
-  }
-  return null;
 }
 
 function mcpSafeAuditText(definition: unknown): string {
@@ -1134,7 +1107,7 @@ export async function evaluateStaticAudit(opts?: {
       continue;
     }
 
-    const serversObj = extractMcpServersObject(parsed);
+    const serversObj = extractAuditMcpServersObject(parsed);
     if (!serversObj) {
       continue;
     }

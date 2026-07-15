@@ -130,6 +130,7 @@ async function makeAuthorizedFixture(
     localServer?: Record<string, unknown>;
     serverName?: string;
     sourceContainer?: "mcp.servers" | "servers";
+    sourceRoot?: Record<string, unknown>;
   }
 ) {
   const home = await makeTempHome();
@@ -138,14 +139,17 @@ async function makeAuthorizedFixture(
   const localPath = join(root, "mcp", "servers.local.json");
   const serverName = options?.serverName ?? "github";
   const sourceContainer = options?.sourceContainer ?? "servers";
-  await writeJson(trackedPath, {
-    [sourceContainer]: {
-      [serverName]: {
-        command: "fixture-command",
-        env: { GITHUB_PERSONAL_ACCESS_TOKEN: marker },
+  await writeJson(
+    trackedPath,
+    options?.sourceRoot ?? {
+      [sourceContainer]: {
+        [serverName]: {
+          command: "fixture-command",
+          env: { GITHUB_PERSONAL_ACCESS_TOKEN: marker },
+        },
       },
-    },
-  });
+    }
+  );
   if (options?.localServer) {
     await writeJson(localPath, {
       servers: { [serverName]: options.localServer },
@@ -469,6 +473,57 @@ describe("audit fix", () => {
       expect(result.fixed).toBe(1);
       expect(await Bun.file(fixture.trackedPath).json()).toEqual({
         "mcp.servers": { github: { command: "fixture-command" } },
+      });
+      expect(await Bun.file(fixture.localPath).json()).toEqual({
+        servers: {
+          github: {
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+            },
+          },
+        },
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("remediates the exact container selected by the static auditor", async () => {
+    const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
+      sourceRoot: {
+        servers: {
+          github: {
+            command: "decoy-command",
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "decoy_secret_1234567890" },
+          },
+        },
+        "mcp.servers": {
+          github: {
+            command: "fixture-command",
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+            },
+          },
+        },
+      },
+    });
+    try {
+      const result = await runAuditFix({
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect(result.fixed).toBe(1);
+      expect(await Bun.file(fixture.trackedPath).json()).toEqual({
+        servers: {
+          github: {
+            command: "decoy-command",
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "decoy_secret_1234567890" },
+          },
+        },
+        "mcp.servers": {
+          github: { command: "fixture-command" },
+        },
       });
       expect(await Bun.file(fixture.localPath).json()).toEqual({
         servers: {
