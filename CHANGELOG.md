@@ -1,3 +1,9 @@
+## [2.25.4](https://github.com/hack-dance/fclt/compare/v2.25.3...v2.25.4) (2026-07-15)
+
+### Bug Fixes
+
+* publish npm provenance on GitHub runner ([b83a8d7](https://github.com/hack-dance/fclt/commit/b83a8d76635ad745c0a673258646f0b6d332f54a))
+
 ## [2.25.3](https://github.com/hack-dance/fclt/compare/v2.25.2...v2.25.3) (2026-07-15)
 
 ### Bug Fixes
