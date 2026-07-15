@@ -101,6 +101,7 @@ async function runAuditCli(args: string[], home: string) {
     env: {
       ...process.env,
       BUN_INSTALL: join(dirname(home), "bun-install"),
+      BUN_INSTALL_CACHE_DIR: join(dirname(home), "bun-cache"),
       FACULT_ROOT_DIR: join(home, ".ai"),
       HOME: home,
     },

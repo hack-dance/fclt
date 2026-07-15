@@ -12,6 +12,7 @@ import {
   type AuditReportReceipt,
   loadVerifiedAuditReportEnvelope,
 } from "./report-persistence";
+import type { PrivateDirectoryReceiptBinding } from "./safe-openat";
 import { loadAuditSuppressions, recordAuditSuppressions } from "./suppressions";
 import type {
   AuditFinding,
@@ -88,6 +89,47 @@ function suppressionStoreExpectedSha256(
     throw new Error("Audit report suppression store identity is ambiguous");
   }
   return evaluated.sha256;
+}
+
+function suppressionStoreDirectoryBinding(
+  receipt: AuditReportReceipt,
+  storePath: string
+): PrivateDirectoryReceiptBinding {
+  const absence = receipt.sourceSnapshot.absentPaths.find(
+    (entry) => entry.requestedPath === storePath
+  );
+  if (absence) {
+    const finalSegment = absence.relativeSegments.at(-1);
+    if (
+      finalSegment !== basename(storePath) ||
+      absence.relativeSegments.length < 1
+    ) {
+      throw new Error("Audit report suppression absence proof is malformed");
+    }
+    return {
+      ancestorDev: String(absence.ancestorDev),
+      ancestorIno: String(absence.ancestorIno),
+      ancestorPath: absence.ancestorPath,
+      directorySegments: absence.relativeSegments.slice(0, -1),
+    };
+  }
+  const requested = receipt.sourceSnapshot.requestedPaths.find(
+    (entry) => entry.requestedPath === storePath && entry.kind === "file"
+  );
+  const parentPath = dirname(storePath);
+  const parent = requested?.lexicalChain.findLast(
+    (entry) => entry.path === parentPath && entry.kind === "directory"
+  );
+  const canonicalParent = requested ? dirname(requested.canonicalPath) : null;
+  if (!(requested && parent && canonicalParent)) {
+    throw new Error("Audit report suppression parent binding is missing");
+  }
+  return {
+    ancestorDev: parent.dev,
+    ancestorIno: parent.ino,
+    ancestorPath: canonicalParent,
+    directorySegments: [],
+  };
 }
 
 async function activeSuppressionStorePath(homeDir: string): Promise<string> {
@@ -492,6 +534,7 @@ export async function runAuditSafe(args: {
   let agentReport: AgentAuditReport | null = null;
   let suppressionStorePath: string | null = null;
   let expectedSuppressionStoreSha256: string | null | undefined;
+  let suppressionDirectoryBinding: PrivateDirectoryReceiptBinding | null = null;
   for (const reportPath of parsed.reportPaths) {
     const envelope = await loadVerifiedAuditReportEnvelope<
       StaticAuditReport | AgentAuditReport
@@ -501,6 +544,10 @@ export async function runAuditSafe(args: {
       envelope.receipt
     );
     const reportExpectedSuppressionStoreSha256 = suppressionStoreExpectedSha256(
+      envelope.receipt,
+      reportSuppressionStorePath
+    );
+    const reportSuppressionDirectoryBinding = suppressionStoreDirectoryBinding(
       envelope.receipt,
       reportSuppressionStorePath
     );
@@ -518,6 +565,14 @@ export async function runAuditSafe(args: {
       throw new Error("Exact audit reports bind different suppression states");
     }
     expectedSuppressionStoreSha256 = reportExpectedSuppressionStoreSha256;
+    if (
+      suppressionDirectoryBinding !== null &&
+      JSON.stringify(suppressionDirectoryBinding) !==
+        JSON.stringify(reportSuppressionDirectoryBinding)
+    ) {
+      throw new Error("Exact audit reports bind different suppression parents");
+    }
+    suppressionDirectoryBinding = reportSuppressionDirectoryBinding;
     if (report.mode === "static") {
       if (staticReport) {
         throw new Error("Only one exact static audit report may be supplied");
@@ -606,6 +661,7 @@ export async function runAuditSafe(args: {
   const saved = await recordAuditSuppressions({
     homeDir,
     expectedPriorSha256: expectedSuppressionStoreSha256,
+    directoryBinding: suppressionDirectoryBinding!,
     selected: uniqueSelections,
     note: parsed.note,
     storePath: suppressionStorePath!,

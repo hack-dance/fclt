@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+  chmod,
+  link,
   mkdir,
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -159,6 +162,78 @@ describe("audit suppressions", () => {
       })
     ).rejects.toThrow("open failed closed");
     expect(await readFile(victimPath, "utf8")).toBe("untouched\n");
+  });
+
+  it("does not chmod a preplaced hard-linked transaction lock", async () => {
+    tempHome = await makeTempHome();
+    const storeDirectory = join(tempHome, ".ai", ".facult", "audit");
+    const victimPath = join(tempHome, "victim.txt");
+    await mkdir(storeDirectory, { recursive: true });
+    await writeFile(victimPath, "untouched\n");
+    await chmod(victimPath, 0o640);
+    await link(victimPath, join(storeDirectory, ".suppressions.json.lock"));
+    const result: AuditItemResult = {
+      item: "alpha",
+      type: "skill",
+      path: "/tmp/alpha",
+      passed: false,
+      findings: [
+        {
+          severity: "medium",
+          ruleId: "non-https-url",
+          message: "Safe in local dev",
+        },
+      ],
+    };
+
+    await expect(
+      recordAuditSuppressions({
+        homeDir: tempHome,
+        selected: [{ result, finding: result.findings[0]! }],
+      })
+    ).rejects.toThrow("already active");
+    expect((await stat(victimPath)).mode % 0o1000).toBe(0o640);
+    expect(await readFile(victimPath, "utf8")).toBe("untouched\n");
+  });
+
+  it("rejects a replacement of the receipt-recorded ancestor before binding", async () => {
+    tempHome = await makeTempHome();
+    const ancestorPath = join(tempHome, ".ai", ".facult");
+    const movedAncestor = join(tempHome, ".ai", ".facult-moved");
+    await mkdir(ancestorPath, { recursive: true });
+    const ancestor = await stat(ancestorPath);
+    await rename(ancestorPath, movedAncestor);
+    await mkdir(ancestorPath);
+    const result: AuditItemResult = {
+      item: "alpha",
+      type: "skill",
+      path: "/tmp/alpha",
+      passed: false,
+      findings: [
+        {
+          severity: "medium",
+          ruleId: "non-https-url",
+          message: "Safe in local dev",
+        },
+      ],
+    };
+
+    await expect(
+      recordAuditSuppressions({
+        directoryBinding: {
+          ancestorDev: String(ancestor.dev),
+          ancestorIno: String(ancestor.ino),
+          ancestorPath,
+          directorySegments: ["audit"],
+        },
+        expectedPriorSha256: null,
+        homeDir: tempHome,
+        selected: [{ result, finding: result.findings[0]! }],
+      })
+    ).rejects.toThrow("root is unsafe");
+    expect(
+      await Bun.file(join(ancestorPath, "audit", "suppressions.json")).exists()
+    ).toBe(false);
   });
 
   it("rejects a parent swap before the descriptor-relative commit", async () => {

@@ -14,6 +14,7 @@ import type { AgentAuditReport } from "./agent";
 import {
   auditReportPersistenceSupported,
   openOrCreatePrivateDirectory,
+  type PrivateDirectoryReceiptBinding,
   replacePrivateFileAt,
 } from "./safe-openat";
 import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
@@ -196,7 +197,9 @@ function privateDirectoryIsSafe(metadata: Stats): boolean {
   );
 }
 
-async function canonicalDirectoryForCreation(path: string): Promise<string> {
+async function currentDirectoryBindingForCreation(
+  path: string
+): Promise<PrivateDirectoryReceiptBinding> {
   let ancestor = path;
   while (true) {
     try {
@@ -211,7 +214,13 @@ async function canonicalDirectoryForCreation(path: string): Promise<string> {
     }
   }
   const canonicalAncestor = await realpath(ancestor);
-  return resolve(canonicalAncestor, relative(ancestor, path));
+  const metadata = lstatSync(canonicalAncestor);
+  return {
+    ancestorDev: String(metadata.dev),
+    ancestorIno: String(metadata.ino),
+    ancestorPath: canonicalAncestor,
+    directorySegments: relative(ancestor, path).split("/").filter(Boolean),
+  };
 }
 
 export async function loadAuditSuppressions(
@@ -235,6 +244,7 @@ export async function loadAuditSuppressions(
 export async function recordAuditSuppressions(args: {
   /** @internal Adversarial test hook; production callers must not set this. */
   beforeStoreCommit?: () => Promise<void>;
+  directoryBinding?: PrivateDirectoryReceiptBinding;
   expectedPriorSha256?: string | null;
   selected: { result: AuditItemResult; finding: AuditFinding }[];
   homeDir?: string;
@@ -252,8 +262,13 @@ export async function recordAuditSuppressions(args: {
     storePath: args.storePath,
   });
   const storeDirectory = dirname(storePath);
-  const canonicalPath = await canonicalDirectoryForCreation(storeDirectory);
-  const directoryFd = openOrCreatePrivateDirectory(canonicalPath);
+  const directoryBinding =
+    args.directoryBinding ??
+    (await currentDirectoryBindingForCreation(storeDirectory));
+  const canonicalPath = normalize(
+    join(directoryBinding.ancestorPath, ...directoryBinding.directorySegments)
+  );
+  const directoryFd = openOrCreatePrivateDirectory(directoryBinding);
   const pathMetadata = lstatSync(canonicalPath);
   const lexicalCanonicalPath = await realpath(storeDirectory).catch(() => null);
   if (

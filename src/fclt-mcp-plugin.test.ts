@@ -849,6 +849,7 @@ describe("bundled fclt MCP plugin", () => {
     const child = spawnConfiguredMcp({
       env: {
         BUN_INSTALL: join(base, "bun-install"),
+        BUN_INSTALL_CACHE_DIR: join(base, "bun-cache"),
         FACULT_ROOT_DIR: join(home, ".ai"),
         FCLT_BIN: wrapper,
         HOME: home,

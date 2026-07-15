@@ -8,6 +8,7 @@ import {
   rename,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -325,6 +326,10 @@ test("requested paths reject same-target lexical symlink replacement", async () 
   );
   expect(aliasIdentity?.birthtimeNs).toMatch(NON_NEGATIVE_DECIMAL_RE);
   expect(aliasIdentity?.ctimeNs).toMatch(POSITIVE_DECIMAL_RE);
+  expect(aliasIdentity?.parentCtimeNs).toMatch(POSITIVE_DECIMAL_RE);
+  expect(aliasIdentity?.parentDev).toMatch(NON_NEGATIVE_DECIMAL_RE);
+  expect(aliasIdentity?.parentIno).toMatch(POSITIVE_DECIMAL_RE);
+  expect(aliasIdentity?.parentMtimeNs).toMatch(NON_NEGATIVE_DECIMAL_RE);
   expect(aliasIdentity?.kind).toBe("symlink");
   expect(aliasIdentity?.linkTarget).toBe(targetDirectory);
   expect(() => assertAuditSourceSnapshot(snapshot)).not.toThrow();
@@ -336,6 +341,45 @@ test("requested paths reject same-target lexical symlink replacement", async () 
     "requested path changed"
   );
   await expect(tracker.protect([requested])).rejects.toThrow(
+    "requested path changed"
+  );
+});
+
+test("requested paths bind a symlink replacement through its parent generation", async () => {
+  const { root, targetDirectory } = await makeFileFixture(
+    "fclt-provenance-parent-bound-link-replacement-"
+  );
+  const aliasDirectory = join(root, "alias");
+  const requested = join(aliasDirectory, "config.json");
+  await symlink(targetDirectory, aliasDirectory, "dir");
+  const tracker = new AuditSourceTracker();
+  await tracker.read(requested);
+  const snapshot = tracker.snapshot();
+  const recorded = snapshot.requestedPaths[0]!.lexicalChain.find(
+    (component) => component.path === aliasDirectory
+  )!;
+
+  await utimes(root, new Date(1), new Date(1));
+  await rm(aliasDirectory);
+  await symlink(targetDirectory, aliasDirectory, "dir");
+  const replacementTracker = new AuditSourceTracker();
+  await replacementTracker.read(requested);
+  const replacement = replacementTracker
+    .snapshot()
+    .requestedPaths[0]!.lexicalChain.find(
+      (component) => component.path === aliasDirectory
+    )!;
+  expect(replacement.parentCtimeNs).not.toBe(recorded.parentCtimeNs);
+
+  recorded.birthtimeNs = replacement.birthtimeNs;
+  recorded.ctimeNs = replacement.ctimeNs;
+  recorded.dev = replacement.dev;
+  recorded.ino = replacement.ino;
+  recorded.kind = replacement.kind;
+  recorded.linkTarget = replacement.linkTarget;
+  recomputeValidationContract(snapshot);
+
+  await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "requested path changed"
   );
 });

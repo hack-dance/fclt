@@ -17,7 +17,7 @@ import {
   realpathSync,
   type Stats,
 } from "node:fs";
-import { isAbsolute, normalize, parse, relative, sep } from "node:path";
+import { isAbsolute, join, normalize, sep } from "node:path";
 
 const DIRECTORY_ENTRY_TYPES = {
   blockDevice: 6,
@@ -538,10 +538,23 @@ function privateDirectoryComponentIsSafe(metadata: Stats): boolean {
   );
 }
 
-export function openOrCreatePrivateDirectory(directoryPath: string): number {
+export interface PrivateDirectoryReceiptBinding {
+  ancestorDev: string;
+  ancestorIno: string;
+  ancestorPath: string;
+  directorySegments: string[];
+}
+
+export function openOrCreatePrivateDirectory(
+  binding: PrivateDirectoryReceiptBinding
+): number {
   if (
-    !isAbsolute(directoryPath) ||
-    normalize(directoryPath) !== directoryPath ||
+    !isAbsolute(binding.ancestorPath) ||
+    normalize(binding.ancestorPath) !== binding.ancestorPath ||
+    binding.directorySegments.some(
+      (segment) =>
+        !segment || segment === "." || segment === ".." || segment.includes(sep)
+    ) ||
     !auditReportPersistenceSupported()
   ) {
     throw new Error("Private directory path must be canonical and supported");
@@ -560,19 +573,23 @@ export function openOrCreatePrivateDirectory(directoryPath: string): number {
   };
   const libc = dlopen(configuration.library, definitions);
   const symbols = libc.symbols as unknown as DirectoryMutationSymbols;
-  const root = parse(directoryPath).root;
-  const segments = relative(root, directoryPath).split(sep).filter(Boolean);
   const directoryFlags =
     constants.O_RDONLY +
     (constants.O_DIRECTORY ?? 0) +
     (constants.O_NOFOLLOW ?? 0) +
     ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ?? 0);
-  let currentFd = openSync(root, directoryFlags);
+  let currentFd = openSync(binding.ancestorPath, directoryFlags);
   try {
-    if (!privateDirectoryComponentIsSafe(fstatSync(currentFd))) {
+    const ancestorMetadata = fstatSync(currentFd);
+    if (
+      !privateDirectoryComponentIsSafe(ancestorMetadata) ||
+      String(ancestorMetadata.dev) !== binding.ancestorDev ||
+      String(ancestorMetadata.ino) !== binding.ancestorIno ||
+      realpathSync(binding.ancestorPath) !== binding.ancestorPath
+    ) {
       throw new Error("Private directory root is unsafe");
     }
-    for (const segment of segments) {
+    for (const segment of binding.directorySegments) {
       const name = Buffer.from(`${segment}\0`);
       let nextFd = symbols.openat(currentFd, ptr(name), directoryFlags, 0);
       if (nextFd < 0) {
@@ -590,6 +607,9 @@ export function openOrCreatePrivateDirectory(directoryPath: string): number {
       currentFd = nextFd;
     }
     const descriptorMetadata = fstatSync(currentFd);
+    const directoryPath = normalize(
+      join(binding.ancestorPath, ...binding.directorySegments)
+    );
     const pathMetadata = lstatSync(directoryPath);
     if (
       pathMetadata.isSymbolicLink() ||
@@ -759,17 +779,35 @@ export async function replacePrivateFileAt(args: {
     lockFd = symbols.openat(
       args.directoryFd,
       ptr(lockName),
-      constants.O_RDWR +
-        constants.O_CREAT +
+      configuration.createExclusive +
         (constants.O_NOFOLLOW ?? 0) +
         ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ??
           0),
       0o600
     );
+    const createdLock = lockFd >= 0;
+    if (createdLock && symbols.fchmod(lockFd, 0o600) !== 0) {
+      throw new Error(`Could not secure private file lock: ${args.fileName}`);
+    }
+    if (!createdLock) {
+      lockFd = symbols.openat(
+        args.directoryFd,
+        ptr(lockName),
+        constants.O_RDWR +
+          (constants.O_NOFOLLOW ?? 0) +
+          (constants.O_NONBLOCK ?? 0) +
+          ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ??
+            0),
+        0
+      );
+    }
+    const lockMetadata = lockFd >= 0 ? fstatSync(lockFd) : null;
     if (
       lockFd < 0 ||
-      symbols.fchmod(lockFd, 0o600) !== 0 ||
-      !privateMutableFileIsSafe(fstatSync(lockFd), args.maxBytes) ||
+      !lockMetadata ||
+      !privateMutableFileIsSafe(lockMetadata, args.maxBytes) ||
+      lockMetadata.size !== 0 ||
+      permissionBits(lockMetadata.mode) !== 0o600 ||
       symbols.flock(lockFd, 6) !== 0
     ) {
       throw new Error(
