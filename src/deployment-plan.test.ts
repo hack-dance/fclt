@@ -7,6 +7,8 @@ import {
   readdir,
   readFile,
   readlink,
+  realpath,
+  rename,
   rm,
   symlink,
 } from "node:fs/promises";
@@ -16,11 +18,13 @@ import {
   buildDeploymentPlan,
   type DeploymentPlanV1,
   type DeploymentStateV1,
+  readStableRegularFileForTest,
   serializeDeploymentState,
 } from "./deployment-plan";
 
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
-const DESTINATION_IDENTITY_RE = /^physical-path-v2:.+/;
+const DESTINATION_IDENTITY_RE =
+  /^physical-path-v3:(?:posix|win32):[A-Za-z0-9_-]+$/;
 const DESTINATION_COLLISION_KEY_RE = /^case-folded-path-v1:.+/;
 const SOURCE_DIR_SUFFIX_RE = /\/src$/;
 const DOLLAR = "$";
@@ -622,6 +626,107 @@ describe("immutable per-asset deployment planning", () => {
     ).toBe(deploymentStateWrite(initial).path);
   });
 
+  it("keeps POSIX backslash paths lossless while failing closed on portable collisions", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = await createFixture();
+    const backslashRoot = join(fixture.root, "tool\\home");
+    const slashRoot = join(fixture.root, "tool", "home");
+    await mkdir(backslashRoot, { recursive: true });
+    await mkdir(slashRoot, { recursive: true });
+    const [backslashStat, slashStat] = await Promise.all([
+      lstat(backslashRoot),
+      lstat(slashRoot),
+    ]);
+    expect(backslashRoot).not.toBe(slashRoot);
+    expect(await readdir(fixture.root)).toContain("tool\\home");
+    expect([backslashStat.dev, backslashStat.ino]).not.toEqual([
+      slashStat.dev,
+      slashStat.ino,
+    ]);
+
+    const beforeInitialPlan = await snapshotTree(fixture.root);
+    let initial: Readonly<DeploymentPlanV1>;
+    try {
+      initial = await buildDeploymentPlan({
+        ...planOptions(fixture),
+        targetRoot: backslashRoot,
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(
+        "identity cannot be established safely"
+      );
+      expect(await snapshotTree(fixture.root)).toEqual(beforeInitialPlan);
+      return;
+    }
+    await materializePlanFixture(initial);
+    const encodedPath = initial.binding.destination.identity.split(":").at(-1);
+    expect(encodedPath).toBeTruthy();
+    expect(Buffer.from(encodedPath ?? "", "base64url").toString("utf8")).toBe(
+      await realpath(initial.binding.destination.path)
+    );
+
+    const before = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        targetRoot: slashRoot,
+      })
+    ).rejects.toThrow("Case-folded destination collision is ambiguous");
+    expect(await snapshotTree(fixture.root)).toEqual(before);
+  });
+
+  it("keeps normalization-distinct paths lossless where the filesystem preserves them", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = await createFixture();
+    const composedRoot = join(fixture.root, "tool-\u00e9");
+    const decomposedRoot = join(fixture.root, "tool-e\u0301");
+    await mkdir(composedRoot, { recursive: true });
+    await mkdir(decomposedRoot, { recursive: true });
+    const [composedStat, decomposedStat] = await Promise.all([
+      lstat(composedRoot),
+      lstat(decomposedRoot),
+    ]);
+    if (
+      composedStat.dev === decomposedStat.dev &&
+      composedStat.ino === decomposedStat.ino
+    ) {
+      return;
+    }
+    const [composedRealpath, decomposedRealpath] = await Promise.all([
+      realpath(composedRoot),
+      realpath(decomposedRoot),
+    ]);
+    expect(composedRealpath).not.toBe(decomposedRealpath);
+    expect([composedStat.dev, composedStat.ino]).not.toEqual([
+      decomposedStat.dev,
+      decomposedStat.ino,
+    ]);
+
+    const initial = await buildDeploymentPlan({
+      ...planOptions(fixture),
+      targetRoot: composedRoot,
+    });
+    await materializePlanFixture(initial);
+    const encodedPath = initial.binding.destination.identity.split(":").at(-1);
+    expect(encodedPath).toBeTruthy();
+    expect(Buffer.from(encodedPath ?? "", "base64url").toString("utf8")).toBe(
+      await realpath(initial.binding.destination.path)
+    );
+    const before = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        targetRoot: decomposedRoot,
+      })
+    ).rejects.toThrow("Case-folded destination collision is ambiguous");
+    expect(await snapshotTree(fixture.root)).toEqual(before);
+  });
+
   it("coalesces case-only destination aliases on case-insensitive filesystems", async () => {
     const fixture = await createFixture();
     const initial = await buildDeploymentPlan(planOptions(fixture));
@@ -700,6 +805,49 @@ describe("immutable per-asset deployment planning", () => {
     expect(after).toEqual(before);
   });
 
+  it("rejects a corrupt persisted collision key before selecting case competitors", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const originalPath = initial.binding.destination.path;
+    const competitorPath = join(
+      fixture.targetRoot,
+      "instructions",
+      "work_units.md"
+    );
+    const [originalStat, competitorStat] = await Promise.all([
+      lstat(originalPath),
+      lstat(competitorPath).catch(() => null),
+    ]);
+    if (
+      competitorStat &&
+      originalStat.dev === competitorStat.dev &&
+      originalStat.ino === competitorStat.ino
+    ) {
+      return;
+    }
+
+    await Bun.write(competitorPath, await readFile(fixture.sourcePath));
+    const stateWrite = deploymentStateWrite(initial);
+    const corruptState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      binding: {
+        ...stateWrite.state.binding,
+        destinationCollisionKey: "case-folded-path-v1:corrupt",
+      },
+    };
+    await Bun.write(stateWrite.path, serializeDeploymentState(corruptState));
+    const before = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        destination: "instructions/work_units.md",
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow("Deployment state has a corrupt destination identity");
+    expect(await snapshotTree(fixture.root)).toEqual(before);
+  });
+
   it("supports multiple target roots in one shared deployment state root", async () => {
     const fixture = await createFixture();
     const first = await buildDeploymentPlan(planOptions(fixture));
@@ -735,6 +883,85 @@ describe("immutable per-asset deployment planning", () => {
     });
     expect(firstNoOp.operations.writes).toEqual([]);
     expect(secondNoOp.operations.writes).toEqual([]);
+  });
+
+  it("rejects descriptor replacement races for every planner file role", async () => {
+    const fixture = await createFixture();
+    const labels = [
+      "Canonical source",
+      "Current target",
+      "Deployment state",
+      "Rollback snapshot",
+    ];
+    for (const [index, label] of labels.entries()) {
+      const root = join(fixture.root, `replacement-race-${index}`);
+      const path = join(root, "observed");
+      const replacement = join(root, "replacement");
+      await mkdir(root);
+      await Bun.write(path, "before\n");
+      await Bun.write(replacement, "after!\n");
+      const beforeStat = await lstat(path);
+
+      await expect(
+        readStableRegularFileForTest({
+          afterOpen: async () => {
+            await rm(path);
+            await rename(replacement, path);
+          },
+          label,
+          path,
+          root,
+        })
+      ).rejects.toThrow(`${label} changed`);
+      const afterStat = await lstat(path);
+      expect([afterStat.dev, afterStat.ino]).not.toEqual([
+        beforeStat.dev,
+        beforeStat.ino,
+      ]);
+    }
+  });
+
+  it("rejects final-component symlink swaps for every planner file role", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = await createFixture();
+    const labels = [
+      "Canonical source",
+      "Current target",
+      "Deployment state",
+      "Rollback snapshot",
+    ];
+    for (const [index, label] of labels.entries()) {
+      const root = join(fixture.root, `symlink-race-${index}`);
+      const path = join(root, "observed");
+      const parked = join(root, "parked");
+      const replacement = join(root, "replacement");
+      await mkdir(root);
+      await Bun.write(path, "before\n");
+      await Bun.write(replacement, "after!\n");
+
+      await expect(
+        readStableRegularFileForTest({
+          afterOpen: async () => {
+            await rename(path, parked);
+            await symlink(basename(replacement), path);
+          },
+          label,
+          path,
+          root,
+        })
+      ).rejects.toThrow(`${label} changed`);
+      expect((await lstat(path)).isSymbolicLink()).toBe(true);
+      await expect(
+        readStableRegularFileForTest({
+          afterOpen: async () => undefined,
+          label,
+          path,
+          root,
+        })
+      ).rejects.toThrow("regular non-symlink file");
+    }
   });
 
   it("fails closed on path traversal and symlink escape", async () => {

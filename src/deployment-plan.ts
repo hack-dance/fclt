@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { type BigIntStats, constants } from "node:fs";
+import {
+  type FileHandle,
+  lstat,
+  open,
+  readdir,
+  readFile,
+  realpath,
+} from "node:fs/promises";
 import {
   basename,
   dirname,
@@ -22,8 +30,9 @@ const PATH_SEPARATOR_RE = /[\\/]/;
 const DEPLOYMENT_PLAN_SCHEMA_VERSION = 1 as const;
 const DEPLOYMENT_STATE_SCHEMA_VERSION = 1 as const;
 const PACKAGE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const DESTINATION_IDENTITY_PREFIX = "physical-path-v2:";
+const DESTINATION_IDENTITY_PREFIX = "physical-path-v3:";
 const DESTINATION_COLLISION_KEY_PREFIX = "case-folded-path-v1:";
+const MAX_PLANNING_FILE_BYTES = 16 * 1024 * 1024;
 
 export type DeploymentAssetKind = "instruction" | "snippet";
 export type DeploymentOwnerMode = "fclt-owned" | "unowned";
@@ -319,6 +328,14 @@ async function canonicalPhysicalPath(
   } catch {
     throw new Error(`${label} identity cannot be established safely.`);
   }
+  const canonicalStat = await lstat(canonicalAncestor).catch(() => null);
+  if (
+    !canonicalStat ||
+    canonicalStat.dev !== stat.dev ||
+    canonicalStat.ino !== stat.ino
+  ) {
+    throw new Error(`${label} identity cannot be established safely.`);
+  }
   return join(canonicalAncestor, ...missingSegments);
 }
 
@@ -331,9 +348,11 @@ function physicalPathIdentities(
   canonicalPath: string
 ): PhysicalDestinationIdentity {
   const portablePath = canonicalPath.replace(/\\/g, "/").normalize("NFC");
+  const pathSemantics = process.platform === "win32" ? "win32" : "posix";
+  const losslessPath = Buffer.from(canonicalPath, "utf8").toString("base64url");
   return {
     collisionKey: `${DESTINATION_COLLISION_KEY_PREFIX}${portablePath.toLowerCase()}`,
-    identity: `${DESTINATION_IDENTITY_PREFIX}${portablePath}`,
+    identity: `${DESTINATION_IDENTITY_PREFIX}${pathSemantics}:${losslessPath}`,
   };
 }
 
@@ -359,20 +378,222 @@ async function resolveDestinationIdentity(args: {
   return physicalPathIdentities(canonicalDestination);
 }
 
-async function readRegularFileOrNull(args: {
+interface StableReadInterlock {
+  afterOpen?: () => Promise<void>;
+}
+
+interface StableRegularFileReadArgs {
+  expectedIdentity?: string;
+  interlock?: StableReadInterlock;
   label: string;
   path: string;
-}): Promise<Uint8Array | null> {
-  const stat = await lstat(args.path).catch(() => null);
-  if (!stat) {
-    return null;
-  }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
+  root: string;
+}
+
+function isErrnoException(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as Error & { code?: string }).code === code
+  );
+}
+
+function stableStatMatches(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function stableFileIdentityMatches(
+  left: BigIntStats,
+  right: BigIntStats
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function stableReadFlags(): number {
+  const noFollow = constants.O_NOFOLLOW;
+  if (typeof noFollow !== "number" || noFollow === 0) {
     throw new Error(
-      `${args.label} must be a regular non-symlink file: ${args.path}`
+      "Safe descriptor reads are unsupported on this platform: O_NOFOLLOW is unavailable."
     );
   }
-  return await readFile(args.path);
+  const nonBlocking =
+    typeof constants.O_NONBLOCK === "number" ? constants.O_NONBLOCK : 0;
+  const extendedConstants = constants as typeof constants & {
+    O_CLOEXEC?: number;
+  };
+  const closeOnExec =
+    typeof extendedConstants.O_CLOEXEC === "number"
+      ? extendedConstants.O_CLOEXEC
+      : 0;
+  return constants.O_RDONLY + noFollow + nonBlocking + closeOnExec;
+}
+
+function assertStableRegularFileStat(stat: BigIntStats, label: string): number {
+  if (!stat.isFile() || stat.ino <= 0n || stat.dev < 0n) {
+    throw new Error(
+      `${label} must expose a stable regular-file identity for planning.`
+    );
+  }
+  if (stat.size < 0n || stat.size > BigInt(MAX_PLANNING_FILE_BYTES)) {
+    throw new Error(
+      `${label} exceeds the ${MAX_PLANNING_FILE_BYTES}-byte planning read limit.`
+    );
+  }
+  return Number(stat.size);
+}
+
+async function readDescriptorBytes(args: {
+  handle: FileHandle;
+  label: string;
+  size: number;
+}): Promise<Uint8Array> {
+  const bytes = Buffer.alloc(args.size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const result = await args.handle.read(
+      bytes,
+      offset,
+      bytes.length - offset,
+      offset
+    );
+    if (result.bytesRead === 0) {
+      throw new Error(`${args.label} changed while it was being read.`);
+    }
+    offset += result.bytesRead;
+  }
+  const extra = Buffer.alloc(1);
+  const trailing = await args.handle.read(extra, 0, 1, args.size);
+  if (trailing.bytesRead !== 0) {
+    throw new Error(`${args.label} changed while it was being read.`);
+  }
+  return bytes;
+}
+
+async function verifyStableReadPath(args: {
+  descriptorStat: BigIntStats;
+  expectedIdentity?: string;
+  label: string;
+  path: string;
+  root: string;
+}): Promise<void> {
+  const pathStat = await lstat(args.path, { bigint: true }).catch(() => null);
+  if (
+    !pathStat?.isFile() ||
+    pathStat.isSymbolicLink() ||
+    !stableFileIdentityMatches(args.descriptorStat, pathStat)
+  ) {
+    throw new Error(`${args.label} path changed during planning.`);
+  }
+
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(args.path);
+  } catch {
+    throw new Error(`${args.label} path changed during planning.`);
+  }
+  const canonicalRoot = await canonicalPhysicalPath(
+    args.root,
+    `${args.label} root`
+  );
+  const rel = relative(canonicalRoot, canonicalPath);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`${args.label} escapes its physical root.`);
+  }
+  const canonicalStat = await lstat(canonicalPath, { bigint: true }).catch(
+    () => null
+  );
+  if (
+    !(
+      canonicalStat?.isFile() &&
+      stableFileIdentityMatches(args.descriptorStat, canonicalStat)
+    )
+  ) {
+    throw new Error(`${args.label} path changed during planning.`);
+  }
+  if (
+    args.expectedIdentity &&
+    physicalPathIdentities(canonicalPath).identity !== args.expectedIdentity
+  ) {
+    throw new Error(`${args.label} physical identity changed during planning.`);
+  }
+}
+
+async function readRegularFileOrNull(
+  args: StableRegularFileReadArgs
+): Promise<Uint8Array | null> {
+  let handle: FileHandle;
+  try {
+    handle = await open(args.path, stableReadFlags());
+  } catch (error) {
+    if (isErrnoException(error, "ENOENT")) {
+      return null;
+    }
+    throw new Error(
+      `${args.label} must be openable as a regular non-symlink file.`
+    );
+  }
+
+  try {
+    const before = await handle.stat({ bigint: true });
+    const size = assertStableRegularFileStat(before, args.label);
+    await args.interlock?.afterOpen?.();
+    const firstRead = await readDescriptorBytes({
+      handle,
+      label: args.label,
+      size,
+    });
+    const middle = await handle.stat({ bigint: true });
+    if (!stableStatMatches(before, middle)) {
+      throw new Error(`${args.label} changed while it was being read.`);
+    }
+    const secondRead = await readDescriptorBytes({
+      handle,
+      label: args.label,
+      size,
+    });
+    const after = await handle.stat({ bigint: true });
+    if (
+      !(
+        stableStatMatches(middle, after) &&
+        Buffer.from(firstRead).equals(secondRead)
+      )
+    ) {
+      throw new Error(`${args.label} changed while it was being read.`);
+    }
+    await verifyStableReadPath({
+      descriptorStat: after,
+      expectedIdentity: args.expectedIdentity,
+      label: args.label,
+      path: args.path,
+      root: args.root,
+    });
+    return firstRead;
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Deterministic seam for descriptor replacement and symlink-race tests. */
+export async function readStableRegularFileForTest(args: {
+  afterOpen: () => Promise<void>;
+  label: string;
+  path: string;
+  root: string;
+}): Promise<Uint8Array | null> {
+  return await readRegularFileOrNull({
+    interlock: { afterOpen: args.afterOpen },
+    label: args.label,
+    path: args.path,
+    root: args.root,
+  });
 }
 
 function decodeUtf8(value: Uint8Array, label: string): string {
@@ -526,6 +747,7 @@ export function serializeDeploymentState(state: DeploymentStateV1): string {
 interface ScannedDeploymentState {
   hash: string;
   path: string;
+  physicalIdentity: PhysicalDestinationIdentity;
   state: DeploymentStateV1;
 }
 
@@ -539,7 +761,7 @@ async function scanDeploymentStates(args: {
   existing: ScannedDeploymentState | null;
   records: ScannedDeploymentState[];
 }> {
-  const stat = await lstat(args.directory).catch(() => null);
+  const stat = await lstat(args.directory, { bigint: true }).catch(() => null);
   if (!stat) {
     return { directoryHash: null, existing: null, records: [] };
   }
@@ -550,7 +772,8 @@ async function scanDeploymentStates(args: {
   }
 
   const records: ScannedDeploymentState[] = [];
-  for (const entry of (await readdir(args.directory)).sort()) {
+  const entries = (await readdir(args.directory)).sort();
+  for (const entry of entries) {
     if (!entry.endsWith(".json")) {
       throw new Error(
         `Unexpected entry in deployment state directory: ${join(args.directory, entry)}`
@@ -564,11 +787,24 @@ async function scanDeploymentStates(args: {
     const bytes = await readRegularFileOrNull({
       label: "Deployment state",
       path,
+      root: args.directory,
     });
     if (!bytes) {
       throw new Error(`Deployment state disappeared during planning: ${path}`);
     }
     const state = parseDeploymentState({ bytes, path });
+    const physicalIdentity = await resolveDestinationIdentity({
+      destinationPath: state.binding.destinationPath,
+      label: "Recorded deployment destination",
+    });
+    if (
+      physicalIdentity.identity !== state.binding.destinationIdentity ||
+      physicalIdentity.collisionKey !== state.binding.destinationCollisionKey
+    ) {
+      throw new Error(
+        `Deployment state has a corrupt destination identity: ${path}`
+      );
+    }
     if (state.rollbackTarget.kind === "snapshot") {
       await assertContainedPath({
         label: "Recorded rollback snapshot",
@@ -579,34 +815,33 @@ async function scanDeploymentStates(args: {
     records.push({
       hash: sha256(bytes),
       path,
+      physicalIdentity,
       state,
     });
+  }
+
+  const afterEntries = (await readdir(args.directory)).sort();
+  const afterStat = await lstat(args.directory, { bigint: true }).catch(
+    () => null
+  );
+  if (
+    !afterStat?.isDirectory() ||
+    afterStat.isSymbolicLink() ||
+    !stableStatMatches(stat, afterStat) ||
+    stableJson(entries) !== stableJson(afterEntries)
+  ) {
+    throw new Error("Deployment state directory changed during planning.");
   }
 
   const collisionSet = records.filter(
     (record) =>
       record.state.binding.tool === args.requestedBinding.tool &&
-      record.state.binding.destinationCollisionKey ===
+      record.physicalIdentity.collisionKey ===
         args.requestedBinding.destinationCollisionKey
   );
-  for (const record of collisionSet) {
-    const recordedIdentity = await resolveDestinationIdentity({
-      destinationPath: record.state.binding.destinationPath,
-      label: "Recorded deployment destination",
-    });
-    if (
-      recordedIdentity.identity !== record.state.binding.destinationIdentity ||
-      recordedIdentity.collisionKey !==
-        record.state.binding.destinationCollisionKey
-    ) {
-      throw new Error(
-        `Deployment state has a corrupt destination identity: ${record.path}`
-      );
-    }
-  }
   const claims = collisionSet.filter(
     (record) =>
-      record.state.binding.destinationIdentity ===
+      record.physicalIdentity.identity ===
       args.requestedBinding.destinationIdentity
   );
   if (collisionSet.length !== claims.length) {
@@ -725,6 +960,7 @@ export async function buildDeploymentPlan(
   const sourceBytes = await readRegularFileOrNull({
     label: "Canonical source",
     path: sourcePath,
+    root: canonicalRoot,
   });
   if (!sourceBytes) {
     throw new Error(`Canonical source does not exist: ${sourcePath}`);
@@ -758,8 +994,10 @@ export async function buildDeploymentPlan(
     targetRoot,
   });
   const currentBytes = await readRegularFileOrNull({
+    expectedIdentity: destinationIdentity,
     label: "Current target",
     path: destinationPath,
+    root: targetRoot,
   });
   const currentHash = currentBytes ? sha256(currentBytes) : null;
   if (options.expectedCurrentHash !== undefined) {
@@ -853,6 +1091,7 @@ export async function buildDeploymentPlan(
       const snapshotBytes = await readRegularFileOrNull({
         label: "Rollback snapshot",
         path: snapshotPath,
+        root: stateRoot,
       });
       if (!snapshotBytes) {
         throw new Error(
@@ -881,6 +1120,7 @@ export async function buildDeploymentPlan(
     const snapshotBytes = await readRegularFileOrNull({
       label: "Rollback snapshot",
       path: snapshotPath,
+      root: stateRoot,
     });
     snapshotHash = snapshotBytes ? sha256(snapshotBytes) : null;
     if (snapshotHash && snapshotHash !== currentHash) {
