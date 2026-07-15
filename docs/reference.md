@@ -205,8 +205,11 @@ content-addressed report-and-receipt envelope only to a pre-existing,
 non-symlinked root that does not overlap any evaluated source. `audit safe`
 requires `--report <exact-report.json> --yes`; legacy latest reports and
 detached pre-revision-9 pairs are never trusted for mutation. `audit fix`
-supports exact-report `--dry-run` inspection only and automated MCP mutation
-fails closed pending a descriptor-bound exact-source/destination commit design.
+uses `--dry-run` for zero-write inspection. With explicit `--yes`, supported
+inline MCP secrets are moved only from the exact report-bound canonical source
+to its bound owner-only local overlay. The descriptor-relative transaction
+revalidates source, destination, ancestors, permissions, and identity at the
+final commit boundary, and refuses Git-worktree destinations.
 `--update-index` is a separate explicit canonical generated-state mutation.
 
 `self-update` detects release-script, npm/Bun, and mise-managed npm installs.

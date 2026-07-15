@@ -9,7 +9,7 @@ import {
 } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
-import { isInlineMcpSecretValue } from "../mcp-config";
+import { extractServersObject, isInlineMcpSecretValue } from "../mcp-config";
 import {
   facultConfigPath,
   facultContextRootDir,
@@ -29,6 +29,7 @@ import { parseJsonLenient } from "../util/json";
 import {
   type AuditEvaluation,
   auditedRootsFromScan,
+  buildMcpRemediationBindings,
   parseReportRootFlag,
   persistAuditReport,
 } from "./report-persistence";
@@ -397,36 +398,6 @@ function shouldApplyRule(
     return true;
   }
   return t === target;
-}
-
-function extractMcpServersObject(
-  parsed: unknown
-): Record<string, unknown> | null {
-  if (!isPlainObject(parsed)) {
-    return null;
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (isPlainObject(obj.mcpServers)) {
-    return obj.mcpServers as Record<string, unknown>;
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    if (k.endsWith(".mcpServers") && isPlainObject(v)) {
-      return v as Record<string, unknown>;
-    }
-  }
-  if (isPlainObject(obj["mcp.servers"])) {
-    return obj["mcp.servers"] as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.servers)) {
-    return obj.servers as Record<string, unknown>;
-  }
-  if (isPlainObject(obj.mcp)) {
-    const mcp = obj.mcp as Record<string, unknown>;
-    if (isPlainObject(mcp.servers)) {
-      return mcp.servers as Record<string, unknown>;
-    }
-  }
-  return null;
 }
 
 function mcpSafeAuditText(definition: unknown): string {
@@ -820,6 +791,19 @@ export async function evaluateStaticAudit(opts?: {
     auditedRoots.push(rulesPath, dirname(rulesPath));
   }
   await sourceTracker.protect(Array.from(new Set(auditedRoots)).sort());
+  const canonicalMcpRoot = join(canonicalRoot, "mcp");
+  await sourceTracker.capture(canonicalRoot);
+  await sourceTracker.capture(canonicalMcpRoot);
+  await sourceTracker.capture(join(canonicalMcpRoot, "servers.local.json"));
+  await sourceTracker.capture(join(canonicalMcpRoot, "mcp.local.json"));
+  const canonicalMcpExists = sourceTracker
+    .snapshot()
+    .evaluatedDirectories.some(
+      (identity) => identity.path === canonicalMcpRoot
+    );
+  const canonicalMcpExposure = canonicalMcpExists
+    ? await sourceTracker.recordGitPathExposure(canonicalMcpRoot)
+    : null;
   for (const source of res.sources) {
     for (const pathValue of [
       ...source.evidence,
@@ -1128,7 +1112,7 @@ export async function evaluateStaticAudit(opts?: {
       continue;
     }
 
-    const serversObj = extractMcpServersObject(parsed);
+    const serversObj = extractServersObject(parsed);
     if (!serversObj) {
       continue;
     }
@@ -1225,8 +1209,17 @@ export async function evaluateStaticAudit(opts?: {
   }
   const sourceSnapshot = sourceTracker.snapshot();
   await validateAuditSourceSnapshot(sourceSnapshot);
+  const remediationBindings =
+    canonicalMcpExposure && !canonicalMcpExposure.insideRepo
+      ? buildMcpRemediationBindings({
+          canonicalRootPath: canonicalRoot,
+          report,
+          sourceSnapshot,
+        })
+      : [];
   return {
     auditedRoots: Array.from(new Set(auditedRoots)).sort(),
+    remediationBindings,
     report,
     sourceSnapshot,
   };
@@ -1306,6 +1299,7 @@ export async function staticAuditCommand(argv: string[]) {
       reportPath = await persistAuditReport({
         auditedRoots: evaluation.auditedRoots,
         mode: "static",
+        remediationBindings: evaluation.remediationBindings,
         report: evaluation.report,
         reportRoot,
         sourceSnapshot: evaluation.sourceSnapshot,

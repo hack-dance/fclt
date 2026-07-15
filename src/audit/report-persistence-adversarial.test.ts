@@ -17,7 +17,9 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  AUDIT_READ_ONLY_CAPABILITY,
   AUDIT_REPORT_MAX_ENVELOPE_BYTES,
+  AUDIT_REPORT_REVISION,
   auditReportRootPermissionsAreSafe,
   loadVerifiedAuditReport,
   persistAuditReport,
@@ -59,14 +61,35 @@ async function fixture() {
   ).toISOString();
   const report = { mode: "static" as const, results: [], timestamp };
   const reportContents = `${JSON.stringify(report, null, 2)}\n`;
+  const sourceSnapshot = tracker.snapshot();
+  const receipt = {
+    schemaVersion: 6,
+    capability: AUDIT_READ_ONLY_CAPABILITY,
+    reportRevision: AUDIT_REPORT_REVISION,
+    mode: "static",
+    persistedAt: timestamp,
+    reportTimestamp: timestamp,
+    reportSha256: createHash("sha256").update(reportContents).digest("hex"),
+    sourceIdentitySha256: createHash("sha256")
+      .update(stableJson(sourceSnapshot))
+      .digest("hex"),
+    sourceSnapshot,
+    findingIdentities: [],
+    remediationBindings: [],
+  } as const;
+  const envelopeContents = `${JSON.stringify(
+    { schemaVersion: 1, receipt, report },
+    null,
+    2
+  )}\n`;
   const reportFileName = `static-${createHash("sha256")
-    .update(reportContents)
+    .update(envelopeContents)
     .digest("hex")}.json`;
   return {
     evaluation: {
       auditedRoots: [sourceRoot],
       report,
-      sourceSnapshot: tracker.snapshot(),
+      sourceSnapshot,
     },
     reportFileName,
     sourceRoot,
@@ -355,7 +378,7 @@ describe("adversarial audit report persistence", () => {
     ).resolves.toEqual(evaluation.report);
   });
 
-  test("same-content concurrency is idempotent and source conflicts preserve the winner", async () => {
+  test("same-content concurrency is idempotent and distinct source envelopes coexist", async () => {
     const { evaluation } = await fixture();
     const reportRoot = await mkdtemp(
       join(tmpdir(), "fclt-report-adversarial-idempotent-")
@@ -373,14 +396,14 @@ describe("adversarial audit report persistence", () => {
     expect(await readdir(reportRoot)).toHaveLength(1);
 
     const other = await fixture();
-    await expect(
-      persistAuditReport({
-        ...other.evaluation,
-        mode: "static",
-        report: evaluation.report,
-        reportRoot,
-      })
-    ).rejects.toThrow("collision");
+    const otherPath = await persistAuditReport({
+      ...other.evaluation,
+      mode: "static",
+      report: evaluation.report,
+      reportRoot,
+    });
+    expect(otherPath).not.toBe(paths[0]);
+    expect(await readdir(reportRoot)).toHaveLength(2);
     await expect(
       loadVerifiedAuditReport({ reportPath: paths[0]! })
     ).resolves.toEqual(evaluation.report);
@@ -472,8 +495,8 @@ describe("adversarial audit report persistence", () => {
       null,
       2
     ).replace(
-      '"receipt": {\n    "schemaVersion": 5,',
-      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 5,'
+      '"receipt": {\n    "schemaVersion": 6,',
+      '"receipt": {\n    "schemaVersion": 0,\n    "schemaVersion": 6,'
     )}\n`;
     await writeFile(reportPath, duplicateReceiptKey);
     await chmod(reportPath, 0o600);
@@ -670,10 +693,16 @@ describe("adversarial audit report persistence", () => {
       .update(stableJson(sourceSnapshot))
       .digest("hex");
     await writePrivateJson(reportPath, envelope);
-
-    await expect(loadVerifiedAuditReport({ reportPath })).rejects.toThrow(
-      "overlaps an audited source"
+    const modifiedContents = await readFile(reportPath, "utf8");
+    const modifiedPath = join(
+      placedRoot,
+      `static-${createHash("sha256").update(modifiedContents).digest("hex")}.json`
     );
+    await rename(reportPath, modifiedPath);
+
+    await expect(
+      loadVerifiedAuditReport({ reportPath: modifiedPath })
+    ).rejects.toThrow("overlaps an audited source");
   });
 
   test("loader binds the exact parent descriptor, permissions, and final child name", async () => {

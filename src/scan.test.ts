@@ -245,6 +245,32 @@ test("scan --from detects Factory tool surfaces", async () => {
   expect(allMcpPaths).toContain(join(toolDir, "mcp.json"));
 });
 
+test("scan uses the runtime-active MCP container for mixed JSON configs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facult-scan-"));
+  const home = join(dir, "home");
+  const toolDir = join(dir, ".factory");
+  const configPath = join(toolDir, "mcp.json");
+  await mkdir(toolDir, { recursive: true });
+  await Bun.write(
+    configPath,
+    `${JSON.stringify({
+      servers: { active: { command: "active-command" } },
+      "mcp.servers": { inactive: { command: "inactive-command" } },
+    })}\n`
+  );
+
+  const res = await scan([], {
+    cwd: dir,
+    homeDir: home,
+    includeConfigFrom: false,
+    from: [dir],
+  });
+  const config = res.sources
+    .flatMap((source) => source.mcp.configs)
+    .find((candidate) => candidate.path === configPath);
+  expect(config?.servers).toEqual(["active"]);
+});
+
 test("scan --from discovers per-project .vscode/settings.json MCP servers (JSONC)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "facult-scan-"));
   const home = join(dir, "home");

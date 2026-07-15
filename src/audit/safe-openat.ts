@@ -15,6 +15,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readSync,
   realpathSync,
   type Stats,
 } from "node:fs";
@@ -240,12 +241,33 @@ interface PrivateFileMutationSymbols extends DirectoryMutationSymbols {
   fchmod: (fd: number, mode: number) => number;
   flock: (fd: number, operation: number) => number;
   fsync: (fd: number) => number;
+  linkat: (
+    oldDirectoryFd: number,
+    oldName: Pointer,
+    newDirectoryFd: number,
+    newName: Pointer,
+    flags: number
+  ) => number;
   read: (fd: number, buffer: Pointer, length: number) => number | bigint;
   renameat: (
     oldDirectoryFd: number,
     oldName: Pointer,
     newDirectoryFd: number,
     newName: Pointer
+  ) => number;
+  renameat2?: (
+    oldDirectoryFd: number,
+    oldName: Pointer,
+    newDirectoryFd: number,
+    newName: Pointer,
+    flags: number
+  ) => number;
+  renameatx_np?: (
+    oldDirectoryFd: number,
+    oldName: Pointer,
+    newDirectoryFd: number,
+    newName: Pointer,
+    flags: number
   ) => number;
   unlinkat: (directoryFd: number, name: Pointer, flags: number) => number;
   write: (fd: number, buffer: Pointer, length: number) => number | bigint;
@@ -737,6 +759,94 @@ export interface PrivateDirectoryReceiptBinding {
   directorySegments: string[];
 }
 
+export interface PrivateDirectoryIdentity {
+  dev: number;
+  ino: number;
+  mode: number;
+}
+
+export interface BoundPrivateSubdirectory {
+  directoryFd: number;
+  rootFd: number;
+}
+
+export function openBoundPrivateSubdirectory(args: {
+  directoryIdentity: PrivateDirectoryIdentity;
+  directoryName: string;
+  rootIdentity: PrivateDirectoryIdentity;
+  rootPath: string;
+}): BoundPrivateSubdirectory {
+  if (
+    !isAbsolute(args.rootPath) ||
+    normalize(args.rootPath) !== args.rootPath ||
+    !args.directoryName ||
+    args.directoryName === "." ||
+    args.directoryName === ".." ||
+    args.directoryName.includes(sep) ||
+    !auditReportPersistenceSupported()
+  ) {
+    throw new Error("Bound private directory path is unsupported");
+  }
+  const configuration = platformConfiguration();
+  const libc = openSystemLibc(configuration, {
+    openat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
+      returns: FFIType.i32,
+    },
+  });
+  const directoryFlags =
+    constants.O_RDONLY +
+    (constants.O_DIRECTORY ?? 0) +
+    (constants.O_NOFOLLOW ?? 0) +
+    (constants.O_NONBLOCK ?? 0) +
+    ((constants as typeof constants & { O_CLOEXEC?: number }).O_CLOEXEC ?? 0);
+  let rootFd = -1;
+  let directoryFd = -1;
+  try {
+    rootFd = openSync(args.rootPath, directoryFlags);
+    const rootMetadata = fstatSync(rootFd);
+    if (
+      !privateDirectoryComponentIsSafe(rootMetadata) ||
+      rootMetadata.dev !== args.rootIdentity.dev ||
+      rootMetadata.ino !== args.rootIdentity.ino ||
+      rootMetadata.mode !== args.rootIdentity.mode ||
+      realpathSync(args.rootPath) !== args.rootPath
+    ) {
+      throw new Error("Bound private root changed before open");
+    }
+    directoryFd = libc.symbols.openat(
+      rootFd,
+      ptr(Buffer.from(`${args.directoryName}\0`)),
+      directoryFlags,
+      0
+    );
+    if (directoryFd < 0) {
+      throw new Error("Bound private directory could not be opened");
+    }
+    const directoryMetadata = fstatSync(directoryFd);
+    if (
+      !privateDirectoryComponentIsSafe(directoryMetadata) ||
+      directoryMetadata.dev !== args.directoryIdentity.dev ||
+      directoryMetadata.ino !== args.directoryIdentity.ino ||
+      directoryMetadata.mode !== args.directoryIdentity.mode
+    ) {
+      throw new Error("Bound private directory changed before open");
+    }
+    const result = { directoryFd, rootFd };
+    directoryFd = -1;
+    rootFd = -1;
+    return result;
+  } finally {
+    if (directoryFd >= 0) {
+      closeSync(directoryFd);
+    }
+    if (rootFd >= 0) {
+      closeSync(rootFd);
+    }
+    libc.close();
+  }
+}
+
 export function openOrCreatePrivateDirectory(
   binding: PrivateDirectoryReceiptBinding
 ): number {
@@ -820,6 +930,495 @@ export function openOrCreatePrivateDirectory(
     if (currentFd >= 0) {
       closeSync(currentFd);
     }
+    libc.close();
+  }
+}
+
+export interface PrivateFileReceiptIdentity {
+  ctimeMs: number;
+  dev: number;
+  ino: number;
+  mode: number;
+  mtimeMs: number;
+  sha256: string;
+  size: number;
+}
+
+function sameReceiptFileIdentity(
+  metadata: Stats,
+  expected: PrivateFileReceiptIdentity
+): boolean {
+  return (
+    privateMutableFileIsSafe(metadata, Math.max(expected.size, 0)) &&
+    metadata.dev === expected.dev &&
+    metadata.ino === expected.ino &&
+    metadata.mode === expected.mode &&
+    metadata.size === expected.size &&
+    metadata.ctimeMs === expected.ctimeMs &&
+    metadata.mtimeMs === expected.mtimeMs
+  );
+}
+
+function sameObjectIdentity(left: Stats, right: Stats): boolean {
+  return (
+    left.isFile() === right.isFile() &&
+    left.isDirectory() === right.isDirectory() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.uid === right.uid
+  );
+}
+
+export async function replaceBoundPrivateFilePairAt(args: {
+  assertCommitPolicy?: () => void;
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeSourceCommit?: () => Promise<void>;
+  destinationIdentity: PrivateFileReceiptIdentity | null;
+  destinationName: string;
+  directoryFd: number;
+  directoryIdentity: PrivateDirectoryIdentity;
+  maxBytes: number;
+  rootFd: number;
+  rootIdentity: PrivateDirectoryIdentity;
+  rootPath: string;
+  sourceIdentity: PrivateFileReceiptIdentity;
+  sourceName: string;
+  transform: (
+    sourceContents: string,
+    destinationContents: string | null
+  ) => { destinationContents: string; sourceContents: string };
+}): Promise<{ destinationContents: string; sourceContents: string }> {
+  for (const name of [args.sourceName, args.destinationName]) {
+    if (
+      !name ||
+      name === "." ||
+      name === ".." ||
+      name.includes("/") ||
+      name.includes("\\")
+    ) {
+      throw new Error("Bound private file names must be one segment");
+    }
+  }
+  if (args.sourceName === args.destinationName) {
+    throw new Error("Bound private source and destination must be distinct");
+  }
+  const configuration = platformConfiguration();
+  const definitions: Record<string, FFIFunction> = {
+    close: { args: [FFIType.i32], returns: FFIType.i32 },
+    fchmod: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    fsync: { args: [FFIType.i32], returns: FFIType.i32 },
+    linkat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32],
+      returns: FFIType.i32,
+    },
+    openat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
+      returns: FFIType.i32,
+    },
+    unlinkat: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+      returns: FFIType.i32,
+    },
+    write: {
+      args: [FFIType.i32, FFIType.ptr, FFIType.u64],
+      returns: FFIType.i64,
+    },
+  };
+  if (process.platform === "darwin") {
+    definitions.renameatx_np = {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    };
+    definitions.__error = { args: [], returns: FFIType.ptr };
+  } else {
+    definitions.renameat2 = {
+      args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    };
+    definitions.__errno_location = { args: [], returns: FFIType.ptr };
+  }
+  const libc = openSystemLibc(configuration, definitions);
+  const symbols = libc.symbols as unknown as PrivateFileMutationSymbols;
+  const errnoPointer =
+    process.platform === "darwin"
+      ? symbols.__error!()
+      : symbols.__errno_location!();
+  const errno = new DataView(toArrayBuffer(errnoPointer!, 0, 4));
+  const sourceName = Buffer.from(`${args.sourceName}\0`);
+  const destinationName = Buffer.from(`${args.destinationName}\0`);
+  const sourceTemporaryName = Buffer.from(
+    `.${args.sourceName}.${randomUUID()}.tmp\0`
+  );
+  const destinationTemporaryName = Buffer.from(
+    `.${args.destinationName}.${randomUUID()}.tmp\0`
+  );
+  let sourceFd = -1;
+  let destinationFd = -1;
+  let sourceTemporaryFd = -1;
+  let destinationTemporaryFd = -1;
+  let destinationCommitted = false;
+  let sourceCommitted = false;
+  let sourceBefore: Stats | null = null;
+  let destinationBefore: Stats | null = null;
+  let sourceTemporaryMetadata: Stats | null = null;
+  let destinationTemporaryMetadata: Stats | null = null;
+
+  const exchange = (left: Buffer, right: Buffer): void => {
+    const result =
+      process.platform === "darwin"
+        ? symbols.renameatx_np!(
+            args.directoryFd,
+            ptr(left),
+            args.directoryFd,
+            ptr(right),
+            2
+          )
+        : symbols.renameat2!(
+            args.directoryFd,
+            ptr(left),
+            args.directoryFd,
+            ptr(right),
+            2
+          );
+    if (result !== 0) {
+      throw new Error("Atomic private file exchange failed closed");
+    }
+  };
+  const openExisting = (name: Buffer): number | null => {
+    errno.setInt32(0, 0, true);
+    const fd = symbols.openat(
+      args.directoryFd,
+      ptr(name),
+      safeExistingOpenFlags(),
+      0
+    );
+    if (fd >= 0) {
+      return fd;
+    }
+    if (errno.getInt32(0, true) === 2) {
+      return null;
+    }
+    throw new Error("Bound private file open failed closed");
+  };
+  const assertMappedObject = (name: Buffer, expected: Stats): void => {
+    const fd = openExisting(name);
+    if (fd === null) {
+      throw new Error("Bound private file mapping disappeared");
+    }
+    try {
+      if (!sameObjectIdentity(fstatSync(fd), expected)) {
+        throw new Error("Bound private file mapping changed");
+      }
+    } finally {
+      symbols.close(fd);
+    }
+  };
+  const assertAbsent = (name: Buffer): void => {
+    const fd = openExisting(name);
+    if (fd !== null) {
+      symbols.close(fd);
+      throw new Error("Bound private destination appeared");
+    }
+  };
+  const unlinkIfMapped = (name: Buffer, expected: Stats | null): boolean => {
+    if (!expected) {
+      return false;
+    }
+    const fd = openExisting(name);
+    if (fd === null) {
+      return true;
+    }
+    let matches = false;
+    try {
+      matches = sameObjectIdentity(fstatSync(fd), expected);
+    } finally {
+      symbols.close(fd);
+    }
+    return matches && symbols.unlinkat(args.directoryFd, ptr(name), 0) === 0;
+  };
+  const readHeld = (
+    fd: number,
+    expected: PrivateFileReceiptIdentity,
+    label: string
+  ): { contents: string; metadata: Stats } => {
+    const before = fstatSync(fd);
+    if (!sameReceiptFileIdentity(before, expected)) {
+      throw new Error(`${label} no longer matches its audit receipt`);
+    }
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count <= 0) {
+        throw new Error(`${label} changed while reading`);
+      }
+      offset += count;
+    }
+    const after = fstatSync(fd);
+    if (!sameFileIdentity(before, after)) {
+      throw new Error(`${label} changed while reading`);
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== expected.sha256) {
+      throw new Error(`${label} bytes no longer match their audit receipt`);
+    }
+    try {
+      return { contents: UTF8_DECODER.decode(bytes), metadata: before };
+    } catch {
+      throw new Error(`${label} is not UTF-8`);
+    }
+  };
+  const stage = (
+    name: Buffer,
+    bytes: Buffer,
+    mode: number
+  ): { fd: number; metadata: Stats } => {
+    const fd = symbols.openat(
+      args.directoryFd,
+      ptr(name),
+      configuration.createExclusive,
+      mode
+    );
+    if (fd < 0 || symbols.fchmod(fd, mode) !== 0) {
+      if (fd >= 0) {
+        symbols.close(fd);
+        symbols.unlinkat(args.directoryFd, ptr(name), 0);
+      }
+      throw new Error("Bound private temporary creation failed closed");
+    }
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = Number(
+        symbols.write(fd, ptr(bytes, offset), bytes.length - offset)
+      );
+      if (count <= 0) {
+        symbols.close(fd);
+        symbols.unlinkat(args.directoryFd, ptr(name), 0);
+        throw new Error("Bound private temporary write failed closed");
+      }
+      offset += count;
+    }
+    if (symbols.fsync(fd) !== 0) {
+      symbols.close(fd);
+      symbols.unlinkat(args.directoryFd, ptr(name), 0);
+      throw new Error("Bound private temporary sync failed closed");
+    }
+    const metadata = fstatSync(fd);
+    if (
+      !privateMutableFileIsSafe(metadata, args.maxBytes) ||
+      permissionBits(metadata.mode) !== mode ||
+      metadata.size !== bytes.length
+    ) {
+      symbols.close(fd);
+      symbols.unlinkat(args.directoryFd, ptr(name), 0);
+      throw new Error("Bound private temporary is unsafe");
+    }
+    return { fd, metadata };
+  };
+  const assertDirectoryBinding = (): void => {
+    const root = fstatSync(args.rootFd);
+    const directory = fstatSync(args.directoryFd);
+    const rootPathMetadata = lstatSync(args.rootPath);
+    const directoryPath = join(args.rootPath, "mcp");
+    const directoryPathMetadata = lstatSync(directoryPath);
+    if (
+      !privateDirectoryComponentIsSafe(root) ||
+      root.dev !== args.rootIdentity.dev ||
+      root.ino !== args.rootIdentity.ino ||
+      root.mode !== args.rootIdentity.mode ||
+      !privateDirectoryComponentIsSafe(directory) ||
+      directory.dev !== args.directoryIdentity.dev ||
+      directory.ino !== args.directoryIdentity.ino ||
+      directory.mode !== args.directoryIdentity.mode ||
+      rootPathMetadata.isSymbolicLink() ||
+      !sameObjectIdentity(rootPathMetadata, root) ||
+      directoryPathMetadata.isSymbolicLink() ||
+      !sameObjectIdentity(directoryPathMetadata, directory) ||
+      realpathSync(args.rootPath) !== args.rootPath ||
+      realpathSync(directoryPath) !== directoryPath
+    ) {
+      throw new Error("Bound private directory identity changed");
+    }
+    const reboundFd = symbols.openat(
+      args.rootFd,
+      ptr(Buffer.from("mcp\0")),
+      constants.O_RDONLY +
+        (constants.O_DIRECTORY ?? 0) +
+        (constants.O_NOFOLLOW ?? 0) +
+        (constants.O_NONBLOCK ?? 0),
+      0
+    );
+    if (reboundFd < 0) {
+      throw new Error("Bound private directory mapping changed");
+    }
+    try {
+      if (!sameObjectIdentity(fstatSync(reboundFd), directory)) {
+        throw new Error("Bound private directory mapping changed");
+      }
+    } finally {
+      symbols.close(reboundFd);
+    }
+  };
+  const rollback = (): void => {
+    if (sourceCommitted) {
+      assertMappedObject(sourceName, sourceTemporaryMetadata!);
+      assertMappedObject(sourceTemporaryName, sourceBefore!);
+      exchange(sourceTemporaryName, sourceName);
+      sourceCommitted = false;
+    }
+    if (destinationCommitted) {
+      if (destinationBefore) {
+        assertMappedObject(destinationName, destinationTemporaryMetadata!);
+        assertMappedObject(destinationTemporaryName, destinationBefore);
+        exchange(destinationTemporaryName, destinationName);
+      } else {
+        assertMappedObject(destinationName, destinationTemporaryMetadata!);
+        if (symbols.unlinkat(args.directoryFd, ptr(destinationName), 0) !== 0) {
+          throw new Error("Bound private destination rollback failed closed");
+        }
+      }
+      destinationCommitted = false;
+    }
+    symbols.fsync(args.directoryFd);
+  };
+
+  try {
+    if (symbols.flock(args.directoryFd, 6) !== 0) {
+      throw new Error("Bound private mutation is already active");
+    }
+    assertDirectoryBinding();
+    sourceFd = openExisting(sourceName) ?? -1;
+    if (sourceFd < 0) {
+      throw new Error("Bound private source disappeared");
+    }
+    const sourceSnapshot = readHeld(
+      sourceFd,
+      args.sourceIdentity,
+      "Bound private source"
+    );
+    sourceBefore = sourceSnapshot.metadata;
+    destinationFd = openExisting(destinationName) ?? -1;
+    let destinationContents: string | null = null;
+    if (args.destinationIdentity) {
+      if (destinationFd < 0) {
+        throw new Error("Bound private destination disappeared");
+      }
+      const destinationSnapshot = readHeld(
+        destinationFd,
+        args.destinationIdentity,
+        "Bound private destination"
+      );
+      destinationBefore = destinationSnapshot.metadata;
+      destinationContents = destinationSnapshot.contents;
+    } else if (destinationFd >= 0) {
+      throw new Error("Bound private destination appeared");
+    }
+
+    const committedContents = args.transform(
+      sourceSnapshot.contents,
+      destinationContents
+    );
+    const sourceBytes = Buffer.from(committedContents.sourceContents);
+    const destinationBytes = Buffer.from(committedContents.destinationContents);
+    if (
+      sourceBytes.byteLength > args.maxBytes ||
+      destinationBytes.byteLength > args.maxBytes
+    ) {
+      throw new Error("Bound private file exceeds byte limit");
+    }
+
+    let staged = stage(
+      sourceTemporaryName,
+      sourceBytes,
+      permissionBits(args.sourceIdentity.mode)
+    );
+    sourceTemporaryFd = staged.fd;
+    sourceTemporaryMetadata = staged.metadata;
+    staged = stage(destinationTemporaryName, destinationBytes, 0o600);
+    destinationTemporaryFd = staged.fd;
+    destinationTemporaryMetadata = staged.metadata;
+
+    assertDirectoryBinding();
+    if (!sameFileIdentity(sourceBefore, fstatSync(sourceFd))) {
+      throw new Error("Bound private source changed before commit");
+    }
+    assertMappedObject(sourceName, sourceBefore);
+    args.assertCommitPolicy?.();
+    if (destinationBefore) {
+      if (!sameFileIdentity(destinationBefore, fstatSync(destinationFd))) {
+        throw new Error("Bound private destination changed before commit");
+      }
+      assertMappedObject(destinationName, destinationBefore);
+      exchange(destinationTemporaryName, destinationName);
+    } else {
+      assertAbsent(destinationName);
+      if (
+        symbols.linkat(
+          args.directoryFd,
+          ptr(destinationTemporaryName),
+          args.directoryFd,
+          ptr(destinationName),
+          0
+        ) !== 0
+      ) {
+        throw new Error("Bound private destination create failed closed");
+      }
+    }
+    destinationCommitted = true;
+
+    if (args.beforeSourceCommit) {
+      await args.beforeSourceCommit();
+    }
+    assertDirectoryBinding();
+    if (!sameFileIdentity(sourceBefore, fstatSync(sourceFd))) {
+      throw new Error("Bound private source changed before final commit");
+    }
+    assertMappedObject(sourceName, sourceBefore);
+    assertMappedObject(destinationName, destinationTemporaryMetadata);
+    args.assertCommitPolicy?.();
+    exchange(sourceTemporaryName, sourceName);
+    sourceCommitted = true;
+    assertMappedObject(sourceName, sourceTemporaryMetadata);
+    assertMappedObject(sourceTemporaryName, sourceBefore);
+
+    // Both exchanges are now the irrevocable commit. Cleanup cannot be
+    // reported as a failed transaction because either rollback object may
+    // already have been unlinked; doing so would turn a committed mutation
+    // into a false failure and invite an unsafe pathname retry.
+    sourceCommitted = false;
+    destinationCommitted = false;
+    unlinkIfMapped(sourceTemporaryName, sourceBefore);
+    unlinkIfMapped(
+      destinationTemporaryName,
+      destinationBefore ?? destinationTemporaryMetadata
+    );
+    symbols.fsync(args.directoryFd);
+    return committedContents;
+  } catch (error) {
+    try {
+      rollback();
+    } catch (rollbackError) {
+      throw new Error(
+        `Bound private mutation rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        { cause: error }
+      );
+    }
+    throw error;
+  } finally {
+    if (sourceFd >= 0) {
+      symbols.close(sourceFd);
+    }
+    if (destinationFd >= 0) {
+      symbols.close(destinationFd);
+    }
+    if (sourceTemporaryFd >= 0) {
+      symbols.close(sourceTemporaryFd);
+    }
+    if (destinationTemporaryFd >= 0) {
+      symbols.close(destinationTemporaryFd);
+    }
+    unlinkIfMapped(sourceTemporaryName, sourceTemporaryMetadata);
+    unlinkIfMapped(destinationTemporaryName, destinationTemporaryMetadata);
     libc.close();
   }
 }

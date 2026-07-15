@@ -154,8 +154,8 @@ if (auditPersistenceContract(process.platform) === "fail-closed") {
     !reportName ||
     reportNames.length !== 1 ||
     envelope?.schemaVersion !== 1 ||
-    envelope.receipt?.schemaVersion !== 5 ||
-    envelope.receipt.reportRevision !== 10 ||
+    envelope.receipt?.schemaVersion !== 6 ||
+    envelope.receipt.reportRevision !== 11 ||
     JSON.stringify(envelope.report) !==
       JSON.stringify(JSON.parse(persistedAuditText)) ||
     (await Bun.file(auditSkill).text()) !== auditSourceBefore

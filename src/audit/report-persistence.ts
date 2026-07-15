@@ -32,12 +32,13 @@ export type AuditReportMode = "agent" | "static";
 
 export interface AuditEvaluation<TReport> {
   auditedRoots: string[];
+  remediationBindings?: AuditMcpRemediationBinding[];
   report: TReport;
   sourceSnapshot: AuditSourceSnapshot;
 }
 
 export const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
-export const AUDIT_REPORT_REVISION = 10;
+export const AUDIT_REPORT_REVISION = 11;
 export const AUDIT_REPORT_MAX_AGE_MS = 15 * 60 * 1000;
 export const AUDIT_REPORT_MAX_ENVELOPE_BYTES = 16 * 1024 * 1024;
 
@@ -54,6 +55,7 @@ const RECEIPT_KEYS = [
   "sourceIdentitySha256",
   "sourceSnapshot",
   "findingIdentities",
+  "remediationBindings",
 ] as const;
 
 function permissionBits(mode: number): number {
@@ -83,7 +85,7 @@ interface PathSemantics {
 }
 
 export interface AuditReportReceipt {
-  schemaVersion: 5;
+  schemaVersion: 6;
   capability: typeof AUDIT_READ_ONLY_CAPABILITY;
   reportRevision: typeof AUDIT_REPORT_REVISION;
   mode: AuditReportMode;
@@ -93,6 +95,17 @@ export interface AuditReportReceipt {
   sourceIdentitySha256: string;
   sourceSnapshot: AuditSourceSnapshot;
   findingIdentities: string[];
+  remediationBindings: AuditMcpRemediationBinding[];
+}
+
+export interface AuditMcpRemediationBinding {
+  canonicalRootPath: string;
+  destinationPath: string;
+  envKey: string;
+  findingIdentity: string;
+  kind: "mcp-inline-secret";
+  serverName: string;
+  sourcePath: string;
 }
 
 interface PersistedAuditEnvelope {
@@ -154,6 +167,272 @@ export function auditFindingIdentity(args: {
       type: args.result.type,
     })
   );
+}
+
+const REMEDIATION_BINDING_KEYS = [
+  "canonicalRootPath",
+  "destinationPath",
+  "envKey",
+  "findingIdentity",
+  "kind",
+  "serverName",
+  "sourcePath",
+] as const;
+
+function parseInlineSecretLocation(args: {
+  configPath: string;
+  location: string;
+  serverName: string;
+}): {
+  configPath: string;
+  envKey: string;
+  serverName: string;
+} | null {
+  const prefix = `${args.configPath}:${args.serverName}:env:`;
+  if (!args.location.startsWith(prefix)) {
+    return null;
+  }
+  const envKey = args.location.slice(prefix.length).trim();
+  return envKey
+    ? {
+        configPath: args.configPath,
+        envKey,
+        serverName: args.serverName,
+      }
+    : null;
+}
+
+function isSingleSafeSegment(value: string): boolean {
+  return (
+    !!value &&
+    value !== "__proto__" &&
+    value !== "constructor" &&
+    value !== "prototype" &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("/") &&
+    !value.includes("\\") &&
+    !value.includes("\0")
+  );
+}
+
+function assertRemediationBinding(
+  binding: unknown,
+  receipt: Pick<AuditReportReceipt, "findingIdentities" | "sourceSnapshot">
+): asserts binding is AuditMcpRemediationBinding {
+  const value = binding as Partial<AuditMcpRemediationBinding> | null;
+  if (
+    !value ||
+    Object.keys(value).join("\0") !== REMEDIATION_BINDING_KEYS.join("\0") ||
+    value.kind !== "mcp-inline-secret" ||
+    typeof value.canonicalRootPath !== "string" ||
+    typeof value.sourcePath !== "string" ||
+    typeof value.destinationPath !== "string" ||
+    typeof value.serverName !== "string" ||
+    typeof value.envKey !== "string" ||
+    typeof value.findingIdentity !== "string" ||
+    !SHA256_RE.test(value.findingIdentity) ||
+    !receipt.findingIdentities.includes(value.findingIdentity) ||
+    !isSingleSafeSegment(value.serverName) ||
+    !isSingleSafeSegment(value.envKey)
+  ) {
+    throw new Error("Audit remediation binding is unsupported");
+  }
+  const root = value.canonicalRootPath;
+  const mcpRoot = join(root, "mcp");
+  const sourceNames = new Set(["servers.json", "mcp.json"]);
+  const destinationNames = new Set(["servers.local.json", "mcp.local.json"]);
+  if (
+    !isAbsolute(root) ||
+    normalize(root) !== root ||
+    dirname(value.sourcePath) !== mcpRoot ||
+    dirname(value.destinationPath) !== mcpRoot ||
+    !sourceNames.has(basename(value.sourcePath)) ||
+    !destinationNames.has(basename(value.destinationPath)) ||
+    value.sourcePath === value.destinationPath ||
+    !receipt.sourceSnapshot.protectedRoots.some(
+      (identity) => identity.kind === "directory" && identity.path === root
+    ) ||
+    !receipt.sourceSnapshot.evaluatedDirectories.some(
+      (identity) => identity.path === mcpRoot
+    ) ||
+    !receipt.sourceSnapshot.evaluatedFiles.some(
+      (identity) => identity.path === value.sourcePath
+    ) ||
+    !(
+      receipt.sourceSnapshot.evaluatedFiles.some(
+        (identity) => identity.path === value.destinationPath
+      ) ||
+      receipt.sourceSnapshot.absentPaths.some(
+        (identity) => identity.path === value.destinationPath
+      )
+    )
+  ) {
+    throw new Error("Audit remediation binding is not source-bound");
+  }
+}
+
+function canonicalRemediationBindings(
+  bindings: readonly AuditMcpRemediationBinding[]
+): AuditMcpRemediationBinding[] {
+  return bindings
+    .map((binding) => ({ ...binding }))
+    .sort((left, right) =>
+      [
+        left.findingIdentity,
+        left.sourcePath,
+        left.destinationPath,
+        left.serverName,
+        left.envKey,
+      ]
+        .join("\0")
+        .localeCompare(
+          [
+            right.findingIdentity,
+            right.sourcePath,
+            right.destinationPath,
+            right.serverName,
+            right.envKey,
+          ].join("\0")
+        )
+    );
+}
+
+function assertRemediationBindingsMatchReport(args: {
+  bindings: readonly AuditMcpRemediationBinding[];
+  mode: AuditReportMode;
+  report: unknown;
+}): void {
+  if (args.bindings.length === 0) {
+    return;
+  }
+  if (
+    args.mode !== "static" ||
+    !(args.report && typeof args.report === "object") ||
+    !Array.isArray((args.report as { results?: unknown }).results)
+  ) {
+    throw new Error("Audit remediation bindings do not match the report");
+  }
+  const expected = new Map<
+    string,
+    { envKey: string; serverName: string; sourcePath: string }
+  >();
+  for (const candidate of (args.report as { results: unknown[] }).results) {
+    if (!(candidate && typeof candidate === "object")) {
+      continue;
+    }
+    const result = candidate as AuditItemResult;
+    if (result.type !== "mcp" || !Array.isArray(result.findings)) {
+      continue;
+    }
+    for (const findingCandidate of result.findings) {
+      if (!(findingCandidate && typeof findingCandidate === "object")) {
+        continue;
+      }
+      const finding = findingCandidate as AuditFinding;
+      const location = finding.location
+        ? parseInlineSecretLocation({
+            configPath: result.path,
+            location: finding.location,
+            serverName: result.item,
+          })
+        : null;
+      if (
+        finding.ruleId === "mcp-env-inline-secret" &&
+        location &&
+        location.configPath === result.path
+      ) {
+        expected.set(auditFindingIdentity({ finding, result }), {
+          envKey: location.envKey,
+          serverName: location.serverName,
+          sourcePath: result.path,
+        });
+      }
+    }
+  }
+  for (const binding of args.bindings) {
+    const finding = expected.get(binding.findingIdentity);
+    if (
+      !finding ||
+      finding.envKey !== binding.envKey ||
+      finding.serverName !== binding.serverName ||
+      finding.sourcePath !== binding.sourcePath
+    ) {
+      throw new Error("Audit remediation bindings do not match the report");
+    }
+  }
+}
+
+export function buildMcpRemediationBindings(args: {
+  canonicalRootPath: string;
+  report: { results: AuditItemResult[] };
+  sourceSnapshot: AuditSourceSnapshot;
+}): AuditMcpRemediationBinding[] {
+  const canonicalRootPath = normalize(args.canonicalRootPath);
+  const mcpRoot = join(canonicalRootPath, "mcp");
+  const canonicalDestination = join(mcpRoot, "servers.local.json");
+  const legacyDestination = join(mcpRoot, "mcp.local.json");
+  const existingPaths = new Set(
+    args.sourceSnapshot.evaluatedFiles.map((identity) => identity.path)
+  );
+  const absentPaths = new Set(
+    args.sourceSnapshot.absentPaths.map((identity) => identity.path)
+  );
+  const destinationPath = existingPaths.has(canonicalDestination)
+    ? canonicalDestination
+    : existingPaths.has(legacyDestination)
+      ? legacyDestination
+      : absentPaths.has(canonicalDestination)
+        ? canonicalDestination
+        : null;
+  if (!destinationPath) {
+    return [];
+  }
+
+  const bindings = args.report.results.flatMap((result) =>
+    result.findings.flatMap((finding) => {
+      const location = finding.location
+        ? parseInlineSecretLocation({
+            configPath: result.path,
+            location: finding.location,
+            serverName: result.item,
+          })
+        : null;
+      if (
+        result.type !== "mcp" ||
+        finding.ruleId !== "mcp-env-inline-secret" ||
+        !location ||
+        result.path !== location.configPath ||
+        dirname(result.path) !== mcpRoot ||
+        !["servers.json", "mcp.json"].includes(basename(result.path)) ||
+        !existingPaths.has(result.path) ||
+        !isSingleSafeSegment(location.serverName) ||
+        !isSingleSafeSegment(location.envKey)
+      ) {
+        return [];
+      }
+      return [
+        {
+          canonicalRootPath,
+          destinationPath,
+          envKey: location.envKey,
+          findingIdentity: auditFindingIdentity({ finding, result }),
+          kind: "mcp-inline-secret" as const,
+          serverName: location.serverName,
+          sourcePath: result.path,
+        },
+      ];
+    })
+  );
+  const canonical = canonicalRemediationBindings(bindings);
+  const receiptShape = {
+    findingIdentities: canonicalFindingIdentities(args.report),
+    sourceSnapshot: args.sourceSnapshot,
+  };
+  for (const binding of canonical) {
+    assertRemediationBinding(binding, receiptShape);
+  }
+  return canonical;
 }
 
 function canonicalFindingIdentities(report: unknown): string[] {
@@ -500,6 +779,7 @@ export async function persistAuditReport(args: {
   /** @internal Adversarial test hook; production callers must not set this. */
   beforeReportRootOpen?: () => Promise<void>;
   mode: AuditReportMode;
+  remediationBindings?: AuditMcpRemediationBinding[];
   report: unknown;
   reportRoot: string;
   sourceSnapshot: AuditSourceSnapshot;
@@ -541,7 +821,6 @@ export async function persistAuditReport(args: {
   }
   const reportContents = `${JSON.stringify(args.report, null, 2)}\n`;
   const reportSha256 = sha256(reportContents);
-  const reportFileName = `${args.mode}-${reportSha256}.json`;
 
   const requestedRoot = normalize(args.reportRoot);
   const requestedMetadata = await lstat(requestedRoot).catch(() => null);
@@ -605,13 +884,26 @@ export async function persistAuditReport(args: {
     );
   }
 
-  const reportPath = join(reportRoot, reportFileName);
-
   const canonicalSourceSnapshot = canonicalAuditSourceSnapshot(
     args.sourceSnapshot
   );
+  const remediationBindings = canonicalRemediationBindings(
+    args.remediationBindings ?? []
+  );
+  const receiptBindingShape = {
+    findingIdentities: canonicalFindingIdentityList,
+    sourceSnapshot: canonicalSourceSnapshot,
+  };
+  for (const binding of remediationBindings) {
+    assertRemediationBinding(binding, receiptBindingShape);
+  }
+  assertRemediationBindingsMatchReport({
+    bindings: remediationBindings,
+    mode: args.mode,
+    report: args.report,
+  });
   const receipt: AuditReportReceipt = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     capability: AUDIT_READ_ONLY_CAPABILITY,
     reportRevision: AUDIT_REPORT_REVISION,
     mode: args.mode,
@@ -621,6 +913,7 @@ export async function persistAuditReport(args: {
     sourceIdentitySha256: sha256(stableJson(canonicalSourceSnapshot)),
     sourceSnapshot: canonicalSourceSnapshot,
     findingIdentities: canonicalFindingIdentityList,
+    remediationBindings,
   };
   const envelope: PersistedAuditEnvelope = {
     schemaVersion: 1,
@@ -628,6 +921,8 @@ export async function persistAuditReport(args: {
     report: args.report,
   };
   const envelopeContents = `${JSON.stringify(envelope, null, 2)}\n`;
+  const reportFileName = `${args.mode}-${sha256(envelopeContents)}.json`;
+  const reportPath = join(reportRoot, reportFileName);
   if (Buffer.byteLength(envelopeContents) > AUDIT_REPORT_MAX_ENVELOPE_BYTES) {
     throw new Error(
       `Audit report envelope exceeds ${AUDIT_REPORT_MAX_ENVELOPE_BYTES} bytes`
@@ -702,7 +997,7 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
   if (
     !receipt ||
     Object.keys(receipt).join("\0") !== RECEIPT_KEYS.join("\0") ||
-    receipt.schemaVersion !== 5 ||
+    receipt.schemaVersion !== 6 ||
     receipt.capability !== AUDIT_READ_ONLY_CAPABILITY ||
     receipt.reportRevision !== AUDIT_REPORT_REVISION ||
     (receipt.mode !== "static" && receipt.mode !== "agent") ||
@@ -712,6 +1007,7 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
     !SHA256_RE.test(receipt.sourceIdentitySha256 ?? "") ||
     !receipt.sourceSnapshot ||
     !Array.isArray(receipt.findingIdentities) ||
+    !Array.isArray(receipt.remediationBindings) ||
     receipt.findingIdentities.some(
       (identity) => typeof identity !== "string" || !SHA256_RE.test(identity)
     )
@@ -732,11 +1028,26 @@ function assertReceipt(value: unknown): asserts value is AuditReportReceipt {
     throw new Error("Audit report receipt schema or revision is unsupported");
   }
   assertAuditSourceSnapshot(receipt.sourceSnapshot);
+  for (const binding of receipt.remediationBindings) {
+    assertRemediationBinding(binding, receipt as AuditReportReceipt);
+  }
+  const canonicalBindings = canonicalRemediationBindings(
+    receipt.remediationBindings
+  );
+  if (
+    JSON.stringify(canonicalBindings) !==
+      JSON.stringify(receipt.remediationBindings) ||
+    new Set(
+      receipt.remediationBindings.map((binding) => binding.findingIdentity)
+    ).size !== receipt.remediationBindings.length
+  ) {
+    throw new Error("Audit report receipt schema or revision is unsupported");
+  }
 }
 
 function canonicalReceipt(receipt: AuditReportReceipt): AuditReportReceipt {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     capability: receipt.capability,
     reportRevision: receipt.reportRevision,
     mode: receipt.mode,
@@ -746,6 +1057,9 @@ function canonicalReceipt(receipt: AuditReportReceipt): AuditReportReceipt {
     sourceIdentitySha256: receipt.sourceIdentitySha256,
     sourceSnapshot: canonicalAuditSourceSnapshot(receipt.sourceSnapshot),
     findingIdentities: [...receipt.findingIdentities],
+    remediationBindings: canonicalRemediationBindings(
+      receipt.remediationBindings
+    ),
   };
 }
 
@@ -762,6 +1076,11 @@ function assertEnvelope(
     throw new Error("Audit report receipt schema or revision is unsupported");
   }
   assertReceipt(envelope.receipt);
+  assertRemediationBindingsMatchReport({
+    bindings: envelope.receipt.remediationBindings,
+    mode: envelope.receipt.mode,
+    report: envelope.report,
+  });
 }
 
 function canonicalEnvelopeContents(envelope: PersistedAuditEnvelope): string {
@@ -864,7 +1183,7 @@ export async function loadVerifiedAuditReportEnvelope<
     if (sha256(canonicalReportContents) !== receipt.reportSha256) {
       throw new Error("Audit report content hash does not match its receipt");
     }
-    if (fileName !== `${receipt.mode}-${receipt.reportSha256}.json`) {
+    if (fileName !== `${receipt.mode}-${sha256(contents)}.json`) {
       throw new Error("Audit report path does not match its content identity");
     }
     if (args.expectedMode && receipt.mode !== args.expectedMode) {
