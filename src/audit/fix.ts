@@ -1,6 +1,6 @@
-import { closeSync } from "node:fs";
+import { closeSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, normalize } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import { extractServersObject, isInlineMcpSecretValue } from "../mcp-config";
 import { facultRootDir } from "../paths";
 import { parseJsonLenient } from "../util/json";
@@ -359,6 +359,28 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function assertOutsideGitWorktree(pathValue: string): void {
+  let current = dirname(resolve(pathValue));
+  while (true) {
+    const marker = join(current, ".git");
+    try {
+      lstatSync(marker);
+      throw new Error(
+        "Audit fix destination must remain outside a Git worktree"
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return;
+    }
+    current = parent;
+  }
+}
+
 function transformBoundMcpConfigs(args: {
   bindings: AuditMcpRemediationBinding[];
   destinationContents: string | null;
@@ -608,6 +630,7 @@ export async function runAuditFix(args: {
     selections: staticSelections,
   });
   const firstBinding = bindings[0]!;
+  assertOutsideGitWorktree(firstBinding.destinationPath);
   const currentRoot = normalize(facultRootDir(args.homeDir ?? homedir()));
   if (currentRoot !== firstBinding.canonicalRootPath) {
     throw new Error(
@@ -652,6 +675,8 @@ export async function runAuditFix(args: {
     }
     await validateAuditSourceSnapshot(snapshot);
     await replaceBoundPrivateFilePairAt({
+      assertCommitPolicy: () =>
+        assertOutsideGitWorktree(firstBinding.destinationPath),
       beforeSourceCommit: args.beforeSourceCommit,
       destinationIdentity,
       destinationName: basename(firstBinding.destinationPath),

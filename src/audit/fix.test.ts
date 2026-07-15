@@ -490,6 +490,25 @@ describe("audit fix", () => {
     }
   });
 
+  it("refuses a destination that enters a Git worktree after the report", async () => {
+    const fixture = await makeAuthorizedFixture();
+    try {
+      const trackedBefore = await Bun.file(fixture.trackedPath).text();
+      await mkdir(join(fixture.home, ".git"));
+      await expect(
+        runAuditFix({
+          argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+          cwd: fixture.home,
+          homeDir: fixture.home,
+        })
+      ).rejects.toThrow("outside a Git worktree");
+      expect(await Bun.file(fixture.trackedPath).text()).toBe(trackedBefore);
+      expect(await Bun.file(fixture.localPath).exists()).toBe(false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("binds colon-bearing server names without location ambiguity", async () => {
     const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
       serverName: "team:github",

@@ -970,6 +970,7 @@ function sameObjectIdentity(left: Stats, right: Stats): boolean {
 }
 
 export async function replaceBoundPrivateFilePairAt(args: {
+  assertCommitPolicy?: () => void;
   /** @internal Adversarial test hook; production callers must not set this. */
   beforeSourceCommit?: () => Promise<void>;
   destinationIdentity: PrivateFileReceiptIdentity | null;
@@ -1342,6 +1343,7 @@ export async function replaceBoundPrivateFilePairAt(args: {
       throw new Error("Bound private source changed before commit");
     }
     assertMappedObject(sourceName, sourceBefore);
+    args.assertCommitPolicy?.();
     if (destinationBefore) {
       if (!sameFileIdentity(destinationBefore, fstatSync(destinationFd))) {
         throw new Error("Bound private destination changed before commit");
@@ -1373,6 +1375,7 @@ export async function replaceBoundPrivateFilePairAt(args: {
     }
     assertMappedObject(sourceName, sourceBefore);
     assertMappedObject(destinationName, destinationTemporaryMetadata);
+    args.assertCommitPolicy?.();
     exchange(sourceTemporaryName, sourceName);
     sourceCommitted = true;
     assertMappedObject(sourceName, sourceTemporaryMetadata);

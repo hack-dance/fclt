@@ -796,6 +796,8 @@ export async function evaluateStaticAudit(opts?: {
   await sourceTracker.capture(canonicalMcpRoot);
   await sourceTracker.capture(join(canonicalMcpRoot, "servers.local.json"));
   await sourceTracker.capture(join(canonicalMcpRoot, "mcp.local.json"));
+  const canonicalMcpExposure =
+    await sourceTracker.recordGitPathExposure(canonicalMcpRoot);
   for (const source of res.sources) {
     for (const pathValue of [
       ...source.evidence,
@@ -1201,11 +1203,13 @@ export async function evaluateStaticAudit(opts?: {
   }
   const sourceSnapshot = sourceTracker.snapshot();
   await validateAuditSourceSnapshot(sourceSnapshot);
-  const remediationBindings = buildMcpRemediationBindings({
-    canonicalRootPath: canonicalRoot,
-    report,
-    sourceSnapshot,
-  });
+  const remediationBindings = canonicalMcpExposure.insideRepo
+    ? []
+    : buildMcpRemediationBindings({
+        canonicalRootPath: canonicalRoot,
+        report,
+        sourceSnapshot,
+      });
   return {
     auditedRoots: Array.from(new Set(auditedRoots)).sort(),
     remediationBindings,
