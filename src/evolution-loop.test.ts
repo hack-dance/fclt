@@ -200,18 +200,41 @@ describe("evolution loop", () => {
 
   it("preserves configured source selection when cadence alone is updated", async () => {
     const project = await makeProject();
-    await enableEvolutionLoop({
+    const initial = await enableEvolutionLoop({
       ...project,
       sourceIds: ["review-notes"],
       now: () => new Date("2026-01-03T00:00:00.000Z"),
     });
-    await enableEvolutionLoop({
+    const updated = await enableEvolutionLoop({
       ...project,
       rrule: "RRULE:FREQ=WEEKLY;BYDAY=FR",
       now: () => new Date("2026-01-03T01:00:00.000Z"),
     });
     const status = await evolutionLoopStatus(project);
     expect(status.config?.sourceIds).toEqual(["review-notes"]);
+    expect(updated.config.actionLocator).toEqual(initial.config.actionLocator);
+  });
+
+  it("rotates locator identity when configured sources change", async () => {
+    const project = await makeProject();
+    const initial = await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["review-notes"],
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const updated = await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["verification-notes"],
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+
+    expect(updated.config.sourceIds).toEqual(["verification-notes"]);
+    expect(updated.config.actionLocator?.runtimeId).not.toBe(
+      initial.config.actionLocator?.runtimeId
+    );
+    expect(updated.config.actionLocator?.rootIdentity).toBe(
+      initial.config.actionLocator?.rootIdentity
+    );
   });
 
   it("requires a scheduled run from the current config generation", async () => {

@@ -598,6 +598,15 @@ async function enableEvolutionLoopScoped(args: {
       ? projectRootFromAiRoot(args.rootDir, args.homeDir)
       : null;
   const name = current?.automationName ?? automationName({ ...args, scope });
+  const sourceIds = unique(
+    args.sourceIds && args.sourceIds.length > 0
+      ? args.sourceIds
+      : (current?.sourceIds ?? [])
+  );
+  const sourceIdsUnchanged =
+    current !== null &&
+    current.sourceIds.length === sourceIds.length &&
+    current.sourceIds.every((sourceId, index) => sourceId === sourceIds[index]);
   let config: EvolutionLoopConfig = {
     version: 1,
     generation: (current?.generation ?? 0) + (args.dryRun ? 0 : 1),
@@ -607,11 +616,7 @@ async function enableEvolutionLoopScoped(args: {
     rrule: normalizeRrule(
       args.rrule?.trim() || current?.rrule || DEFAULT_RRULE
     ),
-    sourceIds: unique(
-      args.sourceIds && args.sourceIds.length > 0
-        ? args.sourceIds
-        : (current?.sourceIds ?? [])
-    ),
+    sourceIds,
     lookbackHours: current?.lookbackHours ?? DEFAULT_LOOKBACK_HOURS,
     verificationDelayHours:
       current?.verificationDelayHours ?? DEFAULT_VERIFICATION_DELAY_HOURS,
@@ -624,6 +629,9 @@ async function enableEvolutionLoopScoped(args: {
       reason:
         "Automatic canonical writes are withheld until a hash-bound transaction and rollback receipt are available.",
     },
+    ...(current?.actionLocator && sourceIdsUnchanged
+      ? { actionLocator: current.actionLocator }
+      : {}),
     updatedAt: now,
   };
   if (!args.dryRun) {
