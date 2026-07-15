@@ -11,7 +11,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import {
   buildDeploymentPlan,
   type DeploymentPlanV1,
@@ -20,7 +20,8 @@ import {
 } from "./deployment-plan";
 
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
-const DESTINATION_IDENTITY_RE = /^physical-path-v1:.+/;
+const DESTINATION_IDENTITY_RE = /^physical-path-v2:.+/;
+const DESTINATION_COLLISION_KEY_RE = /^case-folded-path-v1:.+/;
 const SOURCE_DIR_SUFFIX_RE = /\/src$/;
 const DOLLAR = "$";
 
@@ -172,6 +173,9 @@ describe("immutable per-asset deployment planning", () => {
       join(fixture.targetRoot, "instructions", "WORK_UNITS.md")
     );
     expect(first.binding.destination.identity).toMatch(DESTINATION_IDENTITY_RE);
+    expect(first.binding.destination.collisionKey).toMatch(
+      DESTINATION_COLLISION_KEY_RE
+    );
     expect(first.hashes.source).toBe(first.hashes.desired);
     expect(first.hashes.current).toBeNull();
     expect(first.ownerMode).toBe("unowned");
@@ -301,6 +305,113 @@ describe("immutable per-asset deployment planning", () => {
     await expect(buildDeploymentPlan(planOptions(fixture))).rejects.toThrow(
       "Deployment state is corrupt JSON"
     );
+  });
+
+  it("rejects relative, cwd-dependent, unnormalized, and NUL persisted paths", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+    const stateWrite = deploymentStateWrite(initial);
+    const targetPath = initial.binding.destination.path;
+    const relativeTarget = relative(fixture.root, targetPath);
+    const relativeState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      binding: {
+        ...stateWrite.state.binding,
+        destinationPath: relativeTarget,
+      },
+      rollbackTarget: { kind: "absent", path: relativeTarget },
+    };
+    await Bun.write(stateWrite.path, serializeDeploymentState(relativeState));
+
+    const originalCwd = process.cwd();
+    const beforeRelative = await snapshotTree(fixture.root);
+    try {
+      for (const cwd of [fixture.root, dirname(fixture.root)]) {
+        process.chdir(cwd);
+        await expect(
+          buildDeploymentPlan({
+            ...planOptions(fixture),
+            expectedCurrentHash: undefined,
+          })
+        ).rejects.toThrow(
+          "Persisted destination path must be an absolute normalized safe path"
+        );
+      }
+    } finally {
+      process.chdir(originalCwd);
+    }
+    expect(await snapshotTree(fixture.root)).toEqual(beforeRelative);
+
+    const relativeRollbackState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      rollbackTarget: {
+        kind: "snapshot",
+        path: "rollback/snapshot",
+        expectedHash: stateWrite.state.desiredHash,
+      },
+    };
+    await Bun.write(
+      stateWrite.path,
+      serializeDeploymentState(relativeRollbackState)
+    );
+    const beforeRelativeRollback = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow(
+      "Persisted rollback path must be an absolute normalized safe path"
+    );
+    expect(await snapshotTree(fixture.root)).toEqual(beforeRelativeRollback);
+
+    const unnormalizedTarget = `${dirname(targetPath)}/nested/../${basename(targetPath)}`;
+    const unnormalizedState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      binding: {
+        ...stateWrite.state.binding,
+        destinationPath: unnormalizedTarget,
+      },
+      rollbackTarget: { kind: "absent", path: unnormalizedTarget },
+    };
+    await Bun.write(
+      stateWrite.path,
+      serializeDeploymentState(unnormalizedState)
+    );
+    const beforeUnnormalized = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow(
+      "Persisted destination path must be an absolute normalized safe path"
+    );
+    expect(await snapshotTree(fixture.root)).toEqual(beforeUnnormalized);
+
+    const nulRollbackState: DeploymentStateV1 = {
+      ...stateWrite.state,
+      rollbackTarget: {
+        kind: "snapshot",
+        path: `${targetPath}\0snapshot`,
+        expectedHash: stateWrite.state.desiredHash,
+      },
+    };
+    await Bun.write(
+      stateWrite.path,
+      serializeDeploymentState(nulRollbackState)
+    );
+    const beforeNul = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow(
+      "Persisted rollback path must be an absolute normalized safe path"
+    );
+    expect(await snapshotTree(fixture.root)).toEqual(beforeNul);
   });
 
   it("fails closed on an escaped rollback target in otherwise valid owned state", async () => {
@@ -498,6 +609,9 @@ describe("immutable per-asset deployment planning", () => {
     expect(aliasPlan.binding.destination.identity).toBe(
       initial.binding.destination.identity
     );
+    expect(aliasPlan.binding.destination.collisionKey).toBe(
+      initial.binding.destination.collisionKey
+    );
     expect(aliasPlan.ownerMode).toBe("fclt-owned");
     expect(aliasPlan.rollbackTarget).toEqual(initial.rollbackTarget);
     expect(aliasPlan.operations.writes).toEqual([]);
@@ -543,8 +657,47 @@ describe("immutable per-asset deployment planning", () => {
     expect(aliasPlan.binding.destination.identity).toBe(
       initial.binding.destination.identity
     );
+    expect(aliasPlan.binding.destination.collisionKey).toBe(
+      initial.binding.destination.collisionKey
+    );
     expect(aliasPlan.ownerMode).toBe("fclt-owned");
     expect(aliasPlan.operations.writes).toEqual([]);
+  });
+
+  it("rejects distinct case-only files on case-sensitive filesystems", async () => {
+    const fixture = await createFixture();
+    const initial = await buildDeploymentPlan(planOptions(fixture));
+    await materializePlanFixture(initial);
+
+    const originalPath = initial.binding.destination.path;
+    const caseCollisionPath = join(
+      fixture.targetRoot,
+      "instructions",
+      "work_units.md"
+    );
+    const [originalStat, collisionStat] = await Promise.all([
+      lstat(originalPath),
+      lstat(caseCollisionPath).catch(() => null),
+    ]);
+    if (
+      collisionStat &&
+      originalStat.dev === collisionStat.dev &&
+      originalStat.ino === collisionStat.ino
+    ) {
+      return;
+    }
+
+    await Bun.write(caseCollisionPath, await readFile(fixture.sourcePath));
+    const before = await snapshotTree(fixture.root);
+    await expect(
+      buildDeploymentPlan({
+        ...planOptions(fixture),
+        destination: "instructions/work_units.md",
+        expectedCurrentHash: undefined,
+      })
+    ).rejects.toThrow("Case-folded destination collision is ambiguous");
+    const after = await snapshotTree(fixture.root);
+    expect(after).toEqual(before);
   });
 
   it("supports multiple target roots in one shared deployment state root", async () => {
