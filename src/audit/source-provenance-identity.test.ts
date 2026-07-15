@@ -336,6 +336,7 @@ test("requested paths reject same-target lexical symlink replacement", async () 
 
   await rm(aliasDirectory);
   await symlink(targetDirectory, aliasDirectory, "dir");
+  await utimes(root, new Date(1), new Date(1));
 
   await expect(validateAuditSourceSnapshot(snapshot)).rejects.toThrow(
     "requested path changed"
