@@ -12,6 +12,7 @@ import {
   utimes,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { activityActionRootIdentity } from "./activity-action-contract";
 import {
   type AiProposalRecord,
   type AiWritebackRecord,
@@ -53,6 +54,8 @@ const DEFAULT_VERIFICATION_GRACE_HOURS = 24;
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_LEASE_MINUTES = 60;
 const LOOP_VERSION = 1;
+const ACTION_LOCATOR_RUNTIME_ID_PATTERN = /^[0-9a-f-]{36}$/;
+const ACTION_LOCATOR_ROOT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/;
 
 export type LoopQueueState =
   | "open"
@@ -81,6 +84,11 @@ export interface EvolutionLoopConfig {
   autoApply: {
     mode: "off" | "plan-only";
     reason: string;
+  };
+  actionLocator?: {
+    version: 1;
+    runtimeId: string;
+    rootIdentity: string;
   };
   updatedAt: string;
 }
@@ -345,6 +353,18 @@ function parseConfig(value: unknown): EvolutionLoopConfig {
   ) {
     throw new Error("Malformed evolution loop config");
   }
+  const actionLocator = value.actionLocator;
+  if (
+    actionLocator !== undefined &&
+    (!isPlainObject(actionLocator) ||
+      actionLocator.version !== 1 ||
+      typeof actionLocator.runtimeId !== "string" ||
+      !ACTION_LOCATOR_RUNTIME_ID_PATTERN.test(actionLocator.runtimeId) ||
+      typeof actionLocator.rootIdentity !== "string" ||
+      !ACTION_LOCATOR_ROOT_IDENTITY_PATTERN.test(actionLocator.rootIdentity))
+  ) {
+    throw new Error("Malformed evolution loop action locator identity");
+  }
   return {
     version: 1,
     generation: value.generation,
@@ -368,7 +388,33 @@ function parseConfig(value: unknown): EvolutionLoopConfig {
       mode: value.autoApply.mode,
       reason: value.autoApply.reason,
     },
+    ...(actionLocator
+      ? {
+          actionLocator: actionLocator as EvolutionLoopConfig["actionLocator"],
+        }
+      : {}),
     updatedAt: value.updatedAt,
+  };
+}
+
+function withCurrentActionLocatorIdentity(args: {
+  config: EvolutionLoopConfig;
+  rootDir: string;
+}): EvolutionLoopConfig {
+  const rootIdentity = activityActionRootIdentity(args.rootDir);
+  if (!rootIdentity) {
+    return { ...args.config, actionLocator: undefined };
+  }
+  if (args.config.actionLocator?.rootIdentity === rootIdentity) {
+    return args.config;
+  }
+  return {
+    ...args.config,
+    actionLocator: {
+      version: 1,
+      runtimeId: randomUUID(),
+      rootIdentity,
+    },
   };
 }
 
@@ -552,7 +598,16 @@ async function enableEvolutionLoopScoped(args: {
       ? projectRootFromAiRoot(args.rootDir, args.homeDir)
       : null;
   const name = current?.automationName ?? automationName({ ...args, scope });
-  const config: EvolutionLoopConfig = {
+  const sourceIds = unique(
+    args.sourceIds && args.sourceIds.length > 0
+      ? args.sourceIds
+      : (current?.sourceIds ?? [])
+  );
+  const sourceIdsUnchanged =
+    current !== null &&
+    current.sourceIds.length === sourceIds.length &&
+    current.sourceIds.every((sourceId, index) => sourceId === sourceIds[index]);
+  let config: EvolutionLoopConfig = {
     version: 1,
     generation: (current?.generation ?? 0) + (args.dryRun ? 0 : 1),
     enabled: true,
@@ -561,11 +616,7 @@ async function enableEvolutionLoopScoped(args: {
     rrule: normalizeRrule(
       args.rrule?.trim() || current?.rrule || DEFAULT_RRULE
     ),
-    sourceIds: unique(
-      args.sourceIds && args.sourceIds.length > 0
-        ? args.sourceIds
-        : (current?.sourceIds ?? [])
-    ),
+    sourceIds,
     lookbackHours: current?.lookbackHours ?? DEFAULT_LOOKBACK_HOURS,
     verificationDelayHours:
       current?.verificationDelayHours ?? DEFAULT_VERIFICATION_DELAY_HOURS,
@@ -578,8 +629,17 @@ async function enableEvolutionLoopScoped(args: {
       reason:
         "Automatic canonical writes are withheld until a hash-bound transaction and rollback receipt are available.",
     },
+    ...(current?.actionLocator && sourceIdsUnchanged
+      ? { actionLocator: current.actionLocator }
+      : {}),
     updatedAt: now,
   };
+  if (!args.dryRun) {
+    config = withCurrentActionLocatorIdentity({
+      config,
+      rootDir: args.rootDir,
+    });
+  }
   const existingAutomation = await automationStatus({
     homeDir: args.homeDir,
     name,
@@ -1820,11 +1880,20 @@ async function persistFailedLoopRun(args: {
     auditPath,
   };
   const { buildActivityFeed } = await import("./activity");
+  const proposals = await listProposals({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+  });
   report.activity = buildActivityFeed({
     report,
     review: args.review ?? null,
     writebacks: [],
-    proposals: [],
+    proposals,
+    locatorContext: {
+      homeDir: args.homeDir,
+      rootDir: args.rootDir,
+      runtimeId: args.config.actionLocator?.runtimeId,
+    },
   });
   await atomicWrite(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   await atomicWrite(artifactPath, `${renderReport(report)}\n`);
@@ -1889,7 +1958,7 @@ async function runEvolutionLoopScoped(args: {
   const now = args.now?.() ?? new Date();
   const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
   const scope = args.scope ?? (projectRoot ? "project" : "global");
-  const config: EvolutionLoopConfig = loadedConfig ?? {
+  let config: EvolutionLoopConfig = loadedConfig ?? {
     version: 1,
     generation: 0,
     enabled: false,
@@ -1910,6 +1979,25 @@ async function runEvolutionLoopScoped(args: {
   };
   const lockPath = `${facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir)}.lock`;
   const execute = async (): Promise<EvolutionLoopReport> => {
+    if (!args.dryRun) {
+      const lockedConfig = await loadConfig(args);
+      if (!lockedConfig?.enabled) {
+        throw new Error(
+          "Evolution loop is disabled. Run `fclt ai loop enable` first."
+        );
+      }
+      const identifiedConfig = withCurrentActionLocatorIdentity({
+        config: lockedConfig,
+        rootDir: args.rootDir,
+      });
+      if (identifiedConfig !== lockedConfig) {
+        await atomicWrite(
+          facultAiEvolutionLoopConfigPath(args.homeDir, args.rootDir),
+          `${JSON.stringify(identifiedConfig, null, 2)}\n`
+        );
+      }
+      config = identifiedConfig;
+    }
     const prior = await loadState(args);
     const generatedAt = now.toISOString();
     const since =
@@ -2047,6 +2135,13 @@ async function runEvolutionLoopScoped(args: {
         review,
         writebacks,
         proposals,
+        locatorContext: args.dryRun
+          ? undefined
+          : {
+              homeDir: args.homeDir,
+              rootDir: args.rootDir,
+              runtimeId: config.actionLocator?.runtimeId,
+            },
       });
       if (!args.dryRun) {
         const reportPath = join(reportDir, `${runId}.json`);
@@ -2124,6 +2219,11 @@ async function runEvolutionLoopScoped(args: {
             review,
             writebacks,
             proposals,
+            locatorContext: {
+              homeDir: args.homeDir,
+              rootDir: args.rootDir,
+              runtimeId: config.actionLocator?.runtimeId,
+            },
           });
           await atomicWrite(
             reportPath,

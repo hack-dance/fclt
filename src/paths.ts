@@ -303,6 +303,10 @@ export function machineStateProjectKey(
   return `${slug || "project"}-${digest}`;
 }
 
+export function machineStateProjectScopeId(machineKey: string): string {
+  return `project:${createHash("sha256").update(machineKey).digest("hex").slice(0, 16)}`;
+}
+
 export function facultMachineStateDir(
   home: string = defaultHomeDir(),
   rootDir?: string,

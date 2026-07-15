@@ -241,6 +241,10 @@ approvals, verification state, and the next action.
 The aggregate is contract version 2 and joins each version 1 feed to a stable
 opaque scope id. Check its `truncation` object before treating the returned item
 list as exhaustive.
+Actionable items may include an opaque `actionLocator`. Resolve it with
+`fclt ai loop resolve <locator> --json` to obtain a read-only plan for the
+verified current scope and resource. Missing locators remain handoff-only;
+consumers must never infer roots from scope labels or internal ids.
 Each item also identifies its global or project context, typed capability
 targets such as an instruction, skill, prompt, or automation, the reason for
 the decision, and bounded HTTP(S) evidence links when the source supplied one.

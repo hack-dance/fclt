@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { latestActivityFeed } from "./activity";
+import { resolveActivityActionLocator } from "./activity-action";
 import {
   type AiProposalRecord,
   acceptProposal,
@@ -199,18 +200,41 @@ describe("evolution loop", () => {
 
   it("preserves configured source selection when cadence alone is updated", async () => {
     const project = await makeProject();
-    await enableEvolutionLoop({
+    const initial = await enableEvolutionLoop({
       ...project,
       sourceIds: ["review-notes"],
       now: () => new Date("2026-01-03T00:00:00.000Z"),
     });
-    await enableEvolutionLoop({
+    const updated = await enableEvolutionLoop({
       ...project,
       rrule: "RRULE:FREQ=WEEKLY;BYDAY=FR",
       now: () => new Date("2026-01-03T01:00:00.000Z"),
     });
     const status = await evolutionLoopStatus(project);
     expect(status.config?.sourceIds).toEqual(["review-notes"]);
+    expect(updated.config.actionLocator).toEqual(initial.config.actionLocator);
+  });
+
+  it("rotates locator identity when configured sources change", async () => {
+    const project = await makeProject();
+    const initial = await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["review-notes"],
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const updated = await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["verification-notes"],
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+
+    expect(updated.config.sourceIds).toEqual(["verification-notes"]);
+    expect(updated.config.actionLocator?.runtimeId).not.toBe(
+      initial.config.actionLocator?.runtimeId
+    );
+    expect(updated.config.actionLocator?.rootIdentity).toBe(
+      initial.config.actionLocator?.rootIdentity
+    );
   });
 
   it("requires a scheduled run from the current config generation", async () => {
@@ -760,6 +784,9 @@ describe("evolution loop", () => {
     });
     expect(preview.coverage[0]?.signalsDiscovered).toBeGreaterThan(0);
     expect(preview.generationAfter).toBe(preview.generationBefore);
+    expect(
+      preview.activity?.items.every((item) => item.actionLocator === undefined)
+    ).toBe(true);
     expect(await readFile(statePath, "utf8")).toBe(stateBefore);
     expect(await readFile(auditPath, "utf8")).toBe(auditBefore);
     expect(await readFile(reconciliationStatePath, "utf8")).toBe(
@@ -1048,6 +1075,60 @@ describe("evolution loop", () => {
     expect(audit).toContain('"attempt":3');
   });
 
+  it("keeps proposal action locators in failed-run activity snapshots", async () => {
+    const project = await makeProject();
+    await mkdir(join(project.rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(project.rootDir, "instructions", "REVIEW.md"),
+      "# Review\n"
+    );
+    await Bun.write(
+      join(project.projectRoot, "review.md"),
+      "## 2026-01-02 Capability review\n\nThe rule in @project/instructions/REVIEW.md needs a durable verification loop.\n"
+    );
+    await enableEvolutionLoop({
+      ...project,
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const complete = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const proposalId = complete.queue.find(
+      (item) => item.kind === "proposal"
+    )?.proposalId;
+    expect(proposalId).toBeDefined();
+
+    await enableEvolutionLoop({
+      ...project,
+      sourceIds: ["missing-source"],
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+    const failed = await runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T01:00:00.000Z"),
+    });
+    const proposalActivity = failed.activity?.items.find(
+      (item) =>
+        item.kind === "proposal" && item.technical.proposalId === proposalId
+    );
+    expect(failed.status).toBe("failed");
+    expect(proposalActivity?.actionLocator).toBeDefined();
+    expect(
+      await resolveActivityActionLocator({
+        homeDir: project.homeDir,
+        locator: proposalActivity!.actionLocator!,
+      })
+    ).toMatchObject({
+      status: "resolved",
+      target: { resource: { kind: "proposal", id: proposalId } },
+    });
+  });
+
   it("records committed mutations when a later materialization step fails", async () => {
     const project = await makeProject();
     await mkdir(join(project.rootDir, "instructions"), { recursive: true });
@@ -1225,6 +1306,90 @@ describe("evolution loop", () => {
     ).rejects.toThrow("Another evolution loop run holds");
     releaseFirst?.();
     expect((await first).status).toBe("complete");
+  });
+
+  it("creates locator runtime identity only after acquiring the loop lock", async () => {
+    const project = await makeProject();
+    const writeback = await addWriteback({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      kind: "missing_context",
+      summary: "A scoped review instruction needs a durable target.",
+      suggestedDestination: "@project/instructions/REVIEW.md",
+      evidence: [{ type: "test", ref: "locator-lock-order" }],
+    });
+    const [proposal] = await proposeEvolution({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      writebackIds: [writeback.id],
+    });
+    await draftProposal(proposal!.id, {
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+    });
+    await enableEvolutionLoop({
+      ...project,
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const configPath = facultAiEvolutionLoopConfigPath(
+      project.homeDir,
+      project.rootDir
+    );
+    const configured = JSON.parse(await readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const { actionLocator: _removed, ...legacyConfig } = configured;
+    await Bun.write(configPath, `${JSON.stringify(legacyConfig, null, 2)}\n`);
+
+    let markEntered: (() => void) | undefined;
+    const entered = new Promise<void>((resolveEntered) => {
+      markEntered = resolveEntered;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const holdFirst = new Promise<void>((resolveRelease) => {
+      releaseFirst = resolveRelease;
+    });
+    const first = runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+      onLockAcquired: async () => {
+        markEntered?.();
+        await holdFirst;
+      },
+    });
+    await entered;
+    await expect(
+      runEvolutionLoop({
+        ...project,
+        since: "2026-01-01",
+        until: "2026-01-03",
+        now: () => new Date("2026-01-03T00:00:00.000Z"),
+      })
+    ).rejects.toThrow("Another evolution loop run holds");
+    expect(
+      (
+        JSON.parse(await readFile(configPath, "utf8")) as Record<
+          string,
+          unknown
+        >
+      ).actionLocator
+    ).toBeUndefined();
+
+    releaseFirst?.();
+    const report = await first;
+    const locator = report.activity?.items.find(
+      (item) => item.actionLocator
+    )?.actionLocator;
+    expect(locator).toBeDefined();
+    expect(
+      await resolveActivityActionLocator({
+        homeDir: project.homeDir,
+        locator: locator!,
+      })
+    ).toMatchObject({ status: "resolved" });
   });
 
   it("reports an exact manual recovery boundary for an orphaned takeover claim", async () => {
