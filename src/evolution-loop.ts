@@ -2239,7 +2239,7 @@ async function runEvolutionLoopScoped(args: {
             {
               attempt: attempts.length + 1,
               ok: false,
-              error: `post-commit audit: ${message}`,
+              error: `post-commit ${historyAttempted ? "history" : "audit"}: ${message}`,
             },
           ];
           const failedReport: EvolutionLoopReport = {
@@ -2284,7 +2284,25 @@ async function runEvolutionLoopScoped(args: {
               2
             )}\n`
           );
-          if (!historyAttempted) {
+          if (historyAttempted) {
+            try {
+              await appendLoopAudit(args, {
+                runId,
+                generatedAt,
+                trigger: report.trigger,
+                status: "failed",
+                generationBefore: report.generationBefore,
+                generationAfter: report.generationAfter,
+                attempts: failedAttempts,
+                mutations: report.mutations,
+                reportPath,
+                recovery:
+                  "Repair activity history storage, inspect the failed report, and rerun the same bounded window",
+              });
+            } catch {
+              // Preserve the authoritative failed report when the audit sink also becomes unavailable.
+            }
+          } else {
             await appendFailedRunHistory({
               homeDir: args.homeDir,
               rootDir: args.rootDir,
