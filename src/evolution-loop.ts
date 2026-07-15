@@ -1930,6 +1930,14 @@ async function persistFailedLoopRun(args: {
     recovery:
       "Resolve the reported error, inspect the failed report, and rerun the same bounded window",
   });
+  const { appendActivityHistory } = await import("./activity-history");
+  await appendActivityHistory({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    report,
+    review: args.review,
+    configRevision: args.config.generation,
+  });
   return report;
 }
 
@@ -2198,6 +2206,14 @@ async function runEvolutionLoopScoped(args: {
             })}\n`,
             "utf8"
           );
+          const { appendActivityHistory } = await import("./activity-history");
+          await appendActivityHistory({
+            homeDir: args.homeDir,
+            rootDir: args.rootDir,
+            report,
+            review,
+            configRevision: config.generation,
+          });
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);

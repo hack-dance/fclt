@@ -2809,7 +2809,7 @@ Usage:
   fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
   fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
   fclt ai review <init|status|reconcile> [args...]
-  fclt ai loop <enable|disable|status|report|activity|resolve|run> [args...]
+  fclt ai loop <enable|disable|status|report|activity|history|resolve|run> [args...]
 `;
 }
 
@@ -2823,6 +2823,7 @@ Usage:
   fclt ai loop report [--json]
   fclt ai loop activity [--all|--global|--project] [--json]
   fclt ai loop resolve <activity-action-locator> [--json]
+  fclt ai loop history [--all|--global|--project] [--since <date>] [--until <date>] [--item <id>] [--scope-id <opaque-id>] [--event <type>] [--limit <1-200>] [--cursor <cursor>] [--json]
   fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
 
 The loop keeps a full machine-local review queue and emits a delta for
@@ -2929,6 +2930,18 @@ function parseRepeatedFlag(argv: string[], flag: string): string[] {
     }
   }
   return values;
+}
+
+function parseIntegerFlag(argv: string[], flag: string): number | undefined {
+  const raw = parseStringFlag(argv, flag);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${flag} requires an integer`);
+  }
+  return parsed;
 }
 
 async function loopCommand(argv: string[]) {
@@ -3120,6 +3133,74 @@ async function loopCommand(argv: string[]) {
       }
       console.log(
         json ? JSON.stringify(result, null, 2) : renderActivityFeed(result)
+      );
+      return;
+    }
+    if (sub === "history") {
+      const { queryActivityHistory, renderActivityHistory } = await import(
+        "./activity-history"
+      );
+      const explicitAllScopes = commandArgs.includes("--all");
+      const allScopes = explicitAllScopes || parsed.scope === "merged";
+      if (explicitAllScopes && parsed.scope !== "merged") {
+        throw new Error("Conflicting scope flags");
+      }
+      const historyRootDir = allScopes
+        ? resolveCliContextRoot({
+            homeDir,
+            cwd: process.cwd(),
+            rootArg: parsed.rootArg,
+            scope: "global",
+          })
+        : rootDir;
+      if (
+        allScopes &&
+        !explicitAllScopes &&
+        projectRootFromAiRoot(historyRootDir, homeDir)
+      ) {
+        throw new Error(
+          "All-scope history accepts only a global --root; use --project for one project"
+        );
+      }
+      const eventTypes = parseRepeatedFlag(commandArgs, "--event");
+      const allowedEventTypes = new Set([
+        "run",
+        "discovery",
+        "observation",
+        "correlation",
+        "disposition",
+        "proposal",
+        "review",
+        "application",
+        "verification",
+        "effectiveness",
+        "regression",
+        "supersession",
+        "resolution",
+      ]);
+      const invalidEventType = eventTypes.find(
+        (value) => !allowedEventTypes.has(value)
+      );
+      if (invalidEventType) {
+        throw new Error(
+          `Unknown activity history event type: ${invalidEventType}`
+        );
+      }
+      const result = await queryActivityHistory({
+        homeDir,
+        rootDir: historyRootDir,
+        scope: allScopes ? "all" : loopScope,
+        since: parseStringFlag(commandArgs, "--since"),
+        until: parseStringFlag(commandArgs, "--until"),
+        item: parseStringFlag(commandArgs, "--item"),
+        scopeId: parseStringFlag(commandArgs, "--scope-id"),
+        eventTypes:
+          eventTypes as import("./activity-history").ActivityHistoryEventType[],
+        limit: parseIntegerFlag(commandArgs, "--limit"),
+        cursor: parseStringFlag(commandArgs, "--cursor"),
+      });
+      console.log(
+        json ? JSON.stringify(result, null, 2) : renderActivityHistory(result)
       );
       return;
     }

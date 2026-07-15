@@ -209,6 +209,7 @@ fclt ai loop activity --project
 fclt ai loop activity --project --json
 fclt ai loop activity --all --json
 fclt ai loop resolve <activity-action-locator> --json
+fclt ai loop history --project --since 2026-01-01T00:00:00Z --json
 ```
 
 The activity snapshot explains what agents captured, what sources were checked,
@@ -218,6 +219,11 @@ report so later writeback edits cannot rewrite history.
 Aggregate actionable items may carry an opaque locator. Resolution revalidates
 the exact current scope and lifecycle revision and returns a plain-language
 plan without guessing a root or performing a mutation.
+
+Use `loop history` for a bounded multi-run timeline. It returns append-only
+event lineage, opaque cross-scope identities, cursor pagination, and explicit
+snapshot-only, pruned, corrupt, or truncated coverage. The current activity
+snapshot remains the fast default.
 
 ### 3. Inspect existing AI state
 

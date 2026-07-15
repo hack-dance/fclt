@@ -123,6 +123,7 @@ fclt ai loop disable [--dry-run] [--json]
 fclt ai loop status [--json]
 fclt ai loop activity [--all|--global|--project] [--json]
 fclt ai loop resolve <activity-action-locator> [--json]
+fclt ai loop history [--all|--global|--project] [--since <date>] [--until <date>] [--item <id>] [--scope-id <opaque-id>] [--event <type>] [--limit <1-200>] [--cursor <cursor>] [--json]
 fclt ai loop run [--since <date>] [--until <date>] [--source <id>] [--dry-run] [--scheduled] [--json]
 ```
 
@@ -162,6 +163,15 @@ resource lifecycle, allowed action class, or project/runtime identity changed.
 Older or non-actionable items without a locator remain handoff-only. See
 [Activity action locators](./activity-action-locators.md) for versioning and
 error semantics.
+
+`loop history` is the bounded version 1 multi-run timeline and lineage
+contract. It stores immutable per-run event segments in machine-local runtime
+state and returns delta events rather than copying current activity items.
+Queries are newest first and cursor-paginated. Scope, time, item, and event-type
+filters are explicit. Missing pre-history, retention pruning, corruption, and
+bounded omissions remain visible in `coverage` and `truncation`. See
+[Activity history](./activity-history.md) for the schema, identity, retention,
+and privacy contract.
 
 `loop enable` is an explicit opt-in that installs an fclt-owned Codex
 automation. The loop persists the full current queue, emits a delta for
