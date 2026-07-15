@@ -1965,21 +1965,27 @@ async function runEvolutionLoopScoped(args: {
     },
     updatedAt: now.toISOString(),
   };
-  if (!args.dryRun) {
-    const identifiedConfig = withCurrentActionLocatorIdentity({
-      config,
-      rootDir: args.rootDir,
-    });
-    if (identifiedConfig !== config) {
-      await atomicWrite(
-        facultAiEvolutionLoopConfigPath(args.homeDir, args.rootDir),
-        `${JSON.stringify(identifiedConfig, null, 2)}\n`
-      );
-    }
-    config = identifiedConfig;
-  }
   const lockPath = `${facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir)}.lock`;
   const execute = async (): Promise<EvolutionLoopReport> => {
+    if (!args.dryRun) {
+      const lockedConfig = await loadConfig(args);
+      if (!lockedConfig?.enabled) {
+        throw new Error(
+          "Evolution loop is disabled. Run `fclt ai loop enable` first."
+        );
+      }
+      const identifiedConfig = withCurrentActionLocatorIdentity({
+        config: lockedConfig,
+        rootDir: args.rootDir,
+      });
+      if (identifiedConfig !== lockedConfig) {
+        await atomicWrite(
+          facultAiEvolutionLoopConfigPath(args.homeDir, args.rootDir),
+          `${JSON.stringify(identifiedConfig, null, 2)}\n`
+        );
+      }
+      config = identifiedConfig;
+    }
     const prior = await loadState(args);
     const generatedAt = now.toISOString();
     const since =
@@ -2117,11 +2123,13 @@ async function runEvolutionLoopScoped(args: {
         review,
         writebacks,
         proposals,
-        locatorContext: {
-          homeDir: args.homeDir,
-          rootDir: args.rootDir,
-          runtimeId: config.actionLocator?.runtimeId,
-        },
+        locatorContext: args.dryRun
+          ? undefined
+          : {
+              homeDir: args.homeDir,
+              rootDir: args.rootDir,
+              runtimeId: config.actionLocator?.runtimeId,
+            },
       });
       if (!args.dryRun) {
         const reportPath = join(reportDir, `${runId}.json`);

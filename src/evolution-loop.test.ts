@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { latestActivityFeed } from "./activity";
+import { resolveActivityActionLocator } from "./activity-action";
 import {
   type AiProposalRecord,
   acceptProposal,
@@ -760,6 +761,9 @@ describe("evolution loop", () => {
     });
     expect(preview.coverage[0]?.signalsDiscovered).toBeGreaterThan(0);
     expect(preview.generationAfter).toBe(preview.generationBefore);
+    expect(
+      preview.activity?.items.every((item) => item.actionLocator === undefined)
+    ).toBe(true);
     expect(await readFile(statePath, "utf8")).toBe(stateBefore);
     expect(await readFile(auditPath, "utf8")).toBe(auditBefore);
     expect(await readFile(reconciliationStatePath, "utf8")).toBe(
@@ -1225,6 +1229,90 @@ describe("evolution loop", () => {
     ).rejects.toThrow("Another evolution loop run holds");
     releaseFirst?.();
     expect((await first).status).toBe("complete");
+  });
+
+  it("creates locator runtime identity only after acquiring the loop lock", async () => {
+    const project = await makeProject();
+    const writeback = await addWriteback({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      kind: "missing_context",
+      summary: "A scoped review instruction needs a durable target.",
+      suggestedDestination: "@project/instructions/REVIEW.md",
+      evidence: [{ type: "test", ref: "locator-lock-order" }],
+    });
+    const [proposal] = await proposeEvolution({
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+      writebackIds: [writeback.id],
+    });
+    await draftProposal(proposal!.id, {
+      homeDir: project.homeDir,
+      rootDir: project.rootDir,
+    });
+    await enableEvolutionLoop({
+      ...project,
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+    });
+    const configPath = facultAiEvolutionLoopConfigPath(
+      project.homeDir,
+      project.rootDir
+    );
+    const configured = JSON.parse(await readFile(configPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const { actionLocator: _removed, ...legacyConfig } = configured;
+    await Bun.write(configPath, `${JSON.stringify(legacyConfig, null, 2)}\n`);
+
+    let markEntered: (() => void) | undefined;
+    const entered = new Promise<void>((resolveEntered) => {
+      markEntered = resolveEntered;
+    });
+    let releaseFirst: (() => void) | undefined;
+    const holdFirst = new Promise<void>((resolveRelease) => {
+      releaseFirst = resolveRelease;
+    });
+    const first = runEvolutionLoop({
+      ...project,
+      since: "2026-01-01",
+      until: "2026-01-03",
+      now: () => new Date("2026-01-03T00:00:00.000Z"),
+      onLockAcquired: async () => {
+        markEntered?.();
+        await holdFirst;
+      },
+    });
+    await entered;
+    await expect(
+      runEvolutionLoop({
+        ...project,
+        since: "2026-01-01",
+        until: "2026-01-03",
+        now: () => new Date("2026-01-03T00:00:00.000Z"),
+      })
+    ).rejects.toThrow("Another evolution loop run holds");
+    expect(
+      (
+        JSON.parse(await readFile(configPath, "utf8")) as Record<
+          string,
+          unknown
+        >
+      ).actionLocator
+    ).toBeUndefined();
+
+    releaseFirst?.();
+    const report = await first;
+    const locator = report.activity?.items.find(
+      (item) => item.actionLocator
+    )?.actionLocator;
+    expect(locator).toBeDefined();
+    expect(
+      await resolveActivityActionLocator({
+        homeDir: project.homeDir,
+        locator: locator!,
+      })
+    ).toMatchObject({ status: "resolved" });
   });
 
   it("reports an exact manual recovery boundary for an orphaned takeover claim", async () => {
