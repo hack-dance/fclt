@@ -5,10 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   auditReportPersistenceSupported,
+  darwinReaddirSymbol,
   linuxLibcCandidates,
   readDirectoryEntriesAt,
   resolveLinuxLibcPath,
 } from "./safe-openat";
+
+test("Darwin directory reads select the SDK inode ABI for each architecture", () => {
+  expect(darwinReaddirSymbol("x64")).toBe("readdir$INODE64");
+  expect(darwinReaddirSymbol("arm64")).toBe("readdir");
+});
 
 test("Linux libc candidates cover Bun-supported glibc and musl runtimes", () => {
   expect(linuxLibcCandidates("x64")).toEqual([
