@@ -2274,6 +2274,7 @@ async function runEvolutionLoopScoped(args: {
                   prior.lastSuccessfulScheduledRunAt,
                 lastSuccessfulScheduledConfigGeneration:
                   prior.lastSuccessfulScheduledConfigGeneration,
+                lastSuccessfulCoverageUntil: prior.lastSuccessfulCoverageUntil,
                 lastFailure: {
                   at: generatedAt,
                   message,

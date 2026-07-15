@@ -1295,6 +1295,7 @@ describe("evolution loop", () => {
       )
     );
     expect(state.lastRunStatus).toBe("failed");
+    expect(state.lastSuccessfulCoverageUntil).toBeUndefined();
   });
 
   it("never takes over a live lease and recovers an abandoned lease", async () => {
