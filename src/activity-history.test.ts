@@ -473,6 +473,23 @@ describe("activity history", () => {
     expect(
       new Set(result.lineage?.resources.map((entry) => entry.resource.id)).size
     ).toBe(2);
+    expect(result.runs).toHaveLength(2);
+    expect(new Set(result.runs.map((run) => run.scopeId)).size).toBe(2);
+    expect(new Set(result.runs.map((run) => run.id))).toEqual(
+      new Set(["LR-1"])
+    );
+
+    const page = await queryActivityHistory({
+      homeDir: home,
+      rootDir: globalRoot,
+      scope: "all",
+      since: "2026-03-01T00:00:00.000Z",
+      limit: 1,
+    });
+    expect(page.events).toHaveLength(1);
+    expect(page.runs).toHaveLength(1);
+    expect(page.runs[0]?.id).toBe("LR-1");
+    expect(page.runs[0]?.scopeId).toBe(page.events[0]?.scopeId);
   });
 
   test("links a superseded correlation branch to its opaque successor", async () => {

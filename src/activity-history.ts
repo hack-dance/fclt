@@ -1747,10 +1747,12 @@ export async function queryActivityHistory(
     );
   const pageEvents = sortedEvents.slice(0, limit);
   const hasMore = sortedEvents.length > limit;
-  const returnedRunIds = new Set(pageEvents.map((event) => event.runId));
+  const returnedRunKeys = new Set(
+    pageEvents.map((event) => `${event.scopeId}\0${event.runId}`)
+  );
   const runs = reads
     .flatMap((read) => read.runs)
-    .filter((run) => returnedRunIds.has(run.id))
+    .filter((run) => returnedRunKeys.has(`${run.scopeId}\0${run.id}`))
     .filter(
       (run, index, values) =>
         values.findIndex(
