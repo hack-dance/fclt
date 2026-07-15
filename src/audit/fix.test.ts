@@ -129,6 +129,7 @@ async function makeAuthorizedFixture(
     localMode?: number;
     localServer?: Record<string, unknown>;
     serverName?: string;
+    sourceContainer?: "mcp.servers" | "servers";
   }
 ) {
   const home = await makeTempHome();
@@ -136,8 +137,9 @@ async function makeAuthorizedFixture(
   const trackedPath = join(root, "mcp", "servers.json");
   const localPath = join(root, "mcp", "servers.local.json");
   const serverName = options?.serverName ?? "github";
+  const sourceContainer = options?.sourceContainer ?? "servers";
   await writeJson(trackedPath, {
-    servers: {
+    [sourceContainer]: {
       [serverName]: {
         command: "fixture-command",
         env: { GITHUB_PERSONAL_ACCESS_TOKEN: marker },
@@ -447,6 +449,34 @@ describe("audit fix", () => {
       expect(local.servers["team:github"]).toEqual({
         env: {
           GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+        },
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("remediates the auditor-supported dotted MCP server container", async () => {
+    const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
+      sourceContainer: "mcp.servers",
+    });
+    try {
+      const result = await runAuditFix({
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect(result.fixed).toBe(1);
+      expect(await Bun.file(fixture.trackedPath).json()).toEqual({
+        "mcp.servers": { github: { command: "fixture-command" } },
+      });
+      expect(await Bun.file(fixture.localPath).json()).toEqual({
+        servers: {
+          github: {
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+            },
+          },
         },
       });
     } finally {

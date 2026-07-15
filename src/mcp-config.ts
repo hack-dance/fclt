@@ -40,6 +40,7 @@ export function extractServersObject(
   const servers =
     (raw.servers as Record<string, unknown> | undefined) ??
     (raw.mcpServers as Record<string, unknown> | undefined) ??
+    (raw["mcp.servers"] as Record<string, unknown> | undefined) ??
     ((raw.mcp as Record<string, unknown> | undefined)?.servers as
       | Record<string, unknown>
       | undefined) ??
