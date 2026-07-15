@@ -179,24 +179,27 @@ const REMEDIATION_BINDING_KEYS = [
   "sourcePath",
 ] as const;
 
-function parseInlineSecretLocation(location: string): {
+function parseInlineSecretLocation(args: {
+  configPath: string;
+  location: string;
+  serverName: string;
+}): {
   configPath: string;
   envKey: string;
   serverName: string;
 } | null {
-  const envMarker = location.lastIndexOf(":env:");
-  if (envMarker <= 0) {
+  const prefix = `${args.configPath}:${args.serverName}:env:`;
+  if (!args.location.startsWith(prefix)) {
     return null;
   }
-  const envKey = location.slice(envMarker + ":env:".length).trim();
-  const left = location.slice(0, envMarker);
-  const serverMarker = left.lastIndexOf(":");
-  if (serverMarker <= 0 || !envKey) {
-    return null;
-  }
-  const configPath = left.slice(0, serverMarker);
-  const serverName = left.slice(serverMarker + 1).trim();
-  return configPath && serverName ? { configPath, envKey, serverName } : null;
+  const envKey = args.location.slice(prefix.length).trim();
+  return envKey
+    ? {
+        configPath: args.configPath,
+        envKey,
+        serverName: args.serverName,
+      }
+    : null;
 }
 
 function isSingleSafeSegment(value: string): boolean {
@@ -328,7 +331,11 @@ function assertRemediationBindingsMatchReport(args: {
       }
       const finding = findingCandidate as AuditFinding;
       const location = finding.location
-        ? parseInlineSecretLocation(finding.location)
+        ? parseInlineSecretLocation({
+            configPath: result.path,
+            location: finding.location,
+            serverName: result.item,
+          })
         : null;
       if (
         finding.ruleId === "mcp-env-inline-secret" &&
@@ -385,7 +392,11 @@ export function buildMcpRemediationBindings(args: {
   const bindings = args.report.results.flatMap((result) =>
     result.findings.flatMap((finding) => {
       const location = finding.location
-        ? parseInlineSecretLocation(finding.location)
+        ? parseInlineSecretLocation({
+            configPath: result.path,
+            location: finding.location,
+            serverName: result.item,
+          })
         : null;
       if (
         result.type !== "mcp" ||

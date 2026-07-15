@@ -123,19 +123,35 @@ async function makeFixBase() {
   });
 }
 
-async function makeAuthorizedFixture(marker = "fixture_secret_1234567890") {
+async function makeAuthorizedFixture(
+  marker = "fixture_secret_1234567890",
+  options?: {
+    localMode?: number;
+    localServer?: Record<string, unknown>;
+    serverName?: string;
+  }
+) {
   const home = await makeTempHome();
   const root = join(home, ".ai");
   const trackedPath = join(root, "mcp", "servers.json");
   const localPath = join(root, "mcp", "servers.local.json");
+  const serverName = options?.serverName ?? "github";
   await writeJson(trackedPath, {
     servers: {
-      github: {
+      [serverName]: {
         command: "fixture-command",
         env: { GITHUB_PERSONAL_ACCESS_TOKEN: marker },
       },
     },
   });
+  if (options?.localServer) {
+    await writeJson(localPath, {
+      servers: { [serverName]: options.localServer },
+    });
+    if (options.localMode !== undefined) {
+      await chmod(localPath, options.localMode);
+    }
+  }
   const audit = await evaluateStaticAudit({
     argv: [],
     cwd: home,
@@ -160,6 +176,7 @@ async function makeAuthorizedFixture(marker = "fixture_secret_1234567890") {
     localPath,
     reportRoot,
     root,
+    serverName,
     trackedPath,
   };
 }
@@ -375,6 +392,63 @@ describe("audit fix", () => {
       ).not.toContainEqual(
         expect.objectContaining({ ruleId: "mcp-env-inline-secret" })
       );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("secures an existing readable local destination to owner-only mode", async () => {
+    const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
+      localMode: 0o644,
+      localServer: { env: { NON_SECRET_SETTING: "preserve" } },
+    });
+    try {
+      await runAuditFix({
+        argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect((await lstat(fixture.localPath)).mode % 0o1000).toBe(0o600);
+      expect(await Bun.file(fixture.localPath).json()).toEqual({
+        servers: {
+          github: {
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+              NON_SECRET_SETTING: "preserve",
+            },
+          },
+        },
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("binds colon-bearing server names without location ambiguity", async () => {
+    const fixture = await makeAuthorizedFixture("fixture_secret_1234567890", {
+      serverName: "team:github",
+    });
+    try {
+      const result = await runAuditFix({
+        argv: [
+          "--item",
+          "team:github",
+          "--report",
+          fixture.exactReportPath,
+          "--yes",
+        ],
+        cwd: fixture.home,
+        homeDir: fixture.home,
+      });
+      expect(result.fixed).toBe(1);
+      const local = (await Bun.file(fixture.localPath).json()) as {
+        servers: Record<string, unknown>;
+      };
+      expect(local.servers["team:github"]).toEqual({
+        env: {
+          GITHUB_PERSONAL_ACCESS_TOKEN: "fixture_secret_1234567890",
+        },
+      });
     } finally {
       await fixture.cleanup();
     }

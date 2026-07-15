@@ -154,27 +154,26 @@ function parseAuditFixArgs(argv: string[]): AuditFixArgs {
   return args;
 }
 
-function parseInlineSecretLocation(location: string): {
+function parseInlineSecretLocation(args: {
+  location: string;
+  result: AuditItemResult;
+}): {
   configPath: string;
   serverName: string;
   envKey: string;
 } | null {
-  const envMarker = location.lastIndexOf(":env:");
-  if (envMarker <= 0) {
+  const prefix = `${args.result.path}:${args.result.item}:env:`;
+  if (!args.location.startsWith(prefix)) {
     return null;
   }
-  const envKey = location.slice(envMarker + ":env:".length).trim();
-  const left = location.slice(0, envMarker);
-  const serverMarker = left.lastIndexOf(":");
-  if (serverMarker <= 0 || !envKey) {
-    return null;
-  }
-  const configPath = left.slice(0, serverMarker);
-  const serverName = left.slice(serverMarker + 1).trim();
-  if (!(configPath && serverName)) {
-    return null;
-  }
-  return { configPath, serverName, envKey };
+  const envKey = args.location.slice(prefix.length).trim();
+  return envKey
+    ? {
+        configPath: args.result.path,
+        envKey,
+        serverName: args.result.item,
+      }
+    : null;
 }
 
 function findingKey(args: {
@@ -182,7 +181,10 @@ function findingKey(args: {
   finding: AuditFinding;
 }): string {
   const parsed = args.finding.location
-    ? parseInlineSecretLocation(args.finding.location)
+    ? parseInlineSecretLocation({
+        location: args.finding.location,
+        result: args.result,
+      })
     : null;
   return [
     args.result.type,

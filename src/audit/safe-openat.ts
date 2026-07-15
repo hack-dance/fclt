@@ -1333,13 +1333,7 @@ export async function replaceBoundPrivateFilePairAt(args: {
     );
     sourceTemporaryFd = staged.fd;
     sourceTemporaryMetadata = staged.metadata;
-    staged = stage(
-      destinationTemporaryName,
-      destinationBytes,
-      args.destinationIdentity
-        ? permissionBits(args.destinationIdentity.mode)
-        : 0o600
-    );
+    staged = stage(destinationTemporaryName, destinationBytes, 0o600);
     destinationTemporaryFd = staged.fd;
     destinationTemporaryMetadata = staged.metadata;
 
