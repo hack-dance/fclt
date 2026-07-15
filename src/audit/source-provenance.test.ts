@@ -17,10 +17,6 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  auditNativeLibraryCandidates,
-  selectFirstAvailableNativeLibrary,
-} from "./safe-openat";
-import {
   AuditSourceTracker,
   auditReadOnlyNoFollowFlags,
   validateAuditSourceSnapshot,
@@ -232,37 +228,6 @@ test("POSIX provenance rejects a FIFO swapped in before a directory open without
   }
 });
 
-test("Linux descriptor operations fall back from glibc to musl and otherwise fail closed", () => {
-  const candidates = auditNativeLibraryCandidates("linux", "x64");
-  expect(candidates[0]).toBe("libc.so.6");
-  expect(candidates).toContain("libc.musl-x86_64.so.1");
-  expect(auditNativeLibraryCandidates("linux", "arm64")).toContain(
-    "/lib/ld-musl-aarch64.so.1"
-  );
-
-  const attempts: string[] = [];
-  const selected = selectFirstAvailableNativeLibrary({
-    candidates,
-    open: (candidate) => {
-      attempts.push(candidate);
-      if (candidate === "libc.so.6") {
-        throw new Error("fixture glibc missing");
-      }
-      return candidate;
-    },
-  });
-  expect(selected).toBe("libc.musl-x86_64.so.1");
-  expect(attempts).toEqual(["libc.so.6", "libc.musl-x86_64.so.1"]);
-  expect(() =>
-    selectFirstAvailableNativeLibrary({
-      candidates: ["missing-libc"],
-      open: () => {
-        throw new Error("fixture missing");
-      },
-    })
-  ).toThrow("no compatible system C library");
-});
-
 test("POSIX directory reads enumerate the opened descriptor during pathname swaps", async () => {
   const parent = await mkdtemp(join(tmpdir(), "fclt-provenance-dir-swap-"));
   const requestedContainer = join(parent, "requested-container");
@@ -291,6 +256,126 @@ test("POSIX directory reads enumerate the opened descriptor during pathname swap
   await expect(
     validateAuditSourceSnapshot(tracker.snapshot())
   ).resolves.toBeUndefined();
+});
+
+test("POSIX audited source opens reject FIFO replacements without blocking", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  const root = await mkdtemp(join(tmpdir(), "fclt-provenance-fifo-child-"));
+  const moduleUrl = new URL("./source-provenance.ts", import.meta.url).href;
+  const script = `
+    import { lstat, mkdir, rename, writeFile } from "node:fs/promises";
+    import { join } from "node:path";
+    import { AuditSourceTracker } from ${JSON.stringify(moduleUrl)};
+
+    const root = process.env.FCLT_FIFO_FIXTURE_ROOT;
+    if (!root) throw new Error("FIFO fixture root is unavailable");
+    const requestedDirectory = join(root, "requested-directory");
+    const movedDirectory = join(root, "moved-directory");
+    await mkdir(requestedDirectory);
+    let directorySwapComplete = false;
+    const tracker = new AuditSourceTracker({
+      beforeDirectoryRead: async () => {
+        await rename(requestedDirectory, movedDirectory);
+        const fifo = Bun.spawnSync(["mkfifo", requestedDirectory], {
+          stderr: "pipe",
+          stdout: "pipe",
+        });
+        if (fifo.exitCode !== 0) {
+          throw new Error(new TextDecoder().decode(fifo.stderr));
+        }
+        directorySwapComplete = true;
+      },
+    });
+    try {
+      await tracker.readDirectory(requestedDirectory);
+      process.exit(2);
+    } catch {
+      if (
+        !directorySwapComplete ||
+        !(await lstat(requestedDirectory)).isFIFO() ||
+        tracker.snapshot().evaluatedDirectories.length !== 0
+      ) {
+        process.exit(4);
+      }
+      process.stdout.write("rejected-directory-fifo\\n");
+    }
+
+    const requestedFile = join(root, "requested-file");
+    const movedFile = join(root, "moved-file");
+    await writeFile(requestedFile, "stable\\n");
+    let fileSwapComplete = false;
+    const fileTracker = new AuditSourceTracker({
+      beforeFileOpen: async () => {
+        await rename(requestedFile, movedFile);
+        const fifo = Bun.spawnSync(["mkfifo", requestedFile], {
+          stderr: "pipe",
+          stdout: "pipe",
+        });
+        if (fifo.exitCode !== 0) {
+          throw new Error(new TextDecoder().decode(fifo.stderr));
+        }
+        fileSwapComplete = true;
+      },
+    });
+    try {
+      await fileTracker.read(requestedFile);
+      process.exit(3);
+    } catch {
+      if (
+        !fileSwapComplete ||
+        !(await lstat(requestedFile)).isFIFO() ||
+        fileTracker.snapshot().evaluatedFiles.length !== 0
+      ) {
+        process.exit(5);
+      }
+      process.stdout.write("rejected-file-fifo\\n");
+    }
+  `;
+  try {
+    const child = Bun.spawn([process.execPath, "-e", script], {
+      env: {
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        FCLT_FIFO_FIXTURE_ROOT: root,
+        HOME: root,
+        PATH: process.env.PATH ?? "",
+        TEMP: root,
+        TMP: root,
+        TMPDIR: root,
+      },
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      child.exited.then((exitCode) => ({ exitCode, timedOut: false as const })),
+      new Promise<{ exitCode: null; timedOut: true }>((resolveTimeout) => {
+        timeout = setTimeout(
+          () => resolveTimeout({ exitCode: null, timedOut: true }),
+          2000
+        );
+      }),
+    ]).finally(() => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    });
+    if (outcome.timedOut) {
+      child.kill();
+      await child.exited;
+    }
+    const [stderr, stdout] = await Promise.all([
+      new Response(child.stderr).text(),
+      new Response(child.stdout).text(),
+    ]);
+    expect(outcome.timedOut, stderr).toBe(false);
+    expect(outcome.exitCode, stderr).toBe(0);
+    expect(stdout).toContain("rejected-directory-fifo");
+    expect(stdout).toContain("rejected-file-fifo");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
 test("bounded provenance rejects large, sparse, growing, symlink, and special inputs", async () => {

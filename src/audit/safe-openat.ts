@@ -2,6 +2,7 @@ import {
   dlopen,
   type FFIFunction,
   FFIType,
+  type Library,
   type Pointer,
   ptr,
   toArrayBuffer,
@@ -29,67 +30,153 @@ const DIRECTORY_ENTRY_TYPES = {
   symlink: 10,
 } as const;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
-
-const MUSL_ARCH_NAMES: Partial<Record<string, readonly string[]>> = {
-  arm: ["armhf", "armv7"],
-  arm64: ["aarch64"],
-  ia32: ["i386", "i686"],
-  ppc64: ["powerpc64le", "ppc64le"],
-  riscv64: ["riscv64"],
-  s390x: ["s390x"],
-  x64: ["x86_64"],
+const LINUX_MUSL_LIBRARIES: Readonly<Record<string, readonly string[]>> = {
+  arm64: ["/lib/libc.musl-aarch64.so.1", "/lib/ld-musl-aarch64.so.1"],
+  x64: ["/lib/libc.musl-x86_64.so.1", "/lib/ld-musl-x86_64.so.1"],
 };
+const COMMON_SYSTEM_LIBC_PROBE_SYMBOLS = {
+  close: { args: [FFIType.i32], returns: FFIType.i32 },
+  closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
+  dup: { args: [FFIType.i32], returns: FFIType.i32 },
+  fchmod: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  fdopendir: { args: [FFIType.i32], returns: FFIType.ptr },
+  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  fsync: { args: [FFIType.i32], returns: FFIType.i32 },
+  linkat: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.i32],
+    returns: FFIType.i32,
+  },
+  mkdirat: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+    returns: FFIType.i32,
+  },
+  openat: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
+    returns: FFIType.i32,
+  },
+  read: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.u64],
+    returns: FFIType.i64,
+  },
+  readdir: { args: [FFIType.ptr], returns: FFIType.ptr },
+  renameat: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+  rewinddir: { args: [FFIType.ptr], returns: FFIType.void },
+  unlinkat: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+    returns: FFIType.i32,
+  },
+  write: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.u64],
+    returns: FFIType.i64,
+  },
+} as const;
+const LINUX_SYSTEM_LIBC_PROBE_SYMBOLS = {
+  ...COMMON_SYSTEM_LIBC_PROBE_SYMBOLS,
+  __errno_location: { args: [], returns: FFIType.ptr },
+} as const;
+const DARWIN_SYSTEM_LIBC_PROBE_SYMBOLS = {
+  ...COMMON_SYSTEM_LIBC_PROBE_SYMBOLS,
+  __error: { args: [], returns: FFIType.ptr },
+} as const;
 
-export function auditNativeLibraryCandidates(
-  platform: NodeJS.Platform = process.platform,
-  architecture: string = process.arch
-): string[] {
-  if (platform === "darwin") {
-    return ["/usr/lib/libSystem.B.dylib"];
-  }
-  if (platform !== "linux") {
-    return [];
-  }
-  const candidates = ["libc.so.6"];
-  for (const muslArchitecture of MUSL_ARCH_NAMES[architecture] ?? []) {
-    candidates.push(
-      `libc.musl-${muslArchitecture}.so.1`,
-      `/lib/ld-musl-${muslArchitecture}.so.1`,
-      `/usr/lib/libc.musl-${muslArchitecture}.so.1`
-    );
-  }
-  return candidates;
+interface LibcProbeHandle {
+  close: () => void;
 }
 
-export function selectFirstAvailableNativeLibrary<T>(args: {
-  candidates: readonly string[];
-  open: (candidate: string) => T;
-}): T {
-  for (const candidate of args.candidates) {
-    try {
-      return args.open(candidate);
-    } catch {
-      // Try the next known system C library name without trusting loader text.
+let cachedLinuxLibcPath: string | null | undefined;
+let cachedRuntimeSystemLibcSupport: boolean | undefined;
+
+export function linuxLibcCandidates(
+  architecture: string = process.arch
+): readonly string[] {
+  return ["libc.so.6", ...(LINUX_MUSL_LIBRARIES[architecture] ?? [])];
+}
+
+export function resolveLinuxLibcPath(options?: {
+  architecture?: string;
+  openProbe?: (
+    library: string,
+    symbols: typeof LINUX_SYSTEM_LIBC_PROBE_SYMBOLS
+  ) => LibcProbeHandle;
+}): string {
+  if (!options && cachedLinuxLibcPath !== undefined) {
+    if (cachedLinuxLibcPath === null) {
+      throw new Error(
+        `System libc FFI is unsupported on linux/${process.arch}`
+      );
     }
+    return cachedLinuxLibcPath;
+  }
+  const architecture = options?.architecture ?? process.arch;
+  const openProbe =
+    options?.openProbe ??
+    ((library: string) => dlopen(library, LINUX_SYSTEM_LIBC_PROBE_SYMBOLS));
+  for (const candidate of linuxLibcCandidates(architecture)) {
+    let probe: LibcProbeHandle;
+    try {
+      probe = openProbe(candidate, LINUX_SYSTEM_LIBC_PROBE_SYMBOLS);
+    } catch {
+      // Try the next reviewed libc candidate and fail closed if none load.
+      continue;
+    }
+    try {
+      probe.close();
+    } catch {
+      if (!options) {
+        cachedLinuxLibcPath = null;
+      }
+      throw new Error(
+        `System libc FFI is unsupported on linux/${architecture}`
+      );
+    }
+    if (!options) {
+      cachedLinuxLibcPath = candidate;
+    }
+    return candidate;
+  }
+  if (!options) {
+    cachedLinuxLibcPath = null;
+  }
+  throw new Error(`System libc FFI is unsupported on linux/${architecture}`);
+}
+
+interface SystemLibcConfiguration {
+  createExclusive: number;
+  library: string;
+}
+
+function platformConfiguration(): SystemLibcConfiguration {
+  if (process.platform === "darwin") {
+    return {
+      createExclusive: 0xa_01,
+      library: "/usr/lib/libSystem.B.dylib",
+    };
+  }
+  if (process.platform === "linux") {
+    return {
+      createExclusive: 0xc1,
+      library: resolveLinuxLibcPath(),
+    };
   }
   throw new Error(
-    "Descriptor-bound audit operations are unavailable: no compatible system C library was found"
+    `System libc FFI is unsupported on ${process.platform}/${process.arch}`
   );
 }
 
-function openNativeLibrary<T extends Record<string, FFIFunction>>(
-  definitions: T
-) {
-  const candidates = auditNativeLibraryCandidates();
-  if (candidates.length === 0) {
+function openSystemLibc<Fns extends Record<string, FFIFunction>>(
+  configuration: SystemLibcConfiguration,
+  symbols: Fns
+): Library<Fns> {
+  try {
+    return dlopen(configuration.library, symbols);
+  } catch {
     throw new Error(
-      `Descriptor-bound audit operations are unavailable on ${process.platform}`
+      `System libc FFI is unsupported on ${process.platform}/${process.arch}`
     );
   }
-  return selectFirstAvailableNativeLibrary({
-    candidates,
-    open: (candidate) => dlopen(candidate, definitions),
-  });
 }
 
 function directoryEntry(args: { name: string; type: number }): Dirent {
@@ -152,6 +239,7 @@ interface PrivateFileMutationSymbols extends DirectoryMutationSymbols {
 }
 
 function directoryStreamLibrary(): DirectoryStreamLibrary {
+  const configuration = platformConfiguration();
   const commonSymbols = {
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     closedir: { args: [FFIType.ptr], returns: FFIType.i32 },
@@ -161,7 +249,7 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
     rewinddir: { args: [FFIType.ptr], returns: FFIType.void },
   } as const;
   if (process.platform === "darwin") {
-    const libc = openNativeLibrary({
+    const libc = openSystemLibc(configuration, {
       ...commonSymbols,
       __error: { args: [], returns: FFIType.ptr },
     });
@@ -178,7 +266,7 @@ function directoryStreamLibrary(): DirectoryStreamLibrary {
     };
   }
   if (process.platform === "linux") {
-    const libc = openNativeLibrary({
+    const libc = openSystemLibc(configuration, {
       ...commonSymbols,
       __errno_location: { args: [], returns: FFIType.ptr },
     });
@@ -326,26 +414,33 @@ function groupOrOtherWritable(mode: number): boolean {
   return Math.floor(group / 2) % 2 === 1 || Math.floor(other / 2) % 2 === 1;
 }
 
-function platformConfiguration(): {
-  createExclusive: number;
-} {
-  if (process.platform === "darwin") {
-    return {
-      createExclusive: 0xa_01,
-    };
-  }
-  if (process.platform === "linux") {
-    return { createExclusive: 0xc1 };
-  }
-  throw new Error(
-    `Audit report persistence is unavailable on ${process.platform}: safe descriptor-relative creation is unsupported`
-  );
-}
-
 export function auditReportPersistenceSupported(
   platform: NodeJS.Platform = process.platform
 ): boolean {
-  return platform === "darwin" || platform === "linux";
+  if (!(platform === "darwin" || platform === "linux")) {
+    return false;
+  }
+  if (platform !== process.platform) {
+    return true;
+  }
+  if (cachedRuntimeSystemLibcSupport !== undefined) {
+    return cachedRuntimeSystemLibcSupport;
+  }
+  try {
+    const configuration = platformConfiguration();
+    const probe = openSystemLibc(
+      configuration,
+      process.platform === "darwin"
+        ? DARWIN_SYSTEM_LIBC_PROBE_SYMBOLS
+        : LINUX_SYSTEM_LIBC_PROBE_SYMBOLS
+    );
+    probe.close();
+    cachedRuntimeSystemLibcSupport = true;
+    return true;
+  } catch {
+    cachedRuntimeSystemLibcSupport = false;
+    return false;
+  }
 }
 
 export function openReadOnlyAt(args: {
@@ -357,7 +452,8 @@ export function openReadOnlyAt(args: {
       "Descriptor-relative report names must be single path segments"
     );
   }
-  const libc = openNativeLibrary({
+  const configuration = platformConfiguration();
+  const libc = openSystemLibc(configuration, {
     openat: {
       args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.i32],
       returns: FFIType.i32,
@@ -392,7 +488,7 @@ export function writeExclusiveAt(args: {
     );
   }
   const configuration = platformConfiguration();
-  const libc = openNativeLibrary({
+  const libc = openSystemLibc(configuration, {
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     fchmod: {
       args: [FFIType.i32, FFIType.i32],
@@ -618,6 +714,7 @@ export function openOrCreatePrivateDirectory(
   ) {
     throw new Error("Private directory path must be canonical and supported");
   }
+  const configuration = platformConfiguration();
   const definitions: Record<string, FFIFunction> = {
     close: { args: [FFIType.i32], returns: FFIType.i32 },
     mkdirat: {
@@ -629,7 +726,7 @@ export function openOrCreatePrivateDirectory(
       returns: FFIType.i32,
     },
   };
-  const libc = openNativeLibrary(definitions);
+  const libc = openSystemLibc(configuration, definitions);
   const symbols = libc.symbols as unknown as DirectoryMutationSymbols;
   const directoryFlags =
     constants.O_RDONLY +
@@ -738,7 +835,7 @@ export async function replacePrivateFileAt(args: {
   };
   definitions[process.platform === "darwin" ? "__error" : "__errno_location"] =
     { args: [], returns: FFIType.ptr };
-  const libc = openNativeLibrary(definitions);
+  const libc = openSystemLibc(configuration, definitions);
   const symbols = libc.symbols as unknown as PrivateFileMutationSymbols;
   const errnoPointer =
     process.platform === "darwin"
