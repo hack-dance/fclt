@@ -180,6 +180,37 @@ describe("paths", () => {
     ).toBe(rootDir);
   });
 
+  it("uses the supplied config for every project-root decision when disk config differs", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+
+    const projectRoot = join(tempHome, "work", "repo");
+    const projectAiRoot = join(projectRoot, ".ai");
+    const evaluatedGlobalRoot = join(tempHome, "evaluated-global");
+    await mkdir(join(projectAiRoot, "instructions"), { recursive: true });
+    await mkdir(join(tempHome, ".ai", ".facult"), { recursive: true });
+    await writeFile(
+      join(tempHome, ".ai", ".facult", "config.json"),
+      `${JSON.stringify({ rootDir: projectAiRoot })}\n`,
+      "utf8"
+    );
+
+    const evaluatedConfig = { rootDir: evaluatedGlobalRoot };
+    expect(
+      facultContextRootDir({
+        home: tempHome,
+        cwd: join(projectRoot, "src"),
+        config: evaluatedConfig,
+      })
+    ).toBe(projectAiRoot);
+    expect(
+      projectRootFromAiRoot(projectAiRoot, tempHome, evaluatedConfig)
+    ).toBe(projectRoot);
+    expect(
+      facultMachineStateDir(tempHome, projectAiRoot, evaluatedConfig)
+    ).toContain(join(expectedLocalStateRoot(tempHome), "projects"));
+  });
+
   it("treats a repo-local .ai with config.toml as a project AI root", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

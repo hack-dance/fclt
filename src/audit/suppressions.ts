@@ -1,8 +1,22 @@
-import { mkdir } from "node:fs/promises";
+import { closeSync, fstatSync, lstatSync, type Stats } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { facultStateDir } from "../paths";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+} from "node:path";
+import { type FacultConfig, facultStateDir } from "../paths";
 import type { AgentAuditReport } from "./agent";
+import {
+  auditReportPersistenceSupported,
+  openOrCreatePrivateDirectory,
+  type PrivateDirectoryReceiptBinding,
+  replacePrivateFileAt,
+} from "./safe-openat";
 import { computeStoredAuditStatus, isStoredAuditStatusPassed } from "./status";
 import type {
   AuditFinding,
@@ -12,6 +26,7 @@ import type {
 } from "./types";
 
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
+const SUPPRESSION_STORE_MAX_BYTES = 4 * 1024 * 1024;
 
 export interface AuditSuppressionEntry {
   key: string;
@@ -55,8 +70,32 @@ function normalizedFindingSignature(args: {
   });
 }
 
-function suppressionsPath(homeDir: string): string {
-  return join(facultStateDir(homeDir), "audit", "suppressions.json");
+function suppressionsPath(
+  homeDir: string,
+  rootDir?: string,
+  config?: FacultConfig | null
+): string {
+  return join(
+    facultStateDir(homeDir, rootDir, config),
+    "audit",
+    "suppressions.json"
+  );
+}
+
+function exactSuppressionStorePath(args: {
+  config?: FacultConfig | null;
+  homeDir: string;
+  rootDir?: string;
+  storePath?: string;
+}): string {
+  const path =
+    args.storePath ?? suppressionsPath(args.homeDir, args.rootDir, args.config);
+  if (!isAbsolute(path) || normalize(resolve(path)) !== path) {
+    throw new Error(
+      "Audit suppression store path must be canonical and absolute"
+    );
+  }
+  return path;
 }
 
 export function createAuditSuppressionEntry(args: {
@@ -88,19 +127,36 @@ export function createAuditSuppressionEntry(args: {
 }
 
 async function loadAuditSuppressionStore(
-  homeDir: string
+  homeDir: string,
+  readOptionalText?: (path: string) => Promise<string | null>,
+  rootDir?: string,
+  config?: FacultConfig | null,
+  storePath?: string
 ): Promise<AuditSuppressionStore> {
-  const path = suppressionsPath(homeDir);
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
+  const path = exactSuppressionStorePath({
+    config,
+    homeDir,
+    rootDir,
+    storePath,
+  });
+  const text = readOptionalText
+    ? await readOptionalText(path)
+    : (await Bun.file(path).exists())
+      ? await Bun.file(path).text()
+      : null;
+  if (text === null) {
     return {
       version: 1,
       updatedAt: new Date(0).toISOString(),
       entries: [],
     };
   }
+  return parseAuditSuppressionStore(text);
+}
+
+function parseAuditSuppressionStore(text: string): AuditSuppressionStore {
   try {
-    const parsed = (await file.json()) as Partial<AuditSuppressionStore>;
+    const parsed = JSON.parse(text) as Partial<AuditSuppressionStore>;
     return {
       version: 1,
       updatedAt:
@@ -125,52 +181,176 @@ async function loadAuditSuppressionStore(
   }
 }
 
-async function writeAuditSuppressionStore(
-  homeDir: string,
-  store: AuditSuppressionStore
-) {
-  const path = suppressionsPath(homeDir);
-  await mkdir(join(facultStateDir(homeDir), "audit"), { recursive: true });
-  await Bun.write(path, `${JSON.stringify(store, null, 2)}\n`);
+function privateDirectoryIsSafe(metadata: Stats): boolean {
+  const expectedOwner = process.getuid?.();
+  const permissions = metadata.mode % 0o1000;
+  const group = Math.floor(permissions / 8) % 8;
+  const other = permissions % 8;
+  const groupOrOtherWritable =
+    Math.floor(group / 2) % 2 === 1 || Math.floor(other / 2) % 2 === 1;
+  return (
+    metadata.isDirectory() &&
+    !metadata.isSymbolicLink() &&
+    expectedOwner !== undefined &&
+    metadata.uid === expectedOwner &&
+    !groupOrOtherWritable
+  );
+}
+
+async function currentDirectoryBindingForCreation(
+  path: string
+): Promise<PrivateDirectoryReceiptBinding> {
+  let ancestor = path;
+  while (true) {
+    try {
+      lstatSync(ancestor);
+      break;
+    } catch {
+      const parent = dirname(ancestor);
+      if (parent === ancestor) {
+        throw new Error("Audit suppression directory has no safe ancestor");
+      }
+      ancestor = parent;
+    }
+  }
+  const canonicalAncestor = await realpath(ancestor);
+  const metadata = lstatSync(canonicalAncestor);
+  return {
+    ancestorDev: String(metadata.dev),
+    ancestorIno: String(metadata.ino),
+    ancestorPath: canonicalAncestor,
+    directorySegments: relative(ancestor, path).split("/").filter(Boolean),
+  };
 }
 
 export async function loadAuditSuppressions(
-  homeDir = homedir()
+  homeDir = homedir(),
+  readOptionalText?: (path: string) => Promise<string | null>,
+  rootDir?: string,
+  config?: FacultConfig | null,
+  storePath?: string
 ): Promise<AuditSuppressionEntry[]> {
-  return (await loadAuditSuppressionStore(homeDir)).entries;
+  return (
+    await loadAuditSuppressionStore(
+      homeDir,
+      readOptionalText,
+      rootDir,
+      config,
+      storePath
+    )
+  ).entries;
 }
 
 export async function recordAuditSuppressions(args: {
+  /** @internal Adversarial test hook; production callers must not set this. */
+  beforeStoreCommit?: () => Promise<void>;
+  directoryBinding?: PrivateDirectoryReceiptBinding;
+  expectedPriorSha256?: string | null;
   selected: { result: AuditItemResult; finding: AuditFinding }[];
   homeDir?: string;
   note?: string;
+  storePath?: string;
 }): Promise<{ added: number; total: number }> {
-  const homeDir = args.homeDir ?? homedir();
-  const store = await loadAuditSuppressionStore(homeDir);
-  const next = new Map(store.entries.map((entry) => [entry.key, entry]));
-  const createdAt = new Date().toISOString();
-
-  for (const selection of args.selected) {
-    const entry = createAuditSuppressionEntry({
-      result: selection.result,
-      finding: selection.finding,
-      createdAt,
-      note: args.note,
-    });
-    next.set(entry.key, entry);
+  if (!auditReportPersistenceSupported()) {
+    throw new Error(
+      `Audit suppression persistence is unavailable on ${process.platform}`
+    );
   }
-
-  const entries = [...next.values()].sort((a, b) => a.key.localeCompare(b.key));
-  await writeAuditSuppressionStore(homeDir, {
-    version: 1,
-    updatedAt: createdAt,
-    entries,
+  const homeDir = args.homeDir ?? homedir();
+  const storePath = exactSuppressionStorePath({
+    homeDir,
+    storePath: args.storePath,
   });
-
-  return {
-    added: Math.max(0, entries.length - store.entries.length),
-    total: entries.length,
+  const storeDirectory = dirname(storePath);
+  const directoryBinding =
+    args.directoryBinding ??
+    (await currentDirectoryBindingForCreation(storeDirectory));
+  const canonicalPath = normalize(
+    join(directoryBinding.ancestorPath, ...directoryBinding.directorySegments)
+  );
+  const directoryFd = openOrCreatePrivateDirectory(directoryBinding);
+  const pathMetadata = lstatSync(canonicalPath);
+  const lexicalCanonicalPath = await realpath(storeDirectory).catch(() => null);
+  if (
+    !privateDirectoryIsSafe(pathMetadata) ||
+    lexicalCanonicalPath !== canonicalPath
+  ) {
+    throw new Error("Audit suppression directory is unsafe");
+  }
+  const assertDirectoryBinding = async (): Promise<void> => {
+    const opened = fstatSync(directoryFd);
+    const current = (() => {
+      try {
+        return lstatSync(canonicalPath);
+      } catch {
+        return null;
+      }
+    })();
+    const [currentCanonical, currentLexicalCanonical] = await Promise.all([
+      realpath(canonicalPath).catch(() => null),
+      realpath(storeDirectory).catch(() => null),
+    ]);
+    const currentIsSafe = current !== null && privateDirectoryIsSafe(current);
+    if (
+      !(privateDirectoryIsSafe(opened) && currentIsSafe) ||
+      opened.dev !== pathMetadata.dev ||
+      opened.ino !== pathMetadata.ino ||
+      current?.dev !== pathMetadata.dev ||
+      current?.ino !== pathMetadata.ino ||
+      currentCanonical !== canonicalPath ||
+      currentLexicalCanonical !== canonicalPath
+    ) {
+      throw new Error("Audit suppression directory changed during update");
+    }
   };
+  let added = 0;
+  let total = 0;
+  try {
+    await assertDirectoryBinding();
+    await replacePrivateFileAt({
+      beforeCommit: async () => {
+        await args.beforeStoreCommit?.();
+        await assertDirectoryBinding();
+      },
+      directoryFd,
+      expectedPriorSha256: args.expectedPriorSha256,
+      fileName: "suppressions.json",
+      maxBytes: SUPPRESSION_STORE_MAX_BYTES,
+      transform: (contents) => {
+        const store = contents
+          ? parseAuditSuppressionStore(contents)
+          : {
+              version: 1 as const,
+              updatedAt: new Date(0).toISOString(),
+              entries: [],
+            };
+        const next = new Map(store.entries.map((entry) => [entry.key, entry]));
+        const createdAt = new Date().toISOString();
+        for (const selection of args.selected) {
+          const entry = createAuditSuppressionEntry({
+            result: selection.result,
+            finding: selection.finding,
+            createdAt,
+            note: args.note,
+          });
+          next.set(entry.key, entry);
+        }
+        const entries = [...next.values()].sort((a, b) =>
+          a.key.localeCompare(b.key)
+        );
+        added = Math.max(0, entries.length - store.entries.length);
+        total = entries.length;
+        return `${JSON.stringify(
+          { version: 1, updatedAt: createdAt, entries },
+          null,
+          2
+        )}\n`;
+      },
+    });
+    return { added, total };
+  } finally {
+    closeSync(directoryFd);
+  }
 }
 
 export function applyAuditSuppressionsToResults(args: {

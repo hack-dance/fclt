@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 interface ProtocolInspection {
+  capabilities: string[];
   executable: string;
   packageVersion: string;
   compatible: boolean;
@@ -132,7 +133,7 @@ function runtimeScript(
     [
       `#!${process.execPath}`,
       "if (process.argv[2] !== 'protocol') process.exit(2);",
-      `console.log(JSON.stringify({schemaVersion:1,packageVersion:${JSON.stringify(version)},protocol:{version:1,minimumPluginVersion:${protocol.minimum},maximumPluginVersion:${protocol.maximum}},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]}}));`,
+      `console.log(JSON.stringify({schemaVersion:1,packageVersion:${JSON.stringify(version)},protocol:{version:1,minimumPluginVersion:${protocol.minimum},maximumPluginVersion:${protocol.maximum}},runtime:{platform:process.platform,architecture:process.arch,executable:process.argv[1]},capabilities:['audit-read-only-v1']}));`,
       "",
     ].join("\n")
   );
@@ -211,6 +212,7 @@ describe("fclt plugin runtime discovery", () => {
     expect(discovery.compatible).toBe(true);
     expect(discovery.selected?.executable).toBe(executable);
     expect(discovery.selected?.packageVersion).toBe("7.8.9");
+    expect(discovery.selected?.capabilities).toContain("audit-read-only-v1");
   });
 
   it("reports protocol skew without selecting the runtime", async () => {

@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { auditPersistenceContract } from "./verify-binary-audit-contract";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const defaultBinary =
@@ -11,6 +12,7 @@ const binaryPath = resolve(repoRoot, process.argv[2] ?? defaultBinary);
 const tempHome = await mkdtemp(join(tmpdir(), "fclt-binary-verify-"));
 const tempProcessTmp = join(tempHome, "tmp");
 const legacyManagedMutationFlag = "--allow-legacy-managed-mutation";
+await mkdir(tempProcessTmp, { recursive: true });
 
 async function execute(args: string[]): Promise<{
   code: number;
@@ -85,6 +87,83 @@ if (status.packageVersion !== version) {
   throw new Error(
     `Expected status packageVersion ${version}, got ${JSON.stringify(status.packageVersion)}`
   );
+}
+
+const auditSource = join(tempHome, "audit-source");
+const auditSkill = join(auditSource, "skills", "compiled-audit", "SKILL.md");
+const auditReportRoot = await mkdtemp(
+  join(tmpdir(), "fclt-binary-audit-reports-")
+);
+await mkdir(dirname(auditSkill), { recursive: true });
+await Bun.write(auditSkill, "# Compiled Audit\n\nReview safely.\n");
+const auditSourceBefore = await Bun.file(auditSkill).text();
+const readOnlyAudit = JSON.parse(
+  await run([
+    "audit",
+    "--non-interactive",
+    "--no-config-from",
+    "--from",
+    auditSource,
+    "--json",
+  ])
+) as { mode?: string };
+if (
+  readOnlyAudit.mode !== "static" ||
+  (await Bun.file(auditSkill).text()) !== auditSourceBefore ||
+  (await readdir(auditReportRoot)).length !== 0
+) {
+  throw new Error(
+    "Compiled default audit did not preserve its read-only boundary"
+  );
+}
+const persistenceArgs = [
+  "audit",
+  "--non-interactive",
+  "--no-config-from",
+  "--from",
+  auditSource,
+  "--report-root",
+  auditReportRoot,
+  "--json",
+];
+if (auditPersistenceContract(process.platform) === "fail-closed") {
+  const blockedPersistence = await runBlocked(persistenceArgs);
+  if (
+    !blockedPersistence.includes(
+      "Audit report persistence is unavailable on win32"
+    ) ||
+    (await readdir(auditReportRoot)).length !== 0 ||
+    (await Bun.file(auditSkill).text()) !== auditSourceBefore
+  ) {
+    throw new Error(
+      "Compiled Windows audit persistence did not fail closed without source mutation"
+    );
+  }
+} else {
+  const persistedAuditText = await run(persistenceArgs);
+  const reportNames = (await readdir(auditReportRoot)).sort();
+  const reportName = reportNames.find((name) => name.startsWith("static-"));
+  const envelope = reportName
+    ? ((await Bun.file(join(auditReportRoot, reportName)).json()) as {
+        receipt?: { reportRevision?: number; schemaVersion?: number };
+        report?: unknown;
+        schemaVersion?: number;
+      })
+    : null;
+  if (
+    !reportName ||
+    reportNames.length !== 1 ||
+    envelope?.schemaVersion !== 1 ||
+    envelope.receipt?.schemaVersion !== 5 ||
+    envelope.receipt.reportRevision !== 10 ||
+    JSON.stringify(envelope.report) !==
+      JSON.stringify(JSON.parse(persistedAuditText)) ||
+    (await Bun.file(auditSkill).text()) !== auditSourceBefore
+  ) {
+    throw new Error(
+      "Compiled explicit audit persistence did not produce one isolated authorization envelope"
+    );
+  }
 }
 
 const setup = JSON.parse(

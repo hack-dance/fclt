@@ -7,6 +7,7 @@ const path = require("node:path");
 const runtime = require("./fclt-runtime.cjs");
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.FCLT_MCP_TIMEOUT_MS || 60_000);
+const AUDIT_READ_ONLY_CAPABILITY = "audit-read-only-v1";
 const CONTENT_LENGTH_RE = /Content-Length:\s*(\d+)/i;
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
 
@@ -228,7 +229,7 @@ const tools = [
   {
     name: "fclt_audit",
     description:
-      "Run a structured, redacted, non-interactive fclt security audit.",
+      "Run a structured, redacted, non-interactive fclt security audit with no report or index writes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1230,6 +1231,27 @@ async function runFclt(args, cwd, operation) {
           error: "no_compatible_runtime",
           message:
             "No compatible fclt runtime is available. Check, stage, and apply an explicit verified version with fclt_runtime.",
+          runtime: discovery,
+        },
+        null,
+        2
+      ),
+    };
+  }
+
+  if (
+    operation.tool === "fclt_audit" &&
+    !discovery.selected.capabilities?.includes(AUDIT_READ_ONLY_CAPABILITY)
+  ) {
+    return {
+      code: 1,
+      text: JSON.stringify(
+        {
+          schemaVersion: 1,
+          operation,
+          error: "missing_runtime_capability",
+          message:
+            "The selected fclt runtime does not advertise audit-read-only-v1; typed audit fails closed.",
           runtime: discovery,
         },
         null,

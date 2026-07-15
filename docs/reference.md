@@ -175,9 +175,19 @@ fclt sources trust <source> [--note <text>]
 fclt sources review <source> [--note <text>]
 fclt sources block <source> [--note <text>]
 fclt sources clear <source>
-fclt audit [--non-interactive]
+fclt audit [--non-interactive] [--report-root <absolute-directory>] [--update-index]
 fclt self-update
 ```
+
+Audit evaluation is read-only across library, CLI, interactive initial scan,
+and typed MCP entry points. `--report-root` explicitly persists a
+content-addressed report-and-receipt envelope only to a pre-existing,
+non-symlinked root that does not overlap any evaluated source. `audit safe`
+requires `--report <exact-report.json> --yes`; legacy latest reports and
+detached pre-revision-9 pairs are never trusted for mutation. `audit fix`
+supports exact-report `--dry-run` inspection only and automated MCP mutation
+fails closed pending a descriptor-bound exact-source/destination commit design.
+`--update-index` is a separate explicit canonical generated-state mutation.
 
 `self-update` detects release-script, npm/Bun, and mise-managed npm installs.
 For mise installs it updates the global `npm:facult` pin and verifies the

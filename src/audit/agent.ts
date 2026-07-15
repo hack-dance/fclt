@@ -1,14 +1,31 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
-import { facultRootDir, facultStateDir, readFacultConfig } from "../paths";
+import { basename, join } from "node:path";
+import {
+  facultConfigPath,
+  facultRootDir,
+  legacyExternalFacultStateDir,
+  parseFacultConfigText,
+} from "../paths";
 import type { AssetFile, ScanResult } from "../scan";
-import { scan } from "../scan";
+import { scan, scanDiscoveryIdentity } from "../scan";
 import {
   extractCodexTomlMcpServerBlocks,
   sanitizeCodexTomlMcpText,
 } from "../util/codex-toml";
 import { parseJsonLenient } from "../util/json";
+import {
+  type AuditEvaluation,
+  auditedRootsFromScan,
+  auditPathsOverlap,
+  parseReportRootFlag,
+  persistAuditReport,
+} from "./report-persistence";
+import {
+  AuditSourceTracker,
+  validateAuditSourceSnapshot,
+} from "./source-provenance";
 import {
   applyAuditSuppressionsToAgentReport,
   loadAuditSuppressions,
@@ -71,18 +88,24 @@ function requestedNameFromArgv(argv: string[]): string | null {
     if (!arg) {
       continue;
     }
-    if (arg === "--with" || arg === "--from" || arg === "--max-items") {
+    if (
+      arg === "--with" ||
+      arg === "--from" ||
+      arg === "--max-items" ||
+      arg === "--report-root"
+    ) {
       i += 1;
       continue;
     }
     if (
       arg.startsWith("--with=") ||
       arg.startsWith("--from=") ||
-      arg.startsWith("--max-items=")
+      arg.startsWith("--max-items=") ||
+      arg.startsWith("--report-root=")
     ) {
       continue;
     }
-    if (arg === "--json") {
+    if (arg === "--json" || arg === "--update-index") {
       continue;
     }
     if (arg.startsWith("-")) {
@@ -311,56 +334,79 @@ function selectPreferredSkillInstance(
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function readSkillBundle(skillDir: string): Promise<string> {
+const SUPPORT_ROOTS = ["assets", "references", "scripts"] as const;
+const MAX_SUPPORT_DEPTH = 8;
+const MAX_SUPPORT_ENTRIES = 2048;
+const MAX_SUPPORT_FILES = 12;
+const MAX_SUPPORT_FILE_BYTES = 50_000;
+
+async function readSkillBundle(
+  skillDir: string,
+  sourceTracker: AuditSourceTracker
+): Promise<string> {
   const skillMd = join(skillDir, "SKILL.md");
-  const file = Bun.file(skillMd);
-  if (!(await file.exists())) {
+  const skillText = await sourceTracker.readOptionalText(skillMd);
+  if (skillText === null) {
     return "";
   }
-
-  let text = await file.text();
+  let text = skillText;
   text = sanitizeEnvAssignments(redactPossibleSecrets(text));
 
-  // Optionally include small supporting scripts/references; keep bounded.
+  const candidates: { path: string; rel: string }[] = [];
+  let visited = 0;
+  const visit = async (
+    directory: string,
+    relativeParts: string[]
+  ): Promise<void> => {
+    if (relativeParts.length > MAX_SUPPORT_DEPTH) {
+      throw new Error(`Skill supporting files exceed depth limit: ${skillDir}`);
+    }
+    const entries = await sourceTracker.readDirectory(directory, {
+      maxEntries: MAX_SUPPORT_ENTRIES - visited,
+    });
+    if (entries === null) {
+      return;
+    }
+    for (const entry of entries) {
+      visited += 1;
+      if (visited > MAX_SUPPORT_ENTRIES) {
+        throw new Error(
+          `Skill supporting files exceed entry limit: ${skillDir}`
+        );
+      }
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+      const parts = [...relativeParts, entry.name];
+      const absolute = join(directory, entry.name);
+      if (entry.isSymbolicLink() || !(entry.isDirectory() || entry.isFile())) {
+        throw new Error(
+          `Skill supporting path must be a regular file or directory: ${absolute}`
+        );
+      }
+      if (entry.isDirectory()) {
+        await visit(absolute, parts);
+        continue;
+      }
+      candidates.push({ path: absolute, rel: parts.join("/") });
+    }
+  };
+  for (const root of SUPPORT_ROOTS) {
+    await visit(join(skillDir, root), [root]);
+  }
+
   const included: { rel: string; content: string }[] = [];
-  const glob = new Bun.Glob("**/*");
-  for await (const rel of glob.scan({ cwd: skillDir, onlyFiles: true })) {
-    const parts = rel.split(sep);
-    if (parts.includes("node_modules") || parts.includes(".git")) {
-      continue;
-    }
-    // Always include SKILL.md only once.
-    if (rel === "SKILL.md") {
-      continue;
-    }
-    // Prefer common subdirs. Skip other files to avoid sending huge bundles.
-    const root = parts[0] ?? "";
-    if (root !== "scripts" && root !== "references" && root !== "assets") {
-      continue;
-    }
-    const abs = join(skillDir, rel);
-    const st = await Bun.file(abs)
-      .stat()
-      .catch(() => null);
-    if (!st?.isFile()) {
-      continue;
-    }
-    if (st.size > 50_000) {
-      continue;
-    }
-    const raw = await Bun.file(abs)
-      .text()
-      .catch(() => "");
-    if (!raw) {
-      continue;
-    }
+  for (const candidate of candidates
+    .sort((a, b) => a.rel.localeCompare(b.rel))
+    .slice(0, MAX_SUPPORT_FILES)) {
+    const rawBytes = await sourceTracker.read(candidate.path, {
+      maxBytes: MAX_SUPPORT_FILE_BYTES,
+    });
+    const raw = rawBytes.toString("utf8");
     included.push({
-      rel,
+      rel: candidate.rel,
       content: sanitizeEnvAssignments(redactPossibleSecrets(raw)),
     });
-    if (included.length >= 12) {
-      break;
-    }
   }
 
   let bundle = `SKILL.md:\n${text}\n`;
@@ -377,12 +423,15 @@ async function readSkillBundle(skillDir: string): Promise<string> {
   return bundle;
 }
 
-async function readAssetBundle(asset: AssetFile): Promise<string> {
-  const file = Bun.file(asset.path);
-  if (!(await file.exists())) {
+async function readAssetBundle(
+  asset: AssetFile,
+  sourceTracker: AuditSourceTracker
+): Promise<string> {
+  const trackedText = await sourceTracker.readOptionalText(asset.path);
+  if (trackedText === null) {
     return "";
   }
-  let text = await file.text();
+  let text = trackedText;
   if (text.length > 200_000) {
     text = text.slice(0, 200_000);
   }
@@ -448,87 +497,685 @@ const PER_ITEM_SCHEMA = {
   required: ["passed", "findings", "notes"],
 } as const;
 
-async function runClaude(
-  prompt: string
-): Promise<{ output: PerItemOutput; model?: string }> {
-  const proc = Bun.spawn({
-    cmd: [
-      "claude",
-      "-p",
-      "--output-format",
-      "json",
-      "--json-schema",
-      JSON.stringify(PER_ITEM_SCHEMA),
-      "--tools",
-      "",
-    ],
-    stdin: new Blob([prompt]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+const AUTH_FAILURE_RE =
+  /(?:not logged in|authentication (?:failed|required)|unauthorized|login required|please (?:log|sign) in|missing (?:api key|credentials)|invalid (?:api key|credentials|token))/i;
 
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const code = await proc.exited;
-  if (code !== 0) {
-    throw new Error(`claude exited with code ${code}: ${stderr || stdout}`);
+const AUTH_ENV_BY_TOOL = {
+  claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+  codex: ["OPENAI_API_KEY"],
+} as const satisfies Record<AgentTool, readonly string[]>;
+
+// Keep child configuration non-persisting and non-ambient. In particular, do
+// not pass service credentials, proxy/Git overrides, or execution-hook vars.
+const OPERATIONAL_ENV_NAMES = [
+  "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "WINDIR",
+  "ComSpec",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TERM",
+  "NO_COLOR",
+] as const;
+const MAX_SUBPROCESS_OUTPUT_BYTES = 1_000_000;
+const AGENT_SUBPROCESS_TIMEOUT_MS = 10 * 60 * 1000;
+
+class AgentAuditPreconditionError extends Error {}
+
+type AgentAuditRunnerFailureCode =
+  | "agent-subprocess-exit"
+  | "agent-subprocess-failed"
+  | "agent-subprocess-interrupted"
+  | "agent-subprocess-invalid-output"
+  | "agent-subprocess-output-limit"
+  | "agent-subprocess-timeout";
+
+class AgentAuditRunnerError extends Error {
+  readonly code: AgentAuditRunnerFailureCode;
+
+  constructor(code: AgentAuditRunnerFailureCode) {
+    super(`Agent audit runner failed (${code}).`);
+    this.name = "AgentAuditRunnerError";
+    this.code = code;
   }
+}
 
-  const parsed = JSON.parse(stdout) as any;
-  const structured = parsed?.structured_output as unknown;
-  if (!structured || typeof structured !== "object") {
-    throw new Error("claude did not return structured_output");
+const SENSITIVE_ENV_NAME_RE =
+  /(?:AUTH|BEARER|COOKIE|CREDENTIAL|DATABASE_URL|DSN|KEY|PASS|SECRET|TOKEN)/i;
+
+function sensitiveEnvironmentValues(
+  env: NodeJS.ProcessEnv = process.env
+): string[] {
+  return [
+    ...new Set(
+      Object.entries(env)
+        .filter(([name]) => SENSITIVE_ENV_NAME_RE.test(name))
+        .map(([, value]) => value ?? "")
+        .filter((value) => value.length > 0)
+    ),
+  ].sort((a, b) => b.length - a.length);
+}
+
+function sanitizeHostileChildText(
+  value: string,
+  sensitiveValues: readonly string[]
+): string {
+  if (
+    sensitiveValues.some(
+      (sensitiveValue) =>
+        sensitiveValue.length <= 4 && value.includes(sensitiveValue)
+    )
+  ) {
+    // Tiny credentials are too collision-prone for substring replacement.
+    // Redact the complete child-controlled field instead of corrupting text.
+    return "<redacted>";
+  }
+  let sanitized = value;
+  for (const sensitiveValue of sensitiveValues) {
+    if (sensitiveValue.length <= 4) {
+      continue;
+    }
+    sanitized = sanitized.replaceAll(sensitiveValue, "<redacted>");
+  }
+  return sanitizeEnvAssignments(redactPossibleSecrets(sanitized));
+}
+
+function normalizePerItemOutput(
+  value: unknown,
+  sensitiveValues: readonly string[]
+): PerItemOutput {
+  if (!isPlainObject(value) || typeof value.passed !== "boolean") {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  if (!Array.isArray(value.findings) || value.findings.length > 500) {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  const findings: PerItemOutput["findings"] = value.findings.map((finding) => {
+    if (
+      !isPlainObject(finding) ||
+      typeof finding.severity !== "string" ||
+      !parseSeverity(finding.severity) ||
+      typeof finding.category !== "string" ||
+      typeof finding.message !== "string" ||
+      (finding.recommendation !== undefined &&
+        typeof finding.recommendation !== "string") ||
+      (finding.location !== undefined && typeof finding.location !== "string")
+    ) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    return {
+      severity: finding.severity as Severity,
+      category: sanitizeHostileChildText(finding.category, sensitiveValues),
+      message: sanitizeHostileChildText(finding.message, sensitiveValues),
+      recommendation:
+        typeof finding.recommendation === "string"
+          ? sanitizeHostileChildText(finding.recommendation, sensitiveValues)
+          : undefined,
+      location:
+        typeof finding.location === "string"
+          ? sanitizeHostileChildText(finding.location, sensitiveValues)
+          : undefined,
+    };
+  });
+  if (value.notes !== undefined && typeof value.notes !== "string") {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
   }
   return {
-    output: structured as PerItemOutput,
-    model: Object.keys(parsed?.modelUsage ?? {})[0],
+    passed: value.passed,
+    findings,
+    notes:
+      typeof value.notes === "string"
+        ? sanitizeHostileChildText(value.notes, sensitiveValues)
+        : undefined,
   };
 }
 
-async function runCodex(
-  prompt: string
+function profileCredentialPath(
+  tool: AgentTool,
+  homeDir: string,
+  honorEnvironmentOverrides: boolean
+): string {
+  if (tool === "codex") {
+    const codexHome =
+      (honorEnvironmentOverrides ? process.env.CODEX_HOME?.trim() : "") ||
+      join(homeDir, ".codex");
+    return join(codexHome, "auth.json");
+  }
+  const claudeConfig =
+    (honorEnvironmentOverrides ? process.env.CLAUDE_CONFIG_DIR?.trim() : "") ||
+    join(homeDir, ".claude");
+  return join(claudeConfig, ".credentials.json");
+}
+
+function hasEnvironmentAuthentication(tool: AgentTool): boolean {
+  return AUTH_ENV_BY_TOOL[tool].some(
+    (name) => typeof process.env[name] === "string" && process.env[name]!.trim()
+  );
+}
+
+async function assertSupportedAuthenticationMode(args: {
+  homeDir: string;
+  honorEnvironmentOverrides: boolean;
+  tool: AgentTool;
+}): Promise<void> {
+  // Environment credentials do not require any profile access. Native credential
+  // services remain available to the child process despite its isolated HOME.
+  if (hasEnvironmentAuthentication(args.tool)) {
+    return;
+  }
+
+  const sourcePath = profileCredentialPath(
+    args.tool,
+    args.homeDir,
+    args.honorEnvironmentOverrides
+  );
+  const profileEntry = await lstat(sourcePath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw new AgentAuditPreconditionError(
+      `Agent audit ${args.tool} profile authentication cannot be used safely in isolated non-persisting mode`
+    );
+  });
+  if (!profileEntry) {
+    return;
+  }
+  throw new AgentAuditPreconditionError(
+    `Agent audit ${args.tool} file-backed profile authentication is unsupported in isolated non-persisting mode; use ${AUTH_ENV_BY_TOOL[args.tool].join(" or ")} or native authentication`
+  );
+}
+
+function isolatedAgentEnvironment(
+  tool: AgentTool,
+  runtimeDir: string
+): NodeJS.ProcessEnv {
+  const home = join(runtimeDir, "home");
+  const env: NodeJS.ProcessEnv = {
+    CLAUDE_CONFIG_DIR: join(runtimeDir, "claude-config"),
+    CODEX_HOME: join(runtimeDir, "codex-home"),
+    HOME: home,
+    TEMP: runtimeDir,
+    TMP: runtimeDir,
+    TMPDIR: runtimeDir,
+    XDG_CACHE_HOME: join(runtimeDir, "xdg-cache"),
+    XDG_CONFIG_HOME: join(runtimeDir, "xdg-config"),
+    XDG_STATE_HOME: join(runtimeDir, "xdg-state"),
+  };
+  for (const name of OPERATIONAL_ENV_NAMES) {
+    const value = process.env[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  for (const name of AUTH_ENV_BY_TOOL[tool]) {
+    const value = process.env[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
+type CapturedStream = { text: string; truncated: boolean };
+
+async function drainBoundedStream(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+  onLimit: () => void,
+  signal?: AbortSignal
+): Promise<CapturedStream> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let captured = 0;
+  let truncated = false;
+  let cancellation: Promise<void> | undefined;
+  const cancelForAbort = () => {
+    cancellation ??= reader.cancel("agent subprocess interrupted").then(
+      () => undefined,
+      () => undefined
+    );
+  };
+  if (signal?.aborted) {
+    cancelForAbort();
+  } else {
+    signal?.addEventListener("abort", cancelForAbort, { once: true });
+  }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const remaining = Math.max(0, limit - captured);
+      if (captured < limit) {
+        const kept =
+          value.byteLength <= remaining ? value : value.slice(0, remaining);
+        chunks.push(kept);
+        captured += kept.byteLength;
+      }
+      if (value.byteLength > remaining) {
+        if (!truncated) {
+          onLimit();
+        }
+        truncated = true;
+        break;
+      }
+    }
+  } finally {
+    signal?.removeEventListener("abort", cancelForAbort);
+    await cancellation;
+    reader.releaseLock();
+  }
+  return {
+    text: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+      "utf8"
+    ),
+    truncated,
+  };
+}
+
+async function collectProcessOutput(
+  proc: {
+    exited: Promise<number>;
+    kill: (signal?: number | NodeJS.Signals) => void;
+    pid: number;
+    stderr: ReadableStream<Uint8Array>;
+    stdout: ReadableStream<Uint8Array>;
+  },
+  signal?: AbortSignal
+): Promise<{ code: number; stderr: string; stdout: string }> {
+  let killedForOutputLimit = false;
+  let killed = false;
+  const collectionController = new AbortController();
+  const kill = () => {
+    if (killed) {
+      return;
+    }
+    killed = true;
+    if (
+      process.platform !== "win32" &&
+      Number.isSafeInteger(proc.pid) &&
+      proc.pid > 0
+    ) {
+      try {
+        process.kill(-proc.pid, "SIGKILL");
+        return;
+      } catch {
+        // Fall through if the detached process group already exited.
+      }
+    }
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // The process may have exited between the bounded read and termination.
+    }
+  };
+  const cancelCollection = () => {
+    kill();
+    collectionController.abort();
+  };
+  const killForOutputLimit = () => {
+    killedForOutputLimit = true;
+    cancelCollection();
+  };
+  if (signal?.aborted) {
+    cancelCollection();
+  } else {
+    signal?.addEventListener("abort", cancelCollection, { once: true });
+  }
+  const stdoutPromise = drainBoundedStream(
+    proc.stdout,
+    MAX_SUBPROCESS_OUTPUT_BYTES,
+    killForOutputLimit,
+    collectionController.signal
+  ).catch((error) => {
+    cancelCollection();
+    throw error;
+  });
+  const stderrPromise = drainBoundedStream(
+    proc.stderr,
+    MAX_SUBPROCESS_OUTPUT_BYTES,
+    killForOutputLimit,
+    collectionController.signal
+  ).catch((error) => {
+    cancelCollection();
+    throw error;
+  });
+  const exitedPromise = proc.exited.catch((error) => {
+    cancelCollection();
+    throw error;
+  });
+  const [stdout, stderr, exited] = await Promise.allSettled([
+    stdoutPromise,
+    stderrPromise,
+    exitedPromise,
+  ]).finally(() => signal?.removeEventListener("abort", cancelCollection));
+  if (killedForOutputLimit) {
+    throw new AgentAuditRunnerError("agent-subprocess-output-limit");
+  }
+  if (stdout.status === "rejected") {
+    throw stdout.reason;
+  }
+  if (stderr.status === "rejected") {
+    throw stderr.reason;
+  }
+  if (exited.status === "rejected") {
+    throw exited.reason;
+  }
+  return {
+    code: exited.value,
+    stderr: stderr.value.text,
+    stdout: stdout.value.text,
+  };
+}
+
+async function readBoundedChildOutput(path: string): Promise<string> {
+  const pathBefore = await lstat(path);
+  if (pathBefore.isSymbolicLink() || !pathBefore.isFile()) {
+    throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+  }
+  const handle = await open(
+    path,
+    constants.O_RDONLY + (constants.O_NOFOLLOW ?? 0)
+  );
+  try {
+    const before = await handle.stat();
+    if (
+      !before.isFile() ||
+      before.dev !== pathBefore.dev ||
+      before.ino !== pathBefore.ino ||
+      before.mode !== pathBefore.mode ||
+      before.size !== pathBefore.size
+    ) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    if (before.size > MAX_SUBPROCESS_OUTPUT_BYTES) {
+      throw new AgentAuditRunnerError("agent-subprocess-output-limit");
+    }
+    const buffer = Buffer.alloc(before.size + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.byteLength) {
+      const result = await handle.read(
+        buffer,
+        bytesRead,
+        buffer.byteLength - bytesRead,
+        null
+      );
+      if (result.bytesRead === 0) {
+        break;
+      }
+      bytesRead += result.bytesRead;
+    }
+    const after = await handle.stat();
+    const pathAfter = await lstat(path);
+    if (
+      !after.isFile() ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.ctimeMs !== before.ctimeMs ||
+      pathAfter.isSymbolicLink() ||
+      !pathAfter.isFile() ||
+      pathAfter.dev !== after.dev ||
+      pathAfter.ino !== after.ino ||
+      pathAfter.mode !== after.mode ||
+      pathAfter.size !== after.size ||
+      pathAfter.mtimeMs !== after.mtimeMs ||
+      pathAfter.ctimeMs !== after.ctimeMs ||
+      bytesRead !== before.size
+    ) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    if (bytesRead > MAX_SUBPROCESS_OUTPUT_BYTES) {
+      throw new AgentAuditRunnerError("agent-subprocess-output-limit");
+    }
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function runnerSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): { dispose: () => void; signal: AbortSignal } {
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else {
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  timeout.unref?.();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abortFromCaller);
+    },
+  };
+}
+
+function normalizeRunnerError(args: {
+  error: unknown;
+  externalSignal?: AbortSignal;
+  subprocessSignal: AbortSignal;
+}): never {
+  if (args.error instanceof AgentAuditPreconditionError) {
+    throw args.error;
+  }
+  if (args.externalSignal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
+  if (args.subprocessSignal.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-timeout");
+  }
+  if (args.error instanceof AgentAuditRunnerError) {
+    throw args.error;
+  }
+  throw new AgentAuditRunnerError("agent-subprocess-failed");
+}
+
+/** @internal Exported for transactional setup fault tests. */
+export async function makeAgentRuntimeDir(
+  tempRoot?: string,
+  beforeSubdirectoryCreate?: (path: string) => Promise<void>
+): Promise<string> {
+  const root = tempRoot ?? tmpdir();
+  await mkdir(root, { recursive: true });
+  const runtimeDir = await mkdtemp(join(root, "facult-agent-audit-"));
+  try {
+    for (const name of ["home", "claude-config", "codex-home"]) {
+      const path = join(runtimeDir, name);
+      await beforeSubdirectoryCreate?.(path);
+      await mkdir(path, { recursive: true });
+    }
+    return runtimeDir;
+  } catch (error) {
+    await rm(runtimeDir, { force: true, recursive: true });
+    throw error;
+  }
+}
+
+async function runClaude(
+  prompt: string,
+  profileHome: string,
+  honorEnvironmentOverrides: boolean,
+  tempRoot?: string,
+  signal?: AbortSignal,
+  timeoutMs = AGENT_SUBPROCESS_TIMEOUT_MS
 ): Promise<{ output: PerItemOutput; model?: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "facult-agent-audit-"));
+  const runtimeDir = await makeAgentRuntimeDir(tempRoot);
+  const subprocess = runnerSignal(signal, timeoutMs);
+  try {
+    await assertSupportedAuthenticationMode({
+      homeDir: profileHome,
+      honorEnvironmentOverrides,
+      tool: "claude",
+    });
+    const childEnvironment = isolatedAgentEnvironment("claude", runtimeDir);
+    const childSensitiveValues = sensitiveEnvironmentValues(childEnvironment);
+    const proc = Bun.spawn({
+      cmd: [
+        "claude",
+        "-p",
+        "--no-session-persistence",
+        "--output-format",
+        "json",
+        "--json-schema",
+        JSON.stringify(PER_ITEM_SCHEMA),
+        "--tools",
+        "",
+      ],
+      cwd: runtimeDir,
+      detached: process.platform !== "win32",
+      env: childEnvironment,
+      signal: subprocess.signal,
+      stdin: new Blob([prompt]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const { code, stderr, stdout } = await collectProcessOutput(
+      proc,
+      subprocess.signal
+    );
+    if (code !== 0) {
+      if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
+        throw new AgentAuditPreconditionError(
+          "Agent audit Claude authentication is unavailable in isolated non-persisting mode"
+        );
+      }
+      throw new AgentAuditRunnerError("agent-subprocess-exit");
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(stdout) as Record<string, unknown>;
+    } catch {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    const structured = parsed.structured_output as unknown;
+    if (!structured || typeof structured !== "object") {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    const modelUsage = parsed.modelUsage;
+    return {
+      output: normalizePerItemOutput(structured, childSensitiveValues),
+      model:
+        modelUsage && typeof modelUsage === "object"
+          ? sanitizeHostileChildText(
+              Object.keys(modelUsage)[0] ?? "",
+              childSensitiveValues
+            ) || undefined
+          : undefined,
+    };
+  } catch (error) {
+    normalizeRunnerError({
+      error,
+      externalSignal: signal,
+      subprocessSignal: subprocess.signal,
+    });
+  } finally {
+    subprocess.dispose();
+    await rm(runtimeDir, { recursive: true, force: true });
+  }
+}
+
+async function runCodex(
+  prompt: string,
+  profileHome: string,
+  honorEnvironmentOverrides: boolean,
+  tempRoot?: string,
+  signal?: AbortSignal,
+  timeoutMs = AGENT_SUBPROCESS_TIMEOUT_MS
+): Promise<{ output: PerItemOutput; model?: string }> {
+  const dir = await makeAgentRuntimeDir(tempRoot);
+  const subprocess = runnerSignal(signal, timeoutMs);
   const schemaPath = join(dir, "schema.json");
   const outPath = join(dir, "last-message.txt");
-  await Bun.write(schemaPath, `${JSON.stringify(PER_ITEM_SCHEMA, null, 2)}\n`);
-
-  const proc = Bun.spawn({
-    cmd: [
-      "codex",
-      "exec",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "read-only",
-      "--output-schema",
+  try {
+    await assertSupportedAuthenticationMode({
+      homeDir: profileHome,
+      honorEnvironmentOverrides,
+      tool: "codex",
+    });
+    await Bun.write(
       schemaPath,
-      "--output-last-message",
-      outPath,
-      "-",
-    ],
-    stdin: new Blob([prompt]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+      `${JSON.stringify(PER_ITEM_SCHEMA, null, 2)}\n`
+    );
 
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const code = await proc.exited;
-  if (code !== 0) {
-    throw new Error(`codex exited with code ${code}: ${stderr || stdout}`);
-  }
+    const childEnvironment = isolatedAgentEnvironment("codex", dir);
+    const childSensitiveValues = sensitiveEnvironmentValues(childEnvironment);
+    const proc = Bun.spawn({
+      cmd: [
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--output-schema",
+        schemaPath,
+        "--output-last-message",
+        outPath,
+        "-",
+      ],
+      cwd: dir,
+      detached: process.platform !== "win32",
+      env: childEnvironment,
+      signal: subprocess.signal,
+      stdin: new Blob([prompt]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
-  const raw = await Bun.file(outPath).text();
-  const trimmed = raw.trim();
-  const jsonStart = trimmed.indexOf("{");
-  const jsonEnd = trimmed.lastIndexOf("}");
-  if (jsonStart < 0 || jsonEnd < 0 || jsonEnd <= jsonStart) {
-    throw new Error("codex output did not contain JSON object");
+    const { code, stderr, stdout } = await collectProcessOutput(
+      proc,
+      subprocess.signal
+    );
+    if (code !== 0) {
+      if (AUTH_FAILURE_RE.test(`${stderr}\n${stdout}`)) {
+        throw new AgentAuditPreconditionError(
+          "Agent audit Codex authentication is unavailable in isolated non-persisting mode"
+        );
+      }
+      throw new AgentAuditRunnerError("agent-subprocess-exit");
+    }
+
+    const raw = await readBoundedChildOutput(outPath);
+    const trimmed = raw.trim();
+    const jsonStart = trimmed.indexOf("{");
+    const jsonEnd = trimmed.lastIndexOf("}");
+    if (jsonStart < 0 || jsonEnd < 0 || jsonEnd <= jsonStart) {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    let parsed: PerItemOutput;
+    try {
+      parsed = JSON.parse(
+        trimmed.slice(jsonStart, jsonEnd + 1)
+      ) as PerItemOutput;
+    } catch {
+      throw new AgentAuditRunnerError("agent-subprocess-invalid-output");
+    }
+    return {
+      output: normalizePerItemOutput(parsed, childSensitiveValues),
+    };
+  } catch (error) {
+    normalizeRunnerError({
+      error,
+      externalSignal: signal,
+      subprocessSignal: subprocess.signal,
+    });
+  } finally {
+    subprocess.dispose();
+    await rm(dir, { recursive: true, force: true });
   }
-  const parsed = JSON.parse(
-    trimmed.slice(jsonStart, jsonEnd + 1)
-  ) as PerItemOutput;
-  return { output: parsed };
 }
 
 function promptForItem(args: {
@@ -561,7 +1208,7 @@ ${args.content}
 `;
 }
 
-export async function runAgentAudit(opts?: {
+export async function evaluateAgentAudit(opts?: {
   argv?: string[];
   homeDir?: string;
   cwd?: string;
@@ -571,6 +1218,9 @@ export async function runAgentAudit(opts?: {
   requested?: string | null;
   withTool?: AgentTool;
   maxItems?: number;
+  runtimeTempRoot?: string;
+  signal?: AbortSignal;
+  subprocessTimeoutMs?: number;
   // Test hook: inject a runner by tool name.
   runner?: (
     tool: AgentTool,
@@ -584,19 +1234,37 @@ export async function runAgentAudit(opts?: {
     item: string;
     path: string;
   }) => void;
-}): Promise<AgentAuditReport> {
+  /** @internal Test hook for the abort boundary after final discovery. */
+  afterFinalDiscovery?: () => Promise<void>;
+}): Promise<AuditEvaluation<AgentAuditReport>> {
   const argv = opts?.argv ?? [];
+  const evaluationSensitiveValues = sensitiveEnvironmentValues();
   const home = opts?.homeDir ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
+  const sourceTracker = new AuditSourceTracker();
 
   const includeConfigFrom =
     opts?.includeConfigFrom ?? !argv.includes("--no-config-from");
   let from = opts?.from ?? parseFromFlags(argv);
-  if (includeConfigFrom && from.length === 0) {
-    const cfg = readFacultConfig(home);
-    if (!(cfg?.scanFrom && cfg.scanFrom.length > 0)) {
-      from = ["~"];
-    }
+  const preferredConfigText = await sourceTracker.readOptionalText(
+    facultConfigPath(home)
+  );
+  const legacyConfigText = await sourceTracker.readOptionalText(
+    join(legacyExternalFacultStateDir(home), "config.json")
+  );
+  const exactConfig =
+    (preferredConfigText === null
+      ? null
+      : parseFacultConfigText(preferredConfigText)) ??
+    (legacyConfigText === null
+      ? null
+      : parseFacultConfigText(legacyConfigText));
+  if (
+    includeConfigFrom &&
+    from.length === 0 &&
+    !(exactConfig?.scanFrom && exactConfig.scanFrom.length > 0)
+  ) {
+    from = ["~"];
   }
   const requested = opts?.requested ?? requestedNameFromArgv(argv);
   const tool =
@@ -611,15 +1279,58 @@ export async function runAgentAudit(opts?: {
 
   const maxItems = opts?.maxItems ?? parseMaxItemsFlag(argv) ?? 50;
 
-  const scanRes: ScanResult = await scan(argv, {
+  const canonicalRoot = facultRootDir(home, exactConfig);
+  const scanOptions: NonNullable<Parameters<typeof scan>[1]> = {
     homeDir: home,
     cwd,
     includeConfigFrom,
+    configFrom: exactConfig,
+    canonicalRoot,
     includeGitHooks:
       opts?.includeGitHooks ?? argv.includes("--include-git-hooks"),
     from,
-  });
-  const canonicalRoot = facultRootDir(home);
+    readText: (path) => sourceTracker.readText(path),
+    tracking: {
+      capturePath: (path) => sourceTracker.capture(path),
+      captureTree: (path, options) => sourceTracker.captureTree(path, options),
+      readDirectory: (path) => sourceTracker.readDirectory(path),
+    },
+  };
+  const scanRes: ScanResult = await scan(argv, scanOptions);
+  const discoveryIdentity = scanDiscoveryIdentity(scanRes);
+  const auditedRoots = auditedRootsFromScan(scanRes);
+  await sourceTracker.protect(auditedRoots);
+  for (const source of scanRes.sources) {
+    for (const pathValue of [
+      ...source.evidence,
+      ...source.skills.roots,
+      ...source.skills.entries,
+    ]) {
+      await sourceTracker.capture(pathValue);
+    }
+  }
+  const runtimeTempRoot = await realpath(
+    opts?.runtimeTempRoot ?? tmpdir()
+  ).catch(() => null);
+  if (!runtimeTempRoot) {
+    throw new Error(
+      "Agent audit runtime temp root could not be resolved safely"
+    );
+  }
+  if (!opts?.runner) {
+    const canonicalAuditedRoots = await Promise.all(
+      auditedRoots.map((root) => realpath(root).catch(() => null))
+    );
+    const runtimeOverlap = canonicalAuditedRoots.find(
+      (root): root is string =>
+        typeof root === "string" && auditPathsOverlap(root, runtimeTempRoot)
+    );
+    if (runtimeOverlap) {
+      throw new Error(
+        `Agent audit runtime temp root overlaps audited source: ${runtimeTempRoot} <-> ${runtimeOverlap}`
+      );
+    }
+  }
 
   // Collect skill instances and prefer canonical copies when available.
   const skillInstances: { name: string; path: string; sourceId: string }[] = [];
@@ -650,7 +1361,7 @@ export async function runAgentAudit(opts?: {
       if (cfg.format === "toml" || cfg.path.endsWith(".toml")) {
         let txt: string;
         try {
-          txt = await Bun.file(cfg.path).text();
+          txt = await sourceTracker.readText(cfg.path);
         } catch {
           continue;
         }
@@ -686,7 +1397,7 @@ export async function runAgentAudit(opts?: {
       }
       let parsed: unknown;
       try {
-        const txt = await Bun.file(cfg.path).text();
+        const txt = await sourceTracker.readText(cfg.path);
         parsed = parseJsonLenient(txt);
       } catch {
         continue;
@@ -761,7 +1472,7 @@ export async function runAgentAudit(opts?: {
       if (requestedParsed && requestedParsed.name !== s.name) {
         continue;
       }
-      const content = await readSkillBundle(s.path);
+      const content = await readSkillBundle(s.path, sourceTracker);
       if (!content) {
         continue;
       }
@@ -797,7 +1508,7 @@ export async function runAgentAudit(opts?: {
     for (const a of assets.sort(
       (x, y) => x.item.localeCompare(y.item) || x.path.localeCompare(y.path)
     )) {
-      const content = await readAssetBundle(a.file);
+      const content = await readAssetBundle(a.file, sourceTracker);
       if (!content) {
         continue;
       }
@@ -817,9 +1528,23 @@ export async function runAgentAudit(opts?: {
     opts?.runner ??
     (async (t: AgentTool, prompt: string) => {
       if (t === "claude") {
-        return await runClaude(prompt);
+        return await runClaude(
+          prompt,
+          home,
+          opts?.homeDir === undefined,
+          runtimeTempRoot,
+          opts?.signal,
+          opts?.subprocessTimeoutMs
+        );
       }
-      return await runCodex(prompt);
+      return await runCodex(
+        prompt,
+        home,
+        opts?.homeDir === undefined,
+        runtimeTempRoot,
+        opts?.signal,
+        opts?.subprocessTimeoutMs
+      );
     });
 
   const results: AuditItemResult[] = [];
@@ -846,10 +1571,21 @@ export async function runAgentAudit(opts?: {
     let out: PerItemOutput | null = null;
     try {
       const res = await runner(tool, prompt);
-      out = res.output;
-      model = model ?? res.model;
+      out = normalizePerItemOutput(res.output, evaluationSensitiveValues);
+      model =
+        model ??
+        (typeof res.model === "string"
+          ? sanitizeHostileChildText(res.model, evaluationSensitiveValues)
+          : undefined);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      if (e instanceof AgentAuditPreconditionError) {
+        throw e;
+      }
+      if (opts?.signal?.aborted) {
+        throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+      }
+      const failureCode =
+        e instanceof AgentAuditRunnerError ? e.code : "agent-subprocess-failed";
       results.push({
         item: it.item,
         type: it.type,
@@ -862,7 +1598,7 @@ export async function runAgentAudit(opts?: {
             ruleId: "agent-error",
             message: "Agent audit failed; review manually.",
             location: it.path,
-            evidence: redactPossibleSecrets(msg),
+            evidence: failureCode,
           },
         ],
       });
@@ -977,20 +1713,40 @@ export async function runAgentAudit(opts?: {
 
   report = applyAuditSuppressionsToAgentReport(
     report,
-    await loadAuditSuppressions(home)
+    await loadAuditSuppressions(
+      home,
+      (path) => sourceTracker.readOptionalText(path),
+      canonicalRoot,
+      exactConfig
+    )
   );
 
-  const auditDir = join(facultStateDir(home), "audit");
-  await mkdir(auditDir, { recursive: true });
-  await Bun.write(
-    join(auditDir, "agent-latest.json"),
-    `${JSON.stringify(report, null, 2)}\n`
-  );
-
-  return report;
+  if (opts?.signal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
+  const finalScan = await scan(argv, scanOptions);
+  await opts?.afterFinalDiscovery?.();
+  if (opts?.signal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
+  if (scanDiscoveryIdentity(finalScan) !== discoveryIdentity) {
+    throw new Error("Audit source discovery changed during evaluation");
+  }
+  const sourceSnapshot = sourceTracker.snapshot();
+  await validateAuditSourceSnapshot(sourceSnapshot);
+  if (opts?.signal?.aborted) {
+    throw new AgentAuditRunnerError("agent-subprocess-interrupted");
+  }
+  return { auditedRoots, report, sourceSnapshot };
 }
 
-function printHuman(report: AgentAuditReport) {
+export async function runAgentAudit(
+  opts?: Parameters<typeof evaluateAgentAudit>[0]
+) {
+  return (await evaluateAgentAudit(opts)).report;
+}
+
+function printHuman(report: AgentAuditReport, reportPath?: string) {
   console.log("Agent Security Audit");
   console.log("====================");
   console.log("");
@@ -1042,32 +1798,48 @@ function printHuman(report: AgentAuditReport) {
     `By severity: critical=${report.summary.bySeverity.critical}, high=${report.summary.bySeverity.high}, medium=${report.summary.bySeverity.medium}, low=${report.summary.bySeverity.low}`
   );
   console.log(
-    `Wrote ${join(facultStateDir(homedir()), "audit", "agent-latest.json")}`
+    reportPath
+      ? `Wrote ${reportPath}`
+      : "Read-only: no report or index state written."
   );
 }
 
 export async function agentAuditCommand(argv: string[]) {
   const json = argv.includes("--json");
+  const reportRoot = parseReportRootFlag(argv);
+  const updateIndex = argv.includes("--update-index");
 
-  let report: AgentAuditReport;
+  let evaluation: AuditEvaluation<AgentAuditReport>;
+  let reportPath: string | undefined;
   try {
-    report = await runAgentAudit({ argv });
+    evaluation = await evaluateAgentAudit({ argv });
+    if (reportRoot) {
+      reportPath = await persistAuditReport({
+        auditedRoots: evaluation.auditedRoots,
+        mode: "agent",
+        report: evaluation.report,
+        reportRoot,
+        sourceSnapshot: evaluation.sourceSnapshot,
+      });
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return;
   }
 
-  // Best-effort: update index.json auditStatus/lastAuditAt for canonical items.
-  await updateIndexFromAuditReport({
-    timestamp: report.timestamp,
-    results: report.results,
-  });
+  const report = evaluation.report;
+  if (updateIndex) {
+    await updateIndexFromAuditReport({
+      timestamp: report.timestamp,
+      results: report.results,
+    });
+  }
 
   if (json) {
     console.log(JSON.stringify(report, null, 2));
     return;
   }
 
-  printHuman(report);
+  printHuman(report, reportPath);
 }

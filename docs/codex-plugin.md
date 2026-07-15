@@ -35,7 +35,7 @@ The plugin exposes:
 - `fclt_sync`: managed-state inspection and dry-run sync preview
 - `fclt_registry`: source search/verification, strict-trust install/update preview,
   and bounded reconciliation status/review through a closed scope/window/source-id schema
-- `fclt_audit`: structured, redacted, non-interactive security audit
+- `fclt_audit`: structured, redacted, non-interactive security audit with zero report or index writes
 - `fclt_automation`: read-only autosync status plus scheduled evolution-loop status and preview
 - `fclt_status`
 - `fclt_doctor`
@@ -102,7 +102,11 @@ inherit the shell that contains Node, Bun, mise, or a package-manager shim.
 When the `codex` command is available, setup runs
 `codex plugin add fclt@<marketplace> --json`. Codex installs the plugin cache
 under `~/.codex/plugins/cache/<marketplace>/fclt/` using its own version
-directory.
+directory. The read-only audit capability gate ships in plugin `0.1.2`; its
+version bump prevents Codex from selecting the pre-gate `0.1.1` cached wrapper
+after an upgrade. Setup fails closed unless Codex's install result, installed
+payload hash, and post-install plugin list all select the bundled version as
+installed and enabled.
 
 It does not enter managed mode, adopt Codex state, render
 `~/.codex/AGENTS.md`, or touch existing Codex skills/rules/config.

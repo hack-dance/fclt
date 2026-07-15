@@ -15,7 +15,15 @@ export async function syncReleaseMetadata({
     "docs",
     "codex-plugin-capability-matrix.json"
   );
+  const pluginManifestPath = join(
+    repoRoot,
+    "plugins",
+    "fclt",
+    ".codex-plugin",
+    "plugin.json"
+  );
   const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+  const pluginManifest = JSON.parse(await readFile(pluginManifestPath, "utf8"));
   const packageVersion =
     typeof packageJson.version === "string" ? packageJson.version.trim() : "";
   const version =
@@ -25,6 +33,13 @@ export async function syncReleaseMetadata({
   if (!version) {
     throw new Error("release metadata requires a non-empty package version");
   }
+  const pluginVersion =
+    typeof pluginManifest.version === "string"
+      ? pluginManifest.version.trim()
+      : "";
+  if (!pluginVersion) {
+    throw new Error("release metadata requires a non-empty plugin version");
+  }
   const matrixText = await readFile(matrixPath, "utf8");
   const matrix = JSON.parse(matrixText);
   if (!matrix.generatedFrom) {
@@ -32,10 +47,13 @@ export async function syncReleaseMetadata({
       "codex-plugin-capability-matrix.json must declare generatedFrom"
     );
   }
-  if (matrix.generatedFrom.packageVersion === version) {
-    return { changed: false, version };
+  if (
+    matrix.generatedFrom.packageVersion === version &&
+    matrix.generatedFrom.pluginVersion === pluginVersion
+  ) {
+    return { changed: false, pluginVersion, version };
   }
-  const edits = modify(
+  const packageEdits = modify(
     matrixText,
     ["generatedFrom", "packageVersion"],
     version,
@@ -47,12 +65,25 @@ export async function syncReleaseMetadata({
       },
     }
   );
-  const updated = applyEdits(matrixText, edits);
+  const packageUpdated = applyEdits(matrixText, packageEdits);
+  const pluginEdits = modify(
+    packageUpdated,
+    ["generatedFrom", "pluginVersion"],
+    pluginVersion,
+    {
+      formattingOptions: {
+        eol: "\n",
+        insertSpaces: true,
+        tabSize: 2,
+      },
+    }
+  );
+  const updated = applyEdits(packageUpdated, pluginEdits);
   await writeFile(
     matrixPath,
     updated.endsWith("\n") ? updated : `${updated}\n`
   );
-  return { changed: true, version };
+  return { changed: true, pluginVersion, version };
 }
 
 export async function prepare(_pluginConfig, context) {

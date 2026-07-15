@@ -486,8 +486,24 @@ Audit local capability:
 ```bash
 fclt audit
 fclt audit --non-interactive --severity high
-fclt audit fix mcp:github
+fclt audit --non-interactive --report-root /absolute/isolated/reports --json
+fclt audit fix mcp:github --report /absolute/isolated/reports/static-<sha256>.json --dry-run
 ```
+
+Audit evaluation is read-only by default: it does not refresh saved reports or
+generated index annotations. Persisting a report requires `--report-root` with
+an existing absolute directory outside every audited root. Use
+`--update-index` only when an explicit canonical generated-state mutation is
+intended.
+
+Persisted reports are content-addressed authorization envelopes containing the
+report payload and a receipt that binds its bytes, evaluated source revisions,
+and finding identities in one atomic file. `audit safe` requires the exact
+fresh envelope path and `--yes`; legacy `*-latest.json` files and pre-revision-9
+detached report/receipt pairs cannot authorize mutation. `audit fix` currently
+supports exact-report `--dry-run` inspection only. Automated MCP mutation fails
+closed pending descriptor-bound source and destination authorization through
+the final commit boundary.
 
 Keep tracked MCP config secret-free. Use local overlays such as `mcp/servers.local.json` for machine-specific secrets.
 
@@ -551,7 +567,7 @@ fclt install <source:item> [--as <name>] [--strict-source-trust]
 fclt update [--apply]
 fclt sources list|trust|review|block|clear
 fclt verify-source <name>
-fclt audit [--non-interactive]
+fclt audit [--non-interactive] [--report-root <absolute-directory>] [--update-index]
 fclt self-update
 ```
 

@@ -1,19 +1,31 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { constants, type Dirent, type Stats } from "node:fs";
 import {
   appendFile,
   cp,
   lstat,
   mkdir,
+  open,
+  opendir,
   readdir,
   readFile,
   readlink,
+  realpath,
   rename,
   rm,
   symlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { getAdapter } from "./adapters";
 import { renderCanonicalText } from "./agents";
 import { ensureAiIndexPath } from "./ai-state";
@@ -57,6 +69,7 @@ import {
   stringifyCanonicalMcpServers,
 } from "./mcp-config";
 import {
+  type FacultConfig,
   facultMachineStateDir,
   facultRootDir,
   legacyFacultStateDirForRoot,
@@ -188,6 +201,7 @@ export interface SetupCodexPluginResult {
   codexInstall: {
     status: "skipped" | "succeeded" | "failed";
     command?: string[];
+    verificationCommand?: string[];
     stdout?: string;
     stderr?: string;
     code?: number | null;
@@ -648,9 +662,10 @@ export function managedStatePath(home: string = homedir()): string {
 
 export function managedStatePathForRoot(
   home: string = homedir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
-  return join(facultMachineStateDir(home, rootDir), "managed.json");
+  return join(facultMachineStateDir(home, rootDir, config), "managed.json");
 }
 
 function syncLedgerPathForRoot(
@@ -679,10 +694,15 @@ async function appendSyncLedgerEvents(args: {
 
 function legacyManagedStatePathForRoot(
   home: string = homedir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
   return join(
-    legacyFacultStateDirForRoot(rootDir ?? facultRootDir(home), home),
+    legacyFacultStateDirForRoot(
+      rootDir ?? facultRootDir(home, config),
+      home,
+      config
+    ),
     "managed.json"
   );
 }
@@ -770,18 +790,26 @@ export async function inspectManagedStateRecords(
 
 export async function loadManagedState(
   home: string = homedir(),
-  rootDir?: string
+  rootDir?: string,
+  options?: {
+    readOptionalText?: (path: string) => Promise<string | null>;
+    config?: FacultConfig | null;
+  }
 ): Promise<ManagedState> {
   const candidates = [
-    managedStatePathForRoot(home, rootDir),
-    legacyManagedStatePathForRoot(home, rootDir),
+    managedStatePathForRoot(home, rootDir, options?.config),
+    legacyManagedStatePathForRoot(home, rootDir, options?.config),
   ];
   for (const p of candidates) {
-    if (!(await fileExists(p))) {
+    const txt = options?.readOptionalText
+      ? await options.readOptionalText(p)
+      : (await fileExists(p))
+        ? await Bun.file(p).text()
+        : null;
+    if (txt === null) {
       continue;
     }
     try {
-      const txt = await Bun.file(p).text();
       const data = JSON.parse(txt) as Partial<ManagedState> | null;
       if (data?.version === MANAGED_VERSION && data.tools) {
         return { version: MANAGED_VERSION, tools: data.tools };
@@ -1423,6 +1451,315 @@ async function hashDirectoryTree(
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+interface StrictDirectoryTreeHash {
+  entryCount: number;
+  hash: string;
+}
+
+const CODEX_PLUGIN_TREE_LIMITS = Object.freeze({
+  maxAggregateBytes: 4 * 1024 * 1024,
+  maxDepth: 12,
+  maxEntries: 256,
+  maxFileBytes: 1024 * 1024,
+  maxRelativePathBytes: 512,
+  readChunkBytes: 64 * 1024,
+});
+
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.nlink === right.nlink &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function updateTreeHashField(
+  hash: ReturnType<typeof createHash>,
+  value: string
+) {
+  hash.update(String(Buffer.byteLength(value, "utf8")));
+  hash.update(":");
+  hash.update(value);
+}
+
+/**
+ * Hash a plugin payload without following or overlooking any tree entry.
+ * This is intentionally stricter than the generic content comparison above:
+ * an installed plugin is executable input, so an unreadable, mutable, linked,
+ * or non-regular entry makes its identity unverifiable.
+ */
+async function hashStrictDirectoryTree(
+  root: string
+): Promise<StrictDirectoryTreeHash> {
+  const rootPath = resolve(root);
+  const initialRoot = await lstat(rootPath);
+  if (!initialRoot.isDirectory() || initialRoot.isSymbolicLink()) {
+    throw new Error("plugin payload root is not a regular directory");
+  }
+  const initialRealRoot = await realpath(rootPath);
+
+  const hash = createHash("sha256");
+  let entryCount = 0;
+  let aggregateBytes = 0;
+
+  const addEntryMetadata = (
+    relativePath: string,
+    type: "directory" | "file",
+    mode: number,
+    size: number
+  ) => {
+    if (entryCount >= CODEX_PLUGIN_TREE_LIMITS.maxEntries) {
+      throw new Error(
+        `plugin payload exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxEntries} entries`
+      );
+    }
+    updateTreeHashField(hash, relativePath);
+    updateTreeHashField(hash, type);
+    updateTreeHashField(hash, (mode % 0o1_0000).toString(8));
+    updateTreeHashField(hash, String(size));
+    entryCount += 1;
+  };
+
+  async function readBoundedDirectoryEntries(pathValue: string) {
+    const directory = await opendir(pathValue);
+    const entries: Dirent[] = [];
+    try {
+      while (true) {
+        const entry = await directory.read();
+        if (!entry) {
+          break;
+        }
+        if (entries.length >= CODEX_PLUGIN_TREE_LIMITS.maxEntries) {
+          throw new Error(
+            `plugin payload directory exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxEntries} entries`
+          );
+        }
+        entries.push(entry);
+      }
+    } finally {
+      try {
+        await directory.close();
+      } catch {
+        // The directory may already be closed after a terminal read.
+      }
+    }
+    return entries.sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    );
+  }
+
+  async function visitDirectory(
+    currentPath: string,
+    relativePath: string,
+    expectedStat: Stats,
+    depth: number
+  ): Promise<void> {
+    if (depth > CODEX_PLUGIN_TREE_LIMITS.maxDepth) {
+      throw new Error(
+        `plugin payload exceeds depth ${CODEX_PLUGIN_TREE_LIMITS.maxDepth}`
+      );
+    }
+    addEntryMetadata(relativePath || ".", "directory", expectedStat.mode, 0);
+    const entries = await readBoundedDirectoryEntries(currentPath);
+    const initialNames = entries.map((entry) => entry.name);
+
+    for (const entry of entries) {
+      if (
+        !entry.name ||
+        entry.name === "." ||
+        entry.name === ".." ||
+        entry.name.includes("/") ||
+        entry.name.includes("\\")
+      ) {
+        throw new Error("plugin payload contains an unsafe entry name");
+      }
+      const childRelativePath = relativePath
+        ? `${relativePath}/${entry.name}`
+        : entry.name;
+      if (
+        Buffer.byteLength(childRelativePath, "utf8") >
+        CODEX_PLUGIN_TREE_LIMITS.maxRelativePathBytes
+      ) {
+        throw new Error(
+          `plugin payload relative path exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxRelativePathBytes} bytes`
+        );
+      }
+      const childPath = join(currentPath, entry.name);
+      const lexicalRelative = relative(rootPath, childPath);
+      if (
+        !lexicalRelative ||
+        lexicalRelative === ".." ||
+        lexicalRelative.startsWith(
+          `..${process.platform === "win32" ? "\\" : "/"}`
+        ) ||
+        isAbsolute(lexicalRelative)
+      ) {
+        throw new Error("plugin payload traversal escaped its root");
+      }
+
+      const childStat = await lstat(childPath);
+      if (childStat.isSymbolicLink()) {
+        throw new Error(
+          `plugin payload contains a symbolic link at ${childRelativePath}`
+        );
+      }
+      if (!pathIsInsideOrEqual(await realpath(childPath), initialRealRoot)) {
+        throw new Error(
+          `plugin payload entry escaped its root at ${childRelativePath}`
+        );
+      }
+      if (childStat.isDirectory()) {
+        if (!entry.isDirectory()) {
+          throw new Error(
+            `plugin payload entry changed type at ${childRelativePath}`
+          );
+        }
+        await visitDirectory(
+          childPath,
+          childRelativePath,
+          childStat,
+          depth + 1
+        );
+        continue;
+      }
+      if (!(childStat.isFile() && entry.isFile())) {
+        throw new Error(
+          `plugin payload contains a special entry at ${childRelativePath}`
+        );
+      }
+
+      const noFollowFlag =
+        process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+      const handle = await open(childPath, constants.O_RDONLY + noFollowFlag);
+      try {
+        const beforeRead = await handle.stat();
+        if (!(beforeRead.isFile() && sameFileIdentity(childStat, beforeRead))) {
+          throw new Error(
+            `plugin payload file changed before read at ${childRelativePath}`
+          );
+        }
+        if (beforeRead.nlink !== 1) {
+          throw new Error(
+            `plugin payload contains a hard-linked file at ${childRelativePath}`
+          );
+        }
+        if (!(Number.isSafeInteger(beforeRead.size) && beforeRead.size >= 0)) {
+          throw new Error(
+            `plugin payload file has an invalid size at ${childRelativePath}`
+          );
+        }
+        if (beforeRead.size > CODEX_PLUGIN_TREE_LIMITS.maxFileBytes) {
+          throw new Error(
+            `plugin payload file exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxFileBytes} bytes at ${childRelativePath}`
+          );
+        }
+        if (
+          aggregateBytes + beforeRead.size >
+          CODEX_PLUGIN_TREE_LIMITS.maxAggregateBytes
+        ) {
+          throw new Error(
+            `plugin payload exceeds ${CODEX_PLUGIN_TREE_LIMITS.maxAggregateBytes} aggregate bytes`
+          );
+        }
+        if (
+          process.platform !== "win32" &&
+          beforeRead.size > 0 &&
+          beforeRead.blocks * 512 < beforeRead.size
+        ) {
+          throw new Error(
+            `plugin payload contains a sparse file at ${childRelativePath}`
+          );
+        }
+
+        aggregateBytes += beforeRead.size;
+        addEntryMetadata(
+          childRelativePath,
+          "file",
+          beforeRead.mode,
+          beforeRead.size
+        );
+        let offset = 0;
+        while (offset < beforeRead.size) {
+          const chunk = Buffer.allocUnsafe(
+            Math.min(
+              CODEX_PLUGIN_TREE_LIMITS.readChunkBytes,
+              beforeRead.size - offset
+            )
+          );
+          const { bytesRead } = await handle.read(
+            chunk,
+            0,
+            chunk.byteLength,
+            offset
+          );
+          if (bytesRead !== chunk.byteLength) {
+            throw new Error(
+              `plugin payload file changed during read at ${childRelativePath}`
+            );
+          }
+          hash.update(chunk);
+          offset += bytesRead;
+          if (!sameFileIdentity(beforeRead, await handle.stat())) {
+            throw new Error(
+              `plugin payload file changed during read at ${childRelativePath}`
+            );
+          }
+        }
+        const sentinel = Buffer.allocUnsafe(1);
+        if ((await handle.read(sentinel, 0, 1, beforeRead.size)).bytesRead) {
+          throw new Error(
+            `plugin payload file grew during read at ${childRelativePath}`
+          );
+        }
+        const afterRead = await handle.stat();
+        const finalPathStat = await lstat(childPath);
+        if (
+          !sameFileIdentity(beforeRead, afterRead) ||
+          finalPathStat.isSymbolicLink() ||
+          !sameFileIdentity(afterRead, finalPathStat)
+        ) {
+          throw new Error(
+            `plugin payload file changed during read at ${childRelativePath}`
+          );
+        }
+      } finally {
+        await handle.close();
+      }
+    }
+
+    const finalNames = (await readBoundedDirectoryEntries(currentPath)).map(
+      (entry) => entry.name
+    );
+    if (JSON.stringify(initialNames) !== JSON.stringify(finalNames)) {
+      throw new Error(
+        `plugin payload directory changed during verification at ${relativePath || "."}`
+      );
+    }
+    const finalStat = await lstat(currentPath);
+    if (
+      !(finalStat.isDirectory() && sameFileIdentity(expectedStat, finalStat))
+    ) {
+      throw new Error(
+        `plugin payload directory changed during verification at ${relativePath || "."}`
+      );
+    }
+  }
+
+  await visitDirectory(rootPath, "", initialRoot, 0);
+  const finalRoot = await lstat(rootPath);
+  if (
+    !sameFileIdentity(initialRoot, finalRoot) ||
+    (await realpath(rootPath)) !== initialRealRoot
+  ) {
+    throw new Error("plugin payload root changed during verification");
+  }
+  return { entryCount, hash: hash.digest("hex") };
 }
 
 async function loadMergedIndex(
@@ -5036,6 +5373,8 @@ async function planCodexPluginFileChanges(args: {
 async function runCodexPluginAdd(args: {
   codexBin: string;
   cwd: string;
+  expectedHash: string;
+  expectedVersion: string;
   homeDir: string;
   marketplaceName: string;
 }): Promise<SetupCodexPluginResult["codexInstall"]> {
@@ -5046,39 +5385,159 @@ async function runCodexPluginAdd(args: {
     `fclt@${args.marketplaceName}`,
     "--json",
   ];
-  return await new Promise((resolve) => {
-    const child = spawn(args.codexBin, command.slice(1), {
-      cwd: args.cwd,
-      env: { ...process.env, HOME: args.homeDir },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => {
-      resolve({
-        status: "failed",
-        command,
-        stdout,
-        stderr: error.message,
-        code: null,
+  const run = async (command: string[]) =>
+    await new Promise<{
+      code: number | null;
+      stderr: string;
+      stdout: string;
+    }>((complete) => {
+      const child = spawn(args.codexBin, command.slice(1), {
+        cwd: args.cwd,
+        env: {
+          ...process.env,
+          CODEX_HOME: join(args.homeDir, ".codex"),
+          HOME: args.homeDir,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => {
+        complete({ stdout, stderr: error.message, code: null });
+      });
+      child.on("close", (code) => {
+        complete({ stdout, stderr, code });
       });
     });
-    child.on("close", (code) => {
-      resolve({
-        status: code === 0 ? "succeeded" : "failed",
-        command,
-        stdout,
-        stderr,
-        code,
-      });
-    });
-  });
+
+  const added = await run(command);
+  if (added.code !== 0) {
+    return { status: "failed", command, ...added };
+  }
+
+  let addOutput: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(added.stdout) as unknown;
+    if (!isPlainObject(parsed)) {
+      throw new Error("result is not an object");
+    }
+    addOutput = parsed;
+  } catch (error) {
+    return {
+      status: "failed",
+      command,
+      ...added,
+      stderr: `Codex plugin install returned invalid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const pluginId = `${FCLT_CODEX_PLUGIN_NAME}@${args.marketplaceName}`;
+  const expectedInstalledPath = join(
+    args.homeDir,
+    ".codex",
+    "plugins",
+    "cache",
+    args.marketplaceName,
+    FCLT_CODEX_PLUGIN_NAME,
+    args.expectedVersion
+  );
+  const addIdentityMatches =
+    addOutput.pluginId === pluginId &&
+    addOutput.name === FCLT_CODEX_PLUGIN_NAME &&
+    addOutput.marketplaceName === args.marketplaceName &&
+    addOutput.version === args.expectedVersion &&
+    typeof addOutput.installedPath === "string" &&
+    resolve(addOutput.installedPath) === resolve(expectedInstalledPath);
+  if (!addIdentityMatches) {
+    return {
+      status: "failed",
+      command,
+      ...added,
+      stderr: `Codex selected an unexpected plugin after install; expected ${pluginId} version ${args.expectedVersion} at ${expectedInstalledPath}.`,
+    };
+  }
+
+  const verificationCommand = [
+    args.codexBin,
+    "plugin",
+    "list",
+    "--marketplace",
+    args.marketplaceName,
+    "--json",
+  ];
+  const listed = await run(verificationCommand);
+  if (listed.code !== 0) {
+    return {
+      status: "failed",
+      command,
+      verificationCommand,
+      ...listed,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(listed.stdout) as unknown;
+    const installed = isPlainObject(parsed) ? parsed.installed : null;
+    const selected = Array.isArray(installed)
+      ? installed.find(
+          (entry) => isPlainObject(entry) && entry.pluginId === pluginId
+        )
+      : null;
+    if (
+      !isPlainObject(selected) ||
+      selected.name !== FCLT_CODEX_PLUGIN_NAME ||
+      selected.marketplaceName !== args.marketplaceName ||
+      selected.version !== args.expectedVersion ||
+      selected.installed !== true ||
+      selected.enabled !== true
+    ) {
+      throw new Error(
+        `expected ${pluginId} version ${args.expectedVersion} to be installed and enabled`
+      );
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      command,
+      verificationCommand,
+      ...listed,
+      stderr: `Codex plugin selection verification failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  try {
+    const installed = await hashStrictDirectoryTree(expectedInstalledPath);
+    if (installed.hash !== args.expectedHash) {
+      throw new Error("installed tree hash differs from bundled payload");
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      command,
+      verificationCommand,
+      ...listed,
+      stderr: `Codex installed payload for ${pluginId} does not match the bundled ${args.expectedVersion} payload: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  return {
+    status: "succeeded",
+    command,
+    verificationCommand,
+    ...added,
+  };
 }
 
 export async function setupCodexPlugin(
@@ -5143,17 +5602,40 @@ export async function setupCodexPlugin(
     if (installInCodex) {
       const codexBin =
         opts.codexBin === undefined ? Bun.which("codex") : opts.codexBin;
-      codexInstall = codexBin
-        ? await runCodexPluginAdd({
-            codexBin,
-            cwd: home,
-            homeDir: home,
-            marketplaceName,
-          })
-        : {
-            status: "skipped",
-            reason: "codex command not found",
-          };
+      if (codexBin) {
+        const manifest = (await Bun.file(
+          join(pluginTargetDir, ".codex-plugin", "plugin.json")
+        ).json()) as unknown;
+        const expectedVersion = isPlainObject(manifest)
+          ? manifest.version
+          : null;
+        let expectedHash: string;
+        if (typeof expectedVersion !== "string" || !expectedVersion.trim()) {
+          throw new Error("Bundled Codex plugin manifest has no version.");
+        }
+        try {
+          expectedHash = (await hashStrictDirectoryTree(pluginTargetDir)).hash;
+        } catch (error) {
+          throw new Error(
+            `Bundled Codex plugin payload could not be verified: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+        codexInstall = await runCodexPluginAdd({
+          codexBin,
+          cwd: home,
+          expectedHash,
+          expectedVersion,
+          homeDir: home,
+          marketplaceName,
+        });
+      } else {
+        codexInstall = {
+          status: "skipped",
+          reason: "codex command not found",
+        };
+      }
     }
   }
 

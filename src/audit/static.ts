@@ -1,23 +1,41 @@
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  resolve,
+} from "node:path";
 import { parse as parseYaml } from "yaml";
 import { loadManagedState } from "../manage";
 import { isInlineMcpSecretValue } from "../mcp-config";
 import {
+  facultConfigPath,
   facultContextRootDir,
   facultRootDir,
   facultStateDir,
-  readFacultConfig,
+  legacyExternalFacultStateDir,
+  parseFacultConfigText,
 } from "../paths";
 import type { ScanResult } from "../scan";
-import { scan } from "../scan";
+import { scan, scanDiscoveryIdentity } from "../scan";
 import {
   extractCodexTomlMcpServerBlocks,
   sanitizeCodexTomlMcpText,
 } from "../util/codex-toml";
-import { type GitPathExposure, getGitPathExposure } from "../util/git";
+import type { GitPathExposure } from "../util/git";
 import { parseJsonLenient } from "../util/json";
+import {
+  type AuditEvaluation,
+  auditedRootsFromScan,
+  parseReportRootFlag,
+  persistAuditReport,
+} from "./report-persistence";
+import {
+  AuditSourceTracker,
+  validateAuditSourceSnapshot,
+} from "./source-provenance";
 import {
   applyAuditSuppressionsToStaticReport,
   loadAuditSuppressions,
@@ -65,14 +83,14 @@ function requestedNameFromArgv(argv: string[]): string | null {
     if (arg.startsWith("--from=")) {
       continue;
     }
-    if (arg === "--rules") {
+    if (arg === "--rules" || arg === "--report-root") {
       i += 1; // skip its value
       continue;
     }
-    if (arg.startsWith("--rules=")) {
+    if (arg.startsWith("--rules=") || arg.startsWith("--report-root=")) {
       continue;
     }
-    if (arg === "--json") {
+    if (arg === "--json" || arg === "--update-index") {
       continue;
     }
     if (arg.startsWith("-")) {
@@ -329,14 +347,12 @@ function mergeRules(base: AuditRule[], overrides: AuditRule[]): AuditRule[] {
   return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
 }
 
-async function loadRuleOverrides(path: string): Promise<AuditRule[]> {
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
+function loadRuleOverrides(text: string | null): AuditRule[] {
+  if (text === null) {
     return [];
   }
 
-  const txt = await file.text();
-  const parsed = parseYaml(txt) as unknown;
+  const parsed = parseYaml(text) as unknown;
   if (!isPlainObject(parsed)) {
     return [];
   }
@@ -733,11 +749,7 @@ function filterFindingsByMinSeverity(
   return findings.filter((f) => isAtLeastSeverity(f.severity, min));
 }
 
-async function ensureDir(p: string) {
-  await mkdir(p, { recursive: true });
-}
-
-export async function runStaticAudit(opts?: {
+export async function evaluateStaticAudit(opts?: {
   argv?: string[];
   homeDir?: string;
   cwd?: string;
@@ -747,32 +759,76 @@ export async function runStaticAudit(opts?: {
   name?: string;
   includeConfigFrom?: boolean;
   includeGitHooks?: boolean;
-}): Promise<StaticAuditReport> {
+}): Promise<AuditEvaluation<StaticAuditReport>> {
   const argv = opts?.argv ?? [];
   const home = opts?.homeDir ?? homedir();
-  const rulesPath =
-    opts?.rulesPath ?? join(facultStateDir(home), "audit-rules.yaml");
-
-  const overrides = await loadRuleOverrides(rulesPath);
-  const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));
+  const sourceTracker = new AuditSourceTracker();
 
   const includeConfigFrom =
     opts?.includeConfigFrom ?? !argv.includes("--no-config-from");
   let from = opts?.from ?? parseFromFlags(argv);
-  if (includeConfigFrom && from.length === 0) {
-    const cfg = readFacultConfig(home);
-    if (!(cfg?.scanFrom && cfg.scanFrom.length > 0)) {
-      from = ["~"];
-    }
+  const preferredConfigText = await sourceTracker.readOptionalText(
+    facultConfigPath(home)
+  );
+  const legacyConfigText = await sourceTracker.readOptionalText(
+    join(legacyExternalFacultStateDir(home), "config.json")
+  );
+  const exactConfig =
+    (preferredConfigText === null
+      ? null
+      : parseFacultConfigText(preferredConfigText)) ??
+    (legacyConfigText === null
+      ? null
+      : parseFacultConfigText(legacyConfigText));
+  if (
+    includeConfigFrom &&
+    from.length === 0 &&
+    !(exactConfig?.scanFrom && exactConfig.scanFrom.length > 0)
+  ) {
+    from = ["~"];
   }
-  const res: ScanResult = await scan(argv, {
+  const canonicalRoot = facultRootDir(home, exactConfig);
+  const rulesPathInput =
+    opts?.rulesPath ??
+    join(facultStateDir(home, canonicalRoot, exactConfig), "audit-rules.yaml");
+  const rulesPath = isAbsolute(rulesPathInput)
+    ? normalize(rulesPathInput)
+    : resolve(rulesPathInput);
+  const rulesText = await sourceTracker.readOptionalText(rulesPath);
+  const overrides = loadRuleOverrides(rulesText);
+  const rules = compileRules(mergeRules(DEFAULT_RULES, overrides));
+  const scanOptions: NonNullable<Parameters<typeof scan>[1]> = {
     homeDir: home,
     cwd: opts?.cwd,
     includeConfigFrom,
+    configFrom: exactConfig,
+    canonicalRoot,
     includeGitHooks:
       opts?.includeGitHooks ?? argv.includes("--include-git-hooks"),
     from,
-  });
+    readText: (path) => sourceTracker.readText(path),
+    tracking: {
+      capturePath: (path) => sourceTracker.capture(path),
+      captureTree: (path, options) => sourceTracker.captureTree(path, options),
+      readDirectory: (path) => sourceTracker.readDirectory(path),
+    },
+  };
+  const res: ScanResult = await scan(argv, scanOptions);
+  const discoveryIdentity = scanDiscoveryIdentity(res);
+  const auditedRoots = auditedRootsFromScan(res);
+  if (rulesText !== null) {
+    auditedRoots.push(rulesPath, dirname(rulesPath));
+  }
+  await sourceTracker.protect(Array.from(new Set(auditedRoots)).sort());
+  for (const source of res.sources) {
+    for (const pathValue of [
+      ...source.evidence,
+      ...source.skills.roots,
+      ...source.skills.entries,
+    ]) {
+      await sourceTracker.capture(pathValue);
+    }
+  }
 
   const skillInstances: { name: string; path: string; sourceId: string }[] = [];
   for (const src of res.sources) {
@@ -816,12 +872,15 @@ export async function runStaticAudit(opts?: {
       : { kind: "skill", name: nameArg }
     : null;
   const managedRoots = uniqueSorted([
-    facultRootDir(home),
-    facultContextRootDir({ home, cwd: opts?.cwd }),
+    canonicalRoot,
+    facultContextRootDir({ home, cwd: opts?.cwd, config: exactConfig }),
   ]);
   const managedStates = await Promise.all(
     managedRoots.map((rootDir) =>
-      loadManagedState(home, rootDir).catch(() => null)
+      loadManagedState(home, rootDir, {
+        config: exactConfig,
+        readOptionalText: (path) => sourceTracker.readOptionalText(path),
+      })
     )
   );
   const managedMcpConfigPaths = new Set(
@@ -844,11 +903,10 @@ export async function runStaticAudit(opts?: {
       continue;
     }
     const skillMdPath = join(skill.path, "SKILL.md");
-    const file = Bun.file(skillMdPath);
-    if (!(await file.exists())) {
+    const text = await sourceTracker.readOptionalText(skillMdPath);
+    if (text === null) {
       continue;
     }
-    const text = await file.text();
     const findings = applyRulesToText({
       rules,
       target: "skill",
@@ -928,14 +986,13 @@ export async function runStaticAudit(opts?: {
     for (const asset of Array.from(uniqAssets.values()).sort(
       (a, b) => a.item.localeCompare(b.item) || a.path.localeCompare(b.path)
     )) {
-      const file = Bun.file(asset.path);
-      if (!(await file.exists())) {
-        continue;
-      }
-
       let text: string;
       try {
-        text = await file.text();
+        const trackedText = await sourceTracker.readOptionalText(asset.path);
+        if (trackedText === null) {
+          continue;
+        }
+        text = trackedText;
       } catch {
         continue;
       }
@@ -977,14 +1034,14 @@ export async function runStaticAudit(opts?: {
   for (const cfg of Array.from(uniqMcpConfigs.values()).sort((a, b) =>
     a.path.localeCompare(b.path)
   )) {
-    const exposure = await getGitPathExposure(cfg.path);
+    const exposure = await sourceTracker.recordGitPathExposure(cfg.path);
     const isManagedOutput = managedMcpConfigPaths.has(cfg.path);
     const isToml = cfg.format === "toml" || cfg.path.endsWith(".toml");
 
     if (isToml) {
       let txt: string;
       try {
-        txt = await Bun.file(cfg.path).text();
+        txt = await sourceTracker.readText(cfg.path);
       } catch (e: unknown) {
         const err = e as { message?: string } | null;
         results.push({
@@ -1045,7 +1102,7 @@ export async function runStaticAudit(opts?: {
     // Default: JSON config file parsing.
     let parsed: unknown;
     try {
-      const txt = await Bun.file(cfg.path).text();
+      const txt = await sourceTracker.readText(cfg.path);
       parsed = parseJsonLenient(txt);
     } catch (e: unknown) {
       const err = e as { message?: string } | null;
@@ -1131,7 +1188,7 @@ export async function runStaticAudit(opts?: {
     timestamp: new Date().toISOString(),
     mode: "static",
     minSeverity,
-    rulesPath: (await Bun.file(rulesPath).exists()) ? rulesPath : null,
+    rulesPath: rulesText === null ? null : rulesPath,
     results,
     summary: {
       totalItems: results.length,
@@ -1154,20 +1211,34 @@ export async function runStaticAudit(opts?: {
 
   report = applyAuditSuppressionsToStaticReport(
     report,
-    await loadAuditSuppressions(home)
+    await loadAuditSuppressions(
+      home,
+      (path) => sourceTracker.readOptionalText(path),
+      canonicalRoot,
+      exactConfig
+    )
   );
 
-  const auditDir = join(facultStateDir(home), "audit");
-  await ensureDir(auditDir);
-  await Bun.write(
-    join(auditDir, "static-latest.json"),
-    `${JSON.stringify(report, null, 2)}\n`
-  );
-
-  return report;
+  const finalScan = await scan(argv, scanOptions);
+  if (scanDiscoveryIdentity(finalScan) !== discoveryIdentity) {
+    throw new Error("Audit source discovery changed during evaluation");
+  }
+  const sourceSnapshot = sourceTracker.snapshot();
+  await validateAuditSourceSnapshot(sourceSnapshot);
+  return {
+    auditedRoots: Array.from(new Set(auditedRoots)).sort(),
+    report,
+    sourceSnapshot,
+  };
 }
 
-function printHuman(report: StaticAuditReport) {
+export async function runStaticAudit(
+  opts?: Parameters<typeof evaluateStaticAudit>[0]
+) {
+  return (await evaluateStaticAudit(opts)).report;
+}
+
+function printHuman(report: StaticAuditReport, reportPath?: string) {
   console.log("Static Security Audit");
   console.log("=====================");
   console.log("");
@@ -1208,7 +1279,9 @@ function printHuman(report: StaticAuditReport) {
     `By severity: critical=${report.summary.bySeverity.critical}, high=${report.summary.bySeverity.high}, medium=${report.summary.bySeverity.medium}, low=${report.summary.bySeverity.low}`
   );
   console.log(
-    `Wrote ${join(facultStateDir(homedir()), "audit", "static-latest.json")}`
+    reportPath
+      ? `Wrote ${reportPath}`
+      : "Read-only: no report or index state written."
   );
 }
 
@@ -1217,31 +1290,45 @@ export async function staticAuditCommand(argv: string[]) {
   const minSeverity = parseSeverityFlag(argv) ?? undefined;
   const rulesPath = parseRulesPathFlag(argv) ?? undefined;
   const from = parseFromFlags(argv);
+  const reportRoot = parseReportRootFlag(argv);
+  const updateIndex = argv.includes("--update-index");
 
-  let report: StaticAuditReport;
+  let evaluation: AuditEvaluation<StaticAuditReport>;
+  let reportPath: string | undefined;
   try {
-    report = await runStaticAudit({
+    evaluation = await evaluateStaticAudit({
       argv,
       rulesPath,
       minSeverity,
       from,
     });
+    if (reportRoot) {
+      reportPath = await persistAuditReport({
+        auditedRoots: evaluation.auditedRoots,
+        mode: "static",
+        report: evaluation.report,
+        reportRoot,
+        sourceSnapshot: evaluation.sourceSnapshot,
+      });
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
     return;
   }
 
-  // Best-effort: update index.json auditStatus/lastAuditAt for canonical items.
-  await updateIndexFromAuditReport({
-    timestamp: report.timestamp,
-    results: report.results,
-  });
+  const report = evaluation.report;
+  if (updateIndex) {
+    await updateIndexFromAuditReport({
+      timestamp: report.timestamp,
+      results: report.results,
+    });
+  }
 
   if (json) {
     console.log(JSON.stringify(report, null, 2));
     return;
   }
 
-  printHuman(report);
+  printHuman(report, reportPath);
 }

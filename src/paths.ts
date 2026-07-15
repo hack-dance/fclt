@@ -245,9 +245,10 @@ function detectLegacyStoreUnderAgents(home: string): string | null {
 
 export function legacyFacultStateDirForRoot(
   rootDir: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string {
-  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  const projectRoot = projectRootFromAiRoot(rootDir, home, config);
   return projectRoot
     ? join(projectRoot, ".facult")
     : legacyExternalFacultStateDir(home);
@@ -255,10 +256,11 @@ export function legacyFacultStateDirForRoot(
 
 function shouldUsePreferredGlobalStateDir(
   rootDir: string,
-  home: string
+  home: string,
+  config?: FacultConfig | null
 ): boolean {
   const resolved = resolve(rootDir);
-  if (projectRootFromAiRoot(resolved, home)) {
+  if (projectRootFromAiRoot(resolved, home, config)) {
     return false;
   }
   if (resolved === resolve(preferredGlobalAiRoot(home))) {
@@ -272,13 +274,14 @@ function shouldUsePreferredGlobalStateDir(
 
 export function facultStateDir(
   home: string = defaultHomeDir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
-  const resolvedRoot = rootDir ?? facultRootDir(home);
-  if (projectRootFromAiRoot(resolvedRoot, home)) {
-    return facultMachineStateDir(home, resolvedRoot);
+  const resolvedRoot = rootDir ?? facultRootDir(home, config);
+  if (projectRootFromAiRoot(resolvedRoot, home, config)) {
+    return facultMachineStateDir(home, resolvedRoot, config);
   }
-  if (shouldUsePreferredGlobalStateDir(resolvedRoot, home)) {
+  if (shouldUsePreferredGlobalStateDir(resolvedRoot, home, config)) {
     return preferredGlobalFacultStateDir(home);
   }
   return join(resolvedRoot, ".facult");
@@ -286,9 +289,10 @@ export function facultStateDir(
 
 export function machineStateProjectKey(
   rootDir: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string {
-  const projectRoot = projectRootFromAiRoot(rootDir, home);
+  const projectRoot = projectRootFromAiRoot(rootDir, home, config);
   const labelSource = projectRoot ?? rootDir;
   const label = basename(labelSource).trim().toLowerCase();
   const slug = label.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -301,15 +305,16 @@ export function machineStateProjectKey(
 
 export function facultMachineStateDir(
   home: string = defaultHomeDir(),
-  rootDir?: string
+  rootDir?: string,
+  config?: FacultConfig | null
 ): string {
-  const resolvedRoot = rootDir ?? facultRootDir(home);
-  const projectRoot = projectRootFromAiRoot(resolvedRoot, home);
+  const resolvedRoot = rootDir ?? facultRootDir(home, config);
+  const projectRoot = projectRootFromAiRoot(resolvedRoot, home, config);
   return projectRoot
     ? join(
         facultLocalStateRoot(home),
         "projects",
-        machineStateProjectKey(resolvedRoot, home)
+        machineStateProjectKey(resolvedRoot, home, config)
       )
     : join(facultLocalStateRoot(home), "global");
 }
@@ -326,7 +331,8 @@ export function facultRuntimeCacheDir(home: string = defaultHomeDir()): string {
 
 export function projectRootFromAiRoot(
   rootDir: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string | null {
   const pathApi =
     looksLikeWindowsAbsolutePath(rootDir) || looksLikeWindowsAbsolutePath(home)
@@ -352,7 +358,7 @@ export function projectRootFromAiRoot(
         ? pathApi.dirname(resolved)
         : null;
     }
-  } else if (pathApi.resolve(facultRootDir(home)) === resolved) {
+  } else if (pathApi.resolve(facultRootDir(home, config)) === resolved) {
     return null;
   }
   if (resolved === pathApi.resolve(pathApi.join(home, ".ai"))) {
@@ -607,6 +613,65 @@ export function facultConfigPath(home: string = defaultHomeDir()): string {
   return join(preferredGlobalFacultStateDir(home), "config.json");
 }
 
+export function parseFacultConfigText(txt: string): FacultConfig | null {
+  try {
+    const parsed = parseJsonLenient(txt) as unknown;
+    if (!isPlainObject(parsed)) {
+      return null;
+    }
+    const rootDir =
+      typeof parsed.rootDir === "string" ? parsed.rootDir : undefined;
+
+    const scanFromRaw = parsed.scanFrom;
+    const scanFrom = Array.isArray(scanFromRaw)
+      ? scanFromRaw
+          .filter((v) => typeof v === "string")
+          .map((v) => v.trim())
+          .filter(Boolean)
+      : undefined;
+
+    const scanFromIgnoreRaw = parsed.scanFromIgnore;
+    const scanFromIgnore = Array.isArray(scanFromIgnoreRaw)
+      ? scanFromIgnoreRaw
+          .filter((v) => typeof v === "string")
+          .map((v) => v.trim())
+          .filter(Boolean)
+      : undefined;
+
+    const scanFromNoDefaultIgnore =
+      typeof parsed.scanFromNoDefaultIgnore === "boolean"
+        ? parsed.scanFromNoDefaultIgnore
+        : undefined;
+
+    const scanFromMaxVisitsRaw = parsed.scanFromMaxVisits;
+    const scanFromMaxVisits =
+      typeof scanFromMaxVisitsRaw === "number" &&
+      Number.isFinite(scanFromMaxVisitsRaw) &&
+      scanFromMaxVisitsRaw > 0
+        ? Math.floor(scanFromMaxVisitsRaw)
+        : undefined;
+
+    const scanFromMaxResultsRaw = parsed.scanFromMaxResults;
+    const scanFromMaxResults =
+      typeof scanFromMaxResultsRaw === "number" &&
+      Number.isFinite(scanFromMaxResultsRaw) &&
+      scanFromMaxResultsRaw > 0
+        ? Math.floor(scanFromMaxResultsRaw)
+        : undefined;
+
+    return {
+      rootDir,
+      scanFrom,
+      scanFromIgnore,
+      scanFromNoDefaultIgnore,
+      scanFromMaxVisits,
+      scanFromMaxResults,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function readFacultConfig(
   home: string = defaultHomeDir()
 ): FacultConfig | null {
@@ -622,63 +687,10 @@ export function readFacultConfig(
 
     try {
       const txt = readFileSync(p, "utf8");
-      const parsed = parseJsonLenient(txt) as unknown;
-      if (!isPlainObject(parsed)) {
-        continue;
+      const parsed = parseFacultConfigText(txt);
+      if (parsed) {
+        return parsed;
       }
-      const rootDir =
-        typeof parsed.rootDir === "string" ? parsed.rootDir : undefined;
-
-      const scanFromRaw = (parsed as Record<string, unknown>).scanFrom;
-      const scanFrom = Array.isArray(scanFromRaw)
-        ? scanFromRaw
-            .filter((v) => typeof v === "string")
-            .map((v) => v.trim())
-            .filter(Boolean)
-        : undefined;
-
-      const scanFromIgnoreRaw = (parsed as Record<string, unknown>)
-        .scanFromIgnore;
-      const scanFromIgnore = Array.isArray(scanFromIgnoreRaw)
-        ? scanFromIgnoreRaw
-            .filter((v) => typeof v === "string")
-            .map((v) => v.trim())
-            .filter(Boolean)
-        : undefined;
-
-      const scanFromNoDefaultIgnore =
-        typeof (parsed as Record<string, unknown>).scanFromNoDefaultIgnore ===
-        "boolean"
-          ? ((parsed as Record<string, unknown>)
-              .scanFromNoDefaultIgnore as boolean)
-          : undefined;
-
-      const scanFromMaxVisitsRaw = (parsed as Record<string, unknown>)
-        .scanFromMaxVisits;
-      const scanFromMaxVisits =
-        typeof scanFromMaxVisitsRaw === "number" &&
-        Number.isFinite(scanFromMaxVisitsRaw) &&
-        scanFromMaxVisitsRaw > 0
-          ? Math.floor(scanFromMaxVisitsRaw)
-          : undefined;
-
-      const scanFromMaxResultsRaw = (parsed as Record<string, unknown>)
-        .scanFromMaxResults;
-      const scanFromMaxResults =
-        typeof scanFromMaxResultsRaw === "number" &&
-        Number.isFinite(scanFromMaxResultsRaw) &&
-        scanFromMaxResultsRaw > 0
-          ? Math.floor(scanFromMaxResultsRaw)
-          : undefined;
-
-      return {
-        rootDir,
-        scanFrom,
-        scanFromIgnore,
-        scanFromNoDefaultIgnore,
-        scanFromMaxVisits,
-        scanFromMaxResults,
-      };
     } catch {
       // Ignore invalid config files and continue to the next fallback path.
     }
@@ -698,7 +710,10 @@ export function readFacultConfig(
  * 5) a legacy store under `~/agents/` (if it looks like a store)
  * 6) default: `~/.ai`
  */
-export function facultRootDir(home: string = defaultHomeDir()): string {
+export function facultRootDir(
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
+): string {
   const envRoot = process.env.FACULT_ROOT_DIR?.trim();
   const preferred = join(home, ".ai");
 
@@ -707,7 +722,7 @@ export function facultRootDir(home: string = defaultHomeDir()): string {
     return isSafePathString(resolved) ? resolved : preferred;
   }
 
-  const cfg = readFacultConfig(home);
+  const cfg = config === undefined ? readFacultConfig(home) : config;
   const cfgRoot = cfg?.rootDir?.trim();
   if (cfgRoot) {
     const resolved = resolvePath(cfgRoot, home);
@@ -739,11 +754,12 @@ export function facultRootDir(home: string = defaultHomeDir()): string {
 
 export function findNearestProjectAiRoot(
   start: string,
-  home: string = defaultHomeDir()
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
 ): string | null {
-  const configuredRoot = facultRootDir(home);
+  const configuredRoot = facultRootDir(home, config);
   const globalRoots = new Set([resolve(join(home, ".ai"))]);
-  if (!projectRootFromAiRoot(configuredRoot, home)) {
+  if (!projectRootFromAiRoot(configuredRoot, home, config)) {
     globalRoots.add(resolve(configuredRoot));
   }
   let current = resolve(start);
@@ -763,6 +779,7 @@ export function findNearestProjectAiRoot(
 export function facultContextRootDir(args?: {
   home?: string;
   cwd?: string;
+  config?: FacultConfig | null;
 }): string {
   const home = args?.home ?? defaultHomeDir();
   const envRoot = process.env.FACULT_ROOT_DIR?.trim();
@@ -772,10 +789,11 @@ export function facultContextRootDir(args?: {
   }
 
   const cwd = args?.cwd?.trim() || process.cwd();
-  const projectRoot = findNearestProjectAiRoot(cwd, home);
+  const config = args && "config" in args ? args.config : undefined;
+  const projectRoot = findNearestProjectAiRoot(cwd, home, config);
   if (projectRoot) {
     return projectRoot;
   }
 
-  return facultRootDir(home);
+  return facultRootDir(home, config);
 }

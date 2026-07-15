@@ -3,8 +3,8 @@
   "matrixVersion": 1,
   "generatedFrom": {
     "packageVersion": "2.25.0",
-    "pluginVersion": "0.1.1",
-    "auditedAt": "2026-07-13T00:00:00Z"
+    "pluginVersion": "0.1.2",
+    "auditedAt": "2026-07-14T00:00:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
   "riskClasses": [
@@ -602,24 +602,24 @@
       "risk": "read_only",
       "scope": "explicit asset or roots",
       "preview": "not_applicable",
-      "apply": "not_applicable",
+      "apply": "report and index persistence deliberately omitted",
       "rollback": "not_applicable",
-      "verification": "static findings are redacted and source locations stay within allowed roots"
+      "verification": "static findings are redacted, source locations stay within allowed roots, and byte snapshots prove zero audited-root mutation"
     },
     {
       "id": "audit.fix_safe",
-      "cli": "audit fix|safe",
+      "cli": "audit fix --dry-run|safe",
       "cliAvailability": "available",
       "mcp": {
         "disposition": "blocked_safer_api",
         "reason": "fix/suppression operations need typed rule-specific diffs, preconditions, and rollback"
       },
-      "risk": "high_risk_destructive",
+      "risk": "mixed",
       "scope": "explicit asset and rule",
       "preview": "required",
-      "apply": "withheld",
+      "apply": "audit fix mutation disabled; audit safe withheld from MCP",
       "rollback": "required before exposure",
-      "verification": "finding transition and exact file/policy diff"
+      "verification": "exact-report fix preview or reviewed safe policy diff"
     },
     {
       "id": "doctor.repair",

@@ -1,20 +1,25 @@
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import { facultStateDir } from "../paths";
+import { basename, dirname, join } from "node:path";
+import {
+  facultConfigPath,
+  facultRootDir,
+  facultStateDir,
+  legacyExternalFacultStateDir,
+  parseFacultConfigText,
+} from "../paths";
 import type { AgentAuditReport } from "./agent";
 import {
-  applyAuditSuppressionsToAgentReport,
-  applyAuditSuppressionsToStaticReport,
-  loadAuditSuppressions,
-  recordAuditSuppressions,
-} from "./suppressions";
+  type AuditReportReceipt,
+  loadVerifiedAuditReportEnvelope,
+} from "./report-persistence";
+import type { PrivateDirectoryReceiptBinding } from "./safe-openat";
+import { loadAuditSuppressions, recordAuditSuppressions } from "./suppressions";
 import type {
   AuditFinding,
   AuditItemResult,
   Severity,
   StaticAuditReport,
 } from "./types";
-import { updateIndexFromAuditReport } from "./update-index";
 
 type AuditSafeSource = "static" | "agent" | "combined";
 const ARG_VALUE_SPLIT_RE = /=(.*)/s;
@@ -28,6 +33,7 @@ interface AuditSafeArgs {
   messages: string[];
   note?: string;
   paths: string[];
+  reportPaths: string[];
   rules: string[];
   severity?: Severity;
   source?: AuditSafeSource;
@@ -40,6 +46,113 @@ interface FindingSelection {
 }
 
 const RULE_ID_PREFIX_RE = /^(static|agent):/;
+
+function suppressionStorePathFromReceipt(receipt: AuditReportReceipt): string {
+  const requestedPaths = [
+    ...receipt.sourceSnapshot.requestedPaths.map(
+      (entry) => entry.requestedPath
+    ),
+    ...receipt.sourceSnapshot.absentPaths.map((entry) => entry.requestedPath),
+  ];
+  const matches = Array.from(new Set(requestedPaths)).filter(
+    (path) =>
+      basename(path) === "suppressions.json" &&
+      basename(dirname(path)) === "audit"
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      "Audit report does not bind exactly one suppression store path"
+    );
+  }
+  return matches[0]!;
+}
+
+function suppressionStoreExpectedSha256(
+  receipt: AuditReportReceipt,
+  storePath: string
+): string | null {
+  const absent = receipt.sourceSnapshot.absentPaths.some(
+    (entry) => entry.requestedPath === storePath
+  );
+  const requested = receipt.sourceSnapshot.requestedPaths.find(
+    (entry) => entry.requestedPath === storePath && entry.kind === "file"
+  );
+  const evaluated = requested
+    ? receipt.sourceSnapshot.evaluatedFiles.find(
+        (entry) => entry.path === requested.canonicalPath
+      )
+    : undefined;
+  if (absent && !requested && !evaluated) {
+    return null;
+  }
+  if (!(requested && evaluated) || absent) {
+    throw new Error("Audit report suppression store identity is ambiguous");
+  }
+  return evaluated.sha256;
+}
+
+function suppressionStoreDirectoryBinding(
+  receipt: AuditReportReceipt,
+  storePath: string
+): PrivateDirectoryReceiptBinding {
+  const absence = receipt.sourceSnapshot.absentPaths.find(
+    (entry) => entry.requestedPath === storePath
+  );
+  if (absence) {
+    const finalSegment = absence.relativeSegments.at(-1);
+    if (
+      finalSegment !== basename(storePath) ||
+      absence.relativeSegments.length < 1
+    ) {
+      throw new Error("Audit report suppression absence proof is malformed");
+    }
+    return {
+      ancestorDev: String(absence.ancestorDev),
+      ancestorIno: String(absence.ancestorIno),
+      ancestorPath: absence.ancestorPath,
+      directorySegments: absence.relativeSegments.slice(0, -1),
+    };
+  }
+  const requested = receipt.sourceSnapshot.requestedPaths.find(
+    (entry) => entry.requestedPath === storePath && entry.kind === "file"
+  );
+  const parentPath = dirname(storePath);
+  const parent = requested?.lexicalChain.findLast(
+    (entry) => entry.path === parentPath && entry.kind === "directory"
+  );
+  const canonicalParent = requested ? dirname(requested.canonicalPath) : null;
+  if (!(requested && parent && canonicalParent)) {
+    throw new Error("Audit report suppression parent binding is missing");
+  }
+  return {
+    ancestorDev: parent.dev,
+    ancestorIno: parent.ino,
+    ancestorPath: canonicalParent,
+    directorySegments: [],
+  };
+}
+
+async function activeSuppressionStorePath(homeDir: string): Promise<string> {
+  const readOptionalText = async (path: string): Promise<string | null> =>
+    (await Bun.file(path).exists()) ? Bun.file(path).text() : null;
+  const preferredConfigText = await readOptionalText(facultConfigPath(homeDir));
+  const legacyConfigText = await readOptionalText(
+    join(legacyExternalFacultStateDir(homeDir), "config.json")
+  );
+  const exactConfig =
+    (preferredConfigText === null
+      ? null
+      : parseFacultConfigText(preferredConfigText)) ??
+    (legacyConfigText === null
+      ? null
+      : parseFacultConfigText(legacyConfigText));
+  const canonicalRoot = facultRootDir(homeDir, exactConfig);
+  return join(
+    facultStateDir(homeDir, canonicalRoot, exactConfig),
+    "audit",
+    "suppressions.json"
+  );
+}
 
 function normalizeRuleId(ruleId: string): string {
   return ruleId.replace(RULE_ID_PREFIX_RE, "");
@@ -79,6 +192,7 @@ function parseAuditSafeArgs(argv: string[]): AuditSafeArgs {
     locations: [],
     messages: [],
     paths: [],
+    reportPaths: [],
     rules: [],
     yes: false,
   };
@@ -106,7 +220,12 @@ function parseAuditSafeArgs(argv: string[]): AuditSafeArgs {
       continue;
     }
 
-    if (arg === "--source" || arg === "--item" || arg === "--path") {
+    if (
+      arg === "--source" ||
+      arg === "--item" ||
+      arg === "--path" ||
+      arg === "--report"
+    ) {
       const next = argv[i + 1];
       if (!next) {
         throw new Error(`${arg} requires a value`);
@@ -115,8 +234,10 @@ function parseAuditSafeArgs(argv: string[]): AuditSafeArgs {
         args.source = parseSource(next);
       } else if (arg === "--item") {
         args.itemSelectors.push(next);
-      } else {
+      } else if (arg === "--path") {
         args.paths.push(next);
+      } else {
+        args.reportPaths.push(next);
       }
       i += 1;
       continue;
@@ -152,6 +273,7 @@ function parseAuditSafeArgs(argv: string[]): AuditSafeArgs {
       arg.startsWith("--source=") ||
       arg.startsWith("--item=") ||
       arg.startsWith("--path=") ||
+      arg.startsWith("--report=") ||
       arg.startsWith("--rule=") ||
       arg.startsWith("--location=") ||
       arg.startsWith("--message=") ||
@@ -169,6 +291,8 @@ function parseAuditSafeArgs(argv: string[]): AuditSafeArgs {
         args.itemSelectors.push(value);
       } else if (flag === "--path") {
         args.paths.push(value);
+      } else if (flag === "--report") {
+        args.reportPaths.push(value);
       } else if (flag === "--rule") {
         args.rules.push(value);
       } else if (flag === "--location") {
@@ -201,6 +325,11 @@ function parseAuditSafeArgs(argv: string[]): AuditSafeArgs {
   ) {
     throw new Error(
       "Specify what to suppress with --item, --rule, --path, --location, --message, --severity, or use --all."
+    );
+  }
+  if (args.reportPaths.length === 0) {
+    throw new Error(
+      "audit safe requires --report <exact persisted report path>; legacy latest reports are not trusted"
     );
   }
 
@@ -278,28 +407,6 @@ function mergeStaticAndAgentResults(args: {
     out.push(entry.agent ?? entry.static!);
   }
   return out;
-}
-
-async function loadLatestStaticReport(
-  homeDir: string
-): Promise<StaticAuditReport | null> {
-  const path = join(facultStateDir(homeDir), "audit", "static-latest.json");
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    return null;
-  }
-  return (await file.json()) as StaticAuditReport;
-}
-
-async function loadLatestAgentReport(
-  homeDir: string
-): Promise<AgentAuditReport | null> {
-  const path = join(facultStateDir(homeDir), "audit", "agent-latest.json");
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    return null;
-  }
-  return (await file.json()) as AgentAuditReport;
 }
 
 function inferSource(args: {
@@ -412,26 +519,6 @@ function matchesFinding(args: {
   return true;
 }
 
-async function rewriteLatestReports(args: {
-  homeDir: string;
-  staticReport: StaticAuditReport | null;
-  agentReport: AgentAuditReport | null;
-}) {
-  const auditDir = join(facultStateDir(args.homeDir), "audit");
-  if (args.staticReport) {
-    await Bun.write(
-      join(auditDir, "static-latest.json"),
-      `${JSON.stringify(args.staticReport, null, 2)}\n`
-    );
-  }
-  if (args.agentReport) {
-    await Bun.write(
-      join(auditDir, "agent-latest.json"),
-      `${JSON.stringify(args.agentReport, null, 2)}\n`
-    );
-  }
-}
-
 export async function runAuditSafe(args: {
   argv: string[];
   homeDir?: string;
@@ -443,13 +530,60 @@ export async function runAuditSafe(args: {
 }> {
   const parsed = parseAuditSafeArgs(args.argv);
   const homeDir = args.homeDir ?? homedir();
-  const staticReport = await loadLatestStaticReport(homeDir);
-  const agentReport = await loadLatestAgentReport(homeDir);
-
-  if (!(staticReport || agentReport)) {
-    throw new Error(
-      "No latest audit reports found. Run `fclt audit` first, then mark findings safe."
+  let staticReport: StaticAuditReport | null = null;
+  let agentReport: AgentAuditReport | null = null;
+  let suppressionStorePath: string | null = null;
+  let expectedSuppressionStoreSha256: string | null | undefined;
+  let suppressionDirectoryBinding: PrivateDirectoryReceiptBinding | null = null;
+  for (const reportPath of parsed.reportPaths) {
+    const envelope = await loadVerifiedAuditReportEnvelope<
+      StaticAuditReport | AgentAuditReport
+    >({ reportPath });
+    const report = envelope.report;
+    const reportSuppressionStorePath = suppressionStorePathFromReceipt(
+      envelope.receipt
     );
+    const reportExpectedSuppressionStoreSha256 = suppressionStoreExpectedSha256(
+      envelope.receipt,
+      reportSuppressionStorePath
+    );
+    const reportSuppressionDirectoryBinding = suppressionStoreDirectoryBinding(
+      envelope.receipt,
+      reportSuppressionStorePath
+    );
+    if (
+      suppressionStorePath !== null &&
+      suppressionStorePath !== reportSuppressionStorePath
+    ) {
+      throw new Error("Exact audit reports bind different suppression stores");
+    }
+    suppressionStorePath = reportSuppressionStorePath;
+    if (
+      expectedSuppressionStoreSha256 !== undefined &&
+      expectedSuppressionStoreSha256 !== reportExpectedSuppressionStoreSha256
+    ) {
+      throw new Error("Exact audit reports bind different suppression states");
+    }
+    expectedSuppressionStoreSha256 = reportExpectedSuppressionStoreSha256;
+    if (
+      suppressionDirectoryBinding !== null &&
+      JSON.stringify(suppressionDirectoryBinding) !==
+        JSON.stringify(reportSuppressionDirectoryBinding)
+    ) {
+      throw new Error("Exact audit reports bind different suppression parents");
+    }
+    suppressionDirectoryBinding = reportSuppressionDirectoryBinding;
+    if (report.mode === "static") {
+      if (staticReport) {
+        throw new Error("Only one exact static audit report may be supplied");
+      }
+      staticReport = report;
+    } else {
+      if (agentReport) {
+        throw new Error("Only one exact agent audit report may be supplied");
+      }
+      agentReport = report;
+    }
   }
 
   const source = inferSource({
@@ -457,6 +591,18 @@ export async function runAuditSafe(args: {
     staticReport,
     agentReport,
   });
+  if (suppressionStorePath !== (await activeSuppressionStorePath(homeDir))) {
+    throw new Error(
+      "Audit report suppression store does not match the active audit scope"
+    );
+  }
+  if (
+    (source === "static" && !staticReport) ||
+    (source === "agent" && !agentReport) ||
+    (source === "combined" && !(staticReport && agentReport))
+  ) {
+    throw new Error(`Exact report input does not satisfy --source ${source}`);
+  }
   const reportResults =
     source === "static"
       ? (staticReport?.results ?? [])
@@ -492,7 +638,15 @@ export async function runAuditSafe(args: {
   }
 
   if (parsed.dryRun) {
-    const totalSuppressions = (await loadAuditSuppressions(homeDir)).length;
+    const totalSuppressions = (
+      await loadAuditSuppressions(
+        homeDir,
+        undefined,
+        undefined,
+        undefined,
+        suppressionStorePath!
+      )
+    ).length;
     return {
       added: 0,
       matched: uniqueSelections.length,
@@ -500,38 +654,18 @@ export async function runAuditSafe(args: {
       totalSuppressions,
     };
   }
+  if (!parsed.yes) {
+    throw new Error("audit safe mutation requires explicit --yes approval");
+  }
 
   const saved = await recordAuditSuppressions({
     homeDir,
+    expectedPriorSha256: expectedSuppressionStoreSha256,
+    directoryBinding: suppressionDirectoryBinding!,
     selected: uniqueSelections,
     note: parsed.note,
+    storePath: suppressionStorePath!,
   });
-  const suppressions = await loadAuditSuppressions(homeDir);
-  const nextStaticReport = staticReport
-    ? applyAuditSuppressionsToStaticReport(staticReport, suppressions)
-    : null;
-  const nextAgentReport = agentReport
-    ? applyAuditSuppressionsToAgentReport(agentReport, suppressions)
-    : null;
-
-  await rewriteLatestReports({
-    homeDir,
-    staticReport: nextStaticReport,
-    agentReport: nextAgentReport,
-  });
-
-  await updateIndexFromAuditReport({
-    homeDir,
-    timestamp: new Date().toISOString(),
-    results: uniqueByKey(
-      mergeStaticAndAgentResults({
-        static: nextStaticReport?.results ?? [],
-        agent: nextAgentReport?.results ?? [],
-      }),
-      keyForResult
-    ),
-  });
-
   return {
     added: saved.added,
     matched: uniqueSelections.length,
@@ -544,13 +678,14 @@ function printHelp() {
   console.log(`fclt audit safe — suppress reviewed findings for future audits
 
 Usage:
-  fclt audit safe <item> [--rule <id>] [--location <text>] [--message <text>]
-  fclt audit safe --item <item> [--path <path>] [--severity <level>] [--note <text>]
-  fclt audit safe --all --source <static|agent|combined> [--note <text>] [--yes]
+  fclt audit safe <item> --report <exact-report.json> --yes [--rule <id>] [--location <text>] [--message <text>]
+  fclt audit safe --item <item> --report <exact-report.json> --yes [--path <path>] [--severity <level>] [--note <text>]
+  fclt audit safe --all --report <exact-report.json> [--report <second-report.json>] --source <static|agent|combined> [--note <text>] --yes
   fclt audit safe --dry-run ...
 
 Notes:
-  - Reads the latest saved audit reports from ~/.ai/.facult/audit/.
+  - Requires a fresh, content-hashed report-and-receipt envelope created by --report-root.
+  - Legacy static-latest.json and agent-latest.json files never authorize mutation.
   - Matching is non-interactive and agent-safe.
   - Combined review suppressions also match future raw static/agent findings.
 `);

@@ -20,6 +20,9 @@ describe("sync release metadata", () => {
     temporaryRoots.push(repoRoot);
     const docsDir = join(repoRoot, "docs");
     await mkdir(docsDir, { recursive: true });
+    const pluginDir = join(repoRoot, "plugins", "fclt", ".codex-plugin");
+    await mkdir(pluginDir, { recursive: true });
+    await Bun.write(join(pluginDir, "plugin.json"), '{"version":"0.1.2"}\n');
     await Bun.write(join(repoRoot, "package.json"), '{"version":"3.4.5"}\n');
     await Bun.write(
       join(docsDir, "codex-plugin-capability-matrix.json"),
@@ -38,6 +41,7 @@ describe("sync release metadata", () => {
 
     expect(await syncReleaseMetadata({ repoRoot })).toEqual({
       changed: true,
+      pluginVersion: "0.1.2",
       version: "3.4.5",
     });
     expect(
@@ -45,7 +49,7 @@ describe("sync release metadata", () => {
         join(docsDir, "codex-plugin-capability-matrix.json")
       ).json()
     ).toMatchObject({
-      generatedFrom: { packageVersion: "3.4.5", pluginVersion: "0.1.1" },
+      generatedFrom: { packageVersion: "3.4.5", pluginVersion: "0.1.2" },
     });
     expect(
       await Bun.file(
@@ -54,6 +58,7 @@ describe("sync release metadata", () => {
     ).toContain('  "dispositions": ["exposed", "withheld"],');
     expect(await syncReleaseMetadata({ repoRoot })).toEqual({
       changed: false,
+      pluginVersion: "0.1.2",
       version: "3.4.5",
     });
   });
@@ -63,6 +68,9 @@ describe("sync release metadata", () => {
     temporaryRoots.push(repoRoot);
     const docsDir = join(repoRoot, "docs");
     await mkdir(docsDir, { recursive: true });
+    const pluginDir = join(repoRoot, "plugins", "fclt", ".codex-plugin");
+    await mkdir(pluginDir, { recursive: true });
+    await Bun.write(join(pluginDir, "plugin.json"), '{"version":"0.1.2"}\n');
     await Bun.write(join(repoRoot, "package.json"), '{"version":"3.4.4"}\n');
     await Bun.write(
       join(docsDir, "codex-plugin-capability-matrix.json"),
@@ -79,7 +87,38 @@ describe("sync release metadata", () => {
         join(docsDir, "codex-plugin-capability-matrix.json")
       ).json()
     ).toMatchObject({
-      generatedFrom: { packageVersion: "3.5.0", pluginVersion: "0.1.1" },
+      generatedFrom: { packageVersion: "3.5.0", pluginVersion: "0.1.2" },
+    });
+  });
+
+  it("refreshes plugin-only version drift so cached wrappers cannot retain an old identity", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "fclt-plugin-metadata-"));
+    temporaryRoots.push(repoRoot);
+    const docsDir = join(repoRoot, "docs");
+    const pluginDir = join(repoRoot, "plugins", "fclt", ".codex-plugin");
+    await mkdir(docsDir, { recursive: true });
+    await mkdir(pluginDir, { recursive: true });
+    await Bun.write(join(repoRoot, "package.json"), '{"version":"3.4.5"}\n');
+    await Bun.write(join(pluginDir, "plugin.json"), '{"version":"0.1.2"}\n');
+    await Bun.write(
+      join(docsDir, "codex-plugin-capability-matrix.json"),
+      `${JSON.stringify({
+        generatedFrom: { packageVersion: "3.4.5", pluginVersion: "0.1.1" },
+        capabilities: [],
+      })}\n`
+    );
+
+    expect(await syncReleaseMetadata({ repoRoot })).toEqual({
+      changed: true,
+      pluginVersion: "0.1.2",
+      version: "3.4.5",
+    });
+    expect(
+      await Bun.file(
+        join(docsDir, "codex-plugin-capability-matrix.json")
+      ).json()
+    ).toMatchObject({
+      generatedFrom: { packageVersion: "3.4.5", pluginVersion: "0.1.2" },
     });
   });
 });

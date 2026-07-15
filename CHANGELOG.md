@@ -1,3 +1,9 @@
+## Unreleased
+
+### Security
+
+* Disable `audit fix` mutation until a durable two-file transaction and recovery protocol is available. Exact-report dry-run, read-only audit, and reviewed `audit safe` workflows remain available.
+
 ## [2.25.0](https://github.com/hack-dance/fclt/compare/v2.24.1...v2.25.0) (2026-07-14)
 
 ### Features
