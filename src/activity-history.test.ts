@@ -633,6 +633,57 @@ describe("activity history", () => {
     expect(retained.coverage.complete).toBe(true);
   });
 
+  test("keeps a committed run successful when pruned segment cleanup fails", async () => {
+    const home = await tempHome();
+    const rootDir = join(home, ".ai");
+    await appendRun({
+      home,
+      rootDir,
+      index: 1,
+      recordedAt: "2026-05-01T00:00:00.000Z",
+      items: [],
+      retention: { maxAgeDays: 365, maxEvents: 100 },
+    });
+    const manifestPath = facultAiActivityHistoryManifestPath(home, rootDir);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      segments: Array<{ file: string }>;
+    };
+    const staleSegmentPath = join(
+      facultAiActivityHistorySegmentDir(home, rootDir),
+      manifest.segments[0]!.file
+    );
+    await rm(staleSegmentPath);
+    await mkdir(staleSegmentPath);
+
+    const appended = await appendRun({
+      home,
+      rootDir,
+      index: 2,
+      recordedAt: "2026-05-02T00:00:00.000Z",
+      items: [],
+      retention: { maxAgeDays: 365, maxEvents: 1 },
+    });
+
+    expect(appended.appended).toBe(true);
+    const retry = await appendRun({
+      home,
+      rootDir,
+      index: 2,
+      recordedAt: "2026-05-02T00:00:00.000Z",
+      items: [],
+      retention: { maxAgeDays: 365, maxEvents: 1 },
+    });
+    expect(retry.appended).toBe(false);
+    const timeline = await queryActivityHistory({
+      homeDir: home,
+      rootDir,
+      scope: "global",
+    });
+    expect(timeline.runs).toEqual([
+      expect.objectContaining({ id: "LR-2", status: "complete" }),
+    ]);
+  });
+
   test("bounds lineage heads and reports item-lineage pruning separately", async () => {
     const home = await tempHome();
     const rootDir = join(home, ".ai");

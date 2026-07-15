@@ -1180,7 +1180,10 @@ export async function appendActivityHistory(args: {
     throw new Error("Activity history manifest exceeds its bounded size");
   }
   await atomicWrite(manifestPath, manifestBody);
-  await Promise.all(
+  // The committed manifest is authoritative. Orphaned pruned segments are
+  // ignored by readers and must not turn a successfully recorded run into a
+  // failure when best-effort cleanup cannot remove them.
+  await Promise.allSettled(
     retained.removed.map(async (entry) => {
       await rm(join(segmentDir, entry.file), { force: true });
     })
