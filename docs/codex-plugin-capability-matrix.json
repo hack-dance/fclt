@@ -3,7 +3,7 @@
   "matrixVersion": 1,
   "generatedFrom": {
     "packageVersion": "2.30.3",
-    "pluginVersion": "0.1.4",
+    "pluginVersion": "0.1.5",
     "auditedAt": "2026-07-14T00:00:00Z"
   },
   "dispositions": ["exposed", "withheld", "blocked_safer_api"],
