@@ -8,11 +8,22 @@ tags: [facult, evolution, writeback]
 ## When To Use
 Use this skill when the same missing guidance, weak loop, or recurring win appears often enough that the AI system itself should probably change.
 
-Do not wait for a human operator by default if the signal is already clear and the environment permits local AI runtime state to be updated.
+Use existing authorization to record or draft useful signal without another approval pause.
 
 Use writeback first when the signal is useful but not yet repeated. Use evolution when accumulated writebacks, repeated tool friction, or a clearly missing capability point at a specific target asset or new capability.
 
 The goal is a governed feedback loop: work creates evidence, evidence produces writeback, repeated writeback becomes a small reviewed proposal, and accepted proposals change future agent behavior.
+
+## Authorization
+
+Proceed with recording or drafting when the current request authorizes that action and scope;
+do not request the same approval again. For read-only or proposal-only work, return findings or a
+proposed writeback without changing state. Strong evidence alone does not grant write authority.
+
+Recording or drafting does not authorize canonical application, cross-scope promotion, external
+messages, tracker changes, publishing, or scheduler activation. Preserve those separate gates and
+native authorization. Keep unchanged, non-actionable scheduled results quiet unless periodic
+reports were requested.
 
 ## Scope Decision
 
@@ -32,8 +43,8 @@ Reject global scope when the proposal depends on private examples, one repo's ar
 4. Run a read-only evolution assessment for the target when possible.
 5. Check the current target asset before proposing a change.
 6. Choose the smallest valid proposal kind and draft it.
-7. Accept only after the target and scope are correct.
-8. Apply only when the markdown target is the intended canonical asset.
+7. Review the draft and confirm authorization for the exact target and scope.
+8. Apply only through a supported surface that permits canonical changes.
 9. Verify the producing loop and grade effectiveness before resolving source writebacks.
 
 Use:
@@ -47,8 +58,6 @@ fclt ai evolve assess --asset <selector> --json
 fclt ai evolve propose
 fclt ai evolve draft EV-00001
 fclt ai evolve draft EV-00001 --append "tighten the rule with a concrete verification step"
-fclt ai evolve accept EV-00001
-fclt ai evolve apply EV-00001
 fclt ai writeback link WB-00001 --issue TEAM-123
 fclt ai writeback disposition WB-00001 --type task --target TEAM-123
 fclt ai evolve verify EV-00001 --effectiveness improved --evidence test:post-apply
@@ -91,6 +100,24 @@ If there is not yet enough repeated signal for evolution, do not stop at a bare 
 
 Do not create a proposal only to preserve an idea. Preserve the idea as writeback, notes, or task tracking unless it has enough evidence to change capability.
 
+Review the draft before changing canonical assets:
+
+```bash
+fclt ai evolve review EV-00001
+```
+
+Acceptance and application are separate mutations. Only use the direct CLI flow below when the
+request authorizes the exact target and scope and the supported execution surface permits it:
+
+```bash
+fclt ai evolve accept EV-00001
+fclt ai evolve apply EV-00001
+```
+
+Plugin canonical apply and cross-scope promotion remain unavailable; do not bypass that restriction
+with shell commands. Scheduled canonical apply remains plan-only. A manual CLI example does not
+authorize a plugin or scheduler to execute it.
+
 ## Proposal Kind Selection
 
 - `update_asset` for tightening existing guidance
@@ -122,12 +149,4 @@ Before accept/apply, verify:
 - next evidence to collect when no proposal is justified
 - exact read-only and mutating commands, with approval boundaries
 
-## Authorization and evidence boundaries
-
-Use existing authorization for the same action and scope; do not request the same approval again.
-Honor read-only and proposal-only requests by returning findings or a proposed writeback without
-recording state. When review-state mutation is authorized, prepare the smallest evidence-backed draft.
-Drafting or recording does not authorize canonical apply, cross-scope promotion, external messages,
-tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
-Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
-Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.
+Verify the producing workflow before resolving source writebacks; applying a change alone does not prove effectiveness.

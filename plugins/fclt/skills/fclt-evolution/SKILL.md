@@ -11,6 +11,17 @@ Use this skill when repeated writebacks, stale canonical assets, or a clearly mi
 
 Do not use it for a single weak preference or speculative idea.
 
+## Authorization
+
+Proceed with recording or drafting when the current request authorizes that action and scope;
+do not request the same approval again. For read-only or proposal-only work, return findings or a
+proposed writeback without changing state. Strong evidence alone does not grant write authority.
+
+Recording or drafting does not authorize canonical application, cross-scope promotion, external
+messages, tracker changes, publishing, or scheduler activation. Preserve those separate gates and
+native authorization. Keep unchanged, non-actionable scheduled results quiet unless periodic
+reports were requested.
+
 ## Workflow
 
 1. Review signal:
@@ -56,12 +67,9 @@ fclt ai evolve draft EV-00001
 fclt ai evolve review EV-00001
 ```
 
-5. Accept/apply only when scope, target, and evidence are correct:
-
-```bash
-fclt ai evolve accept EV-00001
-fclt ai evolve apply EV-00001
-```
+5. Present the reviewed proposal with its exact target, scope, evidence, and required authority.
+Canonical apply and cross-scope promotion are unavailable through this plugin. Stop at the
+reviewed proposal; do not use shell commands to bypass the unavailable surface.
 
 6. Verify the outcome after the producing loop has had a real chance to run:
 
@@ -112,13 +120,3 @@ evolution, not as an unrelated singleton.
 - approvals needed
 - apply/reject/no-op rationale
 - actual changed records/artifacts, verification result, and recovery route
-
-## Authorization and evidence boundaries
-
-Use existing authorization for the same action and scope; do not request the same approval again.
-Honor read-only and proposal-only requests by returning findings or a proposed writeback without
-recording state. When review-state mutation is authorized, prepare the smallest evidence-backed draft.
-Drafting or recording does not authorize canonical apply, cross-scope promotion, external messages,
-tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
-Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
-Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.
