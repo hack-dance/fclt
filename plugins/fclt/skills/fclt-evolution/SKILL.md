@@ -40,7 +40,7 @@ Use the assessment recommendation as the decision checkpoint:
 - `review_reconciled_signals`: review correlated dispositions and linked work without creating one proposal per ticket.
 - `no_mutation`: do not change capability state; ask for a target or evidence.
 - `record_more_writeback`: explain what recurrence would justify evolution and record a new writeback only if there is fresh concrete evidence.
-- `propose`: ask before running the proposal command, then create the smallest target-specific proposal.
+- `propose`: create the smallest target-specific draft when review-state mutation is already authorized; otherwise present the proposed action. Retain canonical apply and promotion gates.
 - `review_existing_proposal`: inspect or revise the existing proposal instead of creating a duplicate.
 
 3. Propose only when evidence is strong enough:
@@ -87,7 +87,7 @@ evolution, not as an unrelated singleton.
 
 - Prefer the smallest valid proposal kind.
 - Keep project-specific behavior project-scoped until reuse is proven.
-- Ask for approval before applying global instructions, global skills, plugin behavior, or other broad shared surfaces.
+- Require approval covering the exact scope before applying global instructions, global skills, plugin behavior, or other broad shared surfaces. Existing approval for that action and scope is sufficient; never bypass an unavailable or restricted apply surface.
 - Reject or park proposals that are stale, duplicated, vague, or unsupported.
 - Use the operator's task system for executable implementation work that needs owner, priority, or state.
 - A no-op answer must still be useful: include the evidence grade, missing signal, next writeback target, and exact approval boundary.
@@ -112,3 +112,13 @@ evolution, not as an unrelated singleton.
 - approvals needed
 - apply/reject/no-op rationale
 - actual changed records/artifacts, verification result, and recovery route
+
+## Authorization and evidence boundaries
+
+Use existing authorization for the same action and scope; do not request the same approval again.
+Honor read-only and proposal-only requests by returning findings or a proposed writeback without
+recording state. When review-state mutation is authorized, prepare the smallest evidence-backed draft.
+Drafting or recording does not authorize canonical apply, cross-scope promotion, external messages,
+tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
+Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
+Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.

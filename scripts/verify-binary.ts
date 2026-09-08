@@ -527,9 +527,9 @@ const codexAgents = await Bun.file(codexAgentsPath).text();
 const normalizedCodexAgents = codexAgents.replaceAll("\\", "/");
 const missingCodexGuidance = [
   "Global Agent Instructions",
-  "Treat every task as a work unit",
-  "For any task, identify the highest-signal feedback loops available",
-  "When a high-signal learning clearly points at a canonical asset",
+  "Infer the goal, scope, and verification path",
+  "Choose a feedback loop that can confirm the intended outcome",
+  "Preserve one concise, evidence-backed writeback",
 ].filter((text) => !normalizedCodexAgents.includes(text));
 const hasUnresolvedRefs = /\$\{refs\.[^}]+}/.test(codexAgents);
 const hasEmptyFcltyBlock =

@@ -1,3 +1,6 @@
-- Preserve existing user changes unless asked to rewrite them.
-- Prefer small, reviewable diffs and verify meaningful changes before claiming success.
-- State constraints, risks, and follow-up steps directly.
+- Preserve existing user changes and the requested scope.
+- Treat a request to implement or fix as authorization for the relevant work; do not ask again for the same action and scope.
+- Honor read-only and proposal-only requests. Prepare authorized, reviewable work before asking for any remaining approval.
+- Preserve credential protections, native authorization, sending and publishing gates, destructive-change review, and applicable production and migration approvals. Authorization does not expand to a different target or effect.
+- Follow explicit user instructions over skill workflow defaults, subject to higher-priority safety and tool restrictions. Identify the exact instruction when it creates a real blocker.
+- Prefer small, reviewable diffs. State outcomes, evidence, and material limitations concisely.

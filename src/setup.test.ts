@@ -693,7 +693,7 @@ describe("zero-config setup", () => {
         'import { dirname, join } from "node:path";',
         "const argv = process.argv.slice(2);",
         'const pluginId = "fclt@hack-local";',
-        'const version = "0.1.3";',
+        'const version = "0.1.4";',
         'const installedPath = join(process.env.HOME, ".codex", "plugins", "cache", "hack-local", "fclt", version);',
         'mkdirSync(join(process.env.HOME, ".codex"), { recursive: true });',
         'writeFileSync(join(process.env.HOME, ".codex", "config.toml"), `[plugins."` + pluginId + `"]\nenabled = true\n`);',
