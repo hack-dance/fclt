@@ -24,6 +24,9 @@ preferences in user-owned or project-owned assets outside the public pack.
 
 ## Shared instruction sources
 
+Read only task-relevant references that are not already available in context. These references provide
+workflow detail, not additional approval gates or reasons to expand the requested scope.
+
 - For work-unit definition and scope clarification, read ${refs.work_units}.
 - For identifying, improving, and validating feedback loops, read ${refs.feedback_loops}.
 - For verification and anti-false-positive checks, read ${refs.verification}.
@@ -38,4 +41,4 @@ preferences in user-owned or project-owned assets outside the public pack.
 - Treat this file as the global baseline.
 - Treat repo-level `AGENTS.md` files as more specific additions layered after this file.
 - Repo-level files may add or refine project-specific behavior, but they should not weaken global defaults for rigor, verification, or writeback discipline.
-- If a closer `AGENTS.override.md` exists, follow it as the most specific instructions file in that directory while still preserving the global baseline unless the closer file explicitly tightens it.
+- If a closer `AGENTS.override.md` exists, follow it as the most specific instructions file in that directory while still preserving the global baseline unless the closer file explicitly tightens it. Explicit user scope, including read-only requests, remains binding.

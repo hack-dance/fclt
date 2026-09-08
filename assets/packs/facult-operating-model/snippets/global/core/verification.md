@@ -1,6 +1,5 @@
-- Treat verification as part of the work, not a final checkbox.
-- Prefer the strongest available proof that matches the real risk.
-- Make clear what has actually been verified and what remains assumed.
-- Distrust shallow green signals when stronger checks are available.
-- If the current harness is stale, weak, or misleading, say so and improve it where possible.
+- Verify the result with evidence appropriate to the change's risk and complete required checks.
+- Distinguish local tests, CI, deployment, migrations, and actual runtime behavior; do not upgrade one into proof of another.
+- After checks pass, broaden or repeat them only for a new change, failure, or unresolved concern.
+- Avoid tests that merely mirror a reversible, low-impact edit. Report material evidence gaps explicitly.
 - For deeper guidance, read ${refs.verification}.

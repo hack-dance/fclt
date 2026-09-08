@@ -20,7 +20,7 @@ Use it for:
 
 ## Workflow
 
-1. Bootstrap the global loop with one idempotent command:
+1. For inspection, start with `fclt --version`, `fclt paths --json`, and `fclt doctor --json`. Run setup only when initialization or repair is authorized; existing authorization for the same targets is sufficient. Bootstrap an authorized global setup with:
 
 ```bash
 fclt setup

@@ -169,3 +169,13 @@ mutate an external tracker or automatically apply canonical changes. Treat
 project auto-apply as plan-only until a hash-bound transaction, validation,
 rollback, and durable receipt exist; keep global and plugin changes
 proposal-only.
+
+## Authorization and evidence boundaries
+
+Use existing authorization for the same action and scope; do not request the same approval again.
+Honor read-only and proposal-only requests by returning findings or a proposed writeback without
+recording state. When review-state mutation is authorized, prepare the smallest evidence-backed draft.
+Drafting or recording does not authorize canonical apply, cross-scope promotion, external messages,
+tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
+Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
+Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.
