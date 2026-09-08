@@ -1,3 +1,9 @@
+## [2.30.2](https://github.com/hack-dance/fclt/compare/v2.30.1...v2.30.2) (2026-09-08)
+
+### Bug Fixes
+
+* diagnose native Windows provenance before release ([#79](https://github.com/hack-dance/fclt/issues/79)) ([82c2fc8](https://github.com/hack-dance/fclt/commit/82c2fc89b5abd314526082649f0a894dc5d37819))
+
 ## [2.30.1](https://github.com/hack-dance/fclt/compare/v2.30.0...v2.30.1) (2026-09-08)
 
 ### Bug Fixes
