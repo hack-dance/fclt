@@ -513,13 +513,22 @@ async function bestEffortWriteInstallState(state) {
   }
 }
 
-module.exports = { expectedChecksum, sha256File, verifyDownloadedRuntime };
-
-if (require.main === module) {
-  main().catch((error) => {
+function runCli() {
+  return main().catch((error) => {
     const message =
       error instanceof Error ? error.message : String(error ?? "");
     console.error(message);
     process.exit(1);
   });
+}
+
+module.exports = {
+  expectedChecksum,
+  runCli,
+  sha256File,
+  verifyDownloadedRuntime,
+};
+
+if (require.main === module) {
+  runCli();
 }

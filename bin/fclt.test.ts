@@ -302,3 +302,36 @@ it("waits for a concurrent launcher to finish writing the runtime binary", async
   expect(stdout.trim()).toBe("cached-runtime-ready");
   expect(stderr).toBe("");
 });
+
+it("dispatches the facult alias to the shared launcher and preserves arguments and exit status", async () => {
+  const node = Bun.which("node");
+  expect(node).not.toBeNull();
+  const child = Bun.spawn({
+    cmd: [
+      node!,
+      "-e",
+      `
+      const launcher = require.resolve("./bin/fclt.cjs");
+      require.cache[launcher] = { exports: { runCli() {
+        process.stdout.write(JSON.stringify(process.argv.slice(1)));
+        process.exitCode = 23;
+      } } };
+      require("./bin/facult.cjs");
+    `,
+      "--",
+      "protocol",
+      "--json",
+    ],
+    cwd: repoRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect(exitCode).toBe(23);
+  expect(JSON.parse(stdout)).toEqual(["protocol", "--json"]);
+  expect(stderr).toBe("");
+});
