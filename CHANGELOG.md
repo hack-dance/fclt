@@ -1,3 +1,9 @@
+## [2.30.4](https://github.com/hack-dance/fclt/compare/v2.30.3...v2.30.4) (2026-09-08)
+
+### Bug Fixes
+
+* consolidate writeback authority and plugin execution guidance ([#81](https://github.com/hack-dance/fclt/issues/81)) ([f229256](https://github.com/hack-dance/fclt/commit/f229256a36c5c5b6103eaf772428f6ec56401b41))
+
 ## [2.30.3](https://github.com/hack-dance/fclt/compare/v2.30.2...v2.30.3) (2026-09-08)
 
 ### Bug Fixes
