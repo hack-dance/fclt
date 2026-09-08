@@ -1,3 +1,9 @@
+## [2.30.3](https://github.com/hack-dance/fclt/compare/v2.30.2...v2.30.3) (2026-09-08)
+
+### Bug Fixes
+
+* dispatch the facult npm alias through the shared launcher ([#80](https://github.com/hack-dance/fclt/issues/80)) ([a0ba171](https://github.com/hack-dance/fclt/commit/a0ba1712aba5c62e079461b419df802ce49ca997))
+
 ## [2.30.2](https://github.com/hack-dance/fclt/compare/v2.30.1...v2.30.2) (2026-09-08)
 
 ### Bug Fixes
