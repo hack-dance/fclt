@@ -31,6 +31,17 @@ The intended default is that agents record strong writebacks themselves when the
 
 Do not wait for a weekly review to preserve high-signal evidence. Do wait for repeated evidence or a clearly missing capability before drafting a proposal.
 
+## Authorization
+
+Proceed with recording or drafting when the current request authorizes that action and scope;
+do not request the same approval again. For read-only or proposal-only work, return findings or a
+proposed writeback without changing state. Strong evidence alone does not grant write authority.
+
+Recording or drafting does not authorize canonical application, cross-scope promotion, external
+messages, tracker changes, publishing, or scheduler activation. Preserve those separate gates and
+native authorization. Keep unchanged, non-actionable scheduled results quiet unless periodic
+reports were requested.
+
 ## Scope
 
 Choose `project` scope when the learning depends on:
@@ -72,7 +83,7 @@ Good target examples:
 
 ## Operator Flow
 
-Typical workflow:
+Capture and draft when review-state mutation is authorized:
 
 ```bash
 fclt ai writeback add --kind weak_verification --summary "Checks were too shallow" --asset instruction:VERIFICATION
@@ -81,8 +92,6 @@ fclt ai writeback summarize --by domain
 fclt ai evolve assess --asset instruction:VERIFICATION --json
 fclt ai evolve propose
 fclt ai evolve draft EV-00001
-fclt ai evolve accept EV-00001
-fclt ai evolve apply EV-00001
 ```
 
 Use `fclt ai evolve draft <id> --append "..."` to revise a draft while preserving draft history.
@@ -111,6 +120,24 @@ human-readable review artifacts into global `~/.ai/writebacks/...` and
 `~/.ai/evolution/...`, including project-scoped artifacts under
 `projects/<slug-hash>/` with cwd/project metadata in frontmatter. Canonical
 assets in `~/.ai` or `<repo>/.ai` should only change when a proposal is applied.
+
+Review the draft before changing canonical assets:
+
+```bash
+fclt ai evolve review EV-00001
+```
+
+Acceptance and application are separate mutations. Only use the direct CLI flow below when the
+request authorizes the exact target and scope and the supported execution surface permits it:
+
+```bash
+fclt ai evolve accept EV-00001
+fclt ai evolve apply EV-00001
+```
+
+Plugin canonical apply and cross-scope promotion remain unavailable; do not bypass that restriction
+with shell commands. Scheduled canonical apply remains plan-only. A manual CLI example does not
+authorize a plugin or scheduler to execute it.
 
 ## Default Agent Behavior
 
@@ -154,7 +181,7 @@ Examples:
 ## Review And Apply Rules
 
 - draft before apply
-- accept before apply
+- accept before apply, with authorization covering the exact target and scope
 - prefer the smallest safe change
 - keep reviewable evidence tied to source writebacks
 - do not globalize project behavior too early
@@ -170,12 +197,4 @@ project auto-apply as plan-only until a hash-bound transaction, validation,
 rollback, and durable receipt exist; keep global and plugin changes
 proposal-only.
 
-## Authorization and evidence boundaries
-
-Use existing authorization for the same action and scope; do not request the same approval again.
-Honor read-only and proposal-only requests by returning findings or a proposed writeback without
-recording state. When review-state mutation is authorized, prepare the smallest evidence-backed draft.
-Drafting or recording does not authorize canonical apply, cross-scope promotion, external messages,
-tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
-Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
-Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.
+Verify the producing workflow before resolving source writebacks; applying a change alone does not prove effectiveness.

@@ -13,13 +13,24 @@ stale guidance, repeated success, or a capability gap.
 Writeback is for preserving reusable signal. It is not for every preference or one-off
 annoyance.
 
+## Authorization
+
+Proceed with recording or drafting when the current request authorizes that action and scope;
+do not request the same approval again. For read-only or proposal-only work, return findings or a
+proposed writeback without changing state. Strong evidence alone does not grant write authority.
+
+Recording or drafting does not authorize canonical application, cross-scope promotion, external
+messages, tracker changes, publishing, or scheduler activation. Preserve those separate gates and
+native authorization. Keep unchanged, non-actionable scheduled results quiet unless periodic
+reports were requested.
+
 ## Workflow
 
 1. Choose project scope when the learning depends on a repo, architecture, test harness,
    or team workflow. Choose global scope for broadly reusable learning.
 2. Target the smallest affected instruction, snippet, skill, agent, MCP/tool config, or
    automation.
-3. Record concrete evidence:
+3. Record concrete evidence when state mutation is authorized:
 
 ```bash
 fclt ai writeback add \
@@ -64,12 +75,4 @@ fclt ai loop activity --project
 - evidence summary
 - whether the signal is ready for evolution
 
-## Authorization and evidence boundaries
-
-Use existing authorization for the same action and scope; do not request the same approval again.
-Honor read-only and proposal-only requests by returning findings or a proposed writeback without
-recording state. When review-state mutation is authorized, prepare the smallest evidence-backed draft.
-Drafting or recording does not authorize canonical apply, cross-scope promotion, external messages,
-tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
-Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
-Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.
+Verify the producing workflow before resolving source writebacks; applying a change alone does not prove effectiveness.
