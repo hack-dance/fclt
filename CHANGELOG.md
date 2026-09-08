@@ -1,3 +1,9 @@
+## [2.30.1](https://github.com/hack-dance/fclt/compare/v2.30.0...v2.30.1) (2026-09-08)
+
+### Bug Fixes
+
+* align generated instructions and provider defaults ([#78](https://github.com/hack-dance/fclt/issues/78)) ([0823988](https://github.com/hack-dance/fclt/commit/0823988cbc0a00ca30f2d51ce65fb2f4242ed56c))
+
 ## [2.30.0](https://github.com/hack-dance/fclt/compare/v2.29.2...v2.30.0) (2026-09-02)
 
 ### Features
