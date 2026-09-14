@@ -197,4 +197,13 @@ project auto-apply as plan-only until a hash-bound transaction, validation,
 rollback, and durable receipt exist; keep global and plugin changes
 proposal-only.
 
+Signal-family decisions are a separate machine-local lifecycle. Resolve the
+current opaque activity locator, then record `accept`, `redirect`, `reject`, or
+`defer` only with explicit approval and the exact queue revision. The append-only
+receipt preserves bounded work-unit context but does not apply capability,
+mutate Git or an external tracker, spawn a task, or grant authority beyond the
+recorded decision. Current-source completion may close already-landed families;
+hold/defer remains visible and unimplemented. Treat coverage completeness and
+cursor freshness as independent review facts.
+
 Verify the producing workflow before resolving source writebacks; applying a change alone does not prove effectiveness.

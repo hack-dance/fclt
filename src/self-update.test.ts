@@ -348,3 +348,42 @@ describe("self-update doctor postflight", () => {
     }
   });
 });
+
+it("keeps mise ownership when the npm launcher supplies its package-manager hint", async () => {
+  const home = await mkdtemp(join(tmpdir(), "fclt-self-update-mise-"));
+  try {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "./src/index.ts",
+        "self-update",
+        "--version",
+        "2.30.5",
+        "--dry-run",
+      ],
+      {
+        cwd: process.cwd(),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: {
+          ...process.env,
+          HOME: home,
+          FACULT_LOCAL_STATE_DIR: join(home, "state"),
+          FACULT_INSTALL_METHOD: "mise-npm",
+          FACULT_INSTALL_PM: "npm",
+        },
+      }
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("mise use -g --pin npm:facult@2.30.5");
+    expect(stdout).not.toContain("npm install -g");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

@@ -678,9 +678,10 @@ async function selfUpdateViaPackageManager(args: {
   preferredPackageManager?: string;
   method?: InstallMethod;
 }) {
-  const pm = chooseGlobalPackageManager(
-    args.method === "mise-npm" ? "mise" : args.preferredPackageManager
-  );
+  const pm =
+    args.method === "mise-npm"
+      ? "mise"
+      : chooseGlobalPackageManager(args.preferredPackageManager);
   const target =
     args.dryRun &&
     (!args.requestedVersion || args.requestedVersion === "latest")
