@@ -28,6 +28,20 @@ async function captureConsole(fn: () => Promise<void>) {
   const errors: string[] = [];
   const prevLog = console.log;
   const prevError = console.error;
+  const prevWrite = process.stdout.write;
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void
+  ) => {
+    logs.push(
+      typeof chunk === "string" ? chunk : Buffer.from(chunk).toString()
+    );
+    const done =
+      typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    done?.();
+    return true;
+  }) as typeof process.stdout.write;
   console.log = (...args: Parameters<typeof console.log>) => {
     logs.push(args.map((value) => String(value)).join(" "));
   };
@@ -39,6 +53,7 @@ async function captureConsole(fn: () => Promise<void>) {
   } finally {
     console.log = prevLog;
     console.error = prevError;
+    process.stdout.write = prevWrite;
   }
   return { logs, errors };
 }
@@ -473,7 +488,7 @@ describe("ai CLI", () => {
       automationPath,
       (await Bun.file(automationPath).text()).replace(
         'managed_by = "fclt-evolution-loop"\n',
-        ""
+        'managed_by = "another-owner"\n'
       )
     );
     const disabledOut = await captureConsole(async () => {
