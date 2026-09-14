@@ -1,3 +1,9 @@
+## [2.30.6](https://github.com/hack-dance/fclt/compare/v2.30.5...v2.30.6) (2026-09-14)
+
+### Bug Fixes
+
+* preserve scheduler ownership and flush loop output ([545c1af](https://github.com/hack-dance/fclt/commit/545c1afeece315c30bef2c3ae33d8f2c0d3fcb0a))
+
 ## [2.30.5](https://github.com/hack-dance/fclt/compare/v2.30.4...v2.30.5) (2026-09-14)
 
 ### Bug Fixes
