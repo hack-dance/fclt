@@ -23,6 +23,7 @@ import {
   listProposals,
   listWritebacks,
   proposeEvolution,
+  UnsupportedProposalTargetError,
 } from "./ai";
 import {
   facultAiEvolutionLoopAuditPath,
@@ -485,7 +486,7 @@ async function appendLoopAudit(
   );
 }
 
-async function loadConfig(args: {
+export async function loadEvolutionLoopConfig(args: {
   homeDir: string;
   rootDir: string;
 }): Promise<EvolutionLoopConfig | null> {
@@ -598,7 +599,7 @@ async function enableEvolutionLoopScoped(args: {
   dryRun: boolean;
 }> {
   const now = (args.now?.() ?? new Date()).toISOString();
-  const current = await loadConfig(args);
+  const current = await loadEvolutionLoopConfig(args);
   const inferredScope = projectRootFromAiRoot(args.rootDir, args.homeDir)
     ? "project"
     : "global";
@@ -730,7 +731,7 @@ async function disableEvolutionLoopScoped(args: {
   dryRun: boolean;
   scheduler: { paused: boolean; error?: string } | null;
 }> {
-  const current = await loadConfig(args);
+  const current = await loadEvolutionLoopConfig(args);
   if (!current) {
     return {
       config: null,
@@ -1187,6 +1188,30 @@ async function materializeSignals(args: {
   if (!args.review.coverageComplete) {
     return plans;
   }
+  const draftForReview = async (proposal: AiProposalRecord, reason: string) => {
+    try {
+      const drafted = await draftProposal(proposal.id, {
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+      });
+      await recordPlan({
+        type: "draft-proposal",
+        target: drafted.id,
+        reason,
+        applied: true,
+      });
+    } catch (error) {
+      if (!(error instanceof UnsupportedProposalTargetError)) {
+        throw error;
+      }
+      await recordPlan({
+        type: "draft-proposal",
+        target: proposal.id,
+        reason: error.message,
+        applied: false,
+      });
+    }
+  };
   const existing = await listWritebacks({
     homeDir: args.homeDir,
     rootDir: args.rootDir,
@@ -1336,16 +1361,10 @@ async function materializeSignals(args: {
         });
       }
       if (activeProposal.status === "proposed") {
-        const drafted = await draftProposal(activeProposal.id, {
-          homeDir: args.homeDir,
-          rootDir: args.rootDir,
-        });
-        await recordPlan({
-          type: "draft-proposal",
-          target: drafted.id,
-          reason: "Recovered an existing undrafted proposal from a prior run",
-          applied: true,
-        });
+        await draftForReview(
+          activeProposal,
+          "Recovered an existing undrafted proposal from a prior run"
+        );
       }
       continue;
     }
@@ -1361,16 +1380,10 @@ async function materializeSignals(args: {
         reason: `Assessment recommended a proposal for ${target}`,
         applied: true,
       });
-      const drafted = await draftProposal(proposal.id, {
-        homeDir: args.homeDir,
-        rootDir: args.rootDir,
-      });
-      await recordPlan({
-        type: "draft-proposal",
-        target: drafted.id,
-        reason: "Drafted the review artifact; canonical apply remains gated",
-        applied: true,
-      });
+      await draftForReview(
+        proposal,
+        "Drafted the review artifact; canonical apply remains gated"
+      );
     }
   }
   const projectRoot =
@@ -1701,7 +1714,7 @@ async function evolutionLoopStatusScoped(args: {
   auditPath: string;
   reportDir: string;
 }> {
-  const config = await loadConfig(args);
+  const config = await loadEvolutionLoopConfig(args);
   const state = await loadState(args);
   const scheduler = config
     ? await automationStatus({
@@ -1788,7 +1801,7 @@ export async function diagnoseEvolutionLoop(args: {
     async () => {
       let config: EvolutionLoopConfig | null;
       try {
-        config = await loadConfig(args);
+        config = await loadEvolutionLoopConfig(args);
       } catch (error) {
         return {
           configurationState: "invalid" as const,
@@ -2044,7 +2057,7 @@ async function runEvolutionLoopScoped(args: {
   onLockAcquired?: () => void | Promise<void>;
   openLockFile?: (path: string, flags: "wx") => Promise<FileHandle>;
 }): Promise<EvolutionLoopReport> {
-  const loadedConfig = await loadConfig(args);
+  const loadedConfig = await loadEvolutionLoopConfig(args);
   if (!(loadedConfig?.enabled || args.dryRun)) {
     throw new Error(
       "Evolution loop is disabled. Run `fclt ai loop enable` first."
@@ -2075,7 +2088,7 @@ async function runEvolutionLoopScoped(args: {
   const lockPath = facultAiEvolutionLoopLockPath(args.homeDir, args.rootDir);
   const execute = async (): Promise<EvolutionLoopReport> => {
     if (!args.dryRun) {
-      const lockedConfig = await loadConfig(args);
+      const lockedConfig = await loadEvolutionLoopConfig(args);
       if (!lockedConfig?.enabled) {
         throw new Error(
           "Evolution loop is disabled. Run `fclt ai loop enable` first."
