@@ -1419,6 +1419,19 @@ describe("evolution loop", () => {
     );
   });
 
+  it("refuses a status edit that would match authored multiline prompt content", async () => {
+    const project = await makeProject();
+    const enabled = await enableEvolutionLoop(project);
+    const path = join(enabled.automationPath, "automation.toml");
+    const current = (await readFile(path, "utf8")).replace(
+      AUTOMATION_PROMPT_RE,
+      "prompt = '''\nstatus = \"ACTIVE\"\nupdated_at = 1\nKeep this authored example.\n'''"
+    );
+    await Bun.write(path, current);
+    expect((await disableEvolutionLoop(project)).scheduler?.paused).toBe(false);
+    expect(await readFile(path, "utf8")).toBe(current);
+  });
+
   it("repairs legacy ownership only with explicit approval and preserves the complete paused task", async () => {
     const project = await makeProject();
     const enabled = await enableEvolutionLoop(project);

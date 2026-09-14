@@ -1661,6 +1661,17 @@ export async function setCodexAutomationStatus(args: {
         () => `rrule = ${quoteTomlString(recurrence)}`
       );
     }
+    const expected = {
+      ...parsed,
+      status: args.status,
+      updated_at: Number(timestamp),
+      ...(args.rrule === undefined ? {} : { rrule: args.rrule }),
+    };
+    if (JSON.stringify(Bun.TOML.parse(next)) !== JSON.stringify(expected)) {
+      throw new Error(
+        "Automation layout cannot be updated without changing authored fields"
+      );
+    }
     if ((await readFile(pathValue, "utf8")) !== current) {
       throw new Error("Automation changed during status update");
     }
