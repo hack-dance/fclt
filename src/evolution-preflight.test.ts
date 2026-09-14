@@ -25,6 +25,13 @@ async function setup(scope: "project" | "global") {
   const rootDir =
     scope === "project" ? join(homeDir, "repo", ".ai") : join(homeDir, ".ai");
   await mkdir(rootDir, { recursive: true });
+  await Bun.write(
+    join(rootDir, "reconciliation.json"),
+    JSON.stringify({
+      version: 1,
+      sources: [{ id: "writebacks", type: "writebacks" }],
+    })
+  );
   await enableEvolutionLoop({ homeDir, rootDir, scope });
   return { homeDir, rootDir, scope };
 }
@@ -97,5 +104,45 @@ for (const destination of [
       expect.objectContaining({ path, writable: false })
     );
     expect(result.loopInvoked).toBe(false);
+  });
+}
+
+for (const scenario of [
+  "missing",
+  "malformed",
+  "empty",
+  "selection",
+] as const) {
+  it(`blocks ${scenario} source configuration before a review attempt`, async () => {
+    const args = await setup("project");
+    const path = join(args.rootDir, "reconciliation.json");
+    if (scenario === "missing") {
+      await rm(path);
+    }
+    if (scenario === "malformed") {
+      await Bun.write(path, "{broken");
+    }
+    if (scenario === "empty") {
+      await Bun.write(path, JSON.stringify({ version: 1, sources: [] }));
+    }
+    if (scenario === "selection") {
+      const loopPath = facultAiEvolutionLoopConfigPath(
+        args.homeDir,
+        args.rootDir
+      );
+      const config = await Bun.file(loopPath).json();
+      config.sourceIds = ["missing-source"];
+      await Bun.write(loopPath, JSON.stringify(config));
+    }
+    const result = await preflightEvolutionLoop(args);
+    expect(result.status).toBe("blocked");
+    expect(result.configError).toBeTruthy();
+    expect(result.loopInvoked).toBe(false);
+    expect(result.recovery).toContain("configuration");
+    expect(
+      await Bun.file(
+        facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir)
+      ).exists()
+    ).toBe(false);
   });
 }

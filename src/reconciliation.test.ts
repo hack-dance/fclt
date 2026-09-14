@@ -2245,7 +2245,7 @@ describe("source reconciliation", () => {
     );
   });
 
-  it("separates complete coverage from a cursor stale after newer repository activity", async () => {
+  it("keeps filtered Git sources current after unrelated activity", async () => {
     const fixture = await makeFixture();
     for (const argv of [
       ["init", "--quiet", "--initial-branch=main"],
@@ -2291,6 +2291,19 @@ describe("source reconciliation", () => {
     });
     expect(first.coverageComplete).toBe(true);
     expect(first.freshness.state).toBe("current");
+    const idle = await reconcileSources({
+      ...fixture,
+      since: "2026-07-23",
+      until: "2026-08-30",
+      incremental: true,
+      persist: false,
+    });
+    expect(idle.coverageComplete).toBe(true);
+    expect(idle.coverage[0]?.freshness).toMatchObject({
+      state: "current",
+      reason: "source_caught_up",
+      alert: false,
+    });
 
     await Bun.write(join(fixture.projectRoot, "outside.txt"), "new activity\n");
     await runFixtureGit({
@@ -2321,22 +2334,48 @@ describe("source reconciliation", () => {
       state: "checked",
       recordsScanned: 0,
       freshness: {
-        state: "stale",
-        reason: "newer_repository_activity",
-        alert: true,
+        state: "current",
+        reason: "source_caught_up",
+        alert: false,
         cursorAt: "2026-07-23T18:12:45-04:00",
-        latestSourceAt: "2026-07-23T18:28:50-04:00",
+        latestSourceAt: "2026-07-23T18:12:45-04:00",
       },
     });
     expect(preview.freshness).toMatchObject({
-      state: "stale",
-      staleSourceIds: ["git"],
-      alertSourceIds: ["git"],
+      state: "current",
+      staleSourceIds: [],
+      alertSourceIds: [],
     });
     expect(await readFile(statePath, "utf8")).toBe(stateBefore);
+    await Bun.write(
+      join(fixture.projectRoot, "docs", "new.md"),
+      "New guidance.\n"
+    );
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["add", "docs"],
+    });
+    await runFixtureGit({
+      projectRoot: fixture.projectRoot,
+      argv: ["commit", "--quiet", "-m", "docs: new guidance"],
+      date: "2026-07-25T12:00:00Z",
+    });
+    const advanced = await reconcileSources({
+      ...fixture,
+      since: "2026-07-23",
+      until: "2026-07-27",
+      incremental: true,
+      persist: false,
+    });
+    expect(advanced.coverage[0]?.recordsScanned).toBe(1);
+    expect(advanced.coverage[0]?.freshness).toMatchObject({
+      state: "current",
+      cursorAt: "2026-07-25T12:00:00Z",
+      latestSourceAt: "2026-07-25T12:00:00Z",
+    });
   });
 
-  it("reports six stale Git cursors independently from aggregate coverage", async () => {
+  it("keeps six filtered Git sources current after unrelated activity", async () => {
     const fixture = await makeFixture();
     for (const argv of [
       ["init", "--quiet", "--initial-branch=main"],
@@ -2410,12 +2449,12 @@ describe("source reconciliation", () => {
       )
     ).toBe(true);
     expect(
-      review.coverage.every((entry) => entry.freshness.state === "stale")
+      review.coverage.every((entry) => entry.freshness.state === "current")
     ).toBe(true);
     expect(review.freshness).toMatchObject({
-      state: "stale",
-      staleSourceIds: sourceIds,
-      alertSourceIds: sourceIds,
+      state: "current",
+      staleSourceIds: [],
+      alertSourceIds: [],
     });
   });
 
@@ -2495,10 +2534,10 @@ describe("source reconciliation", () => {
 
     expect(review.coverage[0]).toMatchObject({
       freshness: {
-        state: "stale",
-        reason: "newer_repository_activity",
+        state: "current",
+        reason: "source_caught_up",
         cursorAt: "2026-01-02T12:00:00Z",
-        latestSourceAt: "2026-01-04T12:00:00Z",
+        latestSourceAt: "2026-01-02T12:00:00Z",
       },
     });
   });

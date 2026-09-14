@@ -1104,6 +1104,15 @@ describe("ai CLI", () => {
     expect(draftOut.errors).toEqual([]);
     expect(draftOut.logs.join("\n")).toContain("Drafted EV-00001");
 
+    const reviewOut = await captureConsole(async () => {
+      await aiCommand(["evolve", "review", "EV-00001", "--json"]);
+    });
+    expect(reviewOut.errors).toEqual([]);
+    expect(JSON.parse(reviewOut.logs.join(""))).toMatchObject({
+      id: "EV-00001",
+      status: "in_review",
+    });
+
     const acceptOut = await captureConsole(async () => {
       await aiCommand(["evolve", "accept", "EV-00001"]);
     });

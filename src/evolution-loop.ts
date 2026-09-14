@@ -41,7 +41,10 @@ import {
   processStartIdentityMatches,
 } from "./process-identity";
 import { reconcileSources, reconciliationStatus } from "./reconciliation";
-import { DEFAULT_SOURCE_FRESHNESS_THRESHOLD_HOURS } from "./reconciliation-config";
+import {
+  DEFAULT_SOURCE_FRESHNESS_THRESHOLD_HOURS,
+  ReconciliationConfigurationError,
+} from "./reconciliation-config";
 import type {
   CorrelatedSignal,
   ReconciliationFreshness,
@@ -923,12 +926,14 @@ function rawQueue(args: {
     );
     const bridgeWritebackIds = new Set(
       args.writebacks
-        .filter((entry) =>
-          entry.evidence.some(
-            (evidence) =>
-              evidence.type === "reconciliation" &&
-              familyEvidenceRefs.has(evidence.ref)
-          )
+        .filter(
+          (entry) =>
+            signal.writebackRefs.includes(entry.id) ||
+            entry.evidence.some(
+              (evidence) =>
+                evidence.type === "reconciliation" &&
+                familyEvidenceRefs.has(evidence.ref)
+            )
         )
         .map((entry) => entry.id)
     );
@@ -942,7 +947,10 @@ function rawQueue(args: {
       id: `family:${familyId}`,
       kind: "signal" as const,
       title: signal.title,
-      state: linkedProposal ? ("resolved" as const) : signalQueueState(signal),
+      state:
+        linkedProposal && signal.unresolved
+          ? ("open" as const)
+          : signalQueueState(signal),
       disposition: signal.disposition,
       familyId,
       familyAliases: signal.familyAliases ?? [],
@@ -1231,6 +1239,9 @@ async function materializeSignals(args: {
     rootDir: args.rootDir,
   });
   for (const signal of args.review.signals) {
+    if (!signal.unresolved) {
+      continue;
+    }
     if (
       signal.disposition !== "propose" &&
       signal.disposition !== "apply-local"
@@ -1256,11 +1267,13 @@ async function materializeSignals(args: {
       ),
     ]);
     let createdWriteback = false;
-    let writeback = existing.find((entry) =>
-      entry.evidence.some(
-        (evidence) =>
-          evidence.type === "reconciliation" && evidenceRefs.has(evidence.ref)
-      )
+    let writeback = existing.find(
+      (entry) =>
+        signal.writebackRefs.includes(entry.id) ||
+        entry.evidence.some(
+          (evidence) =>
+            evidence.type === "reconciliation" && evidenceRefs.has(evidence.ref)
+        )
     );
     if (!(writeback || args.dryRun)) {
       writeback = await addWriteback({
@@ -2153,6 +2166,9 @@ async function runEvolutionLoopScoped(args: {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (error instanceof ReconciliationConfigurationError) {
+          break;
+        }
       }
     }
     if (!review) {
