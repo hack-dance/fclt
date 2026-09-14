@@ -1,3 +1,9 @@
+## [2.31.0](https://github.com/hack-dance/fclt/compare/v2.30.6...v2.31.0) (2026-09-14)
+
+### Features
+
+* add revision-bound signal decisions ([035db08](https://github.com/hack-dance/fclt/commit/035db08cd1bf357d42cac221bcab1f5853c5a891))
+
 ## [2.30.6](https://github.com/hack-dance/fclt/compare/v2.30.5...v2.30.6) (2026-09-14)
 
 ### Bug Fixes
