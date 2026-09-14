@@ -1036,7 +1036,8 @@ describe("evolution loop", () => {
     expect(quiet.coverageComplete).toBe(true);
     expect(quiet.freshness.state).toBe("current");
     expect(quiet.delta.notifiable).not.toContain("freshness:git");
-    expect(quiet.delta.unchangedSuppressed).toBeGreaterThan(0);
+    expect(quiet.delta.notifiable).toHaveLength(0);
+    expect(quiet.queue).toEqual(reviewed.queue);
     const artifact = await readFile(quiet.artifactPath, "utf8");
     expect(artifact).toContain("Freshness: current");
     expect(artifact).toContain("source_caught_up");
