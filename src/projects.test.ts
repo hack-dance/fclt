@@ -1909,9 +1909,8 @@ ghs_APP_ID.${"a".repeat(240)}.${"b".repeat(240)}
     const updated = nextPlan.canonicalWrites[1]?.content ?? "";
     expect(Bun.TOML.parse(updated)).toMatchObject({
       "after]quoted": { owned: true },
-      custom: {
-        description: "\n[project]\nthis is authored text, not a table header",
-      },
+      custom: (Bun.TOML.parse(existing) as { custom: { description: string } })
+        .custom,
       project: { cadence: "weekly" },
     });
     expect(updated).toContain(authoredPrefix);
