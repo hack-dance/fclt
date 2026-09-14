@@ -1,3 +1,9 @@
+## [2.31.2](https://github.com/hack-dance/fclt/compare/v2.31.1...v2.31.2) (2026-09-14)
+
+### Bug Fixes
+
+* preserve review provenance and validate loop readiness ([#85](https://github.com/hack-dance/fclt/issues/85)) ([b0d5cae](https://github.com/hack-dance/fclt/commit/b0d5cae0a97b8e5418d65129d81560173d8873e7))
+
 ## [2.31.1](https://github.com/hack-dance/fclt/compare/v2.31.0...v2.31.1) (2026-09-14)
 
 ### Bug Fixes
