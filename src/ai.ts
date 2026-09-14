@@ -2205,6 +2205,20 @@ export async function draftProposal(
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
   }
+  const draftPath = draftRefForProposal(homeDir, args.rootDir, id);
+  const patchPath = patchRefForProposal(homeDir, args.rootDir, id);
+  const existingDraftPath = await firstExistingFile([
+    draftPath,
+    ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
+  ]);
+  if (
+    current.status !== "proposed" &&
+    !args.append &&
+    existingDraftPath &&
+    (await fileExists(patchPath))
+  ) {
+    return current;
+  }
   const writebacks = (
     await Promise.all(
       current.sourceWritebacks.map(async (writebackId) => {
@@ -2220,24 +2234,17 @@ export async function draftProposal(
     homeDir,
     rootDir: args.rootDir,
   });
-  const draftPath = draftRefForProposal(homeDir, args.rootDir, id);
-  const patchPath = patchRefForProposal(homeDir, args.rootDir, id);
   await mkdir(dirname(draftPath), { recursive: true });
   const generatedBody = renderDraftBody(current, writebacks);
-  const existingDraftPath = await firstExistingFile([
-    draftPath,
-    ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
-  ]);
-  const priorDraft =
-    args.append && existingDraftPath
-      ? await readFile(existingDraftPath, "utf8")
-      : null;
+  const priorDraft = existingDraftPath
+    ? await readFile(existingDraftPath, "utf8")
+    : null;
   const baseDraft = priorDraft ?? generatedBody;
   const draftBody = args.append
     ? isAppendProposalKind(current.kind)
       ? insertDraftRevision(id, baseDraft, args.append)
       : `${baseDraft.trimEnd()}\n\n## Draft Revision\n${args.append.trim()}\n`
-    : generatedBody;
+    : baseDraft;
   await Bun.write(draftPath, `${draftBody}\n`);
   const currentText = (await fileExists(targetNode.path!))
     ? await readFile(targetNode.path!, "utf8")
