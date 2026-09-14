@@ -360,6 +360,12 @@ fclt ai evolve verify EV-00001 \
   --note "The producing loop no longer repeats the failure"
 ```
 
+`evolve show <id> --json` inspects a proposal without changing it. Repeating
+`evolve draft <id>` preserves an existing draft, patch, and review state; use
+`--append` only for an intentional substantive revision. If a patch is missing,
+drafting rebuilds it from the existing authored draft rather than replacing that
+draft with generated boilerplate.
+
 Applying a proposal moves its source writebacks into an awaiting-verification state. Verification
 then records one of `improved`, `unchanged`, `regressed`, or `inconclusive`. Improved evidence
 resolves the writebacks; unchanged or regressed evidence returns them to the pending queue;

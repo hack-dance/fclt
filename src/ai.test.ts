@@ -1367,12 +1367,48 @@ describe("ai writeback", () => {
       "Require post-apply effectiveness verification."
     );
 
+    const beforeRepeat = await showProposal(proposal!.id, {
+      homeDir: tempHome,
+      rootDir,
+    });
+    const authoredDraftPath = join(
+      facultAiDraftDir(tempHome, rootDir),
+      `${proposal!.id}.md`
+    );
+    const authoredPatchPath = join(
+      facultAiDraftDir(tempHome, rootDir),
+      `${proposal!.id}.patch`
+    );
+    const authoredDraft = await readFile(authoredDraftPath, "utf8");
+    const journalBefore = await readFile(
+      facultAiJournalPath(tempHome, rootDir),
+      "utf8"
+    );
+    expect(
+      await draftProposal(proposal!.id, { homeDir: tempHome, rootDir })
+    ).toEqual(beforeRepeat!);
+    expect(await readFile(authoredDraftPath, "utf8")).toBe(authoredDraft);
+    expect(await readFile(authoredPatchPath, "utf8")).toBe(revisedPatch);
+    expect(await readFile(facultAiJournalPath(tempHome, rootDir), "utf8")).toBe(
+      journalBefore
+    );
+
+    await rm(authoredPatchPath);
+    await draftProposal(proposal!.id, { homeDir: tempHome, rootDir });
+    expect((await readFile(authoredDraftPath, "utf8")).trimEnd()).toBe(
+      authoredDraft.trimEnd()
+    );
+    expect(await readFile(authoredPatchPath, "utf8")).toBe(revisedPatch);
+
     const accepted = await acceptProposal(proposal!.id, {
       homeDir: tempHome,
       rootDir,
     });
     expect(accepted.status).toBe("accepted");
     expect(accepted.review?.status).toBe("accepted");
+    expect(
+      await draftProposal(proposal!.id, { homeDir: tempHome, rootDir })
+    ).toEqual(accepted);
 
     const applied = await applyProposal(proposal!.id, {
       homeDir: tempHome,
