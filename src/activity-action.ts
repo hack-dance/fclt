@@ -569,6 +569,44 @@ function planFor(
   };
 }
 
+function portableVerification(
+  value: ActivityItem["verification"]
+): ActivityItem["verification"] {
+  return value
+    ? {
+        state: value.state,
+        attempts: value.attempts,
+        ...(value.opensAt === undefined ? {} : { opensAt: value.opensAt }),
+        ...(value.dueAt === undefined ? {} : { dueAt: value.dueAt }),
+        ...(value.overdueAt === undefined
+          ? {}
+          : { overdueAt: value.overdueAt }),
+      }
+    : undefined;
+}
+
+function issuedItemMatchesQueue(
+  issued: ActivityItem,
+  item: LoopQueueItem
+): boolean {
+  return (
+    issued.id === item.id &&
+    issued.kind === item.kind &&
+    issued.state === item.state &&
+    issued.firstSeenAt === item.firstSeenAt &&
+    issued.lastChangedAt === item.lastChangedAt &&
+    issued.technical.familyId === item.familyId &&
+    issued.technical.proposalId === item.proposalId &&
+    issued.decision.disposition === item.disposition &&
+    issued.decision.proposalStatus === item.proposalStatus &&
+    issued.approvalRequired === item.approvalRequired &&
+    JSON.stringify(issued.linkedWork) ===
+      JSON.stringify(item.linkedWork.map(redactPortableActivityText)) &&
+    JSON.stringify(portableVerification(issued.verification)) ===
+      JSON.stringify(portableVerification(item.verification))
+  );
+}
+
 async function matchingCandidate(args: {
   homeDir: string;
   locator: string;
@@ -611,14 +649,20 @@ async function matchingCandidate(args: {
       if (candidate?.identityDigest !== parsed.identityDigest) {
         continue;
       }
+      const issued = scope.feed.items.filter(
+        (activityItem) =>
+          activityItem.actionLocator === args.locator &&
+          activityItem.technical.queueId === item.id
+      );
       matches.push({
         candidate,
         item,
-        issuedItem: scope.feed.items.find(
-          (activityItem) =>
-            activityItem.actionLocator === args.locator &&
-            activityItem.technical.queueId === item.id
-        ),
+        issuedItem:
+          issued.length === 1 &&
+          issued[0] &&
+          issuedItemMatchesQueue(issued[0], item)
+            ? issued[0]
+            : undefined,
         scope,
       });
     }
@@ -911,6 +955,9 @@ function isActivityDecisionWorkUnit(
         ))) &&
     (verification === null ||
       (isRecord(verification) &&
+        Object.keys(verification).every((key) =>
+          ["state", "attempts", "opensAt", "dueAt", "overdueAt"].includes(key)
+        ) &&
         [
           "unscheduled",
           "pending",
@@ -1118,7 +1165,7 @@ function decisionWorkUnit(item: ActivityItem): ActivityDecisionWorkUnit {
       typeof desiredOutcome === "string"
         ? redactPortableActivityText(desiredOutcome)
         : null,
-    verification: item.verification ?? null,
+    verification: portableVerification(item.verification) ?? null,
     nextAction: redactPortableActivityText(item.nextAction),
   };
 }

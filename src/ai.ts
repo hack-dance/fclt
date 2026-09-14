@@ -8,6 +8,7 @@ import {
   readFile,
   rm,
 } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ensureAiGraphPath } from "./ai-state";
 import {
@@ -944,7 +945,7 @@ async function resolveAssetSelection(args: {
 export async function addWriteback(
   args: AddWritebackArgs
 ): Promise<AiWritebackRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const evidence = (args.evidence ?? []).map((entry) => ({
     type: redactReconciliationText(entry.type),
     ref: redactReconciliationText(entry.ref),
@@ -1034,7 +1035,7 @@ export async function listWritebacks(args?: {
   if (!args) {
     throw new Error("listWritebacks requires a rootDir");
   }
-  const homeDir = args?.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args?.homeDir ?? process.env.HOME ?? homedir();
   const latest = await latestWritebackMap({
     homeDir,
     rootDir: args.rootDir,
@@ -1072,7 +1073,7 @@ export async function showWriteback(
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiWritebackRecord | null> {
   const latest = await latestWritebackMap({
-    homeDir: args.homeDir ?? process.env.HOME ?? "",
+    homeDir: args.homeDir ?? process.env.HOME ?? homedir(),
     rootDir: args.rootDir,
   });
   return latest.get(id) ?? null;
@@ -1083,7 +1084,7 @@ async function updateWritebackStatus(
   status: WritebackStatus,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiWritebackRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showWriteback(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Writeback not found: ${id}`);
@@ -1120,7 +1121,7 @@ async function updateWriteback(
   args: { homeDir?: string; rootDir: string },
   mutate: (record: AiWritebackRecord) => AiWritebackRecord
 ): Promise<AiWritebackRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showWriteback(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Writeback not found: ${id}`);
@@ -1384,7 +1385,7 @@ export async function proposeEvolution(args: {
   asset?: string;
   writebackIds?: string[];
 }): Promise<AiProposalRecord[]> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const writebacks = await listWritebacks({
     homeDir,
     rootDir: args.rootDir,
@@ -1537,7 +1538,7 @@ export async function assessEvolution(args: {
   rootDir: string;
   asset?: string;
 }): Promise<EvolutionAssessment> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
   const filterAsset = args.asset
     ? await resolveAssetSelection({
@@ -1826,7 +1827,7 @@ export async function listProposals(args?: {
   if (!args) {
     throw new Error("listProposals requires a rootDir");
   }
-  const homeDir = args?.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args?.homeDir ?? process.env.HOME ?? homedir();
   const byId = new Map<string, AiProposalRecord>();
   for (const dir of [...aiProposalReadDirs(homeDir, args.rootDir)].reverse()) {
     const entries = await readdir(dir).catch(() => [] as string[]);
@@ -1851,7 +1852,7 @@ export async function refreshAiReviewArtifacts(args: {
   writebackReviewDir: string;
   evolutionReviewDir: string;
 }> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const writebacks = await listWritebacks({ homeDir, rootDir: args.rootDir });
   for (const record of writebacks) {
     await writeWritebackReviewArtifact({
@@ -1896,7 +1897,7 @@ export async function showProposal(
   id: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord | null> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   for (const dir of aiProposalReadDirs(homeDir, args.rootDir)) {
     const pathValue = join(dir, `${id}.json`);
     if (!(await fileExists(pathValue))) {
@@ -1925,7 +1926,7 @@ async function saveProposal(
   proposal: AiProposalRecord,
   args: { homeDir?: string; rootDir: string }
 ): Promise<void> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   await writeProposalFile(homeDir, args.rootDir, proposal);
 }
 
@@ -1963,7 +1964,7 @@ export async function linkProposalWriteback(
   writebackId: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const [proposal, writeback] = await Promise.all([
     showProposal(id, { homeDir, rootDir: args.rootDir }),
     showWriteback(writebackId, { homeDir, rootDir: args.rootDir }),
@@ -2163,7 +2164,7 @@ async function resolveProposalTargetNode(
   proposal: AiProposalRecord,
   args: { homeDir?: string; rootDir: string }
 ) {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const target = proposal.targets[0];
   if (!target) {
     throw new Error(`Proposal ${proposal.id} has no targets`);
@@ -2199,7 +2200,7 @@ export async function draftProposal(
   id: string,
   args: { homeDir?: string; rootDir: string; append?: string }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2308,7 +2309,7 @@ export function reviewProposal(
   id: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const actor = proposalActor();
   return updateProposal(id, { homeDir, rootDir: args.rootDir }, (proposal) => {
     const reviewedAt = nowIso();
@@ -2333,7 +2334,7 @@ export function acceptProposal(
   id: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const actor = proposalActor();
   return updateProposal(id, { homeDir, rootDir: args.rootDir }, (proposal) => {
     const reviewedAt = nowIso();
@@ -2359,7 +2360,7 @@ export async function rejectProposal(
   id: string,
   args: { homeDir?: string; rootDir: string; reason: string }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const actor = proposalActor();
   const rejected = await updateProposal(
     id,
@@ -2404,7 +2405,7 @@ export function supersedeProposal(
   by: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const actor = proposalActor();
   return updateProposal(id, { homeDir, rootDir: args.rootDir }, (proposal) => {
     const reviewedAt = nowIso();
@@ -2437,7 +2438,7 @@ export async function applyProposal(
     now?: () => Date;
   }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2584,7 +2585,7 @@ async function verifyProposalEffectivenessUnlocked(
   id: string,
   args: VerifyProposalEffectivenessArgs
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2718,7 +2719,7 @@ export async function verifyProposalEffectiveness(
   id: string,
   args: VerifyProposalEffectivenessArgs
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   return await withProposalVerificationLock({
     homeDir,
     rootDir: args.rootDir,
@@ -2735,7 +2736,7 @@ export async function promoteProposal(
     to: "global";
   }
 ): Promise<AiProposalRecord> {
-  const homeDir = args.homeDir ?? process.env.HOME ?? "";
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2987,7 +2988,7 @@ async function loopCommand(argv: string[]) {
     const { renderActivityActionResolution, resolveActivityActionLocator } =
       await import("./activity-action");
     const result = await resolveActivityActionLocator({
-      homeDir: process.env.HOME ?? "",
+      homeDir: process.env.HOME ?? homedir(),
       locator,
     });
     console.log(
@@ -3074,7 +3075,7 @@ async function loopCommand(argv: string[]) {
       "./activity-action"
     );
     const result = await decideActivityAction({
-      homeDir: process.env.HOME ?? "",
+      homeDir: process.env.HOME ?? homedir(),
       locator: positional[0]!,
       decision: decision as "accept" | "redirect" | "reject" | "defer",
       expectedRevision,
@@ -3101,7 +3102,7 @@ async function loopCommand(argv: string[]) {
       scope: parsed.scope,
       cwd: process.cwd(),
     });
-    const homeDir = process.env.HOME ?? "";
+    const homeDir = process.env.HOME ?? homedir();
     const loopScope =
       parsed.scope === "global" || parsed.scope === "project"
         ? parsed.scope
@@ -3504,7 +3505,7 @@ async function writebackCommand(argv: string[]) {
       }
       console.log(`writebacks root: ${rootDir}`);
       console.log(
-        `writebacks scope: ${projectRootFromAiRoot(rootDir, process.env.HOME ?? "") ? "project" : "global"}`
+        `writebacks scope: ${projectRootFromAiRoot(rootDir, process.env.HOME ?? homedir()) ? "project" : "global"}`
       );
       if (rows.length === 0) {
         console.log("No writebacks found for this scope.");
@@ -3822,7 +3823,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
     scope: parsed.scope,
     cwd: process.cwd(),
   });
-  const homeDir = process.env.HOME ?? "";
+  const homeDir = process.env.HOME ?? homedir();
   const json = commandArgs.includes("--json");
   try {
     if (sub === "init") {
@@ -3904,7 +3905,7 @@ export async function aiCommand(
   if (!rootScopeActive) {
     try {
       const parsed = parseCliContextArgs(rest);
-      const homeDir = process.env.HOME ?? "";
+      const homeDir = process.env.HOME ?? homedir();
       const rootDir = resolveCliContextRoot({
         homeDir,
         rootArg: parsed.rootArg,

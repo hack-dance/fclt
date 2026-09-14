@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import {
   mkdir,
   mkdtemp,
@@ -8,6 +8,8 @@ import {
   rm,
   symlink,
 } from "node:fs/promises";
+// biome-ignore lint/performance/noNamespaceImport: Mock the OS home module binding for this cross-platform fixture.
+import * as os from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -614,7 +616,9 @@ describe("activity action locators", () => {
       homeDir,
       scope: "project",
       projectName: "accepted-context",
-      item: signalQueueItem(),
+      item: signalQueueItem({
+        verification: { state: "pending", attempts: 0 },
+      }),
       runId: "LR-accepted-context",
     });
     const issued = fixture.report.activity?.items[0];
@@ -648,7 +652,11 @@ describe("activity action locators", () => {
         desiredOutcome: "Dispatch one isolated implementation work unit.",
       },
     ];
-    issued.verification = { state: "pending", attempts: 0 };
+    issued.verification = {
+      state: "pending" as const,
+      attempts: 0,
+      privateMetadata: "private-field-must-not-leak",
+    };
     issued.nextAction = "Create the bounded implementation work unit.";
     await Bun.write(
       fixture.reportPath,
@@ -666,6 +674,7 @@ describe("activity action locators", () => {
       now: () => new Date(STAMP),
     });
 
+    expect(JSON.stringify(result)).not.toContain("private-field-must-not-leak");
     expect(result).toMatchObject({
       status: "recorded",
       workUnit: {
@@ -681,6 +690,118 @@ describe("activity action locators", () => {
         nextAction: "Create the bounded implementation work unit.",
       },
     });
+  });
+
+  it("records a decision using the OS home when HOME is absent", async () => {
+    const previousLocalState = process.env.FACULT_LOCAL_STATE_DIR;
+    process.env.FACULT_LOCAL_STATE_DIR = join(homeDir, "isolated-runtime");
+    const fixture = await persistScope({
+      homeDir,
+      scope: "global",
+      item: signalQueueItem(),
+      runId: "LR-os-home",
+    });
+    const home = spyOn(os, "homedir").mockReturnValue(homeDir);
+    const previousHome = process.env.HOME;
+    Reflect.deleteProperty(process.env, "HOME");
+    try {
+      const out = await captureConsole(() =>
+        aiCommand([
+          "loop",
+          "decide",
+          fixture.locator,
+          "--decision",
+          "accept",
+          "--expected-revision",
+          "3",
+          "--actor",
+          "operator-1",
+          "--approval-ref",
+          "approval:os-home",
+          "--approve",
+          "--json",
+        ])
+      );
+      expect(out.errors).toEqual([]);
+      expect(JSON.parse(out.logs.join("\n"))).toMatchObject({
+        status: "recorded",
+      });
+    } finally {
+      home.mockRestore();
+      if (previousLocalState === undefined) {
+        Reflect.deleteProperty(process.env, "FACULT_LOCAL_STATE_DIR");
+      } else {
+        process.env.FACULT_LOCAL_STATE_DIR = previousLocalState;
+      }
+      if (previousHome === undefined) {
+        Reflect.deleteProperty(process.env, "HOME");
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
+  });
+
+  it.each([
+    "id",
+    "kind",
+    "state",
+    "family",
+    "approval",
+    "lifecycle",
+    "linkedWork",
+    "duplicate",
+  ])("rejects an issued activity with mismatched %s", async (field) => {
+    const fixture = await persistScope({
+      homeDir,
+      scope: "project",
+      projectName: `mismatch-${field}`,
+      item: signalQueueItem(),
+      runId: "LR-mismatch",
+    });
+    const issued = fixture.report.activity!.items[0]!;
+    if (field === "id") {
+      issued.id = "family:SF-other";
+    }
+    if (field === "kind") {
+      issued.kind = "coverage";
+    }
+    if (field === "state") {
+      issued.state = "resolved";
+    }
+    if (field === "family") {
+      issued.technical.familyId = "SF-other";
+    }
+    if (field === "approval") {
+      issued.approvalRequired = false;
+    }
+    if (field === "lifecycle") {
+      issued.lastChangedAt = "2026-07-16T12:00:00.000Z";
+    }
+    if (field === "linkedWork") {
+      issued.linkedWork = ["WORK-OTHER"];
+    }
+    if (field === "duplicate") {
+      fixture.report.activity!.items.push(structuredClone(issued));
+    }
+    await Bun.write(fixture.reportPath, JSON.stringify(fixture.report));
+    const result = await decideActivityAction({
+      homeDir,
+      locator: fixture.locator,
+      decision: "accept",
+      expectedRevision: 3,
+      actor: "operator-1",
+      approvalReference: "linear-comment:approval-1",
+      approve: true,
+    });
+    expect(result).toMatchObject({
+      status: "rejected",
+      error: { code: "locator_not_issued" },
+    });
+    expect(
+      await Bun.file(
+        facultAiEvolutionLoopDecisionJournalPath(homeDir, fixture.rootDir)
+      ).exists()
+    ).toBe(false);
   });
 
   it("advances lifecycle revisions only for a newer current signal revision", async () => {
