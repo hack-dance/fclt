@@ -1,3 +1,9 @@
+## [2.31.1](https://github.com/hack-dance/fclt/compare/v2.31.0...v2.31.1) (2026-09-14)
+
+### Bug Fixes
+
+* preserve native Codex recurrence during loop re-enable ([#84](https://github.com/hack-dance/fclt/issues/84)) ([37e7e20](https://github.com/hack-dance/fclt/commit/37e7e205f61ff1306067896d5a0f4594c33cfbea))
+
 ## [2.31.0](https://github.com/hack-dance/fclt/compare/v2.30.6...v2.31.0) (2026-09-14)
 
 ### Features
