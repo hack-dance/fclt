@@ -21,6 +21,7 @@ import {
 } from "./paths";
 
 const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_ROOT = process.env.FACULT_ROOT_DIR;
 const ORIGINAL_ROOT_SCOPE = process.env.FACULT_ROOT_SCOPE;
 let tempHome: string | null = null;
 
@@ -52,9 +53,17 @@ afterEach(async () => {
     await rm(tempHome, { recursive: true, force: true });
   }
   tempHome = null;
-  process.env.HOME = ORIGINAL_HOME;
-  process.env.FACULT_ROOT_DIR = undefined;
-  process.env.FACULT_ROOT_SCOPE = ORIGINAL_ROOT_SCOPE;
+  for (const [key, value] of Object.entries({
+    HOME: ORIGINAL_HOME,
+    FACULT_ROOT_DIR: ORIGINAL_ROOT,
+    FACULT_ROOT_SCOPE: ORIGINAL_ROOT_SCOPE,
+  })) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 });
 
 describe("paths", () => {

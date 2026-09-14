@@ -479,3 +479,25 @@ ownership receipt. Global loops use `--global` and their canonical root. Repair
 requires the configured task ID and expected working directory to match, rejects
 an explicit different owner, and leaves the task contents and paused/active
 status unchanged. It does not enable a schedule or adopt a task by name alone.
+### Scheduled review preflight
+
+Before a scheduled review, verify that `fclt --version` succeeds from its configured
+working directory, then run `fclt ai loop preflight --project --root .ai --json`
+in the same execution environment. Use `--global` with the global canonical root
+for a global review. Stop if a runtime manager requires trust; do not automatically
+trust a generated checkout or bypass the runtime manager.
+
+Preflight creates missing state/review directories and removes temporary write
+probes. It does not invoke reconciliation, acquire the semantic loop lock, or
+create queue state. Its `ready`/`blocked` result reports each required directory
+and the recovery action. A successful probe is point-in-time evidence, not a
+reservation or a guarantee against a later permission change. Configure narrowly
+scoped host write allowances; fclt does not alter the host sandbox policy.
+
+Only after preflight succeeds, invoke `fclt ai loop run --project --root .ai --scheduled --json` once. Errors before a report exists return JSON with
+`queueAvailable: false`; do not interpret missing queue data as an empty queue.
+Large loop JSON is flushed before exit so it can be piped to a bounded projection.
+
+Automatic drafting supports Markdown targets. Other targets remain proposed and
+visible for manual implementation; a skipped `draft-proposal` mutation explains
+why no draft was produced. These proposals do not authorize a canonical edit.

@@ -933,22 +933,24 @@ async function withMutationLock<T>(
     constants.O_CREAT + constants.O_RDWR + (constants.O_NOFOLLOW ?? 0),
     0o600
   );
-  const metadata = await descriptor.stat();
-  const expectedOwner = process.getuid?.();
-  if (
-    !metadata.isFile() ||
-    metadata.nlink !== 1 ||
-    metadata.mode % 0o100 !== 0 ||
-    (expectedOwner !== undefined && metadata.uid !== expectedOwner)
-  ) {
-    await descriptor.close();
-    throw new Error("Project render mutation lock is unsafe.");
-  }
-  const release = acquireExclusiveAdvisoryLock(descriptor.fd);
   try {
-    return await operation();
+    const metadata = await descriptor.stat();
+    const expectedOwner = process.getuid?.();
+    if (
+      !metadata.isFile() ||
+      metadata.nlink !== 1 ||
+      metadata.mode % 0o100 !== 0 ||
+      (expectedOwner !== undefined && metadata.uid !== expectedOwner)
+    ) {
+      throw new Error("Project render mutation lock is unsafe.");
+    }
+    const release = acquireExclusiveAdvisoryLock(descriptor.fd);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   } finally {
-    release();
     await descriptor.close();
   }
 }

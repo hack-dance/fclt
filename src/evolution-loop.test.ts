@@ -1806,6 +1806,60 @@ describe("evolution loop", () => {
     });
   });
 
+  it.each([
+    false,
+    true,
+  ])("keeps unsupported proposal targets pending without duplication (recovery=%s)", async (recover) => {
+    const project = await makeProject();
+    const targetPath = join(
+      project.projectRoot,
+      ".github",
+      "workflows",
+      "release.yml"
+    );
+    await mkdir(dirname(targetPath), { recursive: true });
+    const original = "name: Release\non: push\n";
+    await Bun.write(targetPath, original);
+    await Bun.write(
+      join(project.projectRoot, "review.md"),
+      "## 2026-01-02 Capability review\n\nThe rule in @project/.github/workflows/release.yml needs a durable verification loop.\n"
+    );
+    await enableEvolutionLoop(project);
+    if (recover) {
+      const writeback = await addWriteback({
+        ...project,
+        kind: "capability_gap",
+        summary: "The workflow needs a durable verification loop",
+        suggestedDestination: "@project/.github/workflows/release.yml",
+        evidence: [{ type: "session", ref: "interrupted-draft" }],
+      });
+      await proposeEvolution({ ...project, writebackIds: [writeback.id] });
+      expect(await listProposals(project)).toHaveLength(1);
+    }
+    for (const date of ["2026-01-04", "2026-01-05"]) {
+      const report = await runEvolutionLoop({
+        ...project,
+        since: "2026-01-01",
+        until: "2026-01-03",
+        now: () => new Date(`${date}T00:00:00.000Z`),
+      });
+      expect(report.status).toBe("complete");
+      expect(report.coverageComplete).toBe(true);
+      if (date === "2026-01-04") {
+        expect(report.mutations).toContainEqual(
+          expect.objectContaining({ type: "draft-proposal", applied: false })
+        );
+      }
+      const proposals = await listProposals(project);
+      expect(proposals).toHaveLength(1);
+      expect(proposals[0]?.status).toBe("proposed");
+      expect(report.queue).toContainEqual(
+        expect.objectContaining({ kind: "proposal", state: "approval_needed" })
+      );
+      expect(await readFile(targetPath, "utf8")).toBe(original);
+    }
+  });
+
   it("records committed mutations when a later materialization step fails", async () => {
     const project = await makeProject();
     await mkdir(join(project.rootDir, "instructions"), { recursive: true });

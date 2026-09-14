@@ -45,10 +45,18 @@ async function captureConsole(fn: () => Promise<void>) {
 
 afterEach(async () => {
   process.chdir(originalCwd);
-  process.env.HOME = originalHome;
-  process.env.FACULT_ROOT_DIR = originalRoot;
-  process.env.FACULT_ROOT_SCOPE = originalRootScope;
-  process.env.FACULT_LOCAL_STATE_DIR = originalLocalState;
+  for (const [key, value] of Object.entries({
+    HOME: originalHome,
+    FACULT_ROOT_DIR: originalRoot,
+    FACULT_ROOT_SCOPE: originalRootScope,
+    FACULT_LOCAL_STATE_DIR: originalLocalState,
+  })) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
   process.exitCode = 0;
   if (tempHome) {
     await rm(tempHome, { recursive: true, force: true });
@@ -57,6 +65,119 @@ afterEach(async () => {
 });
 
 describe("ai CLI", () => {
+  it("repairs a configured scheduler through the CLI without activating it", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    process.env.FACULT_ROOT_DIR = join(tempHome, ".ai");
+    process.env.FACULT_LOCAL_STATE_DIR = join(tempHome, "state");
+    process.chdir(tempHome);
+    const { enableEvolutionLoop } = await import("./evolution-loop");
+    const { facultCodexAutomationOwnershipPath } = await import("./paths");
+    const enabled = await enableEvolutionLoop({
+      homeDir: tempHome,
+      rootDir: process.env.FACULT_ROOT_DIR,
+      scope: "global",
+    });
+    const path = join(enabled.automationPath, "automation.toml");
+    const current = (await Bun.file(path).text())
+      .replace('managed_by = "fclt-evolution-loop"\n', "")
+      .replace('status = "ACTIVE"', 'status = "PAUSED"');
+    await Bun.write(path, current);
+    await rm(
+      facultCodexAutomationOwnershipPath(
+        tempHome,
+        enabled.config.automationName
+      )
+    );
+    const preview = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "repair-scheduler",
+        "--global",
+        "--dry-run",
+        "--json",
+      ]);
+    });
+    expect(preview.errors).toEqual([]);
+    expect(JSON.parse(preview.logs.join("\n"))).toMatchObject({
+      repaired: false,
+      status: "PAUSED",
+    });
+    const applied = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "repair-scheduler",
+        "--global",
+        "--approve",
+        "--json",
+      ]);
+    });
+    expect(applied.errors).toEqual([]);
+    expect(JSON.parse(applied.logs.join("\n"))).toMatchObject({
+      repaired: true,
+      status: "PAUSED",
+    });
+    expect(await Bun.file(path).text()).toBe(current);
+  });
+
+  it("returns JSON recovery when the loop fails before a report exists", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    process.env.FACULT_ROOT_DIR = join(tempHome, ".ai");
+    process.chdir(tempHome);
+    const out = await captureConsole(async () => {
+      await aiCommand(["loop", "run", "--global", "--json"]);
+    });
+    expect(out.errors).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(out.logs.join("\n"))).toMatchObject({
+      status: "failed",
+      phase: "command",
+      queueAvailable: false,
+      error: expect.stringContaining("disabled"),
+      recovery: expect.stringContaining("preflight"),
+    });
+  });
+
+  it.each([
+    "run",
+    "preflight",
+  ])("returns JSON for %s context resolution failures", async (sub) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_DIR");
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_SCOPE");
+    process.chdir(tempHome);
+    const out = await captureConsole(async () => {
+      await aiCommand(["loop", sub, "--project", "--json"]);
+    });
+    expect(out.errors).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(out.logs.join("\n"))).toMatchObject({
+      status: "failed",
+      phase: "command",
+      queueAvailable: false,
+      error: expect.any(String),
+    });
+  });
+
+  it("reports a disabled preflight without invoking the loop", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    process.env.FACULT_ROOT_DIR = join(tempHome, ".ai");
+    process.chdir(tempHome);
+    const out = await captureConsole(async () => {
+      await aiCommand(["loop", "preflight", "--global", "--json"]);
+    });
+    expect(out.errors).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(out.logs.join("\n"))).toMatchObject({
+      status: "blocked",
+      enabled: false,
+      loopInvoked: false,
+    });
+  });
+
   it("initializes and runs a structured source review through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
@@ -289,7 +410,7 @@ describe("ai CLI", () => {
       `fclt ai loop run --global --root '${rootDir}' --scheduled --json`
     );
     await aiCommand(["loop", "run", "--global", "--root", rootDir, "--json"]);
-    process.env.FACULT_ROOT_DIR = undefined;
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_DIR");
     const allActivityOut = await captureConsole(async () => {
       await aiCommand([
         "loop",
@@ -1162,8 +1283,8 @@ describe("ai CLI", () => {
   it("keeps custom-global writeback, review, and apply state in global scope", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
-    process.env.FACULT_ROOT_DIR = undefined;
-    process.env.FACULT_ROOT_SCOPE = undefined;
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_DIR");
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_SCOPE");
     process.env.FACULT_LOCAL_STATE_DIR = join(tempHome, "state");
     const rootDir = join(tempHome, "shared", ".ai");
     const defaultTarget = join(
