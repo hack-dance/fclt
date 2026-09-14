@@ -439,6 +439,15 @@ async function firstExistingFile(paths: string[]): Promise<string | null> {
   return null;
 }
 
+export class UnsupportedProposalTargetError extends Error {
+  constructor(pathValue: string) {
+    super(
+      `Automatic drafting and apply support markdown targets only: ${pathValue}. Keep this proposal for manual implementation.`
+    );
+    this.name = "UnsupportedProposalTargetError";
+  }
+}
+
 function supportedDraftTarget(pathValue: string): boolean {
   return pathValue.toLowerCase().endsWith(".md");
 }
@@ -2177,9 +2186,7 @@ async function resolveProposalTargetNode(
     throw new Error(`Could not resolve target path for ${target}`);
   }
   if (!supportedDraftTarget(pathValue)) {
-    throw new Error(
-      `Apply currently supports markdown targets only: ${pathValue}`
-    );
+    throw new UnsupportedProposalTargetError(pathValue);
   }
   return {
     ...node,
@@ -2825,6 +2832,7 @@ Usage:
   fclt ai loop activity [--all|--global|--project] [--json]
   fclt ai loop resolve <activity-action-locator> [--json]
   fclt ai loop history [--all|--global|--project] [--since <date>] [--until <date>] [--item <id>] [--scope-id <opaque-id>] [--event <type>] [--limit <1-200>] [--cursor <cursor>] [--json]
+  fclt ai loop preflight [--json]
   fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
 
 The loop keeps a full machine-local review queue and emits a delta for
@@ -3011,6 +3019,23 @@ async function loopCommand(argv: string[]) {
     runEvolutionLoop,
   } = await import("./evolution-loop");
   try {
+    if (sub === "preflight") {
+      const { preflightEvolutionLoop } = await import("./evolution-preflight");
+      const result = await preflightEvolutionLoop({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+      });
+      await writeCliOutput(
+        json
+          ? JSON.stringify(result, null, 2)
+          : `loop preflight: ${result.status}\n${result.recovery ?? "Required paths are writable"}`
+      );
+      if (result.status !== "ready") {
+        process.exitCode = 1;
+      }
+      return;
+    }
     if (sub === "enable") {
       const result = await enableEvolutionLoop({
         homeDir,
@@ -3020,7 +3045,7 @@ async function loopCommand(argv: string[]) {
         sourceIds: parseRepeatedFlag(commandArgs, "--source"),
         dryRun: commandArgs.includes("--dry-run"),
       });
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : `${result.dryRun ? "Would enable" : "Enabled"} evolution loop at ${result.automationPath}`
@@ -3037,7 +3062,7 @@ async function loopCommand(argv: string[]) {
       if (!(result.dryRun || result.scheduler?.paused || !result.config)) {
         process.exitCode = 1;
       }
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : result.config
@@ -3054,7 +3079,7 @@ async function loopCommand(argv: string[]) {
         rootDir,
         scope: loopScope,
       });
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : [
@@ -3075,7 +3100,7 @@ async function loopCommand(argv: string[]) {
       if (!result) {
         throw new Error("No evolution loop report has been recorded");
       }
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : [
@@ -3225,7 +3250,7 @@ async function loopCommand(argv: string[]) {
         dryRun: commandArgs.includes("--dry-run"),
         trigger: commandArgs.includes("--scheduled") ? "scheduled" : "manual",
       });
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : [
@@ -3243,7 +3268,25 @@ async function loopCommand(argv: string[]) {
     }
     throw new Error(`Unknown loop command: ${sub}`);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (json && (sub === "run" || sub === "preflight")) {
+      await writeCliOutput(
+        JSON.stringify(
+          {
+            status: "failed",
+            phase: "command",
+            queueAvailable: false,
+            error: message,
+            recovery:
+              "Run fclt ai loop preflight for this scope in the same execution environment before another review.",
+          },
+          null,
+          2
+        )
+      );
+    } else {
+      console.error(message);
+    }
     process.exitCode = 1;
   }
 }

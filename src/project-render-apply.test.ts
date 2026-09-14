@@ -550,6 +550,9 @@ sources = ["AGENTS.project.md"]
     );
     unblock?.();
     await first;
+    // A rejected contender must close its descriptor, not leave it to GC.
+    Bun.gc(true);
+    await Bun.sleep(20);
   });
 
   it("fails closed on a malformed ownership receipt", async () => {
