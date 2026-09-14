@@ -602,7 +602,7 @@ Keep the result concise, continuity-aware, and operational. Retain coverage in t
 `,
     prompt: `Goal: run the configured fclt closed-loop evolution review for this cwd and report only decision-relevant changes.
 
-Run \`fclt ai loop run {{loopScopeFlag}} {{loopRootArg}} --scheduled --json\` exactly once from the configured cwd. The rendered command uses the native shell contract: PowerShell on Windows and POSIX shell syntax elsewhere.
+Before the review, run \`fclt --version\` from the configured cwd. If the runtime manager reports an untrusted configuration, stop and report that trust boundary; never automatically trust or bypass it. Then run \`fclt ai loop preflight {{loopScopeFlag}} {{loopRootArg}} --json\` in the same execution environment. This checks machine-local state and review-directory writes without invoking the loop. If preflight is blocked, report the exact paths and recovery action; do not invoke the loop or claim queue coverage. Do not change sandbox policy automatically.\n\nAfter preflight reports ready, run \`fclt ai loop run {{loopScopeFlag}} {{loopRootArg}} --scheduled --json\` exactly once from the configured cwd. The rendered command uses the native shell contract: PowerShell on Windows and POSIX shell syntax elsewhere.
 
 Use the returned full queue for current truth, but keep the user-facing notification delta-only:
 - report new or changed decisions,
