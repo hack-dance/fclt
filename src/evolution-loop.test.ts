@@ -958,7 +958,7 @@ describe("evolution loop", () => {
     expect(quiet.delta.notifiable).not.toContain(pending.id);
   });
 
-  it("alerts once for a stale cursor while keeping complete coverage", async () => {
+  it("keeps filtered Git reviews quiet after unrelated repository activity", async () => {
     const project = await makeProject();
     for (const argv of [
       ["init", "--quiet", "--initial-branch=main"],
@@ -1014,23 +1014,19 @@ describe("evolution loop", () => {
       argv: ["commit", "--quiet", "-m", "fix: newer activity"],
       date: "2026-07-23T18:28:50-04:00",
     });
-    const stale = await runEvolutionLoop({
+    const reviewed = await runEvolutionLoop({
       ...project,
       until: "2026-07-27T23:04:10Z",
       now: () => new Date("2026-07-27T23:04:10Z"),
     });
-    const freshnessItem = stale.queue.find(
+    const freshnessItem = reviewed.queue.find(
       (item) => item.id === "freshness:git"
     );
-    expect(stale.coverageComplete).toBe(true);
-    expect(stale.status).toBe("complete");
-    expect(stale.freshness.state).toBe("stale");
-    expect(freshnessItem).toMatchObject({
-      kind: "coverage",
-      state: "blocked",
-      sourceIds: ["git"],
-    });
-    expect(stale.delta.notifiable).toContain("freshness:git");
+    expect(reviewed.coverageComplete).toBe(true);
+    expect(reviewed.status).toBe("complete");
+    expect(reviewed.freshness.state).toBe("current");
+    expect(freshnessItem).toBeUndefined();
+    expect(reviewed.delta.notifiable).not.toContain("freshness:git");
 
     const quiet = await runEvolutionLoop({
       ...project,
@@ -1038,12 +1034,12 @@ describe("evolution loop", () => {
       now: () => new Date("2026-07-28T00:04:10Z"),
     });
     expect(quiet.coverageComplete).toBe(true);
-    expect(quiet.freshness.state).toBe("stale");
+    expect(quiet.freshness.state).toBe("current");
     expect(quiet.delta.notifiable).not.toContain("freshness:git");
     expect(quiet.delta.unchangedSuppressed).toBeGreaterThan(0);
     const artifact = await readFile(quiet.artifactPath, "utf8");
-    expect(artifact).toContain("Freshness: stale");
-    expect(artifact).toContain("newer_repository_activity");
+    expect(artifact).toContain("Freshness: current");
+    expect(artifact).toContain("source_caught_up");
   });
 
   it("does not report an existing signal-family writeback as a new mutation", async () => {
