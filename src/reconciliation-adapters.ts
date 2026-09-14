@@ -683,26 +683,28 @@ const gitAdapter: ReconciliationAdapter = {
         config,
         projectRoot,
       });
-      const latestDefaultBranch = (
+      const pathArgs = config.paths?.length ? ["--", ...config.paths] : [];
+      const revisionArgs = config.allBranches ? ["--all"] : [defaultBranch.ref];
+      const latestSource = (
         await runGit(
           [
             "log",
             "-1",
             `--until=${context.window.until}`,
             "--format=%H%x1f%cI",
-            defaultBranch.ref,
+            ...revisionArgs,
+            ...pathArgs,
           ],
           projectRoot
         )
       ).trim();
-      const [, latestSourceAt] = latestDefaultBranch.split("\u001f");
-      const pathArgs = config.paths?.length ? ["--", ...config.paths] : [];
+      const [, latestSourceAt] = latestSource.split("\u001f");
       let output: string;
       try {
         output = await runGit(
           [
             "log",
-            ...(config.allBranches ? ["--all"] : [defaultBranch.ref]),
+            ...revisionArgs,
             `--since=${context.window.since}`,
             `--until=${context.window.until}`,
             "--format=%x1e%H%x1f%cI%x1f%s%x1f%b%x00",
