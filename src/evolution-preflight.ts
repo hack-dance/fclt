@@ -2,11 +2,18 @@ import { mkdir, mkdtemp, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { loadEvolutionLoopConfig } from "./evolution-loop";
 import {
+  facultAiActivityHistoryDir,
+  facultAiActivityHistorySegmentDir,
+  facultAiDraftDir,
   facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopLockPath,
   facultAiEvolutionLoopReportDir,
   facultAiEvolutionReviewDir,
+  facultAiJournalPath,
+  facultAiProposalDir,
   facultAiReconciliationReviewDir,
+  facultAiReconciliationStatePath,
+  facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
   projectRootFromAiRoot,
   withFacultRootScope,
@@ -39,6 +46,14 @@ export async function preflightEvolutionLoop(args: {
         configError = error instanceof Error ? error.message : String(error);
       }
       const paths = new Set([
+        facultAiActivityHistoryDir(args.homeDir, args.rootDir),
+        facultAiActivityHistorySegmentDir(args.homeDir, args.rootDir),
+        facultAiDraftDir(args.homeDir, args.rootDir),
+        dirname(facultAiJournalPath(args.homeDir, args.rootDir)),
+        facultAiProposalDir(args.homeDir, args.rootDir),
+        dirname(facultAiReconciliationStatePath(args.homeDir, args.rootDir)),
+        dirname(facultAiWritebackQueuePath(args.homeDir, args.rootDir)),
+
         dirname(facultAiEvolutionLoopConfigPath(args.homeDir, args.rootDir)),
         dirname(facultAiEvolutionLoopLockPath(args.homeDir, args.rootDir)),
         facultAiEvolutionLoopReportDir(args.homeDir, args.rootDir),

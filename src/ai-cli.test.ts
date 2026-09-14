@@ -84,6 +84,28 @@ describe("ai CLI", () => {
     });
   });
 
+  it.each([
+    "run",
+    "preflight",
+  ])("returns JSON for %s context resolution failures", async (sub) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_DIR");
+    Reflect.deleteProperty(process.env, "FACULT_ROOT_SCOPE");
+    process.chdir(tempHome);
+    const out = await captureConsole(async () => {
+      await aiCommand(["loop", sub, "--project", "--json"]);
+    });
+    expect(out.errors).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(out.logs.join("\n"))).toMatchObject({
+      status: "failed",
+      phase: "command",
+      queueAvailable: false,
+      error: expect.any(String),
+    });
+  });
+
   it("reports a disabled preflight without invoking the loop", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

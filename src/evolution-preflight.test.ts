@@ -5,9 +5,12 @@ import { dirname, join } from "node:path";
 import { enableEvolutionLoop } from "./evolution-loop";
 import { preflightEvolutionLoop } from "./evolution-preflight";
 import {
+  facultAiActivityHistorySegmentDir,
+  facultAiDraftDir,
   facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopStatePath,
   facultAiEvolutionReviewDir,
+  facultAiReconciliationStatePath,
 } from "./paths";
 
 const roots: string[] = [];
@@ -76,3 +79,23 @@ it("does not report malformed enabled configuration as ready", async () => {
   expect(result.configError).toContain("schema");
   expect(result.loopInvoked).toBe(false);
 });
+
+for (const destination of [
+  (home: string, root: string) =>
+    dirname(facultAiReconciliationStatePath(home, root)),
+  facultAiActivityHistorySegmentDir,
+  facultAiDraftDir,
+]) {
+  it("blocks on an unavailable runtime sibling even when the loop directory is writable", async () => {
+    const args = await setup("project");
+    const path = destination(args.homeDir, args.rootDir);
+    await mkdir(dirname(path), { recursive: true });
+    await Bun.write(path, "occupied");
+    const result = await preflightEvolutionLoop(args);
+    expect(result.status).toBe("blocked");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({ path, writable: false })
+    );
+    expect(result.loopInvoked).toBe(false);
+  });
+}

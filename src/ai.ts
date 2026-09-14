@@ -2954,71 +2954,73 @@ function parseIntegerFlag(argv: string[], flag: string): number | undefined {
 }
 
 async function loopCommand(argv: string[]) {
-  const parsed = parseCliContextArgs(argv);
-  const [sub, ...commandArgs] = parsed.argv;
-  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
-    console.log(loopHelp());
-    return;
-  }
-  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
-    console.log(loopHelp());
-    return;
-  }
-  if (sub === "resolve") {
-    if (parsed.rootArg || parsed.scope !== "merged") {
-      throw new Error(
-        "Activity locator resolution does not accept caller-supplied root or scope authority"
-      );
-    }
-    const locatorArgs = commandArgs.filter((arg) => arg !== "--json");
-    const locator = locatorArgs[0];
-    if (
-      locatorArgs.length !== 1 ||
-      !locator ||
-      locator.startsWith("-") ||
-      commandArgs.some((arg) => arg.startsWith("-") && arg !== "--json")
-    ) {
-      throw new Error(
-        "loop resolve accepts exactly one opaque locator and optional --json"
-      );
-    }
-    const { renderActivityActionResolution, resolveActivityActionLocator } =
-      await import("./activity-action");
-    const result = await resolveActivityActionLocator({
-      homeDir: process.env.HOME ?? "",
-      locator,
-    });
-    console.log(
-      commandArgs.includes("--json")
-        ? JSON.stringify(result, null, 2)
-        : renderActivityActionResolution(result)
-    );
-    if (result.status === "rejected") {
-      process.exitCode = 1;
-    }
-    return;
-  }
-  const rootDir = resolveCliContextRoot({
-    rootArg: parsed.rootArg,
-    scope: parsed.scope,
-    cwd: process.cwd(),
-  });
-  const homeDir = process.env.HOME ?? "";
-  const loopScope =
-    parsed.scope === "global" || parsed.scope === "project"
-      ? parsed.scope
-      : projectRootFromAiRoot(rootDir, homeDir)
-        ? "project"
-        : "global";
-  const json = commandArgs.includes("--json");
-  const {
-    disableEvolutionLoop,
-    enableEvolutionLoop,
-    evolutionLoopStatus,
-    latestEvolutionLoopReport,
-    runEvolutionLoop,
-  } = await import("./evolution-loop");
+  const json = argv.includes("--json");
+  let sub = argv[0];
   try {
+    const parsed = parseCliContextArgs(argv);
+    const [parsedSub, ...commandArgs] = parsed.argv;
+    sub = parsedSub;
+    if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+      console.log(loopHelp());
+      return;
+    }
+    if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
+      console.log(loopHelp());
+      return;
+    }
+    if (sub === "resolve") {
+      if (parsed.rootArg || parsed.scope !== "merged") {
+        throw new Error(
+          "Activity locator resolution does not accept caller-supplied root or scope authority"
+        );
+      }
+      const locatorArgs = commandArgs.filter((arg) => arg !== "--json");
+      const locator = locatorArgs[0];
+      if (
+        locatorArgs.length !== 1 ||
+        !locator ||
+        locator.startsWith("-") ||
+        commandArgs.some((arg) => arg.startsWith("-") && arg !== "--json")
+      ) {
+        throw new Error(
+          "loop resolve accepts exactly one opaque locator and optional --json"
+        );
+      }
+      const { renderActivityActionResolution, resolveActivityActionLocator } =
+        await import("./activity-action");
+      const result = await resolveActivityActionLocator({
+        homeDir: process.env.HOME ?? "",
+        locator,
+      });
+      console.log(
+        commandArgs.includes("--json")
+          ? JSON.stringify(result, null, 2)
+          : renderActivityActionResolution(result)
+      );
+      if (result.status === "rejected") {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    const rootDir = resolveCliContextRoot({
+      rootArg: parsed.rootArg,
+      scope: parsed.scope,
+      cwd: process.cwd(),
+    });
+    const homeDir = process.env.HOME ?? "";
+    const loopScope =
+      parsed.scope === "global" || parsed.scope === "project"
+        ? parsed.scope
+        : projectRootFromAiRoot(rootDir, homeDir)
+          ? "project"
+          : "global";
+    const {
+      disableEvolutionLoop,
+      enableEvolutionLoop,
+      evolutionLoopStatus,
+      latestEvolutionLoopReport,
+      runEvolutionLoop,
+    } = await import("./evolution-loop");
     if (sub === "preflight") {
       const { preflightEvolutionLoop } = await import("./evolution-preflight");
       const result = await preflightEvolutionLoop({
@@ -3790,23 +3792,49 @@ export async function aiCommand(
   }
 
   if (!rootScopeActive) {
-    const parsed = parseCliContextArgs(rest);
-    const homeDir = process.env.HOME ?? "";
-    const rootDir = resolveCliContextRoot({
-      homeDir,
-      rootArg: parsed.rootArg,
-      scope: parsed.scope,
-      cwd: process.cwd(),
-    });
-    const scope = resolveCliContextScope({
-      homeDir,
-      rootDir,
-      scope: parsed.scope,
-    });
-    await withFacultRootScope({ rootDir, scope }, async () =>
-      aiCommand(argv, true)
-    );
-    return;
+    try {
+      const parsed = parseCliContextArgs(rest);
+      const homeDir = process.env.HOME ?? "";
+      const rootDir = resolveCliContextRoot({
+        homeDir,
+        rootArg: parsed.rootArg,
+        scope: parsed.scope,
+        cwd: process.cwd(),
+      });
+      const scope = resolveCliContextScope({
+        homeDir,
+        rootDir,
+        scope: parsed.scope,
+      });
+      await withFacultRootScope({ rootDir, scope }, async () =>
+        aiCommand(argv, true)
+      );
+      return;
+    } catch (error) {
+      if (
+        sub !== "loop" ||
+        !rest.includes("--json") ||
+        (rest[0] !== "run" && rest[0] !== "preflight")
+      ) {
+        throw error;
+      }
+      await writeCliOutput(
+        JSON.stringify(
+          {
+            status: "failed",
+            phase: "command",
+            queueAvailable: false,
+            error: error instanceof Error ? error.message : String(error),
+            recovery:
+              "Resolve the project or global scope before running fclt ai loop preflight in the same execution environment.",
+          },
+          null,
+          2
+        )
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
 
   if (sub === "writeback") {
