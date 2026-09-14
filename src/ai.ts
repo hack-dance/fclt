@@ -2832,6 +2832,7 @@ Usage:
   fclt ai loop activity [--all|--global|--project] [--json]
   fclt ai loop resolve <activity-action-locator> [--json]
   fclt ai loop history [--all|--global|--project] [--since <date>] [--until <date>] [--item <id>] [--scope-id <opaque-id>] [--event <type>] [--limit <1-200>] [--cursor <cursor>] [--json]
+  fclt ai loop repair-scheduler [--approve] [--dry-run] [--json]
   fclt ai loop preflight [--json]
   fclt ai loop run [--since <date>] [--until <date>] [--source <configured-id>] [--dry-run] [--scheduled] [--json]
 
@@ -3018,7 +3019,23 @@ async function loopCommand(argv: string[]) {
       evolutionLoopStatus,
       latestEvolutionLoopReport,
       runEvolutionLoop,
+      repairEvolutionLoopScheduler,
     } = await import("./evolution-loop");
+    if (sub === "repair-scheduler") {
+      const result = await repairEvolutionLoopScheduler({
+        homeDir,
+        rootDir,
+        scope: loopScope,
+        approve: commandArgs.includes("--approve"),
+        dryRun: commandArgs.includes("--dry-run"),
+      });
+      await writeCliOutput(
+        json
+          ? JSON.stringify(result, null, 2)
+          : `${result.repaired ? "Repaired" : "Would repair"} scheduler ownership at ${result.automationPath}`
+      );
+      return;
+    }
     if (sub === "preflight") {
       const { preflightEvolutionLoop } = await import("./evolution-preflight");
       const result = await preflightEvolutionLoop({

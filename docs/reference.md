@@ -462,6 +462,23 @@ Most commands accept the same root controls:
 - `--scope merged|global|project`: choose a discovery view
 - `--source builtin|global|project`: filter provenance in list/find/show/graph flows
 
+
+### Scheduler ownership recovery
+
+New evolution-loop enrollments store an identity-bound ownership receipt in
+fclt machine-local state under `automations/codex/`. It binds the automation ID, creation time,
+and working directories, so native edits that drop custom TOML fields do not
+lose ownership. Re-enabling preserves the existing prompt, model, target,
+notification settings, and memory; an explicit cadence update changes only the
+requested cadence and status fields.
+
+For an older configured loop whose ownership marker was already lost, inspect
+`fclt ai loop repair-scheduler --project --root .ai --dry-run --json`. After
+confirming the exact task, use `--approve` instead of `--dry-run` to record its
+ownership receipt. Global loops use `--global` and their canonical root. Repair
+requires the configured task ID and expected working directory to match, rejects
+an explicit different owner, and leaves the task contents and paused/active
+status unchanged. It does not enable a schedule or adopt a task by name alone.
 ### Scheduled review preflight
 
 Before a scheduled review, verify that `fclt --version` succeeds from its configured

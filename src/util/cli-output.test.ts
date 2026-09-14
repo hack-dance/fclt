@@ -1,13 +1,15 @@
 import { describe, expect, it } from "bun:test";
 
 describe("writeCliOutput", () => {
-  it("flushes output larger than Bun's buffered stdout window", async () => {
-    const expectedBytes = 200_001;
+  it.each([
+    0, 512, 4096, 49_000, 65_536, 200_000,
+  ])("flushes %i bytes completely through a pipe", async (bytes) => {
+    const expectedBytes = bytes + 1;
     const proc = Bun.spawn(
       [
         process.execPath,
         "-e",
-        'import { writeCliOutput } from "./src/util/cli-output"; await writeCliOutput("x".repeat(200_000));',
+        `import { writeCliOutput } from "./src/util/cli-output"; await writeCliOutput("x".repeat(${bytes}));`,
       ],
       {
         cwd: process.cwd(),

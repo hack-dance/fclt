@@ -33,6 +33,7 @@ import {
   disableEvolutionLoop,
   enableEvolutionLoop,
   evolutionLoopStatus,
+  repairEvolutionLoopScheduler,
   runEvolutionLoop,
 } from "./evolution-loop";
 import {
@@ -45,10 +46,17 @@ import {
   facultAiReconciliationLockPath,
   facultAiReconciliationStatePath,
   facultAiWritebackQueuePath,
+  facultCodexAutomationOwnershipPath,
   withFacultRootScope,
 } from "./paths";
 import { reconcileSources } from "./reconciliation";
 
+const AUTOMATION_PROMPT_RE = /^prompt = .*$/m;
+const AUTOMATION_MODEL_RE = /^model = .*$/m;
+const AUTOMATION_REASONING_RE = /^reasoning_effort = .*$/m;
+const AUTOMATION_RRULE_RE = /^rrule = .*$/m;
+const AUTOMATION_CREATED_RE = /^created_at = .*$/m;
+const AUTOMATION_CWDS_RE = /^cwds = .*$/m;
 const SIGNAL_FAMILY_ID_RE = /^SF-/;
 const COMPLETED_RUN_STATUS_RE = /^(complete|degraded)$/;
 const temporaryRoots: string[] = [];
@@ -1350,33 +1358,144 @@ describe("evolution loop", () => {
     ).toBe(false);
   });
 
-  it("refuses to update a scheduler after its ownership marker is removed", async () => {
-    const project = await makeProject();
-    const enabled = await enableEvolutionLoop({
-      ...project,
-      now: () => new Date("2026-01-03T00:00:00.000Z"),
-    });
+  it.each([
+    "project",
+    "global",
+  ] as const)("preserves %s scheduler ownership and native edits after a marker-stripping update", async (scope) => {
+    const fixture = await makeProject();
+    const project = {
+      ...fixture,
+      rootDir:
+        scope === "global" ? join(fixture.homeDir, ".ai") : fixture.rootDir,
+      scope,
+    };
+    await mkdir(project.rootDir, { recursive: true });
+    const enabled = await enableEvolutionLoop(project);
     const automationPath = join(enabled.automationPath, "automation.toml");
-    const current = await readFile(automationPath, "utf8");
+    const updated =
+      (await readFile(automationPath, "utf8"))
+        .replace('managed_by = "fclt-evolution-loop"\n', "")
+        .replace(
+          AUTOMATION_PROMPT_RE,
+          'prompt = "Custom approved review and archive policy"'
+        )
+        .replace(AUTOMATION_MODEL_RE, 'model = "custom-model"')
+        .replace(AUTOMATION_REASONING_RE, 'reasoning_effort = "medium"')
+        .replace(AUTOMATION_RRULE_RE, 'rrule = "RRULE:FREQ=WEEKLY;BYDAY=FR"') +
+      '\nnotification_policy = "failed_runs_only"\nexecution_environment = "local"\ntarget = { type = "project", project_id = "saved-project" }\n';
+    await Bun.write(automationPath, updated);
     await Bun.write(
-      automationPath,
-      current.replace('managed_by = "fclt-evolution-loop"\n', "")
+      join(enabled.automationPath, "memory.md"),
+      "Retained automation history\n"
     );
+    expect((await evolutionLoopStatus(project)).scheduler.registered).toBe(
+      true
+    );
+    const reenabled = await enableEvolutionLoop(project);
+    expect(reenabled.config.rrule).toContain("WEEKLY");
+    const after = Bun.TOML.parse(
+      await readFile(automationPath, "utf8")
+    ) as Record<string, unknown>;
+    const before = Bun.TOML.parse(updated) as Record<string, unknown>;
+    for (const key of [
+      "prompt",
+      "model",
+      "reasoning_effort",
+      "cwds",
+      "rrule",
+      "created_at",
+      "target",
+      "notification_policy",
+      "execution_environment",
+    ]) {
+      expect(after[key]).toEqual(before[key]);
+    }
+    expect(
+      await readFile(join(enabled.automationPath, "memory.md"), "utf8")
+    ).toBe("Retained automation history\n");
+    expect((await disableEvolutionLoop(project)).scheduler?.paused).toBe(true);
+    expect((await evolutionLoopStatus(project)).scheduler.registered).toBe(
+      true
+    );
+  });
 
-    await expect(
-      enableEvolutionLoop({
-        ...project,
-        rrule: "RRULE:FREQ=WEEKLY;BYDAY=FR",
-      })
-    ).rejects.toThrow("not owned by the fclt evolution loop");
-    expect(await readFile(automationPath, "utf8")).not.toContain(
-      "RRULE:FREQ=WEEKLY"
+  it("refuses a status edit that would match authored multiline prompt content", async () => {
+    const project = await makeProject();
+    const enabled = await enableEvolutionLoop(project);
+    const path = join(enabled.automationPath, "automation.toml");
+    const current = (await readFile(path, "utf8")).replace(
+      AUTOMATION_PROMPT_RE,
+      "prompt = '''\nstatus = \"ACTIVE\"\nupdated_at = 1\nKeep this authored example.\n'''"
     );
-    const disabled = await disableEvolutionLoop(project);
-    expect(disabled.config?.enabled).toBe(false);
-    expect(disabled.scheduler?.paused).toBe(false);
-    expect(disabled.scheduler?.error).toContain("not owned");
-    expect((await evolutionLoopStatus(project)).health).toBe("disabled");
+    await Bun.write(path, current);
+    expect((await disableEvolutionLoop(project)).scheduler?.paused).toBe(false);
+    expect(await readFile(path, "utf8")).toBe(current);
+  });
+
+  it("repairs legacy ownership only with explicit approval and preserves the complete paused task", async () => {
+    const project = await makeProject();
+    const enabled = await enableEvolutionLoop(project);
+    const path = join(enabled.automationPath, "automation.toml");
+    const current = (await readFile(path, "utf8"))
+      .replace('managed_by = "fclt-evolution-loop"\n', "")
+      .replace('status = "ACTIVE"', 'status = "PAUSED"');
+    await Bun.write(path, current);
+    await rm(
+      facultCodexAutomationOwnershipPath(
+        project.homeDir,
+        enabled.config.automationName
+      )
+    );
+    expect((await evolutionLoopStatus(project)).scheduler.registered).toBe(
+      false
+    );
+    await expect(
+      repairEvolutionLoopScheduler({ ...project, scope: "project" })
+    ).rejects.toThrow("--approve");
+    const preview = await repairEvolutionLoopScheduler({
+      ...project,
+      scope: "project",
+      dryRun: true,
+    });
+    expect(preview.repaired).toBe(false);
+    expect((await evolutionLoopStatus(project)).scheduler.registered).toBe(
+      false
+    );
+    await repairEvolutionLoopScheduler({
+      ...project,
+      scope: "project",
+      approve: true,
+    });
+    expect((await evolutionLoopStatus(project)).scheduler).toMatchObject({
+      registered: true,
+      status: "PAUSED",
+    });
+    expect(await readFile(path, "utf8")).toBe(current);
+  });
+
+  it("rejects a replaced or moved scheduler despite a same-name ownership receipt", async () => {
+    const project = await makeProject();
+    const enabled = await enableEvolutionLoop(project);
+    const path = join(enabled.automationPath, "automation.toml");
+    const current = (await readFile(path, "utf8")).replace(
+      'managed_by = "fclt-evolution-loop"\n',
+      ""
+    );
+    for (const edited of [
+      current.replace(AUTOMATION_CREATED_RE, "created_at = 1"),
+      current.replace(AUTOMATION_CWDS_RE, 'cwds = ["/different-project"]'),
+      `${current}\nmanaged_by = "another-owner"\n`,
+    ]) {
+      await Bun.write(path, edited);
+      expect((await evolutionLoopStatus(project)).scheduler.registered).toBe(
+        false
+      );
+      await expect(enableEvolutionLoop(project)).rejects.toThrow("not owned");
+      expect((await disableEvolutionLoop(project)).scheduler?.paused).toBe(
+        false
+      );
+      expect(await readFile(path, "utf8")).toBe(edited);
+    }
   });
 
   it("refuses to replace a partial scheduler directory", async () => {

@@ -215,17 +215,33 @@ function captureConsole(
   const errors: string[] = [];
   const originalLog = console.log;
   const originalError = console.error;
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void
+  ) => {
+    logs.push(
+      typeof chunk === "string" ? chunk : Buffer.from(chunk).toString()
+    );
+    const done =
+      typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    done?.();
+    return true;
+  }) as typeof process.stdout.write;
   console.log = (...args: unknown[]) => logs.push(args.join(" "));
   console.error = (...args: unknown[]) => errors.push(args.join(" "));
   return operation().then(
     () => {
       console.log = originalLog;
       console.error = originalError;
+      process.stdout.write = originalWrite;
       return { errors, logs };
     },
     (error) => {
       console.log = originalLog;
       console.error = originalError;
+      process.stdout.write = originalWrite;
       throw error;
     }
   );
