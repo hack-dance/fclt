@@ -11,7 +11,14 @@ This is the capture side of the feedback loop. The goal is to let normal agent w
 
 ## Default Behavior
 
-The normal path should be agent-driven.
+Proceed with recording or drafting when the current request authorizes that action and scope;
+do not request the same approval again. For read-only or proposal-only work, return findings or a
+proposed writeback without changing state. Strong evidence alone does not grant write authority.
+
+Recording or drafting does not authorize canonical application, cross-scope promotion, external
+messages, tracker changes, publishing, or scheduler activation. Preserve those separate gates and
+native authorization. Keep unchanged, non-actionable scheduled results quiet unless periodic
+reports were requested.
 
 If you can clearly answer:
 
@@ -20,7 +27,7 @@ If you can clearly answer:
 - where it should land
 - whether it belongs in `project` or `global`
 
-then record the writeback instead of only suggesting that someone should do it later.
+then record the writeback within that authorized scope.
 
 Use:
 
@@ -105,3 +112,5 @@ Target the smallest composable unit that explains the friction:
 - use `fclt ai writeback group --by asset` or `fclt ai writeback summarize --by domain` to review accumulated signal before proposing broad changes
 - use `fclt ai loop activity --project` (or `--global`) for the readable latest activity snapshot; use `--json` for downstream UI
 - use scheduled `learning-review`, `evolution-review`, or `tool-call-audit` automations when the signal should be reviewed in the background
+
+Verify the producing workflow before resolving source writebacks; applying a change alone does not prove effectiveness.

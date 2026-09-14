@@ -1764,7 +1764,7 @@ export async function assessEvolution(args: {
 
   const nextAgentInstruction =
     recommendation === "propose"
-      ? `Inspect ${selectedTarget}, confirm scope and proposal kind, then ask before running the proposal command. Draft only the smallest change supported by ${sourceWritebacks.join(", ")}.`
+      ? `Inspect ${selectedTarget}, confirm scope and proposal kind, and draft within existing authorization for review-state mutation. Ask only if that authorization is missing; retain canonical apply and promotion gates. Draft only the smallest change supported by ${sourceWritebacks.join(", ")}.`
       : recommendation === "review_existing_proposal"
         ? `Review ${activeProposalIds.join(", ")} and decide whether to revise, accept, reject, or leave it. Do not create a duplicate proposal.`
         : recommendation === "record_more_writeback"

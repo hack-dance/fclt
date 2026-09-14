@@ -509,6 +509,7 @@ describe("activity action locators", () => {
         })
       ).toMatchObject({
         status: "resolved",
+        plan: { mutation: { approvalRequired: kind === "signal" } },
         target: {
           resource: {
             kind,

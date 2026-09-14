@@ -1,3 +1,33 @@
+## [2.30.4](https://github.com/hack-dance/fclt/compare/v2.30.3...v2.30.4) (2026-09-08)
+
+### Bug Fixes
+
+* consolidate writeback authority and plugin execution guidance ([#81](https://github.com/hack-dance/fclt/issues/81)) ([f229256](https://github.com/hack-dance/fclt/commit/f229256a36c5c5b6103eaf772428f6ec56401b41))
+
+## [2.30.3](https://github.com/hack-dance/fclt/compare/v2.30.2...v2.30.3) (2026-09-08)
+
+### Bug Fixes
+
+* dispatch the facult npm alias through the shared launcher ([#80](https://github.com/hack-dance/fclt/issues/80)) ([a0ba171](https://github.com/hack-dance/fclt/commit/a0ba1712aba5c62e079461b419df802ce49ca997))
+
+## [2.30.2](https://github.com/hack-dance/fclt/compare/v2.30.1...v2.30.2) (2026-09-08)
+
+### Bug Fixes
+
+* diagnose native Windows provenance before release ([#79](https://github.com/hack-dance/fclt/issues/79)) ([82c2fc8](https://github.com/hack-dance/fclt/commit/82c2fc89b5abd314526082649f0a894dc5d37819))
+
+## [2.30.1](https://github.com/hack-dance/fclt/compare/v2.30.0...v2.30.1) (2026-09-08)
+
+### Bug Fixes
+
+* align generated instructions and provider defaults ([#78](https://github.com/hack-dance/fclt/issues/78)) ([0823988](https://github.com/hack-dance/fclt/commit/0823988cbc0a00ca30f2d51ce65fb2f4242ed56c))
+
+## [2.30.0](https://github.com/hack-dance/fclt/compare/v2.29.2...v2.30.0) (2026-09-02)
+
+### Features
+
+* add hermetic project renderer and release locks ([90250d7](https://github.com/hack-dance/fclt/commit/90250d7a10c1cb12246149b8e4c9f4b673b2be24))
+
 ## [2.29.2](https://github.com/hack-dance/fclt/compare/v2.29.1...v2.29.2) (2026-07-29)
 
 ### Bug Fixes

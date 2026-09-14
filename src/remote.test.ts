@@ -1247,6 +1247,81 @@ describe("templates command", () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it("inherits the configured model and preserves approval boundaries in generated automation", async () => {
+    const { home } = await makeTempRoot();
+    await mkdir(join(home, ".codex"), { recursive: true });
+    await writeFile(
+      join(home, ".codex", "config.toml"),
+      'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\n'
+    );
+    const result = await scaffoldCodexAutomationTemplate({
+      homeDir: home,
+      cwd: home,
+      templateId: "learning-review",
+    });
+    const config = Bun.TOML.parse(
+      await readFile(join(result.path, "automation.toml"), "utf8")
+    ) as Record<string, unknown>;
+    expect(config.model).toBe("gpt-6-astra");
+    expect(config.reasoning_effort).toBe("medium");
+    expect(config.status).toBe("PAUSED");
+    expect(config.prompt).toContain("without recording state");
+    expect(config.prompt).toContain("does not authorize canonical apply");
+    expect(config.prompt).toContain("Apply alone is not effectiveness proof");
+    expect(config.prompt).toContain(
+      "Keep unchanged or non-actionable runs quiet"
+    );
+  });
+
+  it("uses an explicitly selected profile and does not overwrite an existing automation", async () => {
+    const { home } = await makeTempRoot();
+    await mkdir(join(home, ".codex"), { recursive: true });
+    await writeFile(
+      join(home, ".codex", "config.toml"),
+      'model = "base-model"\nprofile = "review"\n[profiles.review]\nmodel = "selected-model"\nmodel_reasoning_effort = "low"\n'
+    );
+    const args = { homeDir: home, cwd: home, templateId: "learning-review" };
+    const result = await scaffoldCodexAutomationTemplate(args);
+    const file = join(result.path, "automation.toml");
+    const before = await readFile(file, "utf8");
+    expect((Bun.TOML.parse(before) as Record<string, unknown>).model).toBe(
+      "selected-model"
+    );
+    await writeFile(
+      join(home, ".codex", "config.toml"),
+      'model = "different-model"\n'
+    );
+    await scaffoldCodexAutomationTemplate(args);
+    expect(await readFile(file, "utf8")).toBe(before);
+  });
+
+  it("rejects invalid Codex configuration before creating automation files", async () => {
+    const { home } = await makeTempRoot();
+    await mkdir(join(home, ".codex"), { recursive: true });
+    await writeFile(
+      join(home, ".codex", "config.toml"),
+      'model = "unterminated'
+    );
+    await expect(
+      scaffoldCodexAutomationTemplate({
+        homeDir: home,
+        cwd: home,
+        templateId: "learning-review",
+      })
+    ).rejects.toThrow("invalid TOML");
+    expect(
+      await Bun.file(
+        join(
+          home,
+          ".codex",
+          "automations",
+          "learning-review",
+          "automation.toml"
+        )
+      ).exists()
+    ).toBe(false);
+  });
+
   it("scaffolds codex automation templates", async () => {
     const { home, root } = await makeTempRoot();
     process.chdir(home);

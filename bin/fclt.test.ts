@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   access,
   chmod,
@@ -8,6 +9,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { facultInstallStatePath, facultRuntimeCacheDir } from "../src/paths";
@@ -21,9 +23,50 @@ const platform =
       : "linux";
 const arch = process.arch;
 const repoRoot = resolve(import.meta.dir, "..");
+const require = createRequire(import.meta.url);
+const launcherChecksum = require("./fclt.cjs") as {
+  expectedChecksum: (text: string, assetName: string) => string;
+  verifyDownloadedRuntime: (args: {
+    assetName: string;
+    checksumsPath: string;
+    runtimePath: string;
+  }) => Promise<void>;
+};
 
 const tempDirs: string[] = [];
 const localOnly = process.env.FACULT_TEST_SKIP_LOCAL === "1";
+
+it("verifies downloaded npm-launcher runtimes against one exact checksum entry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fclt-launcher-checksum-"));
+  tempDirs.push(root);
+  const runtimePath = join(root, "facult-runtime");
+  const checksumsPath = join(root, "SHA256SUMS");
+  const assetName = "facult-9.8.7-darwin-arm64";
+  const runtime = "compiled runtime fixture\n";
+  const digest = createHash("sha256").update(runtime).digest("hex");
+  await writeFile(runtimePath, runtime, "utf8");
+  await writeFile(checksumsPath, `${digest}  ${assetName}\n`, "utf8");
+
+  await expect(
+    launcherChecksum.verifyDownloadedRuntime({
+      assetName,
+      checksumsPath,
+      runtimePath,
+    })
+  ).resolves.toBeUndefined();
+  expect(() =>
+    launcherChecksum.expectedChecksum(`${digest}  other-asset\n`, assetName)
+  ).toThrow("exactly one digest");
+
+  await writeFile(checksumsPath, `${"0".repeat(64)}  ${assetName}\n`, "utf8");
+  await expect(
+    launcherChecksum.verifyDownloadedRuntime({
+      assetName,
+      checksumsPath,
+      runtimePath,
+    })
+  ).rejects.toThrow("Checksum verification failed");
+});
 
 async function resolveLauncherRuntime(): Promise<string> {
   try {
@@ -257,5 +300,38 @@ it("waits for a concurrent launcher to finish writing the runtime binary", async
 
   expect(exitCode).toBe(0);
   expect(stdout.trim()).toBe("cached-runtime-ready");
+  expect(stderr).toBe("");
+});
+
+it("dispatches the facult alias to the shared launcher and preserves arguments and exit status", async () => {
+  const node = Bun.which("node");
+  expect(node).not.toBeNull();
+  const child = Bun.spawn({
+    cmd: [
+      node!,
+      "-e",
+      `
+      const launcher = require.resolve("./bin/fclt.cjs");
+      require.cache[launcher] = { exports: { runCli() {
+        process.stdout.write(JSON.stringify(process.argv.slice(1)));
+        process.exitCode = 23;
+      } } };
+      require("./bin/facult.cjs");
+    `,
+      "--",
+      "protocol",
+      "--json",
+    ],
+    cwd: repoRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect(exitCode).toBe(23);
+  expect(JSON.parse(stdout)).toEqual(["protocol", "--json"]);
   expect(stderr).toBe("");
 });

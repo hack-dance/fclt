@@ -1,7 +1,6 @@
-- Treat every task as a work unit, not just a request.
-- A work unit should have a goal, acceptance criteria, required context, constraints, signals or evidence, an output artifact, a verification path, and a writeback target when the work teaches something reusable.
-- If any of those are missing and the gap blocks correctness, surface it early and try to recover it.
-- Prefer making the work unit more explicit before increasing execution speed.
-- If the task is vague, ambiguous, or overloaded, narrow it before acting.
-- Treat work-unit framing as generally applicable to coding, research, writing, operations, setup, debugging, and capability evolution.
+- Infer the goal, scope, and verification path from the request and prior context.
+- Keep simple work-unit framing implicit; a direct answer can be the output artifact.
+- For complex or ambiguous work, make the goal, acceptance criteria, context, constraints, evidence, output artifact, and verification path explicit enough to guide execution.
+- Ask only when missing information materially affects correctness, authority, or an irreversible choice; continue independent authorized work while waiting.
+- Identify a writeback target only when reusable learning warrants one. Do not expand a task just to create an artifact or record.
 - For deeper guidance, read ${refs.work_units}.

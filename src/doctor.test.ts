@@ -2150,7 +2150,7 @@ test("doctor --repair refreshes invalid canonical global guidance and review art
       "utf8"
     );
     expect(repairedWritebackSnippet).toContain(
-      "Do not end at output if something important was learned."
+      "Preserve one concise, evidence-backed writeback when reusable learning has a clear target and scope."
     );
     const repairedInstruction = await readFile(
       join(aiRoot, "instructions", "FEEDBACK_LOOPS.md"),

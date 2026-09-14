@@ -1,3 +1,4 @@
+import { renderClaudeAgent } from "./claude-agent";
 import { generateMcpConfig, parseMcpConfig } from "./mcp";
 import { parseSkillsDir } from "./skills";
 import type { ToolAdapter } from "./types";
@@ -11,7 +12,10 @@ export const claudeCliAdapter: ToolAdapter = {
   getDefaultPaths: () => ({
     mcp: "~/.claude.json",
     skills: "~/.claude/skills",
+    agents: ["~/.claude/agents", ".claude/agents"],
   }),
+  agentFileExtension: ".md",
+  renderAgent: renderClaudeAgent,
   parseMcp: (config) => parseMcpConfig(config),
   generateMcp: (canonical) => generateMcpConfig(canonical, "mcpServers"),
   parseSkills: async (skillsDir) => await parseSkillsDir(skillsDir),

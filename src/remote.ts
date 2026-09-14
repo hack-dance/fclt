@@ -343,7 +343,7 @@ description = "Describe the focused responsibility for {{name}}."
 developer_instructions = """
 You are {{name}}.
 
-Operate with a tight scope.
+Operate within the assigned scope. Honor read-only assignments; implement only when the assignment authorizes edits. Use existing authorization for the same action and scope, while preserving credential, sending, publishing, destructive-change, and production gates.
 
 Prioritize:
 - one clear responsibility
@@ -354,7 +354,9 @@ Prioritize:
 Return:
 - what you changed or found
 - what you verified
-- what still needs a decision
+- material unresolved decisions or risks
+
+Give concise rationale and evidence, never hidden chain-of-thought. Complete required checks proportionately and repeat them only for a new change, failure, or unresolved concern.
 """
 `,
       },
@@ -377,7 +379,9 @@ Ship reliable changes quickly while keeping behavior predictable.
 ## Working Rules
 - Prefer small, reviewable diffs.
 - Preserve existing style and architecture unless a refactor is explicitly requested.
-- Validate behavior with tests/checks after meaningful changes.
+- Complete required checks with evidence appropriate to risk. Repeat or broaden them only for a new change, failure, or unresolved concern.
+- Use existing authorization for the same action and scope; honor read-only requests.
+- Preserve credential, sending, publishing, production, and migration approval gates.
 - Avoid destructive actions unless explicitly approved.
 
 ## Engineering Quality
@@ -415,13 +419,14 @@ Ship reliable changes quickly while keeping behavior predictable.
 
 ## Code Expectations
 - Write readable code with clear intent.
-- Add tests for behavior changes.
+- Verify behavior changes proportionately; avoid tests that merely mirror a reversible edit.
+- Honor the assigned scope and existing authorization. Keep read-only work read-only and preserve real external-action and destructive-change gates.
 - Keep command usage reproducible.
 
 ## Response Expectations
 - Lead with outcome.
 - Include concrete references to files and validation.
-- End with the smallest useful next-step list.
+- State material remaining work only when there is any; do not invent a next-step list.
 `,
       },
     },
@@ -509,7 +514,7 @@ Output:
 - Watch list: promising signals not yet strong enough to encode.
 - Gaps in current operating model or verification harness: only if evidence supports them.
 
-Keep the result concise, high-signal, and operational. If nothing crosses the threshold, say what you reviewed and why no writeback or evolution was justified.`,
+Keep the result concise, high-signal, and operational. Retain coverage in the run record; if nothing changed or crossed the notification threshold, remain quiet unless periodic reports were requested.`,
   },
   {
     id: "evolution-review",
@@ -573,7 +578,7 @@ Output:
 - Hold or reject: proposals that should stay parked, be rejected, or be superseded.
 - Verification gaps: only the missing proof that materially blocks a recommendation.
 
-Keep the result concise, continuity-aware, and operational. If nothing is ready to move, say what you reviewed and why no proposal should advance this run.`,
+Keep the result concise, continuity-aware, and operational. Retain coverage in the run record; if nothing changed or requires action, remain quiet unless periodic reports were requested.`,
   },
   {
     id: "closed-loop-review",
@@ -1252,6 +1257,62 @@ function pickScopeTemplateCwds(opts: {
   return [];
 }
 
+/** Preserve the operator's Codex selection without baking a personal model into public templates. */
+async function resolveAutomationModelDefaults(args: {
+  home: string;
+  template: BuiltinAutomationTemplate;
+}): Promise<{ model: string; reasoningEffort: string }> {
+  const configFile = Bun.file(join(args.home, ".codex", "config.toml"));
+  if (!(await configFile.exists())) {
+    return {
+      model: args.template.defaultModel,
+      reasoningEffort: args.template.defaultReasoningEffort,
+    };
+  }
+  let config: Record<string, unknown>;
+  try {
+    const parsed = Bun.TOML.parse(await configFile.text());
+    if (!isPlainObject(parsed)) {
+      throw new Error("Invalid config shape");
+    }
+    config = parsed;
+  } catch {
+    throw new Error(
+      "Cannot scaffold automation: the selected Codex config is invalid TOML."
+    );
+  }
+  const profile =
+    typeof config.profile === "string" && isPlainObject(config.profiles)
+      ? config.profiles[config.profile]
+      : undefined;
+  const selection = isPlainObject(profile) ? { ...config, ...profile } : config;
+  const model =
+    typeof selection.model === "string" && selection.model.trim()
+      ? selection.model.trim()
+      : args.template.defaultModel;
+  const configuredEffort = selection.model_reasoning_effort;
+  const reasoningEffort =
+    typeof configuredEffort === "string" && configuredEffort.trim()
+      ? configuredEffort.trim()
+      : args.template.defaultReasoningEffort;
+  return {
+    model,
+    reasoningEffort:
+      model === "gpt-6-astra" && ["none", "minimal"].includes(reasoningEffort)
+        ? "low"
+        : reasoningEffort,
+  };
+}
+
+const AUTOMATION_AUTHORITY_BOUNDARIES = `
+Execution boundaries:
+- Read only relevant guidance not already available in context. Infer routine details; ask only about material missing context or authority.
+- Stay within the configured review scope. Existing authorization covers the same action and scope; it does not authorize canonical apply, promotion, external tracker writes, sending, publishing, or scheduler changes.
+- For read-only or proposal-only requests, return proposed changes without recording state. When review-state mutation is authorized, record only new evidence and reuse existing proposals.
+- Complete required verification proportionately. Do not repeat or broaden checks without a new change, failure, or unresolved concern. Apply alone is not effectiveness proof.
+- Keep unchanged or non-actionable runs quiet unless periodic status reports were explicitly requested. Notify only for meaningful change, completion, failure, or required user action.
+`;
+
 export async function scaffoldCodexAutomationTemplate(args: {
   homeDir?: string;
   cwd?: string;
@@ -1306,8 +1367,10 @@ export async function scaffoldCodexAutomationTemplate(args: {
         ? "PAUSED"
         : template.defaultStatus;
   const rrule = args.rrule?.trim() || template.defaultRRule;
-  const model = template.defaultModel;
-  const reasoningEffort = template.defaultReasoningEffort;
+  const { model, reasoningEffort } = await resolveAutomationModelDefaults({
+    home,
+    template,
+  });
   const usesProjectLoopRoot = normalizedScope === "project";
   const selectedProjectLoopRoot = join(
     args.projectRoot ?? cwds[0] ?? cwd,
@@ -1335,7 +1398,10 @@ export async function scaffoldCodexAutomationTemplate(args: {
     loopScopeFlag: normalizedScope === "global" ? "--global" : "--project",
     loopRootArg: `--root ${quoteAutomationShellArg(loopRootDir)}`,
   };
-  const renderedPrompt = renderTemplate(template.prompt.trim(), templateValues);
+  const renderedPrompt = renderTemplate(
+    `${template.prompt.trim()}\n\n${AUTOMATION_AUTHORITY_BOUNDARIES.trim()}`,
+    templateValues
+  );
   const renderedMemory = renderTemplate(template.memory.trim(), templateValues);
 
   const timestamp = String(Date.now());

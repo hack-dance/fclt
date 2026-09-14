@@ -11,6 +11,17 @@ Use this skill when work reveals durable friction, missing context, weak verific
 
 Writeback is for preserving signal. It is not for every preference or one-off annoyance.
 
+## Authorization
+
+Proceed with recording or drafting when the current request authorizes that action and scope;
+do not request the same approval again. For read-only or proposal-only work, return findings or a
+proposed writeback without changing state. Strong evidence alone does not grant write authority.
+
+Recording or drafting does not authorize canonical application, cross-scope promotion, external
+messages, tracker changes, publishing, or scheduler activation. Preserve those separate gates and
+native authorization. Keep unchanged, non-actionable scheduled results quiet unless periodic
+reports were requested.
+
 ## Workflow
 
 1. Decide scope:
@@ -27,7 +38,7 @@ Writeback is for preserving signal. It is not for every preference or one-off an
 - MCP/tool config
 - automation
 
-3. Record writeback when the target and evidence are clear:
+3. Record writeback when the target, evidence, and authorization are clear:
 
 ```bash
 fclt ai writeback add \
@@ -80,3 +91,6 @@ fclt ai loop activity --project
 - risk class and approval boundary
 - actual changed records/artifacts
 - verification result and recovery route
+
+
+Verify the producing workflow before resolving source writebacks; applying a change alone does not prove effectiveness.

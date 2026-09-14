@@ -1698,7 +1698,7 @@ export function assertAuditSourceSnapshot(
   value: unknown
 ): asserts value is AuditSourceSnapshot {
   if (!(value && typeof value === "object" && !Array.isArray(value))) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error("Audit source snapshot schema is unsupported (object)");
   }
   const snapshot = value as Partial<AuditSourceSnapshot>;
   const shapeIsValid =
@@ -1721,7 +1721,34 @@ export function assertAuditSourceSnapshot(
     snapshot.absentPaths.every(isValidAbsentPathIdentity) &&
     snapshot.requestedPaths.every(isValidRequestedPathIdentity);
   if (!shapeIsValid) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    const invalidCollections = Object.entries({
+      protectedRoots:
+        Array.isArray(snapshot.protectedRoots) &&
+        snapshot.protectedRoots.every(isValidProtectedRootIdentity),
+      evaluatedFiles:
+        Array.isArray(snapshot.evaluatedFiles) &&
+        snapshot.evaluatedFiles.every(isValidFileIdentity),
+      evaluatedDirectories:
+        Array.isArray(snapshot.evaluatedDirectories) &&
+        snapshot.evaluatedDirectories.every(isValidDirectoryIdentity),
+      capturedTrees:
+        Array.isArray(snapshot.capturedTrees) &&
+        snapshot.capturedTrees.every(isValidCapturedTreeIdentity),
+      derivedContexts:
+        Array.isArray(snapshot.derivedContexts) &&
+        snapshot.derivedContexts.every(isValidDerivedContextIdentity),
+      absentPaths:
+        Array.isArray(snapshot.absentPaths) &&
+        snapshot.absentPaths.every(isValidAbsentPathIdentity),
+      requestedPaths:
+        Array.isArray(snapshot.requestedPaths) &&
+        snapshot.requestedPaths.every(isValidRequestedPathIdentity),
+    })
+      .filter(([, valid]) => valid !== true)
+      .map(([name]) => name);
+    throw new Error(
+      `Audit source snapshot schema is unsupported (shape: ${invalidCollections.join(", ") || "envelope"})`
+    );
   }
 
   const exactSnapshot = snapshot as AuditSourceSnapshot;
@@ -1748,7 +1775,7 @@ export function assertAuditSourceSnapshot(
       )
     )
   ) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error("Audit source snapshot schema is unsupported (ordering)");
   }
 
   const contract = canonicalSnapshotContract(exactSnapshot);
@@ -1756,17 +1783,21 @@ export function assertAuditSourceSnapshot(
     validationContractDigest(contract) !==
     exactSnapshot.validationContractSha256
   ) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error("Audit source snapshot schema is unsupported (digest)");
   }
   if (!hasCoherentPhysicalIdentities(exactSnapshot)) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error(
+      "Audit source snapshot schema is unsupported (physical-identities)"
+    );
   }
 
   const requestedByCanonicalPath = new Map(
     exactSnapshot.requestedPaths.map((entry) => [entry.canonicalPath, entry])
   );
   if (requestedByCanonicalPath.size !== exactSnapshot.requestedPaths.length) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error(
+      "Audit source snapshot schema is unsupported (canonical-request-uniqueness)"
+    );
   }
   const presentRequestedPaths = new Set(
     exactSnapshot.requestedPaths.map((entry) => entry.requestedPath)
@@ -1776,7 +1807,9 @@ export function assertAuditSourceSnapshot(
       presentRequestedPaths.has(entry.requestedPath)
     )
   ) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error(
+      "Audit source snapshot schema is unsupported (presence-conflict)"
+    );
   }
   const hasRequestedBinding = (args: {
     dev: number;
@@ -1814,7 +1847,9 @@ export function assertAuditSourceSnapshot(
       (entry) => !hasRequestedBinding({ ...entry, kind: entry.pathKind })
     )
   ) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error(
+      "Audit source snapshot schema is unsupported (requested-bindings)"
+    );
   }
 
   const files = new Map(
@@ -1824,7 +1859,9 @@ export function assertAuditSourceSnapshot(
     exactSnapshot.evaluatedDirectories.map((entry) => [entry.path, entry])
   );
   if ([...files.keys()].some((path) => directories.has(path))) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error(
+      "Audit source snapshot schema is unsupported (file-directory-conflict)"
+    );
   }
 
   const treeOwners = new Map<string, string>();
@@ -1835,36 +1872,48 @@ export function assertAuditSourceSnapshot(
         isContainedPath(tree.root, other.root) ||
         isContainedPath(other.root, tree.root)
       ) {
-        throw new Error("Audit source snapshot schema is unsupported");
+        throw new Error(
+          "Audit source snapshot schema is unsupported (tree-overlap)"
+        );
       }
     }
     const budgets = deriveCapturedTreeDirectoryBudgets(tree);
     if (!budgets) {
-      throw new Error("Audit source snapshot schema is unsupported");
+      throw new Error(
+        "Audit source snapshot schema is unsupported (tree-budget)"
+      );
     }
     let aggregateBytes = 0;
     for (const path of tree.directoryPaths) {
       const identity = directories.get(path);
       const expectedBudget = budgets.get(path);
       if (!identity || identity.maxEntries !== expectedBudget) {
-        throw new Error("Audit source snapshot schema is unsupported");
+        throw new Error(
+          "Audit source snapshot schema is unsupported (directory-budget)"
+        );
       }
       if (treeOwners.has(path)) {
-        throw new Error("Audit source snapshot schema is unsupported");
+        throw new Error(
+          "Audit source snapshot schema is unsupported (directory-ownership)"
+        );
       }
       treeOwners.set(path, tree.root);
     }
     for (const path of tree.filePaths) {
       const identity = files.get(path);
       if (!identity || treeOwners.has(path)) {
-        throw new Error("Audit source snapshot schema is unsupported");
+        throw new Error(
+          "Audit source snapshot schema is unsupported (file-ownership)"
+        );
       }
       aggregateBytes += identity.size;
       if (
         identity.size > tree.maxFileBytes ||
         aggregateBytes > tree.maxAggregateBytes
       ) {
-        throw new Error("Audit source snapshot schema is unsupported");
+        throw new Error(
+          "Audit source snapshot schema is unsupported (byte-budget)"
+        );
       }
       treeOwners.set(path, tree.root);
     }
@@ -1875,7 +1924,9 @@ export function assertAuditSourceSnapshot(
       isContainedPath(tree.root, path)
     );
     if (containingTree && treeOwners.get(path) !== containingTree.root) {
-      throw new Error("Audit source snapshot schema is unsupported");
+      throw new Error(
+        "Audit source snapshot schema is unsupported (tree-coverage)"
+      );
     }
   }
 
@@ -1890,7 +1941,9 @@ export function assertAuditSourceSnapshot(
         protectedPaths.has(proof.path)
     )
   ) {
-    throw new Error("Audit source snapshot schema is unsupported");
+    throw new Error(
+      "Audit source snapshot schema is unsupported (absent-present-conflict)"
+    );
   }
 
   for (const root of exactSnapshot.protectedRoots) {
@@ -1906,7 +1959,9 @@ export function assertAuditSourceSnapshot(
           root.dev !== directory.dev ||
           root.ino !== directory.ino))
     ) {
-      throw new Error("Audit source snapshot schema is unsupported");
+      throw new Error(
+        "Audit source snapshot schema is unsupported (root-identity)"
+      );
     }
   }
 }

@@ -563,7 +563,7 @@ function planFor(
       available: false as const,
       performed: false as const,
       separateCommandRequired: true as const,
-      approvalRequired: actionClass !== "handoff",
+      approvalRequired: resource.kind === "signal" || actionClass !== "handoff",
       staleRevisionCheckRequired: true as const,
     },
   };
