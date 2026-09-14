@@ -2991,7 +2991,7 @@ async function loopCommand(argv: string[]) {
       homeDir: process.env.HOME ?? homedir(),
       locator,
     });
-    console.log(
+    await writeCliOutput(
       commandArgs.includes("--json")
         ? JSON.stringify(result, null, 2)
         : renderActivityActionResolution(result)
@@ -3085,7 +3085,7 @@ async function loopCommand(argv: string[]) {
       redirectTarget: values.get("--redirect-target"),
       approve: booleans.has("--approve"),
     });
-    console.log(
+    await writeCliOutput(
       booleans.has("--json")
         ? JSON.stringify(result, null, 2)
         : renderActivityDecisionResult(result)
