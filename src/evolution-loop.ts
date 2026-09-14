@@ -671,7 +671,11 @@ async function enableEvolutionLoopScoped(args: {
     );
   }
   if (existingAutomation.exists && !args.rrule && existingAutomation.rrule) {
-    config.rrule = normalizeRrule(existingAutomation.rrule);
+    config.rrule = normalizeRrule(
+      existingAutomation.rrule.startsWith("RRULE:")
+        ? existingAutomation.rrule
+        : `RRULE:${existingAutomation.rrule}`
+    );
   }
   const scaffold = existingAutomation.exists
     ? { path: join(args.homeDir, ".codex", "automations", name) }
@@ -697,7 +701,7 @@ async function enableEvolutionLoopScoped(args: {
       homeDir: args.homeDir,
       name,
       status: "ACTIVE",
-      rrule: config.rrule,
+      rrule: args.rrule ? config.rrule : undefined,
     });
     await appendLoopAudit(args, {
       generatedAt: now,

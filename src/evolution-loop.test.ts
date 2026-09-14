@@ -1381,7 +1381,7 @@ describe("evolution loop", () => {
         )
         .replace(AUTOMATION_MODEL_RE, 'model = "custom-model"')
         .replace(AUTOMATION_REASONING_RE, 'reasoning_effort = "medium"')
-        .replace(AUTOMATION_RRULE_RE, 'rrule = "RRULE:FREQ=WEEKLY;BYDAY=FR"') +
+        .replace(AUTOMATION_RRULE_RE, 'rrule = "FREQ=WEEKLY;BYDAY=FR"') +
       '\nnotification_policy = "failed_runs_only"\nexecution_environment = "local"\ntarget = { type = "project", project_id = "saved-project" }\n';
     await Bun.write(automationPath, updated);
     await Bun.write(
@@ -1392,7 +1392,7 @@ describe("evolution loop", () => {
       true
     );
     const reenabled = await enableEvolutionLoop(project);
-    expect(reenabled.config.rrule).toContain("WEEKLY");
+    expect(reenabled.config.rrule).toBe("RRULE:FREQ=WEEKLY;BYDAY=FR");
     const after = Bun.TOML.parse(
       await readFile(automationPath, "utf8")
     ) as Record<string, unknown>;
