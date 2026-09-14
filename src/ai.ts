@@ -2954,54 +2954,52 @@ function parseIntegerFlag(argv: string[], flag: string): number | undefined {
 }
 
 async function loopCommand(argv: string[]) {
-  const json = argv.includes("--json");
-  let sub = argv[0];
-  try {
-    const parsed = parseCliContextArgs(argv);
-    const [parsedSub, ...commandArgs] = parsed.argv;
-    sub = parsedSub;
-    if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
-      console.log(loopHelp());
-      return;
-    }
-    if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
-      console.log(loopHelp());
-      return;
-    }
-    if (sub === "resolve") {
-      if (parsed.rootArg || parsed.scope !== "merged") {
-        throw new Error(
-          "Activity locator resolution does not accept caller-supplied root or scope authority"
-        );
-      }
-      const locatorArgs = commandArgs.filter((arg) => arg !== "--json");
-      const locator = locatorArgs[0];
-      if (
-        locatorArgs.length !== 1 ||
-        !locator ||
-        locator.startsWith("-") ||
-        commandArgs.some((arg) => arg.startsWith("-") && arg !== "--json")
-      ) {
-        throw new Error(
-          "loop resolve accepts exactly one opaque locator and optional --json"
-        );
-      }
-      const { renderActivityActionResolution, resolveActivityActionLocator } =
-        await import("./activity-action");
-      const result = await resolveActivityActionLocator({
-        homeDir: process.env.HOME ?? "",
-        locator,
-      });
-      console.log(
-        commandArgs.includes("--json")
-          ? JSON.stringify(result, null, 2)
-          : renderActivityActionResolution(result)
+  const parsed = parseCliContextArgs(argv);
+  const [sub, ...commandArgs] = parsed.argv;
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    console.log(loopHelp());
+    return;
+  }
+  if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
+    console.log(loopHelp());
+    return;
+  }
+  if (sub === "resolve") {
+    if (parsed.rootArg || parsed.scope !== "merged") {
+      throw new Error(
+        "Activity locator resolution does not accept caller-supplied root or scope authority"
       );
-      if (result.status === "rejected") {
-        process.exitCode = 1;
-      }
-      return;
     }
+    const locatorArgs = commandArgs.filter((arg) => arg !== "--json");
+    const locator = locatorArgs[0];
+    if (
+      locatorArgs.length !== 1 ||
+      !locator ||
+      locator.startsWith("-") ||
+      commandArgs.some((arg) => arg.startsWith("-") && arg !== "--json")
+    ) {
+      throw new Error(
+        "loop resolve accepts exactly one opaque locator and optional --json"
+      );
+    }
+    const { renderActivityActionResolution, resolveActivityActionLocator } =
+      await import("./activity-action");
+    const result = await resolveActivityActionLocator({
+      homeDir: process.env.HOME ?? "",
+      locator,
+    });
+    console.log(
+      commandArgs.includes("--json")
+        ? JSON.stringify(result, null, 2)
+        : renderActivityActionResolution(result)
+    );
+    if (result.status === "rejected") {
+      process.exitCode = 1;
+    }
+    return;
+  }
+  const json = commandArgs.includes("--json");
+  try {
     const rootDir = resolveCliContextRoot({
       rootArg: parsed.rootArg,
       scope: parsed.scope,
