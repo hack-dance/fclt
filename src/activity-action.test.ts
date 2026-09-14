@@ -652,11 +652,12 @@ describe("activity action locators", () => {
         desiredOutcome: "Dispatch one isolated implementation work unit.",
       },
     ];
-    issued.verification = {
-      state: "pending" as const,
-      attempts: 0,
-      privateMetadata: "private-field-must-not-leak",
-    };
+    issued.verification = { state: "pending", attempts: 0 };
+    Reflect.set(
+      issued.verification,
+      "privateMetadata",
+      "private-field-must-not-leak"
+    );
     issued.nextAction = "Create the bounded implementation work unit.";
     await Bun.write(
       fixture.reportPath,
