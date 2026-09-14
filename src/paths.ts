@@ -1047,3 +1047,15 @@ export function facultContextRootDir(args?: {
 
   return facultRootDir(home, config);
 }
+
+export function facultCodexAutomationOwnershipPath(
+  home: string,
+  name: string
+): string {
+  return join(
+    facultLocalStateRoot(home),
+    "automations",
+    "codex",
+    `${encodeURIComponent(name)}.json`
+  );
+}

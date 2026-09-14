@@ -47,6 +47,7 @@ import {
   legacyManagedMutationApproved,
 } from "./legacy-mutation-policy";
 import {
+  facultCodexAutomationOwnershipPath,
   facultRootDir,
   pathsPhysicallyEquivalent,
   projectRootFromAiRoot,
@@ -1431,6 +1432,13 @@ updated_at = ${timestamp}
     changedPaths.push(automationTomlPath);
     if (!args.dryRun) {
       await atomicWriteFile(automationTomlPath, `${automationToml}\n`);
+      if (template.id === "closed-loop-review") {
+        await recordAutomationOwnership(
+          home,
+          safeName,
+          Bun.TOML.parse(automationToml) as Record<string, unknown>
+        );
+      }
     }
   }
 
@@ -1450,10 +1458,141 @@ updated_at = ${timestamp}
   };
 }
 
+const AUTOMATION_RRULE_LINE_RE = /^rrule\s*=.*$/m;
+
+function automationIdentity(parsed: Record<string, unknown>): string | null {
+  if (
+    typeof parsed.id !== "string" ||
+    typeof parsed.created_at !== "number" ||
+    !Number.isSafeInteger(parsed.created_at) ||
+    !Array.isArray(parsed.cwds) ||
+    parsed.cwds.length === 0 ||
+    parsed.cwds.some((cwd) => typeof cwd !== "string" || !isAbsolute(cwd))
+  ) {
+    return null;
+  }
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        id: parsed.id,
+        createdAt: parsed.created_at,
+        cwds: parsed.cwds,
+      })
+    )
+    .digest("hex");
+}
+
+async function recordAutomationOwnership(
+  home: string,
+  name: string,
+  parsed: Record<string, unknown>
+): Promise<void> {
+  const identity = automationIdentity(parsed);
+  if (parsed.id !== name || !identity) {
+    throw new Error("Cannot record an invalid automation identity");
+  }
+  await atomicWriteFile(
+    facultCodexAutomationOwnershipPath(home, name),
+    `${JSON.stringify({ version: 1, owner: "fclt-evolution-loop", identity })}\n`
+  );
+}
+
+export async function repairCodexAutomationOwnership(args: {
+  homeDir: string;
+  name: string;
+  expectedCwd: string;
+  approve?: boolean;
+  dryRun?: boolean;
+}) {
+  if (!(args.approve || args.dryRun)) {
+    throw new Error("Scheduler ownership repair requires explicit --approve");
+  }
+  const safeName = sanitizeAutomationName(args.name);
+  await assertSafeAutomationTarget({ home: args.homeDir, safeName });
+  const path = join(
+    args.homeDir,
+    ".codex",
+    "automations",
+    safeName,
+    "automation.toml"
+  );
+  const current = await readFile(path, "utf8");
+  const parsed = Bun.TOML.parse(current) as Record<string, unknown>;
+  if (
+    safeName !== args.name ||
+    parsed.id !== safeName ||
+    (parsed.status !== "ACTIVE" && parsed.status !== "PAUSED") ||
+    !automationIdentity(parsed) ||
+    JSON.stringify(parsed.cwds) !==
+      JSON.stringify([resolve(args.expectedCwd)]) ||
+    (parsed.managed_by !== undefined &&
+      parsed.managed_by !== "fclt-evolution-loop")
+  ) {
+    throw new Error(
+      "Scheduler identity, cwd, or explicit owner does not match this configured loop"
+    );
+  }
+  if (!args.dryRun) {
+    if ((await readFile(path, "utf8")) !== current) {
+      throw new Error("Automation changed during ownership repair");
+    }
+    await recordAutomationOwnership(args.homeDir, safeName, parsed);
+  }
+  return {
+    repaired: !args.dryRun,
+    dryRun: Boolean(args.dryRun),
+    automationPath: path,
+    status: parsed.status,
+  };
+}
+
+export async function hasCodexAutomationOwnership(args: {
+  homeDir: string;
+  name: string;
+  parsed: Record<string, unknown>;
+}): Promise<boolean> {
+  if (
+    args.parsed.id !== args.name ||
+    sanitizeAutomationName(args.name) !== args.name
+  ) {
+    return false;
+  }
+  if (args.parsed.managed_by === "fclt-evolution-loop") {
+    return true;
+  }
+  if (args.parsed.managed_by !== undefined) {
+    return false;
+  }
+  const identity = automationIdentity(args.parsed);
+  if (!identity) {
+    return false;
+  }
+  try {
+    await assertSafeAutomationTarget({
+      home: args.homeDir,
+      safeName: sanitizeAutomationName(args.name),
+    });
+    const receipt = JSON.parse(
+      await readFile(
+        facultCodexAutomationOwnershipPath(args.homeDir, args.name),
+        "utf8"
+      )
+    );
+    return (
+      receipt.version === 1 &&
+      receipt.owner === "fclt-evolution-loop" &&
+      receipt.identity === identity
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function setCodexAutomationStatus(args: {
   homeDir?: string;
   name: string;
   status: "ACTIVE" | "PAUSED";
+  rrule?: string;
   dryRun?: boolean;
 }): Promise<{
   path: string;
@@ -1479,7 +1618,13 @@ export async function setCodexAutomationStatus(args: {
   if (parsed.id !== safeName) {
     throw new Error(`Codex automation id mismatch at ${pathValue}`);
   }
-  if (parsed.managed_by !== "fclt-evolution-loop") {
+  if (
+    !(await hasCodexAutomationOwnership({
+      homeDir: home,
+      name: safeName,
+      parsed,
+    }))
+  ) {
     throw new Error(
       `Refusing to change an automation not owned by the fclt evolution loop: ${pathValue}`
     );
@@ -1488,7 +1633,9 @@ export async function setCodexAutomationStatus(args: {
   if (currentStatus !== "ACTIVE" && currentStatus !== "PAUSED") {
     throw new Error(`Codex automation has an invalid status at ${pathValue}`);
   }
-  const changed = currentStatus !== args.status;
+  const changed =
+    currentStatus !== args.status ||
+    (args.rrule !== undefined && parsed.rrule !== args.rrule);
   if (changed && !args.dryRun) {
     if (
       !(
@@ -1501,13 +1648,41 @@ export async function setCodexAutomationStatus(args: {
       );
     }
     const timestamp = String(Date.now());
-    const next = current
+    let next = current
       .replace(AUTOMATION_STATUS_LINE_RE, `status = "${args.status}"`)
       .replace(AUTOMATION_UPDATED_AT_LINE_RE, `updated_at = ${timestamp}`);
+    if (args.rrule !== undefined) {
+      if (!AUTOMATION_RRULE_LINE_RE.test(next)) {
+        throw new Error("Automation recurrence line is missing");
+      }
+      const recurrence = args.rrule;
+      next = next.replace(
+        AUTOMATION_RRULE_LINE_RE,
+        () => `rrule = ${quoteTomlString(recurrence)}`
+      );
+    }
+    const expected = {
+      ...parsed,
+      status: args.status,
+      updated_at: Number(timestamp),
+      ...(args.rrule === undefined ? {} : { rrule: args.rrule }),
+    };
+    if (JSON.stringify(Bun.TOML.parse(next)) !== JSON.stringify(expected)) {
+      throw new Error(
+        "Automation layout cannot be updated without changing authored fields"
+      );
+    }
+    if ((await readFile(pathValue, "utf8")) !== current) {
+      throw new Error("Automation changed during status update");
+    }
     const temporaryPath = `${pathValue}.${process.pid}.${timestamp}.tmp`;
     await Bun.write(temporaryPath, next);
     await rename(temporaryPath, pathValue);
   }
+  if (!args.dryRun) {
+    await recordAutomationOwnership(home, safeName, parsed);
+  }
+
   return {
     path: pathValue,
     status: args.status,

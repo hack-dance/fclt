@@ -51,6 +51,8 @@ import type {
 } from "./reconciliation-types";
 import {
   assertSafeCodexAutomationTarget,
+  hasCodexAutomationOwnership,
+  repairCodexAutomationOwnership,
   scaffoldCodexAutomationTemplate,
   setCodexAutomationStatus,
 } from "./remote";
@@ -528,6 +530,7 @@ async function automationStatus(args: {
   exists: boolean;
   registered: boolean;
   status?: "ACTIVE" | "PAUSED";
+  rrule?: string;
   error?: string;
 }> {
   try {
@@ -579,8 +582,9 @@ async function automationStatus(args: {
       : undefined;
   return {
     exists: true,
-    registered: parsed.managed_by === "fclt-evolution-loop",
+    registered: await hasCodexAutomationOwnership({ ...args, parsed }),
     status,
+    rrule: typeof parsed.rrule === "string" ? parsed.rrule : undefined,
   };
 }
 
@@ -666,19 +670,24 @@ async function enableEvolutionLoopScoped(args: {
         `Refusing to replace an automation not owned by the fclt evolution loop: ${name}`
     );
   }
-  const scaffold = await scaffoldCodexAutomationTemplate({
-    homeDir: args.homeDir,
-    cwd: projectRoot ?? args.homeDir,
-    templateId: "closed-loop-review",
-    name,
-    scope,
-    projectRoot,
-    rootDir: args.rootDir,
-    rrule: config.rrule,
-    status: "PAUSED",
-    force: existingAutomation.exists,
-    dryRun: args.dryRun,
-  });
+  if (existingAutomation.exists && !args.rrule && existingAutomation.rrule) {
+    config.rrule = normalizeRrule(existingAutomation.rrule);
+  }
+  const scaffold = existingAutomation.exists
+    ? { path: join(args.homeDir, ".codex", "automations", name) }
+    : await scaffoldCodexAutomationTemplate({
+        homeDir: args.homeDir,
+        cwd: projectRoot ?? args.homeDir,
+        templateId: "closed-loop-review",
+        name,
+        scope,
+        projectRoot,
+        rootDir: args.rootDir,
+        rrule: config.rrule,
+        status: "PAUSED",
+        force: existingAutomation.exists,
+        dryRun: args.dryRun,
+      });
   if (!args.dryRun) {
     await atomicWrite(
       facultAiEvolutionLoopConfigPath(args.homeDir, args.rootDir),
@@ -688,6 +697,7 @@ async function enableEvolutionLoopScoped(args: {
       homeDir: args.homeDir,
       name,
       status: "ACTIVE",
+      rrule: config.rrule,
     });
     await appendLoopAudit(args, {
       generatedAt: now,
@@ -2452,5 +2462,37 @@ export async function runEvolutionLoop(
   return await withFacultRootScope(
     { rootDir: args.rootDir, scope },
     async () => await runEvolutionLoopScoped({ ...args, scope })
+  );
+}
+
+export async function repairEvolutionLoopScheduler(args: {
+  homeDir: string;
+  rootDir: string;
+  scope: "global" | "project";
+  approve?: boolean;
+  dryRun?: boolean;
+}) {
+  return await withFacultRootScope(
+    { rootDir: args.rootDir, scope: args.scope },
+    async () => {
+      const config = await loadEvolutionLoopConfig(args);
+      if (!config || config.scope !== args.scope) {
+        throw new Error("No matching configured loop to repair");
+      }
+      const expectedCwd =
+        config.scope === "global"
+          ? args.homeDir
+          : projectRootFromAiRoot(args.rootDir, args.homeDir);
+      if (!expectedCwd) {
+        throw new Error(
+          "Cannot resolve the configured project for scheduler repair"
+        );
+      }
+      return await repairCodexAutomationOwnership({
+        ...args,
+        name: config.automationName,
+        expectedCwd,
+      });
+    }
   );
 }

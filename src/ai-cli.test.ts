@@ -28,6 +28,20 @@ async function captureConsole(fn: () => Promise<void>) {
   const errors: string[] = [];
   const prevLog = console.log;
   const prevError = console.error;
+  const prevWrite = process.stdout.write;
+  process.stdout.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void
+  ) => {
+    logs.push(
+      typeof chunk === "string" ? chunk : Buffer.from(chunk).toString()
+    );
+    const done =
+      typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    done?.();
+    return true;
+  }) as typeof process.stdout.write;
   console.log = (...args: Parameters<typeof console.log>) => {
     logs.push(args.map((value) => String(value)).join(" "));
   };
@@ -39,6 +53,7 @@ async function captureConsole(fn: () => Promise<void>) {
   } finally {
     console.log = prevLog;
     console.error = prevError;
+    process.stdout.write = prevWrite;
   }
   return { logs, errors };
 }
@@ -65,6 +80,61 @@ afterEach(async () => {
 });
 
 describe("ai CLI", () => {
+  it("repairs a configured scheduler through the CLI without activating it", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    process.env.FACULT_ROOT_DIR = join(tempHome, ".ai");
+    process.env.FACULT_LOCAL_STATE_DIR = join(tempHome, "state");
+    process.chdir(tempHome);
+    const { enableEvolutionLoop } = await import("./evolution-loop");
+    const { facultCodexAutomationOwnershipPath } = await import("./paths");
+    const enabled = await enableEvolutionLoop({
+      homeDir: tempHome,
+      rootDir: process.env.FACULT_ROOT_DIR,
+      scope: "global",
+    });
+    const path = join(enabled.automationPath, "automation.toml");
+    const current = (await Bun.file(path).text())
+      .replace('managed_by = "fclt-evolution-loop"\n', "")
+      .replace('status = "ACTIVE"', 'status = "PAUSED"');
+    await Bun.write(path, current);
+    await rm(
+      facultCodexAutomationOwnershipPath(
+        tempHome,
+        enabled.config.automationName
+      )
+    );
+    const preview = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "repair-scheduler",
+        "--global",
+        "--dry-run",
+        "--json",
+      ]);
+    });
+    expect(preview.errors).toEqual([]);
+    expect(JSON.parse(preview.logs.join("\n"))).toMatchObject({
+      repaired: false,
+      status: "PAUSED",
+    });
+    const applied = await captureConsole(async () => {
+      await aiCommand([
+        "loop",
+        "repair-scheduler",
+        "--global",
+        "--approve",
+        "--json",
+      ]);
+    });
+    expect(applied.errors).toEqual([]);
+    expect(JSON.parse(applied.logs.join("\n"))).toMatchObject({
+      repaired: true,
+      status: "PAUSED",
+    });
+    expect(await Bun.file(path).text()).toBe(current);
+  });
+
   it("returns JSON recovery when the loop fails before a report exists", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
@@ -418,7 +488,7 @@ describe("ai CLI", () => {
       automationPath,
       (await Bun.file(automationPath).text()).replace(
         'managed_by = "fclt-evolution-loop"\n',
-        ""
+        'managed_by = "another-owner"\n'
       )
     );
     const disabledOut = await captureConsole(async () => {
