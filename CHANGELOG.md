@@ -1,3 +1,9 @@
+## [2.31.3](https://github.com/hack-dance/fclt/compare/v2.31.2...v2.31.3) (2026-09-14)
+
+### Bug Fixes
+
+* preserve authored evolution drafts on repeated drafting ([#87](https://github.com/hack-dance/fclt/issues/87)) ([b85f475](https://github.com/hack-dance/fclt/commit/b85f4755b7552cbc650a3e16930b4570c3ff3f47))
+
 ## [2.31.2](https://github.com/hack-dance/fclt/compare/v2.31.1...v2.31.2) (2026-09-14)
 
 ### Bug Fixes
