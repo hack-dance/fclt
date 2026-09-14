@@ -3489,18 +3489,24 @@ async function writebackCommand(argv: string[]) {
         evidence: parseEvidence(commandArgs),
       });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(portableWritebackRecord(record), null, 2));
+        await writeCliOutput(
+          JSON.stringify(portableWritebackRecord(record), null, 2)
+        );
         return;
       }
       console.log(`Recorded writeback ${record.id}`);
-      console.log(JSON.stringify(portableWritebackRecord(record), null, 2));
+      await writeCliOutput(
+        JSON.stringify(portableWritebackRecord(record), null, 2)
+      );
       return;
     }
 
     if (sub === "list") {
       const rows = await listWritebacks({ rootDir });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(rows.map(portableWritebackRecord), null, 2));
+        await writeCliOutput(
+          JSON.stringify(rows.map(portableWritebackRecord), null, 2)
+        );
         return;
       }
       console.log(`writebacks root: ${rootDir}`);
@@ -3527,7 +3533,7 @@ async function writebackCommand(argv: string[]) {
           ? await groupWritebacks({ rootDir, by: byValue })
           : await summarizeWritebacks({ rootDir, by: byValue });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(rows, null, 2));
+        await writeCliOutput(JSON.stringify(rows, null, 2));
         return;
       }
       for (const row of rows) {
@@ -3547,7 +3553,9 @@ async function writebackCommand(argv: string[]) {
       if (!row) {
         throw new Error(`Writeback not found: ${id}`);
       }
-      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
+      await writeCliOutput(
+        JSON.stringify(portableWritebackRecord(row), null, 2)
+      );
       return;
     }
 
@@ -3558,8 +3566,12 @@ async function writebackCommand(argv: string[]) {
         throw new Error("writeback link requires an id and --issue");
       }
       const row = await linkWritebackIssue(id, issue, { rootDir });
-      console.log(`Linked ${row.id} to ${issue}`);
-      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
+      if (!commandArgs.includes("--json")) {
+        console.log(`Linked ${row.id} to ${issue}`);
+      }
+      await writeCliOutput(
+        JSON.stringify(portableWritebackRecord(row), null, 2)
+      );
       return;
     }
 
@@ -3586,8 +3598,12 @@ async function writebackCommand(argv: string[]) {
         nextTrigger: parseStringFlag(commandArgs, "--next-trigger"),
         expectedOutcome: parseStringFlag(commandArgs, "--expected-outcome"),
       });
-      console.log(`Updated disposition for ${row.id}`);
-      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
+      if (!commandArgs.includes("--json")) {
+        console.log(`Updated disposition for ${row.id}`);
+      }
+      await writeCliOutput(
+        JSON.stringify(portableWritebackRecord(row), null, 2)
+      );
       return;
     }
 
@@ -3600,8 +3616,14 @@ async function writebackCommand(argv: string[]) {
         sub === "dismiss"
           ? await dismissWriteback(id, { rootDir })
           : await promoteWriteback(id, { rootDir });
-      console.log(`${sub === "dismiss" ? "Dismissed" : "Promoted"} ${row.id}`);
-      console.log(JSON.stringify(portableWritebackRecord(row), null, 2));
+      if (!commandArgs.includes("--json")) {
+        console.log(
+          `${sub === "dismiss" ? "Dismissed" : "Promoted"} ${row.id}`
+        );
+      }
+      await writeCliOutput(
+        JSON.stringify(portableWritebackRecord(row), null, 2)
+      );
       return;
     }
 
@@ -3639,7 +3661,7 @@ async function evolveCommand(argv: string[]) {
         asset: parseStringFlag(commandArgs, "--asset"),
       });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(assessment, null, 2));
+        await writeCliOutput(JSON.stringify(assessment, null, 2));
         return;
       }
       console.log(`recommendation: ${assessment.recommendation}`);
@@ -3664,7 +3686,7 @@ async function evolveCommand(argv: string[]) {
         asset: parseStringFlag(commandArgs, "--asset"),
       });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(proposals, null, 2));
+        await writeCliOutput(JSON.stringify(proposals, null, 2));
         return;
       }
       for (const proposal of proposals) {
@@ -3678,7 +3700,7 @@ async function evolveCommand(argv: string[]) {
     if (sub === "list") {
       const rows = await listProposals({ rootDir });
       if (commandArgs.includes("--json")) {
-        console.log(JSON.stringify(rows, null, 2));
+        await writeCliOutput(JSON.stringify(rows, null, 2));
         return;
       }
       for (const row of rows) {
@@ -3696,7 +3718,7 @@ async function evolveCommand(argv: string[]) {
       if (!row) {
         throw new Error(`Proposal not found: ${id}`);
       }
-      console.log(JSON.stringify(row, null, 2));
+      await writeCliOutput(JSON.stringify(row, null, 2));
       return;
     }
 
@@ -3723,8 +3745,10 @@ async function evolveCommand(argv: string[]) {
         note: parseStringFlag(commandArgs, "--note"),
         allowEarly: commandArgs.includes("--allow-early"),
       });
-      console.log(`Verified ${row.id} as ${effectiveness}`);
-      console.log(JSON.stringify(row, null, 2));
+      if (!commandArgs.includes("--json")) {
+        console.log(`Verified ${row.id} as ${effectiveness}`);
+      }
+      await writeCliOutput(JSON.stringify(row, null, 2));
       return;
     }
 
@@ -3795,8 +3819,9 @@ async function evolveCommand(argv: string[]) {
                   : sub === "promote"
                     ? "Promoted"
                     : "Applied";
-      console.log(`${verb} ${row.id}`);
-      console.log(JSON.stringify(row, null, 2));
+      await writeCliOutput(
+        `${commandArgs.includes("--json") ? "" : `${verb} ${row.id}\n`}${JSON.stringify(row, null, 2)}`
+      );
       return;
     }
 
@@ -3840,7 +3865,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
         dryRun: commandArgs.includes("--dry-run"),
         force: commandArgs.includes("--force"),
       });
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : `${result.created ? "Initialized" : "Using"} reconciliation config ${result.path}`
@@ -3850,7 +3875,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
     if (sub === "status") {
       const { reconciliationStatus } = await import("./reconciliation");
       const result = await reconciliationStatus({ homeDir, rootDir });
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : `reconciliation: ${result.configured ? (result.coverageState ?? "not-run") : "not-configured"}\nconfig: ${result.configPath}\nstate: ${result.statePath}`
@@ -3872,7 +3897,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
         sourceIds: parseRepeatedFlag(commandArgs, "--source"),
         incremental: commandArgs.includes("--incremental"),
       });
-      console.log(
+      await writeCliOutput(
         json
           ? JSON.stringify(result, null, 2)
           : [

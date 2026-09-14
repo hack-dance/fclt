@@ -18,6 +18,10 @@ import {
   projectRootFromAiRoot,
   withFacultRootScope,
 } from "./paths";
+import {
+  loadReconciliationConfig,
+  selectReconciliationSources,
+} from "./reconciliation-config";
 
 /** Probe the actual execution environment without reconciling or creating queue state. */
 export async function preflightEvolutionLoop(args: {
@@ -42,6 +46,8 @@ export async function preflightEvolutionLoop(args: {
       try {
         const config = await loadEvolutionLoopConfig(args);
         enabled = config?.enabled === true;
+        const reconciliation = await loadReconciliationConfig(args);
+        selectReconciliationSources(reconciliation.config, config?.sourceIds);
       } catch (error) {
         configError = error instanceof Error ? error.message : String(error);
       }
@@ -78,7 +84,8 @@ export async function preflightEvolutionLoop(args: {
       const denied = checks.filter((check) => !check.writable);
       return {
         version: 1,
-        status: enabled && denied.length === 0 ? "ready" : "blocked",
+        status:
+          enabled && !configError && denied.length === 0 ? "ready" : "blocked",
         queueAvailable: false,
         loopInvoked: false,
         runtime: process.execPath,
@@ -88,9 +95,11 @@ export async function preflightEvolutionLoop(args: {
         recovery:
           denied.length > 0
             ? `Authorize writes to these fclt state/review directories in the task execution environment: ${denied.map((check) => check.path).join(", ")}. Run preflight again before invoking the loop.`
-            : enabled
-              ? null
-              : "Inspect the loop configuration and enable the intended scope before invoking the loop.",
+            : configError
+              ? `Repair the review configuration before invoking the loop: ${configError}`
+              : enabled
+                ? null
+                : "Inspect the loop configuration and enable the intended scope before invoking the loop.",
       };
     }
   );

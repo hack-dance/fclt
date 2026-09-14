@@ -21,6 +21,7 @@ export type SourceFreshnessState =
 
 export type SourceFreshnessReason =
   | "cursor_advanced"
+  | "source_caught_up"
   | "within_threshold"
   | "threshold_exceeded"
   | "newer_repository_activity"

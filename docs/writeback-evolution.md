@@ -48,6 +48,28 @@ receipt. Global and plugin changes always remain proposal-only.
 
 Manual writeback remains useful, but it is no longer the only source of review
 signal. Setup creates `reconciliation.json` in the selected canonical root.
+Keep the portable source definition in the project's canonical root and include
+it in version control. A missing definition can be restored with `fclt ai review
+init --project --dry-run --json`, followed by the same command without `--dry-run`.
+Initialization preserves existing valid configuration and does not reset writebacks,
+queues, or cursors. Run `fclt ai loop preflight --project --json` afterward: readiness
+requires valid source configuration, a valid source selection, and writable state.
+Missing or invalid configuration is deterministic and is not retried by the loop.
+
+Machine-specific scheduler identity, queues, cursors, and history belong in fclt's
+OS application-data store. Review mirrors live under the global review root with
+project identity. Do not move project evidence into the global queue to solve a
+missing project configuration. Shared operating instructions and reusable source
+recipes may be global; each project's source selection and capability decisions
+remain explicit and project-scoped.
+
+The loop reuses source writebacks when creating proposals, preserving their original
+context instead of copying them into synthetic capability gaps. A linked pending
+proposal does not resolve its signal family. Use an explicit terminal disposition
+only after outcome evidence supports it. Successful scans whose observed latest
+source timestamp is already covered do not become stale merely because the source
+is quiet; newer uncovered activity and unverified old cursors still warn.
+
 Run a bounded review window before deciding that nothing is pending:
 
 ```bash

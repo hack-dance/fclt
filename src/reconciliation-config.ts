@@ -285,6 +285,34 @@ export function parseReconciliationConfig(
   return { version: 1, sources };
 }
 
+export class ReconciliationConfigurationError extends Error {}
+
+export function selectReconciliationSources(
+  config: ReconciliationConfig,
+  sourceIds: string[] = []
+) {
+  const enabledSources = config.sources.filter(
+    (source) => source.enabled !== false
+  );
+  const unknown = sourceIds.filter(
+    (id) => !enabledSources.some((source) => source.id === id)
+  );
+  if (unknown.length > 0) {
+    throw new ReconciliationConfigurationError(
+      `Unknown or disabled reconciliation source ids: ${unknown.join(", ")}`
+    );
+  }
+  const sources = enabledSources.filter(
+    (source) => sourceIds.length === 0 || sourceIds.includes(source.id)
+  );
+  if (sources.length === 0) {
+    throw new ReconciliationConfigurationError(
+      "No enabled reconciliation sources matched the request"
+    );
+  }
+  return { enabledSources, sources };
+}
+
 export async function loadReconciliationConfig(args: {
   homeDir: string;
   rootDir: string;
@@ -295,14 +323,18 @@ export async function loadReconciliationConfig(args: {
     facultAiReconciliationConfigPath(args.homeDir, args.rootDir);
   const file = Bun.file(path);
   if (!(await file.exists())) {
-    throw new Error(
+    throw new ReconciliationConfigurationError(
       `Reconciliation config not found: ${path}. Run fclt ai review init.`
     );
   }
-  return {
-    config: parseReconciliationConfig(JSON.parse(await file.text())),
-    path,
-  };
+  const text = await file.text();
+  try {
+    return { config: parseReconciliationConfig(JSON.parse(text)), path };
+  } catch (error) {
+    throw new ReconciliationConfigurationError(
+      `Invalid reconciliation config ${path}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 export async function initializeReconciliationConfig(args: {

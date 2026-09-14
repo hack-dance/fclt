@@ -1685,7 +1685,7 @@ describe("evolution loop", () => {
     expect(item?.approvalRequired).toBe(false);
   });
 
-  it("records retry failure state and audit history without hiding the error", async () => {
+  it("records permanent configuration failure and audit history without retrying", async () => {
     const project = await makeProject();
     await enableEvolutionLoop({
       ...project,
@@ -1700,7 +1700,7 @@ describe("evolution loop", () => {
       now: () => new Date("2026-01-03T00:00:00.000Z"),
     });
     expect(failed.status).toBe("failed");
-    expect(failed.attempts).toHaveLength(3);
+    expect(failed.attempts).toHaveLength(1);
     expect(await Bun.file(failed.artifactPath).exists()).toBe(true);
     const state = JSON.parse(
       await readFile(
@@ -1708,13 +1708,13 @@ describe("evolution loop", () => {
         "utf8"
       )
     );
-    expect(state.lastFailure.attempts).toBe(3);
+    expect(state.lastFailure.attempts).toBe(1);
     const audit = await readFile(
       facultAiEvolutionLoopAuditPath(project.homeDir, project.rootDir),
       "utf8"
     );
     expect(audit).toContain('"status":"failed"');
-    expect(audit).toContain('"attempt":3');
+    expect(audit).toContain('"attempt":1');
   });
 
   it("keeps proposal action locators in failed-run activity snapshots", async () => {
@@ -1793,7 +1793,7 @@ describe("evolution loop", () => {
     });
 
     expect(failed.status).toBe("failed");
-    expect(failed.attempts).toHaveLength(3);
+    expect(failed.attempts).toHaveLength(1);
     expect(failed.attempts[0]?.error).toContain("missing-source");
     const history = await queryActivityHistory({
       homeDir: project.homeDir,
@@ -2448,7 +2448,7 @@ describe("evolution loop", () => {
     const canonicalSignal = third.queue.find(
       (item) => item.kind === "signal" && item.familyId === familyA
     );
-    expect(canonicalSignal?.state).toBe("resolved");
+    expect(canonicalSignal?.state).toBe("open");
     expect(canonicalSignal?.proposalId).toBe(aliasProposal!.id);
     expect(canonicalSignal?.familyAliases).toContain(familyB!);
     expect(
@@ -2470,7 +2470,7 @@ describe("evolution loop", () => {
     const postMergeSignal = fourth.queue.find(
       (item) => item.kind === "signal" && item.familyId === familyA
     );
-    expect(postMergeSignal?.state).toBe("resolved");
+    expect(postMergeSignal?.state).toBe("open");
     expect(postMergeSignal?.proposalId).toBe(aliasProposal!.id);
     expect(postMergeSignal?.familyAliases).toContain(familyB!);
     expect(await listWritebacks(project)).toHaveLength(1);
@@ -2641,7 +2641,7 @@ describe("evolution loop", () => {
       first.queue.filter(
         (item) => item.kind === "signal" && item.state !== "resolved"
       )
-    ).toHaveLength(0);
+    ).toHaveLength(2);
     expect(
       writebacks.flatMap((entry) => entry.issueLinks ?? []).sort()
     ).toEqual(["EXAMPLE-101", "EXAMPLE-102", "EXAMPLE-201", "EXAMPLE-202"]);
@@ -2735,6 +2735,72 @@ describe("evolution loop", () => {
       approvalRequired: false,
     });
     expect(report.mutations.every((mutation) => !mutation.applied)).toBe(true);
+  });
+
+  it("reuses source writebacks and keeps pending proposal families unresolved", async () => {
+    const project = await makeProject();
+    await Bun.write(
+      join(project.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const row = await addWriteback({
+      ...project,
+      kind: "capability_gap",
+      summary: "Keep integration checks read-only.",
+      suggestedDestination: "@project/instructions/CHECKS.md",
+      evidence: [{ type: "test", ref: "source-evidence" }],
+    });
+    await setWritebackDisposition(row.id, "apply-local", {
+      ...project,
+      target: "@project/instructions/CHECKS.md",
+      expectedOutcome: "Checks remain read-only",
+    });
+    await enableEvolutionLoop(project);
+    const report = await runEvolutionLoop({ ...project, since: "2020-01-01" });
+    expect(report.status).toBe("complete");
+    expect(await listWritebacks(project)).toHaveLength(1);
+    const proposals = await listProposals(project);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.sourceWritebacks).toEqual([row.id]);
+    expect(report.queue.find((item) => item.kind === "signal")?.state).not.toBe(
+      "resolved"
+    );
+    await setWritebackDisposition(row.id, "resolve-watch", {
+      ...project,
+      target: "@project/instructions/CHECKS.md",
+      expectedOutcome: "Implemented and verified",
+    });
+    await rejectProposal(proposals[0]!.id, {
+      ...project,
+      reason: "Already implemented and verified",
+    });
+    const resolved = await runEvolutionLoop({
+      ...project,
+      since: "2020-01-01",
+    });
+    expect(resolved.queue.find((item) => item.kind === "signal")?.state).toBe(
+      "resolved"
+    );
+    expect(
+      resolved.mutations.some((item) => item.type === "create-proposal")
+    ).toBe(false);
+    expect(await listWritebacks(project)).toHaveLength(1);
+    expect(await listProposals(project)).toHaveLength(1);
+  });
+
+  it("records deterministic missing configuration once instead of retrying it", async () => {
+    const project = await makeProject();
+    await enableEvolutionLoop(project);
+    await rm(join(project.rootDir, "reconciliation.json"));
+    const report = await runEvolutionLoop(project);
+    expect(report.status).toBe("failed");
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.error).toContain(
+      "Reconciliation config not found"
+    );
   });
 
   it("covers signal, proposal, explicit apply, regression reopen, and verified improvement end to end", async () => {

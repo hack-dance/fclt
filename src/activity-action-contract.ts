@@ -125,6 +125,10 @@ export function activityActionClass(args: {
   item: LoopQueueItem;
   proposal?: AiProposalRecord | null;
 }): ActivityActionClass | null {
+  // Linked signals remain open, but only the proposal owns its decision action.
+  if (args.item.kind === "signal" && args.item.proposalId) {
+    return null;
+  }
   if (args.item.state === "resolved" || args.item.state === "deferred") {
     return null;
   }

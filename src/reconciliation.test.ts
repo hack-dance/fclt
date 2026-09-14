@@ -2291,6 +2291,19 @@ describe("source reconciliation", () => {
     });
     expect(first.coverageComplete).toBe(true);
     expect(first.freshness.state).toBe("current");
+    const idle = await reconcileSources({
+      ...fixture,
+      since: "2026-07-23",
+      until: "2026-08-30",
+      incremental: true,
+      persist: false,
+    });
+    expect(idle.coverageComplete).toBe(true);
+    expect(idle.coverage[0]?.freshness).toMatchObject({
+      state: "current",
+      reason: "source_caught_up",
+      alert: false,
+    });
 
     await Bun.write(join(fixture.projectRoot, "outside.txt"), "new activity\n");
     await runFixtureGit({

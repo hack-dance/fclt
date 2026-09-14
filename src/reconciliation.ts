@@ -30,6 +30,7 @@ import {
 import {
   DEFAULT_SOURCE_FRESHNESS_THRESHOLD_HOURS,
   loadReconciliationConfig,
+  selectReconciliationSources,
 } from "./reconciliation-config";
 import type {
   AdapterScanResult,
@@ -1140,6 +1141,21 @@ function sourceFreshness(args: {
       latestSourceAt,
     };
   }
+  if (
+    args.coverageState !== "stale" &&
+    latestSourceAt &&
+    Date.parse(latestSourceAt) <= Date.parse(cursorAt)
+  ) {
+    return {
+      state: "current",
+      reason: "source_caught_up",
+      checkedAt: args.checkedAt,
+      thresholdHours,
+      alert: false,
+      cursorAt,
+      latestSourceAt,
+    };
+  }
   const cursorAgeHours =
     (Date.parse(args.until) - Date.parse(cursorAt)) / (60 * 60 * 1000);
   if (cursorAgeHours > thresholdHours) {
@@ -1734,32 +1750,16 @@ export async function reconcileSources(args: {
   onStaleClaimRevalidated?: () => void | Promise<void>;
 }): Promise<ReconciliationReview> {
   const { config } = await loadReconciliationConfig(args);
-  const enabledSources = config.sources.filter(
-    (source) => source.enabled !== false
+  const { enabledSources, sources } = selectReconciliationSources(
+    config,
+    args.sourceIds
   );
   const enabledConfig: ReconciliationConfig = {
     version: 1,
     sources: enabledSources,
   };
-  const unknownSourceIds = (args.sourceIds ?? []).filter(
-    (sourceId) => !enabledSources.some((source) => source.id === sourceId)
-  );
-  if (unknownSourceIds.length > 0) {
-    throw new Error(
-      `Unknown or disabled reconciliation source ids: ${unknownSourceIds.join(", ")}`
-    );
-  }
-  const selectedConfig: ReconciliationConfig = {
-    version: 1,
-    sources: enabledSources.filter(
-      (source) => !args.sourceIds?.length || args.sourceIds.includes(source.id)
-    ),
-  };
-  const filteredCoverage =
-    selectedConfig.sources.length < enabledSources.length;
-  if (selectedConfig.sources.length === 0) {
-    throw new Error("No enabled reconciliation sources matched the request");
-  }
+  const selectedConfig: ReconciliationConfig = { version: 1, sources };
+  const filteredCoverage = sources.length < enabledSources.length;
   const requestedWindow = createWindow({
     config: selectedConfig,
     rootDir: args.rootDir,
