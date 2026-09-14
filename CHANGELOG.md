@@ -1,3 +1,9 @@
+## [2.30.5](https://github.com/hack-dance/fclt/compare/v2.30.4...v2.30.5) (2026-09-14)
+
+### Bug Fixes
+
+* recover scheduled evolution reviews and close render locks ([e7c48bb](https://github.com/hack-dance/fclt/commit/e7c48bb5c51b5ab379d2d273936a6f4437b544cd))
+
 ## [2.30.4](https://github.com/hack-dance/fclt/compare/v2.30.3...v2.30.4) (2026-09-08)
 
 ### Bug Fixes
