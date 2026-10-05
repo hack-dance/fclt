@@ -62,3 +62,6 @@ docs/plans/
 /autoresearch.checks.sh
 /autoresearch.ideas.md
 /autoresearch.jsonl
+
+# project env key
+.hack.secret.key
