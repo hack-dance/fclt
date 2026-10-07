@@ -1,3 +1,9 @@
+## [2.32.2](https://github.com/hack-dance/fclt/compare/v2.32.1...v2.32.2) (2026-10-07)
+
+### Bug Fixes
+
+* preserve native provider state during legacy sync ([#93](https://github.com/hack-dance/fclt/issues/93)) ([1df84bb](https://github.com/hack-dance/fclt/commit/1df84bb3cea20637af8768233fe7bb1b27dcfcb9))
+
 ## [2.32.1](https://github.com/hack-dance/fclt/compare/v2.32.0...v2.32.1) (2026-10-07)
 
 ### Bug Fixes
