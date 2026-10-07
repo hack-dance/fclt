@@ -412,17 +412,6 @@ jobs:
           "$TMP_BIN/fclt" status --json >/dev/null
           "$TMP_BIN/facult" --help
 
-      - name: Ensure NPM_TOKEN is configured
-        shell: bash
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${NPM_TOKEN:-}" ]]; then
-            echo "NPM_TOKEN secret is required for npm publish."
-            exit 1
-          fi
-
       - name: Skip publish if version already exists on npm
         id: npm-check
         shell: bash
@@ -440,7 +429,6 @@ jobs:
       - name: Publish to npm
         if: steps.npm-check.outputs.exists == 'false'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
           HUSKY: "0"
         run: npm publish --access public --provenance

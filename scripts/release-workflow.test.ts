@@ -56,3 +56,21 @@ it("publishes checksummed SBOM-bearing release assets with build provenance", as
       : ""
   ).toContain("SHA256SUMS");
 });
+
+it("publishes npm through OIDC without a stored publish token", async () => {
+  const text = await Bun.file(
+    new URL("../.github/workflows/release.yml", import.meta.url)
+  ).text();
+  const workflow = parseYaml(text);
+  const job = workflow.jobs["publish-npm"];
+  expect(job["runs-on"]).toBe("ubuntu-latest");
+  expect(job.permissions["id-token"]).toBe("write");
+  expect(JSON.stringify(job)).not.toContain("NPM_TOKEN");
+  expect(JSON.stringify(job)).not.toContain("NODE_AUTH_TOKEN");
+  expect(
+    job.steps.some(
+      (step: Record<string, unknown>) =>
+        step.run === "npm publish --access public --provenance"
+    )
+  ).toBe(true);
+});
