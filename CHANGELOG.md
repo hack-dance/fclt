@@ -1,3 +1,10 @@
+## [2.32.1](https://github.com/hack-dance/fclt/compare/v2.32.0...v2.32.1) (2026-10-07)
+
+### Bug Fixes
+
+* flush capability output before subprocess exit ([#92](https://github.com/hack-dance/fclt/issues/92)) ([387c24a](https://github.com/hack-dance/fclt/commit/387c24a3c993839e0ece3aa067630940c86290a9))
+* version native plugin capability routing guidance ([#91](https://github.com/hack-dance/fclt/issues/91)) ([963223e](https://github.com/hack-dance/fclt/commit/963223e71953e1ae9e4b278f1de6798fce730965))
+
 ## [2.32.0](https://github.com/hack-dance/fclt/compare/v2.31.4...v2.32.0) (2026-10-07)
 
 ### Features
