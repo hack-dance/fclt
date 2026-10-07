@@ -145,6 +145,10 @@ function printHelp() {
               ["manage/sync", "Preview deprecated broad managed-mode output"],
               ["deploy plan", "Build one immutable per-asset deployment plan"],
               [
+                "capability",
+                "Inspect versioned ownership and deploy one capability",
+              ],
+              [
                 "setup",
                 "Install narrow agent integrations without full managed mode",
               ],
@@ -1363,6 +1367,11 @@ async function main(argv: string[]) {
       return;
     case "manage":
       await import("./manage").then(({ manageCommand }) => manageCommand(rest));
+      return;
+    case "capability":
+      await import("./capability").then(({ capabilityCommand }) =>
+        capabilityCommand(rest)
+      );
       return;
     case "deploy":
       await import("./deployment-plan").then(({ deployCommand }) =>

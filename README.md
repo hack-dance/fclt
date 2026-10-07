@@ -330,6 +330,8 @@ fclt deploy plan \
   --json
 ```
 
+Use [`fclt capability`](./docs/capability-registry.md) for a versioned skills/plugin/MCP registry, host overlays, drift inspection, and one explicitly owned copy deployment. Native plugin files remain independently owned.
+
 `deploy plan` reads canonical, target, and ownership state directly and never writes them. The
 content-addressed JSON plan fails closed on stale hashes, unsupported adapters, unresolved
 variables, lossy translation, corrupt ownership state, and path escape. Ownership is keyed by the
@@ -626,6 +628,7 @@ fclt project render --root <repo>/.ai --project-root <repo> --check --json
 fclt project render --root <repo>/.ai --project-root <repo> --json
 fclt project render --root <repo>/.ai --project-root <repo> --rollback --json
 fclt deploy plan --help
+fclt capability --help
 fclt setup codex-plugin [--dry-run] [--json] [--no-codex-install]
 fclt manage <tool> --dry-run
 fclt sync [tool] --dry-run
