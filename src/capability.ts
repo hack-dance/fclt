@@ -8,6 +8,7 @@ import {
   type CapabilityPlan,
   loadCapabilityContext,
 } from "./capability-plan";
+import { writeCliOutput } from "./util/cli-output";
 
 const FLAGS = new Set([
   "--manifest",
@@ -56,7 +57,7 @@ function required(flags: Map<string, string>, key: string): string {
 }
 export async function capabilityCommand(argv: string[]): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
-    console.log(`fclt capability — versioned ownership and narrow copy deployment
+    await writeCliOutput(`fclt capability — versioned ownership and narrow copy deployment
 
   digest --path <file-or-directory>
   inventory --manifest <registry.json> --source-root <canonical-root> --target-root <home> --state-root <runtime-dir>
@@ -92,7 +93,7 @@ and native/external ownership never mutate targets. See docs/capability-registry
       if (!snapshot) {
         throw new Error("Capability path is missing");
       }
-      console.log(
+      await writeCliOutput(
         JSON.stringify(
           {
             schemaVersion: 1,
@@ -141,7 +142,7 @@ and native/external ownership never mutate targets. See docs/capability-registry
         required(flags, "--expected-plan")
       );
     }
-    console.log(JSON.stringify(result, null, 2));
+    await writeCliOutput(JSON.stringify(result, null, 2));
   } catch (error) {
     // Do not echo parser input or filesystem errors that could contain credential values.
     console.error(
