@@ -1,3 +1,9 @@
+## [2.32.0](https://github.com/hack-dance/fclt/compare/v2.31.4...v2.32.0) (2026-10-07)
+
+### Features
+
+* add versioned capability ownership and narrow deployment ([#90](https://github.com/hack-dance/fclt/issues/90)) ([125dbe4](https://github.com/hack-dance/fclt/commit/125dbe491d83a66a6bbd3ddbb0b09a538bc4be65))
+
 ## [2.31.4](https://github.com/hack-dance/fclt/compare/v2.31.3...v2.31.4) (2026-10-07)
 
 ### Bug Fixes
