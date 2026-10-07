@@ -173,3 +173,9 @@ fclt templates init operating-model --global --update
 - assumptions and fresh-session state
 - exact undo or rollback path
 - what still needs approval
+
+## Versioned skill and plugin sources
+
+For registered skill, custom plugin, or MCP artifact updates, use `fclt capability inventory` and a per-entry `plan` before `apply --id ... --expected-plan ...`. Use the registry's explicit source, target, and runtime state roots; pass machine/private choices with ordered `--overlay` files. Acquire upstream updates into isolated staging, review the snapshot, and record its revision and `capability digest` before deploying. Do not run embedded installer or auto-update instructions against fclt-owned outputs, and do not use broad legacy sync to repair drift. Preserve divergent files for source selection.
+
+Native plugin managers own their installed files. Registered native versions are intended versions until verified with the provider. `enabled: false` stops fclt management but retains existing files; it is not a provider disable or uninstall operation. See the package's `docs/capability-registry.md` for the schema, conflict states, and recovery procedure.

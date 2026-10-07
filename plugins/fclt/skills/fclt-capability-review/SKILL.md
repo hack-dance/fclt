@@ -69,3 +69,5 @@ Drafting or recording does not authorize canonical apply, cross-scope promotion,
 tracker changes, publishing, or scheduler activation. Preserve those gates and native authorization.
 Do not infer effectiveness from apply: verify the producing workflow before resolving source writebacks.
 Keep unchanged, non-actionable scheduled results quiet unless periodic reports were requested.
+
+For a versioned capability registry, use `fclt capability inventory` with explicit source/target/state roots and host/platform overlays. Review source pins, ownership, drift, credential-reference availability, and retained disabled targets. Independent native records describe intent, not observed version or readiness. A successful file deployment does not prove provider discovery or execution. Preserve both sides of a conflict; do not repair it with an upstream installer in a managed output directory.
