@@ -3,6 +3,7 @@
 import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { captureNativePipe } from "../test/native-pipe";
 import { auditPersistenceContract } from "./verify-binary-audit-contract";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -88,6 +89,63 @@ if (status.packageVersion !== version) {
     `Expected status packageVersion ${version}, got ${JSON.stringify(status.packageVersion)}`
   );
 }
+
+async function verifyCapabilityInventoryOutput(): Promise<void> {
+  const root = join(tempHome, "capability-output-proof");
+  const sourceRoot = join(root, "canonical");
+  await mkdir(sourceRoot, { recursive: true });
+  const entries = Array.from({ length: 96 }, (_, index) => ({
+    id: `native-${index}`,
+    kind: "plugin",
+    owner: "native",
+    source: {
+      origin: `https://example.org/${"x".repeat(2048)}/${index}`,
+      revision: `v${index}`,
+    },
+  }));
+  const manifest = join(sourceRoot, "registry.json");
+  await Bun.write(manifest, JSON.stringify({ schemaVersion: 1, entries }));
+  const captured = captureNativePipe({
+    command: [
+      binaryPath,
+      "capability",
+      "inventory",
+      "--manifest",
+      manifest,
+      "--source-root",
+      sourceRoot,
+      "--target-root",
+      join(root, "targets"),
+      "--state-root",
+      join(root, "state"),
+    ],
+  });
+  if (captured.status !== 0) {
+    throw new Error(
+      `Capability inventory pipe capture failed: ${captured.stderr}`
+    );
+  }
+  const stdout = captured.stdout;
+  if (Buffer.byteLength(stdout) <= 128 * 1024) {
+    throw new Error(
+      "Capability inventory output was truncated at a pipe buffer boundary"
+    );
+  }
+  const inventory = JSON.parse(stdout) as {
+    entries: Array<{ id: string; source: { origin: string } }>;
+  };
+  if (
+    JSON.stringify(inventory.entries.map((entry) => entry.id)) !==
+      JSON.stringify(entries.map((entry) => entry.id)) ||
+    inventory.entries.at(-1)?.source.origin !== entries.at(-1)?.source.origin
+  ) {
+    throw new Error(
+      "Capability inventory did not preserve every complete entry"
+    );
+  }
+}
+
+await verifyCapabilityInventoryOutput();
 
 async function verifyProjectRenderer(): Promise<void> {
   const expectedProjectTargets = 9;

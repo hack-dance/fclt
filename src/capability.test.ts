@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { captureNativePipe } from "../test/native-pipe";
 import { applyCapability } from "./capability-apply";
 import { snapshotCapability } from "./capability-files";
 import {
@@ -399,6 +400,50 @@ describe("versioned capability ownership", () => {
     f.entry.source.origin = "https://example.org/skills?token=fixture-value";
     await f.save();
     await expect(f.plan()).rejects.toThrow("must not contain credentials");
+  });
+  it("flushes inventory JSON larger than a pipe buffer before subprocess exit", async () => {
+    const f = await fixture();
+    const entries: CapabilityEntry[] = Array.from(
+      { length: 96 },
+      (_, index) => ({
+        ...f.entry,
+        id: `native-${index}`,
+        owner: "native",
+        target: undefined,
+        source: {
+          origin: `https://example.org/${"x".repeat(2048)}/${index}`,
+          revision: `v${index}`,
+        },
+      })
+    );
+    await f.save(entries);
+    const result = captureNativePipe({
+      command: [
+        process.execPath,
+        resolve(import.meta.dir, "index.ts"),
+        "capability",
+        "inventory",
+        "--manifest",
+        f.options.manifest,
+        "--source-root",
+        f.options.sourceRoot,
+        "--target-root",
+        f.options.targetRoot,
+        "--state-root",
+        f.options.stateRoot,
+      ],
+    });
+    expect(result.status).toBe(0);
+    expect(Buffer.byteLength(result.stdout)).toBeGreaterThan(128 * 1024);
+    const inventory = JSON.parse(result.stdout.toString()) as {
+      entries: Array<{ id: string; source: { origin: string } }>;
+    };
+    expect(inventory.entries.map((entry) => entry.id)).toEqual(
+      entries.map((entry) => entry.id)
+    );
+    expect(inventory.entries.at(-1)?.source.origin).toBe(
+      entries.at(-1)?.source.origin
+    );
   });
   it("exposes the CLI digest and help contract", async () => {
     const f = await fixture();
