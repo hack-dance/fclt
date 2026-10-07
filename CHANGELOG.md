@@ -1,3 +1,9 @@
+## [2.31.4](https://github.com/hack-dance/fclt/compare/v2.31.3...v2.31.4) (2026-10-07)
+
+### Bug Fixes
+
+* publish npm releases through trusted OIDC identity ([#88](https://github.com/hack-dance/fclt/issues/88)) ([378795e](https://github.com/hack-dance/fclt/commit/378795e1ac42733a35d02272cc8ce3a055e967fa))
+
 ## [2.31.3](https://github.com/hack-dance/fclt/compare/v2.31.2...v2.31.3) (2026-09-14)
 
 ### Bug Fixes
