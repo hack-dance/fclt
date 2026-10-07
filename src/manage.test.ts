@@ -28,6 +28,15 @@ import {
 } from "./manage";
 import { facultMachineStateDir, legacyFacultStateDirForRoot } from "./paths";
 
+const BUNDLED_PLUGIN_VERSION = (
+  JSON.parse(
+    await readFile(
+      new URL("../plugins/fclt/.codex-plugin/plugin.json", import.meta.url),
+      "utf8"
+    )
+  ) as { version: string }
+).version;
+
 const DOLLAR = "$";
 
 function placeholder(name: string): string {
@@ -156,7 +165,7 @@ async function setupMutatedCodexPlugin(mutation: InstalledPluginMutation) {
     codexBin,
     home,
     installedMutation: mutation,
-    selectedVersion: "0.1.5",
+    selectedVersion: BUNDLED_PLUGIN_VERSION,
   });
   return {
     home,
@@ -3118,7 +3127,7 @@ describe("syncManagedTools", () => {
     await writeCodexPluginStub({
       codexBin,
       home,
-      selectedVersion: "0.1.5",
+      selectedVersion: BUNDLED_PLUGIN_VERSION,
     });
     await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
       name: "local",
@@ -3176,14 +3185,14 @@ describe("syncManagedTools", () => {
       codexBin,
       home,
       listedVersion: "0.1.2",
-      selectedVersion: "0.1.5",
+      selectedVersion: BUNDLED_PLUGIN_VERSION,
     });
 
     const result = await setupCodexPlugin({ homeDir: home, codexBin });
 
     expect(result.codexInstall.status).toBe("failed");
     expect(result.codexInstall.stderr).toContain(
-      "expected fclt@local version 0.1.5 to be installed and enabled"
+      `expected fclt@local version ${BUNDLED_PLUGIN_VERSION} to be installed and enabled`
     );
     expect(result.codexInstall.verificationCommand).toEqual([
       codexBin,
@@ -3205,14 +3214,14 @@ describe("syncManagedTools", () => {
           "cache",
           "local",
           "fclt",
-          "0.1.5",
+          BUNDLED_PLUGIN_VERSION,
           "selected.txt"
         )
       ).exists()
     ).toBe(false);
   });
 
-  it("upgrades to plugin 0.1.5 while preserving a cached 0.1.2 payload", async () => {
+  it("upgrades to the bundled plugin while preserving a cached 0.1.2 payload", async () => {
     const home = await createTempDir();
     const oldCache = join(
       home,
@@ -3234,7 +3243,7 @@ describe("syncManagedTools", () => {
     await writeCodexPluginStub({
       codexBin,
       home,
-      selectedVersion: "0.1.5",
+      selectedVersion: BUNDLED_PLUGIN_VERSION,
     });
 
     const result = await setupCodexPlugin({ homeDir: home, codexBin });
@@ -3245,7 +3254,7 @@ describe("syncManagedTools", () => {
       "cache",
       "local",
       "fclt",
-      "0.1.5"
+      BUNDLED_PLUGIN_VERSION
     );
 
     expect(result.codexInstall.status).toBe("succeeded");
@@ -3253,7 +3262,7 @@ describe("syncManagedTools", () => {
       (await Bun.file(
         join(installedPath, ".codex-plugin", "plugin.json")
       ).json()) as { version: string }
-    ).toMatchObject({ version: "0.1.5" });
+    ).toMatchObject({ version: BUNDLED_PLUGIN_VERSION });
     expect(
       await Bun.file(join(installedPath, "scripts", "fclt-mcp.cjs")).text()
     ).toContain("audit-read-only-v1");
@@ -3274,7 +3283,7 @@ describe("syncManagedTools", () => {
       codexBin,
       home,
       installedMutation: "symlink",
-      selectedVersion: "0.1.5",
+      selectedVersion: BUNDLED_PLUGIN_VERSION,
     });
 
     const result = await setupCodexPlugin({ homeDir: home, codexBin });
@@ -3312,7 +3321,7 @@ describe("syncManagedTools", () => {
       codexBin,
       home,
       installedMutation: "unreadable-subtree",
-      selectedVersion: "0.1.5",
+      selectedVersion: BUNDLED_PLUGIN_VERSION,
     });
 
     const result = await setupCodexPlugin({ homeDir: home, codexBin });
@@ -3333,7 +3342,7 @@ describe("syncManagedTools", () => {
         "cache",
         "local",
         "fclt",
-        "0.1.5",
+        BUNDLED_PLUGIN_VERSION,
         "unexpected-private"
       ),
       0o700

@@ -21,6 +21,15 @@ import {
 import { facultMachineStateDir } from "./paths";
 import { bootstrapFclt } from "./setup";
 
+const BUNDLED_PLUGIN_VERSION = (
+  JSON.parse(
+    await readFile(
+      new URL("../plugins/fclt/.codex-plugin/plugin.json", import.meta.url),
+      "utf8"
+    )
+  ) as { version: string }
+).version;
+
 const cleanupPaths: string[] = [];
 const cliEntry = join(import.meta.dir, "index.ts");
 
@@ -693,7 +702,7 @@ describe("zero-config setup", () => {
         'import { dirname, join } from "node:path";',
         "const argv = process.argv.slice(2);",
         'const pluginId = "fclt@hack-local";',
-        'const version = "0.1.5";',
+        `const version = ${JSON.stringify(BUNDLED_PLUGIN_VERSION)};`,
         'const installedPath = join(process.env.HOME, ".codex", "plugins", "cache", "hack-local", "fclt", version);',
         'mkdirSync(join(process.env.HOME, ".codex"), { recursive: true });',
         'writeFileSync(join(process.env.HOME, ".codex", "config.toml"), `[plugins."` + pluginId + `"]\nenabled = true\n`);',
