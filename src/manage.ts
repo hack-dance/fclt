@@ -3392,8 +3392,12 @@ async function isEmptyGeneratedMcpConfig(pathValue: string): Promise<boolean> {
   }
   try {
     const parsed = JSON.parse(text) as unknown;
-    const servers = extractServersObject(parsed);
-    return servers != null && Object.keys(servers).length === 0;
+    return (
+      isPlainObject(parsed) &&
+      Object.keys(parsed).length === 1 &&
+      isPlainObject(parsed.mcpServers) &&
+      Object.keys(parsed.mcpServers).length === 0
+    );
   } catch {
     return false;
   }
@@ -4228,6 +4232,18 @@ async function canonicalAgentsExist(rootDir: string): Promise<boolean> {
   }
 }
 
+async function managedTargetIsAbsent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return true;
+    }
+    throw error;
+  }
+}
+
 async function repairManagedToolEntry(args: {
   homeDir: string;
   rootDir: string;
@@ -4240,6 +4256,8 @@ async function repairManagedToolEntry(args: {
     return { entry: args.entry, changed: false };
   }
 
+  // Repair missing surfaces only. Existing provider files must not become owned
+  // implicitly: later unmanage must not remove a native surface without a backup.
   const next: ManagedToolState = { ...args.entry };
   let changed = false;
 
@@ -4247,11 +4265,9 @@ async function repairManagedToolEntry(args: {
     tool === "codex" &&
     toolPaths.skillsDir &&
     (await canonicalSkillsExist(rootDir)) &&
-    next.skillsDir !== toolPaths.skillsDir
+    next.skillsDir !== toolPaths.skillsDir &&
+    (await managedTargetIsAbsent(toolPaths.skillsDir))
   ) {
-    if (!next.skillsBackup) {
-      next.skillsBackup = await backupPath(toolPaths.skillsDir);
-    }
     next.skillsDir = toolPaths.skillsDir;
     changed = true;
   }
@@ -4259,9 +4275,9 @@ async function repairManagedToolEntry(args: {
   if (
     !next.agentsDir &&
     toolPaths.agentsDir &&
-    (await canonicalAgentsExist(rootDir))
+    (await canonicalAgentsExist(rootDir)) &&
+    (await managedTargetIsAbsent(toolPaths.agentsDir))
   ) {
-    next.agentsBackup = await backupPath(toolPaths.agentsDir);
     next.agentsDir = toolPaths.agentsDir;
     changed = true;
   }
@@ -4282,15 +4298,17 @@ async function repairManagedToolEntry(args: {
     toolPaths.pluginMarketplacePath &&
     (await canonicalCodexPluginSourceExists(rootDir))
   ) {
-    if (!next.pluginsDir) {
-      next.pluginsBackup = await backupPath(toolPaths.pluginsDir);
+    if (
+      !next.pluginsDir &&
+      (await managedTargetIsAbsent(toolPaths.pluginsDir))
+    ) {
       next.pluginsDir = toolPaths.pluginsDir;
       changed = true;
     }
-    if (!next.pluginMarketplacePath) {
-      next.pluginMarketplaceBackup = await backupPath(
-        toolPaths.pluginMarketplacePath
-      );
+    if (
+      !next.pluginMarketplacePath &&
+      (await managedTargetIsAbsent(toolPaths.pluginMarketplacePath))
+    ) {
       next.pluginMarketplacePath = toolPaths.pluginMarketplacePath;
       changed = true;
     }
@@ -4327,25 +4345,29 @@ async function repairManagedToolEntry(args: {
       const overridePath = targets.override;
       if (
         preview.managedTargets.includes(agentsPath) &&
-        !next.globalAgentsPath
+        !next.globalAgentsPath &&
+        (await managedTargetIsAbsent(agentsPath))
       ) {
-        next.globalAgentsBackup = await backupPath(agentsPath);
         next.globalAgentsPath = agentsPath;
         changed = true;
       }
       if (
         overridePath &&
         preview.managedTargets.includes(overridePath) &&
-        !next.globalAgentsOverridePath
+        !next.globalAgentsOverridePath &&
+        (await managedTargetIsAbsent(overridePath))
       ) {
-        next.globalAgentsOverrideBackup = await backupPath(overridePath);
         next.globalAgentsOverridePath = overridePath;
         changed = true;
       }
     }
   }
 
-  if (!next.rulesDir && toolPaths.rulesDir) {
+  if (
+    !next.rulesDir &&
+    toolPaths.rulesDir &&
+    (await managedTargetIsAbsent(toolPaths.rulesDir))
+  ) {
     const preview = await syncToolRules({
       homeDir,
       rootDir,
@@ -4354,13 +4376,16 @@ async function repairManagedToolEntry(args: {
       dryRun: true,
     });
     if (preview.managedRulesDir) {
-      next.rulesBackup = await backupPath(toolPaths.rulesDir);
       next.rulesDir = toolPaths.rulesDir;
       changed = true;
     }
   }
 
-  if (!next.toolConfig && toolPaths.toolConfig) {
+  if (
+    !next.toolConfig &&
+    toolPaths.toolConfig &&
+    (await managedTargetIsAbsent(toolPaths.toolConfig))
+  ) {
     const preview = await syncToolConfig({
       homeDir,
       rootDir,
@@ -4369,7 +4394,6 @@ async function repairManagedToolEntry(args: {
       dryRun: true,
     });
     if (preview.managedConfig) {
-      next.toolConfigBackup = await backupPath(toolPaths.toolConfig);
       next.toolConfig = toolPaths.toolConfig;
       changed = true;
     }
@@ -4380,9 +4404,9 @@ async function repairManagedToolEntry(args: {
 
 interface RenderedConflict {
   targetPath: string;
-  sourcePath: string;
+  sourcePath?: string;
   sourceKind: ManagedRenderedTargetState["sourceKind"];
-  reason: "modified" | "unknown_state" | "missing_source";
+  reason: "modified" | "unknown_state" | "missing_source" | "unsafe_target";
 }
 
 interface RenderedApplyPlan {
@@ -4412,14 +4436,31 @@ async function planRenderedTargetConflicts(args: {
     const sourcePath =
       args.desiredSources.get(targetPath) ?? previous[targetPath]?.sourcePath;
     if (!sourcePath) {
-      if (args.desiredWrites.includes(targetPath)) {
-        write.push(targetPath);
-      } else {
-        remove.push(targetPath);
-      }
+      conflicts.push({
+        targetPath,
+        sourceKind: previous[targetPath]?.sourceKind ?? "canonical",
+        reason: "unknown_state",
+      });
       continue;
     }
     const sourceKind = renderedSourceKindForPath(sourcePath);
+    const targetStat = await lstat(targetPath).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") {
+          return null;
+        }
+        throw error;
+      }
+    );
+    if (targetStat && (!targetStat.isFile() || targetStat.nlink !== 1)) {
+      conflicts.push({
+        targetPath,
+        sourcePath,
+        sourceKind,
+        reason: "unsafe_target",
+      });
+      continue;
+    }
     if (args.conflictMode === "overwrite" && sourceKind === "builtin") {
       if (args.desiredWrites.includes(targetPath)) {
         write.push(targetPath);
@@ -4521,17 +4562,19 @@ function logRenderedConflicts(
   for (const conflict of conflicts) {
     const verb = dryRun ? "would skip" : "skipped";
     const state =
-      conflict.reason === "missing_source"
-        ? `canonical source is missing at ${conflict.sourcePath}`
-        : conflict.reason === "unknown_state"
-          ? "no prior managed hash is recorded"
-          : "local edits were detected";
+      conflict.reason === "unsafe_target"
+        ? "the target is not an independent regular file"
+        : conflict.reason === "missing_source"
+          ? `canonical source is missing at ${conflict.sourcePath}`
+          : conflict.reason === "unknown_state"
+            ? "no prior managed hash is recorded"
+            : "local edits were detected";
     const surface =
       conflict.sourceKind === "builtin"
         ? "builtin-backed target"
         : "managed target";
     console.warn(
-      conflict.sourceKind === "builtin"
+      conflict.sourceKind === "builtin" && conflict.reason !== "unsafe_target"
         ? `${tool}: ${verb} ${surface} ${conflict.targetPath} because ${state}. Rerun with "--builtin-conflicts overwrite" to replace it with the latest packaged default.`
         : `${tool}: ${verb} ${surface} ${conflict.targetPath} because ${state}.`
     );

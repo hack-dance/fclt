@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -12,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { runAutosyncService } from "./autosync";
 import { facultBuiltinPackRoot } from "./builtin";
 import { LEGACY_MANAGED_MUTATION_FLAG } from "./legacy-mutation-policy";
 import {
@@ -763,6 +765,33 @@ describe("managed state", () => {
       "utf8"
     );
     expect(livePluginManifest).toContain('"name": "autoresearch"');
+    const livePath = join(
+      home,
+      "plugins",
+      "autoresearch",
+      ".codex-plugin",
+      "plugin.json"
+    );
+    const nativeUpdate = {
+      name: "autoresearch",
+      version: "9.0.0",
+      nativeSetting: true,
+    };
+    await writeJson(livePath, nativeUpdate);
+    await writeJson(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "autoresearch",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      { name: "autoresearch", version: "2.0.0" }
+    );
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(JSON.parse(await readFile(livePath, "utf8"))).toEqual(nativeUpdate);
   });
 
   it("syncs builtin operating-model skills, agents, and global docs by default", async () => {
@@ -2786,7 +2815,7 @@ describe("syncManagedTools", () => {
     );
   });
 
-  it("repairs legacy managed codex state and adopts new global surfaces on sync", async () => {
+  it("repairs legacy managed codex state without replacing existing global surfaces", async () => {
     const home = await createTempDir();
     const rootDir = join(home, ".ai");
 
@@ -2896,15 +2925,9 @@ describe("syncManagedTools", () => {
     await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
 
     const repairedState = await loadManagedState(home);
-    expect(repairedState.tools.codex?.globalAgentsPath).toBe(
-      join(home, ".codex", "AGENTS.md")
-    );
-    expect(repairedState.tools.codex?.toolConfig).toBe(
-      join(home, ".codex", "config.toml")
-    );
-    expect(repairedState.tools.codex?.rulesDir).toBe(
-      join(home, ".codex", "rules")
-    );
+    expect(repairedState.tools.codex?.globalAgentsPath).toBeUndefined();
+    expect(repairedState.tools.codex?.toolConfig).toBeUndefined();
+    expect(repairedState.tools.codex?.rulesDir).toBeUndefined();
     expect(repairedState.tools.codex?.pluginsDir).toBe(join(home, "plugins"));
     expect(repairedState.tools.codex?.pluginMarketplacePath).toBe(
       join(home, ".agents", "plugins", "marketplace.json")
@@ -2917,20 +2940,18 @@ describe("syncManagedTools", () => {
       join(home, ".codex", "AGENTS.md"),
       "utf8"
     );
-    expect(globalAgents).toContain(join(rootDir, "instructions", "REVIEW.md"));
+    expect(globalAgents).toBe("legacy global\n");
 
     const toolConfig = await readFile(
       join(home, ".codex", "config.toml"),
       "utf8"
     );
     expect(toolConfig).toContain('approval_policy = "never"');
-    expect(toolConfig).toContain("TEAM_GUIDE.md");
+    expect(toolConfig).not.toContain("TEAM_GUIDE.md");
 
-    const rulesFile = await readFile(
-      join(home, ".codex", "rules", "default.rules"),
-      "utf8"
-    );
-    expect(rulesFile).toContain('pattern = ["gh"]');
+    expect(
+      await Bun.file(join(home, ".codex", "rules", "default.rules")).exists()
+    ).toBe(false);
 
     const pluginMarketplace = await readFile(
       join(home, ".agents", "plugins", "marketplace.json"),
@@ -3617,5 +3638,266 @@ exit 7
     expect(await readFile(join(home, ".codex", "AGENTS.md"), "utf8")).toBe(
       "# Legacy Global\n"
     );
+  });
+});
+
+describe("provider configuration ownership during sync", () => {
+  it("preserves native config and plugin files while repairing legacy receipts", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const configPath = join(home, ".codex", "config.toml");
+    const nativePlugin = join(home, "plugins", "native", "plugin.json");
+    await mkdir(join(rootDir, "tools", "codex", "plugins", "shared"), {
+      recursive: true,
+    });
+    await Bun.write(
+      join(rootDir, "tools", "codex", "config.toml"),
+      'model = "shared-default"\n'
+    );
+    await writeJson(
+      join(
+        rootDir,
+        "tools",
+        "codex",
+        "plugins",
+        "shared",
+        ".codex-plugin",
+        "plugin.json"
+      ),
+      { name: "shared", version: "1.0.0" }
+    );
+    await mkdir(dirname(configPath), { recursive: true });
+    const live =
+      '# Provider-owned settings\nmodel = "local-choice"\nnew_native_key = true\n\n[plugins.native]\nenabled = false\n';
+    await Bun.write(configPath, live);
+    await writeJson(nativePlugin, { version: "new-native-version" });
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: { tool: "codex", managedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      },
+      home,
+      rootDir
+    );
+    const before = await snapshotTree(home);
+    await syncManagedTools({
+      homeDir: home,
+      rootDir,
+      tool: "codex",
+      dryRun: true,
+    });
+    expect(await snapshotTree(home)).toEqual(before);
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(await readFile(configPath, "utf8")).toBe(live);
+    expect(JSON.parse(await readFile(nativePlugin, "utf8"))).toEqual({
+      version: "new-native-version",
+    });
+    const state = await loadManagedState(home, rootDir);
+    expect(state.tools.codex?.toolConfigBackup).toBeUndefined();
+    expect(state.tools.codex?.pluginsBackup).toBeUndefined();
+    expect(state.tools.codex?.renderedTargets?.[configPath]).toBeUndefined();
+    expect(state.tools.codex?.toolConfig).toBeUndefined();
+    expect(state.tools.codex?.pluginsDir).toBeUndefined();
+    await unmanageTool("codex", { homeDir: home, rootDir });
+    expect(await readFile(configPath, "utf8")).toBe(live);
+    expect(JSON.parse(await readFile(nativePlugin, "utf8"))).toEqual({
+      version: "new-native-version",
+    });
+  });
+
+  it("preserves native keys beside an empty MCP map with no ownership hash", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const targetPath = join(home, ".codex", "mcp.json");
+    await writeJson(join(rootDir, "mcp", "servers.json"), {
+      servers: { shared: { command: "fixture-command" } },
+    });
+    const live = { mcpServers: {}, nativeSetting: { enabled: false } };
+    await writeJson(targetPath, live);
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-01-01T00:00:00.000Z",
+            mcpConfig: targetPath,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual(live);
+  });
+  it("preserves edited native config with current, missing, and stale ownership receipts", async () => {
+    for (const receipt of ["current", "missing", "stale"] as const) {
+      const home = await createTempDir();
+      const rootDir = join(home, ".ai");
+      const sourcePath = join(rootDir, "tools", "codex", "config.toml");
+      const targetPath = join(home, ".codex", "config.toml");
+      await mkdir(dirname(sourcePath), { recursive: true });
+      await Bun.write(sourcePath, 'model = "shared-v1"\n');
+      await manageTool("codex", { homeDir: home, rootDir });
+      const state = await loadManagedState(home, rootDir);
+      if (receipt === "missing") {
+        delete state.tools.codex!.renderedTargets![targetPath];
+      } else if (receipt === "stale") {
+        state.tools.codex!.renderedTargets![targetPath]!.hash = "0".repeat(64);
+      }
+      await saveManagedState(state, home, rootDir);
+      const live =
+        '# Native edit\nmodel = "local-choice"\nnew_key = { enabled = true }\n\n[mcp_servers.native]\ncommand = "native-command"\n\n[plugins.native]\nenabled = false\n';
+      await Bun.write(targetPath, live);
+      await Bun.write(sourcePath, 'model = "shared-v2"\n');
+      const before = await snapshotTree(home);
+      await syncManagedTools({
+        homeDir: home,
+        rootDir,
+        tool: "codex",
+        dryRun: true,
+      });
+      expect(await snapshotTree(home)).toEqual(before);
+      await syncManagedTools({
+        homeDir: home,
+        rootDir,
+        tool: "codex",
+        adoptLive: true,
+        builtinConflictMode: "overwrite",
+      });
+      expect(await readFile(targetPath, "utf8")).toBe(live);
+      expect(await readFile(sourcePath, "utf8")).toBe('model = "shared-v2"\n');
+    }
+  });
+
+  it("can populate the exact empty generated MCP shape without an old hash", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const targetPath = join(home, ".codex", "mcp.json");
+    const servers = { shared: { command: "fixture-command" } };
+    await writeJson(join(rootDir, "mcp", "servers.json"), { servers });
+    await writeJson(targetPath, { mcpServers: {} });
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-01-01T00:00:00.000Z",
+            mcpConfig: targetPath,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(JSON.parse(await readFile(targetPath, "utf8"))).toEqual({
+      mcpServers: servers,
+    });
+  });
+  it("does not write through a provider config replaced by a native symlink or hardlink", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const sourcePath = join(rootDir, "tools", "codex", "config.toml");
+    const targetPath = join(home, ".codex", "config.toml");
+    const nativePath = join(home, "native-config.toml");
+    await mkdir(dirname(sourcePath), { recursive: true });
+    await Bun.write(sourcePath, 'model = "shared-v1"\n');
+    await manageTool("codex", { homeDir: home, rootDir });
+    const original = await readFile(targetPath, "utf8");
+    await Bun.write(nativePath, original);
+    await rm(targetPath);
+    await symlink(nativePath, targetPath);
+    await Bun.write(sourcePath, 'model = "shared-v2"\n');
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(await readFile(nativePath, "utf8")).toBe(original);
+    expect(await readlink(targetPath)).toBe(nativePath);
+    await rm(targetPath);
+    await link(nativePath, targetPath);
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(await readFile(nativePath, "utf8")).toBe(original);
+    expect((await lstat(targetPath)).nlink).toBe(2);
+  });
+
+  it("autosync preserves native settings when legacy repair discovers canonical config", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const sourcePath = join(rootDir, "tools", "codex", "config.toml");
+    const targetPath = join(home, ".codex", "config.toml");
+    await mkdir(dirname(sourcePath), { recursive: true });
+    await mkdir(dirname(targetPath), { recursive: true });
+    await Bun.write(sourcePath, 'model = "shared-default"\n');
+    const live = 'model = "native-choice"\nnew_setting = true\n';
+    await Bun.write(targetPath, live);
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: { tool: "codex", managedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      },
+      home,
+      rootDir
+    );
+    await runAutosyncService(
+      {
+        version: 1,
+        name: "fixture",
+        rootDir,
+        tool: "codex",
+        debounceMs: 1,
+        git: {
+          enabled: false,
+          remote: "origin",
+          branch: "main",
+          intervalMinutes: 10,
+          autoCommit: false,
+          commitPrefix: "fixture",
+          source: "fixture",
+        },
+      },
+      {
+        homeDir: home,
+        expectedRootDir: rootDir,
+        once: true,
+        allowLegacyManagedMutation: true,
+      }
+    );
+    expect(await readFile(targetPath, "utf8")).toBe(live);
+  });
+  it("preserves provider-added agent and rule files absent from ownership receipts", async () => {
+    const home = await createTempDir();
+    const rootDir = join(home, ".ai");
+    const agentsDir = join(home, ".codex", "agents");
+    const rulesDir = join(home, ".codex", "rules");
+    await mkdir(rootDir, { recursive: true });
+    await mkdir(agentsDir, { recursive: true });
+    await mkdir(rulesDir, { recursive: true });
+    const agentPath = join(agentsDir, "native.toml");
+    const rulePath = join(rulesDir, "native.rules");
+    await Bun.write(agentPath, 'name = "native"\n');
+    await Bun.write(rulePath, "# Native rule\n");
+    await saveManagedState(
+      {
+        version: 1,
+        tools: {
+          codex: {
+            tool: "codex",
+            managedAt: "2026-01-01T00:00:00.000Z",
+            agentsDir,
+            rulesDir,
+          },
+        },
+      },
+      home,
+      rootDir
+    );
+    await syncManagedTools({ homeDir: home, rootDir, tool: "codex" });
+    expect(await readFile(agentPath, "utf8")).toBe('name = "native"\n');
+    expect(await readFile(rulePath, "utf8")).toBe("# Native rule\n");
   });
 });
