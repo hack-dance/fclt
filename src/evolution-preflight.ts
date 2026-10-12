@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rmdir } from "node:fs/promises";
 import {
   basename,
@@ -138,10 +138,15 @@ export function linkedWorktreePrimaryCheckout(
   const primary =
     basename(common) === ".git" ? dirname(common) : submodulePrimary(common);
   const self = resolve(topLevel);
+  // --show-toplevel is symlink-resolved; compare against the real project path.
+  let realProject = resolve(projectRoot);
+  try {
+    realProject = realpathSync.native(realProject);
+  } catch {
+    // Keep the lexical path; relative() below then degrades to the root.
+  }
   // Map a subdirectory .ai root to the matching subdirectory in the primary.
-  const matching = primary
-    ? join(primary, relative(self, resolve(projectRoot)))
-    : null;
+  const matching = primary ? join(primary, relative(self, realProject)) : null;
   return {
     linked: true,
     primary: primary && resolve(primary) !== self ? matching : null,

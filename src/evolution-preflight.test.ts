@@ -1,5 +1,12 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
@@ -478,5 +485,31 @@ it("reports missing git as worktree-unresolved with an accurate message", async 
     expect(result.checks).toEqual([]);
   } finally {
     process.env.PATH = previousPath;
+  }
+});
+
+it("names the real primary checkout when the worktree path goes through a symlink", async () => {
+  const { homeDir, git, commit } = await worktreeFixture(
+    "fclt-preflight-link-"
+  );
+  const primary = join(homeDir, "repo");
+  await mkdir(primary, { recursive: true });
+  await git(primary, "init", "-q");
+  await commit(primary);
+  const worktree = join(homeDir, "wt");
+  await git(primary, "worktree", "add", "-q", "--detach", worktree);
+  await mkdir(join(worktree, "packages", "app", ".ai"), { recursive: true });
+  const alias = join(homeDir, "alias");
+  await symlink(homeDir, alias);
+  for (const sub of ["", join("packages", "app")]) {
+    const rootDir = join(alias, "wt", sub, ".ai");
+    await mkdir(rootDir, { recursive: true });
+    const result = await preflightEvolutionLoop({
+      homeDir,
+      rootDir,
+      scope: "project",
+    });
+    expect(result.blocker).toBe("linked-worktree-without-loop-config");
+    expect(result.primaryCheckout).toBe(join(primary, sub));
   }
 });
