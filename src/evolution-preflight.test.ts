@@ -1,7 +1,8 @@
 import { afterEach, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { runFixtureGit } from "../test/git-fixture";
 import { enableEvolutionLoop } from "./evolution-loop";
 import { preflightEvolutionLoop } from "./evolution-preflight";
 import {
@@ -146,3 +147,173 @@ for (const scenario of [
     ).toBe(false);
   });
 }
+
+it("blocks a generated worktree without loop config and names the primary checkout", async () => {
+  const homeDir = await realpath(
+    await mkdtemp(join(tmpdir(), "fclt-preflight-wt-"))
+  );
+  roots.push(homeDir);
+  const primary = join(homeDir, "repo");
+  await mkdir(join(primary, ".ai"), { recursive: true });
+  const git = (cwd: string, ...argv: string[]) =>
+    runFixtureGit({
+      argv: ["-C", cwd, ...argv],
+      repoDir: primary,
+      homeDir: join(homeDir, ".git-home"),
+    });
+  await git(primary, "init", "-q");
+  await Bun.write(join(primary, ".gitignore"), ".ai/\n");
+  await git(primary, "add", ".gitignore");
+  await git(
+    primary,
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "init"
+  );
+  await Bun.write(
+    join(primary, ".ai", "reconciliation.json"),
+    JSON.stringify({
+      version: 1,
+      sources: [{ id: "writebacks", type: "writebacks" }],
+    })
+  );
+  await enableEvolutionLoop({
+    homeDir,
+    rootDir: join(primary, ".ai"),
+    scope: "project",
+  });
+  const worktree = join(homeDir, "wt");
+  await git(primary, "worktree", "add", "-q", "--detach", worktree);
+  const rootDir = join(worktree, ".ai");
+  const result = await preflightEvolutionLoop({
+    homeDir,
+    rootDir,
+    scope: "project",
+  });
+  expect(result.status).toBe("blocked");
+  expect(result.blocker).toBe("linked-worktree-without-loop-config");
+  expect(result.primaryCheckout).toBe(primary);
+  expect(result.loopInvoked).toBe(false);
+  expect(result.checks).toEqual([]);
+  expect(result.recovery).toContain(primary);
+  const primaryResult = await preflightEvolutionLoop({
+    homeDir,
+    rootDir: join(primary, ".ai"),
+    scope: "project",
+  });
+  expect(primaryResult.status).toBe("ready");
+  expect(primaryResult.blocker).toBeNull();
+  const previous = {
+    dir: process.env.GIT_DIR,
+    common: process.env.GIT_COMMON_DIR,
+  };
+  process.env.GIT_DIR = join(homeDir, "missing-git-dir");
+  process.env.GIT_COMMON_DIR = join(homeDir, "missing-common-dir");
+  try {
+    const inherited = await preflightEvolutionLoop({
+      homeDir,
+      rootDir,
+      scope: "project",
+    });
+    expect(inherited.blocker).toBe("linked-worktree-without-loop-config");
+    expect(inherited.primaryCheckout).toBe(primary);
+    expect(inherited.checks).toEqual([]);
+  } finally {
+    for (const [name, value] of [
+      ["GIT_DIR", previous.dir],
+      ["GIT_COMMON_DIR", previous.common],
+    ] as const) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+});
+
+it("does not report a configured but disabled linked worktree as missing config", async () => {
+  const homeDir = await realpath(
+    await mkdtemp(join(tmpdir(), "fclt-preflight-wt-"))
+  );
+  roots.push(homeDir);
+  const primary = join(homeDir, "repo");
+  await mkdir(primary, { recursive: true });
+  const git = (cwd: string, ...argv: string[]) =>
+    runFixtureGit({
+      argv: ["-C", cwd, ...argv],
+      repoDir: primary,
+      homeDir: join(homeDir, ".git-home"),
+    });
+  await git(primary, "init", "-q");
+  await git(
+    primary,
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "init"
+  );
+  const worktree = join(homeDir, "wt");
+  await git(primary, "worktree", "add", "-q", "--detach", worktree);
+  const rootDir = join(worktree, ".ai");
+  await mkdir(rootDir, { recursive: true });
+  await Bun.write(
+    join(rootDir, "reconciliation.json"),
+    JSON.stringify({
+      version: 1,
+      sources: [{ id: "writebacks", type: "writebacks" }],
+    })
+  );
+  await enableEvolutionLoop({ homeDir, rootDir, scope: "project" });
+  const config = JSON.parse(
+    await Bun.file(facultAiEvolutionLoopConfigPath(homeDir, rootDir)).text()
+  );
+  await Bun.write(
+    facultAiEvolutionLoopConfigPath(homeDir, rootDir),
+    JSON.stringify({ ...config, enabled: false })
+  );
+  const result = await preflightEvolutionLoop({
+    homeDir,
+    rootDir,
+    scope: "project",
+  });
+  expect(result.status).toBe("blocked");
+  expect(result.blocker).toBe("loop-disabled");
+  expect(result.checks.length).toBeGreaterThan(0);
+});
+
+it("does not treat a --separate-git-dir checkout as a generated worktree", async () => {
+  const homeDir = await realpath(
+    await mkdtemp(join(tmpdir(), "fclt-preflight-sep-"))
+  );
+  roots.push(homeDir);
+  const primary = join(homeDir, "repo");
+  await mkdir(primary, { recursive: true });
+  await runFixtureGit({
+    argv: [
+      "init",
+      "-q",
+      "--separate-git-dir",
+      join(homeDir, "meta.git"),
+      primary,
+    ],
+    repoDir: primary,
+    homeDir: join(homeDir, ".git-home"),
+  });
+  const result = await preflightEvolutionLoop({
+    homeDir,
+    rootDir: join(primary, ".ai"),
+    scope: "project",
+  });
+  expect(result.blocker).not.toBe("linked-worktree-without-loop-config");
+  expect(result.loopInvoked).toBe(false);
+});

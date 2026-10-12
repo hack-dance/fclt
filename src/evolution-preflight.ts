@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, rmdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { loadEvolutionLoopConfig } from "./evolution-loop";
 import {
   facultAiActivityHistoryDir,
@@ -22,6 +24,66 @@ import {
   loadReconciliationConfig,
   selectReconciliationSources,
 } from "./reconciliation-config";
+import { withoutLocalGitEnvironment } from "./util/git-environment";
+
+/**
+ * Resolve the primary checkout when a project root is a linked (generated) Git
+ * worktree. `linked` is true whenever `.git` is a pointer file; `primary` is
+ * null when it cannot be resolved (the worktree is still treated as linked).
+ */
+export function linkedWorktreePrimaryCheckout(projectRoot: string): {
+  linked: boolean;
+  primary: string | null;
+} {
+  const unlinked = { linked: false, primary: null };
+  try {
+    if (!lstatSync(join(projectRoot, ".git")).isFile()) {
+      return unlinked;
+    }
+  } catch {
+    return unlinked;
+  }
+  // A `.git` pointer file alone also describes submodules and
+  // `--separate-git-dir` checkouts. Only a linked worktree has a private Git
+  // directory that differs from the shared common directory.
+  const result = spawnSync(
+    "git",
+    [
+      "-C",
+      projectRoot,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-dir",
+      "--git-common-dir",
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...withoutLocalGitEnvironment(process.env),
+        GIT_OPTIONAL_LOCKS: "0",
+      },
+      stdio: ["ignore", "pipe", "ignore"],
+    }
+  );
+  const [gitDir, commonDir] =
+    result.status === 0 && typeof result.stdout === "string"
+      ? result.stdout.trim().split("\n")
+      : [];
+  if (!(gitDir && commonDir)) {
+    // Unresolvable pointer: treat as linked so preflight never probes writes.
+    return { linked: true, primary: null };
+  }
+  if (resolve(gitDir) === resolve(commonDir)) {
+    return unlinked;
+  }
+  const common = resolve(commonDir);
+  const primary = basename(common) === ".git" ? dirname(common) : null;
+  return {
+    linked: true,
+    primary:
+      primary && resolve(primary) !== resolve(projectRoot) ? primary : null,
+  };
+}
 
 /** Probe the actual execution environment without reconciling or creating queue state. */
 export async function preflightEvolutionLoop(args: {
@@ -43,13 +105,44 @@ export async function preflightEvolutionLoop(args: {
         [];
       let enabled = false;
       let configError: string | undefined;
+      let loopConfigAbsent = false;
       try {
         const config = await loadEvolutionLoopConfig(args);
+        loopConfigAbsent = config === null;
         enabled = config?.enabled === true;
         const reconciliation = await loadReconciliationConfig(args);
         selectReconciliationSources(reconciliation.config, config?.sourceIds);
       } catch (error) {
         configError = error instanceof Error ? error.message : String(error);
+      }
+      const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
+      const worktree = projectRoot
+        ? linkedWorktreePrimaryCheckout(projectRoot)
+        : { linked: false, primary: null };
+      const reviewConfigAbsent =
+        loopConfigAbsent ||
+        !existsSync(join(args.rootDir, "reconciliation.json"));
+      if (worktree.linked && reviewConfigAbsent) {
+        const primaryCheckout = worktree.primary;
+        const target = primaryCheckout
+          ? `the primary checkout ${primaryCheckout}`
+          : "the repository's primary checkout (it could not be resolved from this worktree)";
+        // `.ai/` review configuration is machine-local and ignored, so a
+        // generated worktree never carries the enrolled loop. Probing writes
+        // here would only create orphaned per-worktree state directories.
+        return {
+          version: 1,
+          status: "blocked" as const,
+          blocker: "linked-worktree-without-loop-config",
+          queueAvailable: false,
+          loopInvoked: false,
+          runtime: process.execPath,
+          enabled,
+          configError,
+          primaryCheckout,
+          checks: [],
+          recovery: `This is a generated/linked worktree without the enrolled review configuration. Run the scheduled review from ${target} (task execution environment: local, not a generated worktree). Do not invoke the loop here.`,
+        };
       }
       const paths = new Set([
         facultAiActivityHistoryDir(args.homeDir, args.rootDir),
@@ -86,6 +179,14 @@ export async function preflightEvolutionLoop(args: {
         version: 1,
         status:
           enabled && !configError && denied.length === 0 ? "ready" : "blocked",
+        blocker:
+          denied.length > 0
+            ? "state-write-denied"
+            : configError
+              ? "loop-config-invalid"
+              : enabled
+                ? null
+                : "loop-disabled",
         queueAvailable: false,
         loopInvoked: false,
         runtime: process.execPath,
