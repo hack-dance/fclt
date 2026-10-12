@@ -1,7 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rmdir } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { loadEvolutionLoopConfig } from "./evolution-loop";
 import {
   facultAiActivityHistoryDir,
@@ -94,11 +101,24 @@ export function linkedWorktreePrimaryCheckout(
     "--git-common-dir",
     "--show-toplevel",
   ]);
-  const [gitDir, commonDir, topLevel] =
+  const lines =
     result.status === 0 && typeof result.stdout === "string"
       ? result.stdout.trim().split("\n")
       : [];
-  if (!(gitDir && commonDir)) {
+  // Git < 2.31 echoes the unknown --path-format option instead of failing;
+  // accept only exactly three absolute paths.
+  const parsed =
+    lines.length === 3 && lines.every((line) => isAbsolute(line)) ? lines : [];
+  const [gitDir, commonDir, topLevel] = parsed;
+  if (lines.length > 0 && parsed.length === 0) {
+    return {
+      linked: false,
+      primary: null,
+      unresolved:
+        "git returned unexpected rev-parse output (git 2.31 or newer is required)",
+    };
+  }
+  if (!(gitDir && commonDir && topLevel)) {
     if (!hasGitMetadataAbove(projectRoot)) {
       return { linked: false, primary: null, unresolved: null };
     }
@@ -117,10 +137,14 @@ export function linkedWorktreePrimaryCheckout(
   const common = resolve(commonDir);
   const primary =
     basename(common) === ".git" ? dirname(common) : submodulePrimary(common);
-  const self = topLevel ? resolve(topLevel) : resolve(projectRoot);
+  const self = resolve(topLevel);
+  // Map a subdirectory .ai root to the matching subdirectory in the primary.
+  const matching = primary
+    ? join(primary, relative(self, resolve(projectRoot)))
+    : null;
   return {
     linked: true,
-    primary: primary && resolve(primary) !== self ? primary : null,
+    primary: primary && resolve(primary) !== self ? matching : null,
     unresolved: null,
   };
 }

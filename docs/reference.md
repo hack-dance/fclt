@@ -511,9 +511,11 @@ the configuration is absent, it returns `linked-worktree-without-loop-config`
 with `primaryCheckout` set when it can be resolved (including worktrees of
 submodules), probes no directories, and creates no per-worktree state. Run the
 scheduled review from the primary checkout instead; do not run
-`fclt ai review init` in the worktree. If Git is unavailable, times out, or
-cannot read existing metadata, preflight returns `worktree-unresolved` instead
-of guessing. A successful probe is point-in-time evidence, not a
+`fclt ai review init` in the worktree. If Git is unavailable, times out, is
+older than 2.31, or cannot read existing metadata while the review configuration
+is also absent, preflight returns `worktree-unresolved` instead of guessing.
+`primaryCheckout` names the matching subdirectory when `.ai` is not at the
+repository root. A successful probe is point-in-time evidence, not a
 reservation or a guarantee against a later permission change. Configure narrowly
 scoped host write allowances; fclt does not alter the host sandbox policy.
 

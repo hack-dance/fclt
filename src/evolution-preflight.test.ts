@@ -374,7 +374,7 @@ for (const subdir of ["", "packages/app"]) {
       scope: "project",
     });
     expect(result.blocker).toBe("linked-worktree-without-loop-config");
-    expect(result.primaryCheckout).toBe(primary);
+    expect(result.primaryCheckout).toBe(join(primary, subdir));
     expect(result.checks).toEqual([]);
     expect(result.configError ?? "").not.toContain("review init");
     expect(result.recovery).toContain("Do not run `fclt ai review init`");
