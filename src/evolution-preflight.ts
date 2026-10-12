@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rmdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadEvolutionLoopConfig } from "./evolution-loop";
@@ -26,62 +26,102 @@ import {
 } from "./reconciliation-config";
 import { withoutLocalGitEnvironment } from "./util/git-environment";
 
-/**
- * Resolve the primary checkout when a project root is a linked (generated) Git
- * worktree. `linked` is true whenever `.git` is a pointer file; `primary` is
- * null when it cannot be resolved (the worktree is still treated as linked).
- */
-export function linkedWorktreePrimaryCheckout(projectRoot: string): {
+const GIT_TIMEOUT_MS = 5000;
+const REVIEW_INIT_HINT_RE = /\s*Run fclt ai review init\.?/;
+
+export interface WorktreeClassification {
   linked: boolean;
   primary: string | null;
-} {
-  const unlinked = { linked: false, primary: null };
-  try {
-    if (!lstatSync(join(projectRoot, ".git")).isFile()) {
-      return unlinked;
+  /** Set when Git metadata exists but could not be inspected. */
+  unresolved: string | null;
+}
+
+function runGitProbe(argv: string[]) {
+  return spawnSync("git", argv, {
+    encoding: "utf8",
+    env: {
+      ...withoutLocalGitEnvironment(process.env),
+      GIT_OPTIONAL_LOCKS: "0",
+    },
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: GIT_TIMEOUT_MS,
+  });
+}
+
+function hasGitMetadataAbove(start: string): boolean {
+  let current = resolve(start);
+  for (;;) {
+    if (existsSync(join(current, ".git"))) {
+      return true;
     }
-  } catch {
-    return unlinked;
+    const parent = dirname(current);
+    if (parent === current) {
+      return false;
+    }
+    current = parent;
   }
-  // A `.git` pointer file alone also describes submodules and
-  // `--separate-git-dir` checkouts. Only a linked worktree has a private Git
-  // directory that differs from the shared common directory.
-  const result = spawnSync(
-    "git",
-    [
-      "-C",
-      projectRoot,
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-dir",
-      "--git-common-dir",
-    ],
-    {
-      encoding: "utf8",
-      env: {
-        ...withoutLocalGitEnvironment(process.env),
-        GIT_OPTIONAL_LOCKS: "0",
-      },
-      stdio: ["ignore", "pipe", "ignore"],
-    }
-  );
-  const [gitDir, commonDir] =
+}
+
+function submodulePrimary(commonDir: string): string | null {
+  const result = runGitProbe([
+    `--git-dir=${commonDir}`,
+    "config",
+    "--get",
+    "core.worktree",
+  ]);
+  const value =
+    result.status === 0 && typeof result.stdout === "string"
+      ? result.stdout.trim()
+      : "";
+  return value ? resolve(commonDir, value) : null;
+}
+
+/**
+ * Classify the repository containing `projectRoot` (which may be a
+ * subdirectory). Only a linked worktree has a private Git directory that
+ * differs from the shared common directory; submodules and
+ * `--separate-git-dir` checkouts are not linked.
+ */
+export function linkedWorktreePrimaryCheckout(
+  projectRoot: string
+): WorktreeClassification {
+  const result = runGitProbe([
+    "-C",
+    projectRoot,
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-dir",
+    "--git-common-dir",
+    "--show-toplevel",
+  ]);
+  const [gitDir, commonDir, topLevel] =
     result.status === 0 && typeof result.stdout === "string"
       ? result.stdout.trim().split("\n")
       : [];
   if (!(gitDir && commonDir)) {
-    // Unresolvable pointer: treat as linked so preflight never probes writes.
-    return { linked: true, primary: null };
+    if (!hasGitMetadataAbove(projectRoot)) {
+      return { linked: false, primary: null, unresolved: null };
+    }
+    const error = result.error as NodeJS.ErrnoException | undefined;
+    const unresolved =
+      error?.code === "ENOENT"
+        ? "git is not available on PATH in this execution environment"
+        : error?.code === "ETIMEDOUT" || result.signal
+          ? `git did not answer within ${GIT_TIMEOUT_MS} ms`
+          : "git could not read this repository's metadata";
+    return { linked: false, primary: null, unresolved };
   }
   if (resolve(gitDir) === resolve(commonDir)) {
-    return unlinked;
+    return { linked: false, primary: null, unresolved: null };
   }
   const common = resolve(commonDir);
-  const primary = basename(common) === ".git" ? dirname(common) : null;
+  const primary =
+    basename(common) === ".git" ? dirname(common) : submodulePrimary(common);
+  const self = topLevel ? resolve(topLevel) : resolve(projectRoot);
   return {
     linked: true,
-    primary:
-      primary && resolve(primary) !== resolve(projectRoot) ? primary : null,
+    primary: primary && resolve(primary) !== self ? primary : null,
+    unresolved: null,
   };
 }
 
@@ -116,32 +156,39 @@ export async function preflightEvolutionLoop(args: {
         configError = error instanceof Error ? error.message : String(error);
       }
       const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
-      const worktree = projectRoot
+      const worktree: WorktreeClassification = projectRoot
         ? linkedWorktreePrimaryCheckout(projectRoot)
-        : { linked: false, primary: null };
+        : { linked: false, primary: null, unresolved: null };
       const reviewConfigAbsent =
         loopConfigAbsent ||
         !existsSync(join(args.rootDir, "reconciliation.json"));
-      if (worktree.linked && reviewConfigAbsent) {
-        const primaryCheckout = worktree.primary;
-        const target = primaryCheckout
-          ? `the primary checkout ${primaryCheckout}`
-          : "the repository's primary checkout (it could not be resolved from this worktree)";
+      if ((worktree.linked || worktree.unresolved) && reviewConfigAbsent) {
         // `.ai/` review configuration is machine-local and ignored, so a
         // generated worktree never carries the enrolled loop. Probing writes
         // here would only create orphaned per-worktree state directories.
+        const primaryCheckout = worktree.primary;
+        const target = primaryCheckout
+          ? `the primary checkout ${primaryCheckout}`
+          : "the repository's primary checkout (it could not be resolved from here)";
+        const recovery = worktree.unresolved
+          ? `Review configuration is absent and the checkout type could not be determined: ${worktree.unresolved}. Fix Git access in the task execution environment and run preflight again. Do not run \`fclt ai review init\` or invoke the loop here.`
+          : `This is a generated/linked worktree without the enrolled review configuration. Run the scheduled review from ${target} (task execution environment: local, not a generated worktree). Do not run \`fclt ai review init\` or invoke the loop here; that would create orphaned per-worktree state.`;
         return {
           version: 1,
           status: "blocked" as const,
-          blocker: "linked-worktree-without-loop-config",
+          blocker: worktree.unresolved
+            ? "worktree-unresolved"
+            : "linked-worktree-without-loop-config",
           queueAvailable: false,
           loopInvoked: false,
           runtime: process.execPath,
           enabled,
-          configError,
+          configError: configError
+            ? configError.replace(REVIEW_INIT_HINT_RE, "")
+            : undefined,
           primaryCheckout,
           checks: [],
-          recovery: `This is a generated/linked worktree without the enrolled review configuration. Run the scheduled review from ${target} (task execution environment: local, not a generated worktree). Do not invoke the loop here.`,
+          recovery,
         };
       }
       const paths = new Set([
@@ -192,6 +239,7 @@ export async function preflightEvolutionLoop(args: {
         runtime: process.execPath,
         enabled,
         configError,
+        primaryCheckout: null,
         checks,
         recovery:
           denied.length > 0
