@@ -1,3 +1,12 @@
+## [2.32.3](https://github.com/hack-dance/fclt/compare/v2.32.2...v2.32.3) (2026-10-20)
+
+### Bug Fixes
+
+* **loop:** block preflight in generated worktrees without review config (HACK-1045) ([a29dcd2](https://github.com/hack-dance/fclt/commit/a29dcd252fbf9c6a427d359b471823bd5d6b8bca))
+* **loop:** close HACK-1045 review gaps in worktree preflight ([6336a8c](https://github.com/hack-dance/fclt/commit/6336a8c230317d3997b957d139c98dcb034eb834))
+* **loop:** realpath the project root before mapping the primary checkout ([7c353e6](https://github.com/hack-dance/fclt/commit/7c353e6de49a57e65dc1796e1f801e0abb42d09b))
+* **loop:** reject pre-2.31 rev-parse output and map subdirectory primaries ([3010290](https://github.com/hack-dance/fclt/commit/30102901293af561c42df0c1ba294295b2bcecdb))
+
 ## [2.32.2](https://github.com/hack-dance/fclt/compare/v2.32.1...v2.32.2) (2026-10-07)
 
 ### Bug Fixes
