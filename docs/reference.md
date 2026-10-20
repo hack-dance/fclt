@@ -500,7 +500,22 @@ trust a generated checkout or bypass the runtime manager.
 Preflight creates missing state/review directories and removes temporary write
 probes. It does not invoke reconciliation, acquire the semantic loop lock, or
 create queue state. Its `ready`/`blocked` result reports each required directory
-and the recovery action. A successful probe is point-in-time evidence, not a
+(`checks`), a machine-readable `blocker` code, `primaryCheckout`, and the
+recovery action. Blocker codes: `null` (ready), `state-write-denied`,
+`loop-config-invalid`, `loop-disabled`, `linked-worktree-without-loop-config`,
+and `worktree-unresolved`.
+
+Generated or linked Git worktrees do not carry the ignored `.ai/` review
+configuration. When preflight runs in one (including from a subdirectory) and
+the configuration is absent, it returns `linked-worktree-without-loop-config`
+with `primaryCheckout` set when it can be resolved (including worktrees of
+submodules), probes no directories, and creates no per-worktree state. Run the
+scheduled review from the primary checkout instead; do not run
+`fclt ai review init` in the worktree. If Git is unavailable, times out, is
+older than 2.31, or cannot read existing metadata while the review configuration
+is also absent, preflight returns `worktree-unresolved` instead of guessing.
+`primaryCheckout` names the matching subdirectory when `.ai` is not at the
+repository root. A successful probe is point-in-time evidence, not a
 reservation or a guarantee against a later permission change. Configure narrowly
 scoped host write allowances; fclt does not alter the host sandbox policy.
 
