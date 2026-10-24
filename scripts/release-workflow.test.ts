@@ -106,8 +106,8 @@ it("keeps CI and release runtime pins consistent", async () => {
   for (const [runtime, expected] of [
     ["bun", "1.4.4"],
     ["node", "24.22.1"],
-  ]) {
-    expect(versions[runtime!]!.length).toBeGreaterThan(0);
-    expect([...new Set(versions[runtime!]!)]).toEqual([expected]);
+  ] as const) {
+    expect(versions[runtime]!.length).toBeGreaterThan(0);
+    expect([...new Set(versions[runtime]!)]).toEqual([expected]);
   }
 });
