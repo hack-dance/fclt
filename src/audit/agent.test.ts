@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
+import { restoreEnvironmentVariable } from "../../test/environment";
 import {
   evaluateAgentAudit,
   makeAgentRuntimeDir,
@@ -758,12 +759,18 @@ for (const tool of ["claude", "codex"] as const) {
         SERVICE_TOKEN: process.env.SERVICE_TOKEN,
       };
       process.env.PATH = `${bin}${delimiter}${previousPath ?? ""}`;
-      process.env.ANTHROPIC_API_KEY =
-        tool === "claude" ? "fixture-environment-auth" : undefined;
-      process.env.CLAUDE_CODE_OAUTH_TOKEN =
-        tool === "claude" ? "fixture-environment-auth" : undefined;
-      process.env.OPENAI_API_KEY =
-        tool === "codex" ? "fixture-environment-auth" : undefined;
+      restoreEnvironmentVariable(
+        "ANTHROPIC_API_KEY",
+        tool === "claude" ? "fixture-environment-auth" : undefined
+      );
+      restoreEnvironmentVariable(
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        tool === "claude" ? "fixture-environment-auth" : undefined
+      );
+      restoreEnvironmentVariable(
+        "OPENAI_API_KEY",
+        tool === "codex" ? "fixture-environment-auth" : undefined
+      );
       process.env.ALL_PROXY = "http://fixture.invalid";
       process.env.AWS_SECRET_ACCESS_KEY = "fixture-unrelated-secret";
       process.env.BASH_ENV = join(dir, "fixture-hook");
@@ -849,10 +856,10 @@ for (const tool of ["claude", "codex"] as const) {
           const profileBackup = `${authMarkers[tool]}.disabled`;
           await rename(authMarkers[tool], profileBackup);
           if (tool === "claude") {
-            process.env.ANTHROPIC_API_KEY = undefined;
-            process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
+            restoreEnvironmentVariable("ANTHROPIC_API_KEY", undefined);
+            restoreEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", undefined);
           } else {
-            process.env.OPENAI_API_KEY = undefined;
+            restoreEnvironmentVariable("OPENAI_API_KEY", undefined);
           }
           const nativeReport = await runAgentAudit({
             argv: ["ok-skill", "--with", tool, "--max-items", "1"],
@@ -875,10 +882,10 @@ for (const tool of ["claude", "codex"] as const) {
 
         if (phase === "profile-precondition") {
           if (tool === "claude") {
-            process.env.ANTHROPIC_API_KEY = undefined;
-            process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
+            restoreEnvironmentVariable("ANTHROPIC_API_KEY", undefined);
+            restoreEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", undefined);
           } else {
-            process.env.OPENAI_API_KEY = undefined;
+            restoreEnvironmentVariable("OPENAI_API_KEY", undefined);
           }
           await expect(
             runAgentAudit({
@@ -958,22 +965,51 @@ for (const tool of ["claude", "codex"] as const) {
           expect(await readdir(scratch)).toEqual([]);
         }
       } finally {
-        process.env.PATH = previousPath;
-        process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;
-        process.env.CLAUDE_CODE_OAUTH_TOKEN = previousClaudeOauthToken;
-        process.env.OPENAI_API_KEY = previousOpenAiApiKey;
-        process.env.ALL_PROXY = unrelatedEnvironment.ALL_PROXY;
-        process.env.AWS_SECRET_ACCESS_KEY =
-          unrelatedEnvironment.AWS_SECRET_ACCESS_KEY;
-        process.env.BASH_ENV = unrelatedEnvironment.BASH_ENV;
-        process.env.DATABASE_URL = unrelatedEnvironment.DATABASE_URL;
-        process.env.GH_TOKEN = unrelatedEnvironment.GH_TOKEN;
-        process.env.GIT_CONFIG_COUNT = unrelatedEnvironment.GIT_CONFIG_COUNT;
-        process.env.GIT_SSH_COMMAND = unrelatedEnvironment.GIT_SSH_COMMAND;
-        process.env.HTTP_PROXY = unrelatedEnvironment.HTTP_PROXY;
-        process.env.HTTPS_PROXY = unrelatedEnvironment.HTTPS_PROXY;
-        process.env.NODE_OPTIONS = unrelatedEnvironment.NODE_OPTIONS;
-        process.env.SERVICE_TOKEN = unrelatedEnvironment.SERVICE_TOKEN;
+        restoreEnvironmentVariable("PATH", previousPath);
+        restoreEnvironmentVariable(
+          "ANTHROPIC_API_KEY",
+          previousAnthropicApiKey
+        );
+        restoreEnvironmentVariable(
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          previousClaudeOauthToken
+        );
+        restoreEnvironmentVariable("OPENAI_API_KEY", previousOpenAiApiKey);
+        restoreEnvironmentVariable("ALL_PROXY", unrelatedEnvironment.ALL_PROXY);
+        restoreEnvironmentVariable(
+          "AWS_SECRET_ACCESS_KEY",
+          unrelatedEnvironment.AWS_SECRET_ACCESS_KEY
+        );
+        restoreEnvironmentVariable("BASH_ENV", unrelatedEnvironment.BASH_ENV);
+        restoreEnvironmentVariable(
+          "DATABASE_URL",
+          unrelatedEnvironment.DATABASE_URL
+        );
+        restoreEnvironmentVariable("GH_TOKEN", unrelatedEnvironment.GH_TOKEN);
+        restoreEnvironmentVariable(
+          "GIT_CONFIG_COUNT",
+          unrelatedEnvironment.GIT_CONFIG_COUNT
+        );
+        restoreEnvironmentVariable(
+          "GIT_SSH_COMMAND",
+          unrelatedEnvironment.GIT_SSH_COMMAND
+        );
+        restoreEnvironmentVariable(
+          "HTTP_PROXY",
+          unrelatedEnvironment.HTTP_PROXY
+        );
+        restoreEnvironmentVariable(
+          "HTTPS_PROXY",
+          unrelatedEnvironment.HTTPS_PROXY
+        );
+        restoreEnvironmentVariable(
+          "NODE_OPTIONS",
+          unrelatedEnvironment.NODE_OPTIONS
+        );
+        restoreEnvironmentVariable(
+          "SERVICE_TOKEN",
+          unrelatedEnvironment.SERVICE_TOKEN
+        );
       }
     });
   }
@@ -1186,8 +1222,8 @@ beforeAll(async () => {
   let evaluation: Awaited<ReturnType<typeof evaluateAgentAudit>> | undefined;
   let commandError: unknown;
   process.env.PATH = `${bin}${delimiter}${previousEnvironment.PATH ?? ""}`;
-  process.env.ANTHROPIC_API_KEY = undefined;
-  process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
+  restoreEnvironmentVariable("ANTHROPIC_API_KEY", undefined);
+  restoreEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", undefined);
   process.env.OPENAI_API_KEY = "fixture-codex-cold-start-auth";
   try {
     evaluation = await evaluateAgentAudit({
@@ -1202,11 +1238,19 @@ beforeAll(async () => {
     commandError = error;
   } finally {
     clearTimeout(deadline);
-    process.env.PATH = previousEnvironment.PATH;
-    process.env.ANTHROPIC_API_KEY = previousEnvironment.ANTHROPIC_API_KEY;
-    process.env.CLAUDE_CODE_OAUTH_TOKEN =
-      previousEnvironment.CLAUDE_CODE_OAUTH_TOKEN;
-    process.env.OPENAI_API_KEY = previousEnvironment.OPENAI_API_KEY;
+    restoreEnvironmentVariable("PATH", previousEnvironment.PATH);
+    restoreEnvironmentVariable(
+      "ANTHROPIC_API_KEY",
+      previousEnvironment.ANTHROPIC_API_KEY
+    );
+    restoreEnvironmentVariable(
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      previousEnvironment.CLAUDE_CODE_OAUTH_TOKEN
+    );
+    restoreEnvironmentVariable(
+      "OPENAI_API_KEY",
+      previousEnvironment.OPENAI_API_KEY
+    );
   }
   if (commandError) {
     throw commandError;
@@ -1336,22 +1380,34 @@ for (const tool of ["claude", "codex"] as const) {
           | undefined;
         try {
           process.env.PATH = `${bin}${delimiter}${previousEnvironment.PATH ?? ""}`;
-          process.env.ANTHROPIC_API_KEY =
-            tool === "claude" ? selectedSecret : undefined;
-          process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
-          process.env.OPENAI_API_KEY =
-            tool === "codex" ? selectedSecret : undefined;
+          restoreEnvironmentVariable(
+            "ANTHROPIC_API_KEY",
+            tool === "claude" ? selectedSecret : undefined
+          );
+          restoreEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", undefined);
+          restoreEnvironmentVariable(
+            "OPENAI_API_KEY",
+            tool === "codex" ? selectedSecret : undefined
+          );
           await Bun.write(modePath, mode);
           evaluation = await evaluateMode(commandController.signal);
         } catch (error) {
           commandError = error;
         } finally {
           clearTimeout(commandDeadline);
-          process.env.PATH = previousEnvironment.PATH;
-          process.env.ANTHROPIC_API_KEY = previousEnvironment.ANTHROPIC_API_KEY;
-          process.env.CLAUDE_CODE_OAUTH_TOKEN =
-            previousEnvironment.CLAUDE_CODE_OAUTH_TOKEN;
-          process.env.OPENAI_API_KEY = previousEnvironment.OPENAI_API_KEY;
+          restoreEnvironmentVariable("PATH", previousEnvironment.PATH);
+          restoreEnvironmentVariable(
+            "ANTHROPIC_API_KEY",
+            previousEnvironment.ANTHROPIC_API_KEY
+          );
+          restoreEnvironmentVariable(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            previousEnvironment.CLAUDE_CODE_OAUTH_TOKEN
+          );
+          restoreEnvironmentVariable(
+            "OPENAI_API_KEY",
+            previousEnvironment.OPENAI_API_KEY
+          );
         }
 
         expect({
@@ -1449,11 +1505,15 @@ for (const tool of ["claude", "codex"] as const) {
       const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
       const previousServiceToken = process.env.SERVICE_TOKEN;
       process.env.PATH = `${bin}${delimiter}${previousPath ?? ""}`;
-      process.env.ANTHROPIC_API_KEY =
-        tool === "claude" ? selectedSecret : undefined;
-      process.env.CLAUDE_CODE_OAUTH_TOKEN = undefined;
-      process.env.OPENAI_API_KEY =
-        tool === "codex" ? selectedSecret : undefined;
+      restoreEnvironmentVariable(
+        "ANTHROPIC_API_KEY",
+        tool === "claude" ? selectedSecret : undefined
+      );
+      restoreEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", undefined);
+      restoreEnvironmentVariable(
+        "OPENAI_API_KEY",
+        tool === "codex" ? selectedSecret : undefined
+      );
       process.env.SERVICE_TOKEN = unrelatedSecret;
 
       const assertNoHostileValue = (value: unknown) => {
@@ -1549,11 +1609,17 @@ for (const tool of ["claude", "codex"] as const) {
         }
         expect(await readdir(scratch)).toEqual([]);
       } finally {
-        process.env.PATH = previousPath;
-        process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey;
-        process.env.CLAUDE_CODE_OAUTH_TOKEN = previousClaudeOauthToken;
-        process.env.OPENAI_API_KEY = previousOpenAiApiKey;
-        process.env.SERVICE_TOKEN = previousServiceToken;
+        restoreEnvironmentVariable("PATH", previousPath);
+        restoreEnvironmentVariable(
+          "ANTHROPIC_API_KEY",
+          previousAnthropicApiKey
+        );
+        restoreEnvironmentVariable(
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          previousClaudeOauthToken
+        );
+        restoreEnvironmentVariable("OPENAI_API_KEY", previousOpenAiApiKey);
+        restoreEnvironmentVariable("SERVICE_TOKEN", previousServiceToken);
       }
     }, 15_000);
   }

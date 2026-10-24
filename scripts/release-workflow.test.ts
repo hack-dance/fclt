@@ -74,3 +74,40 @@ it("publishes npm through OIDC without a stored publish token", async () => {
     )
   ).toBe(true);
 });
+
+it("keeps CI and release runtime pins consistent", async () => {
+  const versions: Record<string, string[]> = { bun: [], node: [] };
+  for (const name of ["ci", "release"]) {
+    const workflow: unknown = parseYaml(
+      await Bun.file(
+        new URL(`../.github/workflows/${name}.yml`, import.meta.url)
+      ).text()
+    );
+    if (!(isPlainObject(workflow) && isPlainObject(workflow.jobs))) {
+      throw new Error("Workflow jobs are missing.");
+    }
+    for (const job of Object.values(workflow.jobs)) {
+      if (!(isPlainObject(job) && Array.isArray(job.steps))) {
+        continue;
+      }
+      for (const step of job.steps.filter(isPlainObject)) {
+        if (!isPlainObject(step.with)) {
+          continue;
+        }
+        for (const runtime of ["bun", "node"]) {
+          const version = step.with[`${runtime}-version`];
+          if (typeof version === "string") {
+            versions[runtime]!.push(version);
+          }
+        }
+      }
+    }
+  }
+  for (const [runtime, expected] of [
+    ["bun", "1.4.4"],
+    ["node", "24.22.1"],
+  ]) {
+    expect(versions[runtime!]!.length).toBeGreaterThan(0);
+    expect([...new Set(versions[runtime!]!)]).toEqual([expected]);
+  }
+});

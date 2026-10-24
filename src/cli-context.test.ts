@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { restoreEnvironmentVariable } from "../test/environment";
 import {
   parseCliContextArgs,
   resolveCliContextRoot,
@@ -21,8 +22,8 @@ afterEach(async () => {
     await rm(tempRoot, { recursive: true, force: true });
   }
   tempRoot = null;
-  process.env.FACULT_ROOT_DIR = ORIGINAL_ROOT;
-  process.env.FACULT_ROOT_SCOPE = ORIGINAL_ROOT_SCOPE;
+  restoreEnvironmentVariable("FACULT_ROOT_DIR", ORIGINAL_ROOT);
+  restoreEnvironmentVariable("FACULT_ROOT_SCOPE", ORIGINAL_ROOT_SCOPE);
 });
 
 describe("parseCliContextArgs", () => {
