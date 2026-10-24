@@ -3400,8 +3400,18 @@ describe("syncManagedTools", () => {
     await Bun.write(join(home, "growth-stop"), "stop\n");
 
     expect(result.codexInstall.status).toBe("failed");
-    expect(result.codexInstall.stderr).toContain("unexpected-growing");
-    expect(result.codexInstall.stderr).toContain("file changed");
+    // The mutator races the bounded reader. On a busy or single-core runner
+    // (seen on CI with Bun 1.4.4) the reader can finish between appends and
+    // then fails closed on the tree hash instead of the per-file change
+    // check. Both outcomes reject the payload; require one of them.
+    const stderr = result.codexInstall.stderr ?? "";
+    const caughtDuringRead =
+      stderr.includes("unexpected-growing") &&
+      (stderr.includes("file changed") || stderr.includes("file grew"));
+    const caughtByTreeHash = stderr.includes(
+      "installed tree hash differs from bundled payload"
+    );
+    expect(caughtDuringRead || caughtByTreeHash).toBe(true);
   });
 
   it("dry-runs bundled codex plugin setup without writing files", async () => {
