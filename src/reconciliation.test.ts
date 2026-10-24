@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmod, mkdir, readdir, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { restoreEnvironmentVariable } from "../test/environment";
 import {
   facultAiReconciliationLockPath,
   facultAiReconciliationReviewDir,
@@ -171,8 +172,8 @@ async function fixtureGitOutput(args: {
 }
 
 afterEach(async () => {
-  process.env.FACULT_ROOT_DIR = originalRootDir;
-  process.env.FACULT_ROOT_SCOPE = originalRootScope;
+  restoreEnvironmentVariable("FACULT_ROOT_DIR", originalRootDir);
+  restoreEnvironmentVariable("FACULT_ROOT_SCOPE", originalRootScope);
   if (tempRoot) {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { restoreEnvironmentVariable } from "../test/environment";
 import { snippetsCommand } from "./snippets-cli";
 
 let tempDir: string | null = null;
@@ -41,12 +42,12 @@ async function captureConsole(fn: () => Promise<void>) {
 afterEach(async () => {
   process.chdir(originalCwd);
   if (originalRootDir === undefined) {
-    process.env.FACULT_ROOT_DIR = undefined;
+    restoreEnvironmentVariable("FACULT_ROOT_DIR", undefined);
   } else {
     process.env.FACULT_ROOT_DIR = originalRootDir;
   }
   if (originalEditor === undefined) {
-    process.env.EDITOR = undefined;
+    restoreEnvironmentVariable("EDITOR", undefined);
   } else {
     process.env.EDITOR = originalEditor;
   }
