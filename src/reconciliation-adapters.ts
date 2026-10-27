@@ -20,6 +20,7 @@ import type {
   SourceRecord,
   WritebackSourceConfig,
 } from "./reconciliation-types";
+import { normalizeWritebackArrays } from "./writeback-arrays";
 
 const ISSUE_REF_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 const WRITEBACK_REF_RE = /\bWB-\d{5}\b/g;
@@ -363,6 +364,7 @@ const writebackAdapter: ReconciliationAdapter = {
       if (!(entry?.id && observedAt && inWindow(observedAt, context))) {
         return [];
       }
+      const normalized = normalizeWritebackArrays(entry);
       const terminal = ["resolved", "dismissed", "superseded"].includes(
         entry.status ?? ""
       );
@@ -392,8 +394,8 @@ const writebackAdapter: ReconciliationAdapter = {
             entry.id,
             entry.assetRef ?? "",
             entry.suggestedDestination ?? "",
-            ...(entry.evidence ?? []).map((item) => item.ref ?? ""),
-            ...(entry.issueLinks ?? []),
+            ...(normalized.evidence ?? []).map((item) => item.ref ?? ""),
+            ...(normalized.issueLinks ?? []),
           ],
         }),
       ];

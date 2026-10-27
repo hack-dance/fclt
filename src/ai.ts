@@ -33,6 +33,10 @@ import {
 } from "./paths";
 import { redactReconciliationText } from "./reconciliation-adapters";
 import { writeCliOutput } from "./util/cli-output";
+import {
+  normalizeWritebackArrays,
+  writebackWarnings,
+} from "./writeback-arrays";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -239,6 +243,7 @@ export type EvolutionAssessmentRecommendation =
   | "review_existing_proposal";
 
 export interface EvolutionAssessment {
+  warnings: string[];
   scope: AssetScope;
   projectSlug?: string;
   projectRoot?: string;
@@ -744,6 +749,7 @@ function resolveScopeContext(rootDir: string, homeDir: string): ScopeContext {
 async function latestWritebackMap(args: {
   homeDir: string;
   rootDir: string;
+  warnings?: string[];
 }): Promise<Map<string, AiWritebackRecord>> {
   const entries = await readJsonLinesFromPaths<AiWritebackRecord>(
     aiWritebackQueueReadPaths(args.homeDir, args.rootDir)
@@ -751,6 +757,9 @@ async function latestWritebackMap(args: {
   const latest = new Map<string, AiWritebackRecord>();
   for (const entry of entries) {
     latest.set(entry.id, entry);
+  }
+  for (const [id, entry] of latest) {
+    latest.set(id, normalizeWritebackArrays(entry, args.warnings));
   }
   return latest;
 }
@@ -1031,6 +1040,7 @@ export async function addWriteback(
 export async function listWritebacks(args?: {
   homeDir?: string;
   rootDir: string;
+  warnings?: string[];
 }): Promise<AiWritebackRecord[]> {
   if (!args) {
     throw new Error("listWritebacks requires a rootDir");
@@ -1039,6 +1049,7 @@ export async function listWritebacks(args?: {
   const latest = await latestWritebackMap({
     homeDir,
     rootDir: args.rootDir,
+    warnings: args.warnings,
   });
   return [...latest.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -1549,7 +1560,10 @@ export async function assessEvolution(args: {
       })
     : null;
   const target = filterAsset?.assetRef ?? args.asset;
-  const writebacks = (await listWritebacks({ homeDir, rootDir: args.rootDir }))
+  const warnings: string[] = [];
+  const writebacks = (
+    await listWritebacks({ homeDir, rootDir: args.rootDir, warnings })
+  )
     .filter((entry) => entry.status !== "dismissed")
     .filter((entry) => entry.status !== "resolved")
     .filter((entry) => entry.status !== "superseded")
@@ -1799,6 +1813,7 @@ export async function assessEvolution(args: {
     kinds,
     statuses,
     evidenceCount,
+    warnings,
     activeProposalIds,
     repeatedSignal,
     reconciliation: {
@@ -3928,6 +3943,11 @@ export async function aiCommand(
   argv: string[],
   rootScopeActive = false
 ): Promise<void> {
+  if (!writebackWarnings.getStore()) {
+    return writebackWarnings.run(new Set(), () =>
+      aiCommand(argv, rootScopeActive)
+    );
+  }
   const [sub, ...rest] = argv;
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(aiHelp());
