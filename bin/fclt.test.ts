@@ -12,11 +12,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  facultInstallStatePath,
-  facultLocalCacheRoot,
-  facultRuntimeCacheDir,
-} from "../src/paths";
+import { facultInstallStatePath, facultRuntimeCacheDir } from "../src/paths";
 
 const version = (await import("../package.json")).version as string;
 const platform =
@@ -131,12 +127,11 @@ it("does not write install metadata when using a cached runtime binary", async (
   const launcherRuntime = await resolveLauncherRuntime();
 
   const proc = Bun.spawn({
-    cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
-    cwd: repoRoot,
+    cmd: [launcherRuntime, join(repoRoot, "bin", "fclt.cjs"), "help"],
+    cwd: homeDir,
     env: {
       ...process.env,
       HOME: homeDir,
-      FACULT_CACHE_DIR: facultLocalCacheRoot(homeDir),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -147,6 +142,7 @@ it("does not write install metadata when using a cached runtime binary", async (
 
   expect(exitCode).toBe(0);
   expect(stderr).toBe("");
+  await expect(stat(join(homeDir, "~"))).rejects.toThrow();
 
   const installStatePath = facultInstallStatePath(homeDir);
   await expect(stat(installStatePath)).rejects.toThrow();
@@ -227,7 +223,6 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
       ...process.env,
       HOME: homeDir,
       HTTPS_PROXY: "http://127.0.0.1:1",
-      FACULT_CACHE_DIR: facultLocalCacheRoot(homeDir),
       HTTP_PROXY: "http://127.0.0.1:1",
     },
     stdout: "pipe",
@@ -291,7 +286,6 @@ it("waits for a concurrent launcher to finish writing the runtime binary", async
       ...process.env,
       HOME: homeDir,
       HTTPS_PROXY: "http://127.0.0.1:1",
-      FACULT_CACHE_DIR: facultLocalCacheRoot(homeDir),
       HTTP_PROXY: "http://127.0.0.1:1",
     },
     stdout: "pipe",

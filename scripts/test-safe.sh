@@ -7,13 +7,17 @@ bun_executable=$(bun --print 'process.execPath')
 node_executable=$(node --print 'process.execPath')
 export PATH="$(dirname "$bun_executable"):$(dirname "$node_executable"):$PATH"
 
-# Capture the caller's home before replacing it, including in nested test runs.
-export FCLT_TEST_REAL_HOME="${FCLT_TEST_REAL_HOME:-$HOME}"
-test_temp_base="${TMPDIR:-/tmp}"
-case "$test_temp_base/" in
-  "$FCLT_TEST_REAL_HOME/"*) test_temp_base=/tmp ;;
-esac
-test_root=$(mktemp -d "$test_temp_base/fclt-test-shell-XXXXXX")
+# The shared helper resolves physical ancestors and refuses unsafe roots before mkdir.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+isolation=$("$bun_executable" "$script_dir/../test/isolation-root.ts")
+{
+  IFS= read -r FCLT_TEST_REAL_HOME
+  IFS= read -r FCLT_TEST_REAL_STATE_ROOT
+  IFS= read -r test_root
+} <<EOF
+$isolation
+EOF
+export FCLT_TEST_REAL_HOME FCLT_TEST_REAL_STATE_ROOT
 export NODE_ENV=test
 export FCLT_TEST_SHELL_ROOT="$test_root"
 export HOME="$test_root/home"

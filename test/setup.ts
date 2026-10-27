@@ -1,28 +1,19 @@
 import { mock } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import os, { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative } from "node:path";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { delimiter, dirname, join } from "node:path";
+import { createIsolatedTestRoot } from "./isolation-root";
 
 // Run before importing any product module, including helpers that may grow new imports.
-const realHome = process.env.FCLT_TEST_REAL_HOME || homedir();
+const { realHome, realState, testRoot } = createIsolatedTestRoot("fclt-test-");
 const nodeRuntime = Bun.spawnSync(["node", "--print", "process.execPath"]);
 if (nodeRuntime.exitCode !== 0) {
   throw new Error("Cannot resolve the Node test runtime before HOME isolation");
 }
 const nodeExecutable = nodeRuntime.stdout.toString().trim();
-const tempRelativeToHome = relative(realHome, tmpdir());
-const tempInsideHome =
-  tempRelativeToHome === "" ||
-  !(tempRelativeToHome.startsWith("..") || isAbsolute(tempRelativeToHome));
-// Agent runners can put TMPDIR under HOME. Keep test state outside that home too.
-const systemTemp =
-  process.platform === "win32"
-    ? join(process.env.SystemRoot || "C:\\Windows", "Temp")
-    : "/tmp";
-const tempBase = tempInsideHome ? systemTemp : tmpdir();
-const testRoot = mkdtempSync(join(tempBase, "fclt-test-"));
 process.env.NODE_ENV = "test";
 process.env.FCLT_TEST_REAL_HOME = realHome;
+process.env.FCLT_TEST_REAL_STATE_ROOT = realState;
 process.env.FCLT_TEST_TEMP_ROOT = testRoot;
 for (const [name, subdir] of Object.entries({
   HOME: "home",

@@ -47,6 +47,7 @@ test("shell wrapper isolates the environment even without the Bun preload", asyn
     [
       "#!/bin/sh",
       'if [ "$1" = --print ]; then printf "%s\\n" "$0"; exit 0; fi',
+      `if [ "$1" != test ]; then exec '${process.execPath.replaceAll("'", "'\\''")}' "$@"; fi`,
       'printf "%s\\n" "$FCLT_TEST_SHELL_ROOT" "$HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$TMPDIR" "$FACULT_ROOT_DIR" "$FACULT_ROOT_SCOPE" "$NODE_ENV" "$FACULT_TEST_SKIP_LOCAL" "$*"',
       "",
     ].join("\n")
