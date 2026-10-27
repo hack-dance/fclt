@@ -12,7 +12,11 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { facultInstallStatePath, facultRuntimeCacheDir } from "../src/paths";
+import {
+  facultInstallStatePath,
+  facultLocalCacheRoot,
+  facultRuntimeCacheDir,
+} from "../src/paths";
 
 const version = (await import("../package.json")).version as string;
 const platform =
@@ -132,6 +136,7 @@ it("does not write install metadata when using a cached runtime binary", async (
     env: {
       ...process.env,
       HOME: homeDir,
+      FACULT_CACHE_DIR: facultLocalCacheRoot(homeDir),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -222,6 +227,7 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
       ...process.env,
       HOME: homeDir,
       HTTPS_PROXY: "http://127.0.0.1:1",
+      FACULT_CACHE_DIR: facultLocalCacheRoot(homeDir),
       HTTP_PROXY: "http://127.0.0.1:1",
     },
     stdout: "pipe",
@@ -285,6 +291,7 @@ it("waits for a concurrent launcher to finish writing the runtime binary", async
       ...process.env,
       HOME: homeDir,
       HTTPS_PROXY: "http://127.0.0.1:1",
+      FACULT_CACHE_DIR: facultLocalCacheRoot(homeDir),
       HTTP_PROXY: "http://127.0.0.1:1",
     },
     stdout: "pipe",
