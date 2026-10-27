@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  canonicalProjectAiRoot,
   facultAiActivityHistoryManifestPath,
   facultAiActivityHistorySegmentDir,
   facultAiGraphPath,
@@ -14,6 +15,7 @@ import {
   facultMachineStateDir,
   facultRootDir,
   facultRuntimeCacheDir,
+  findNearestProjectAiRoot,
   legacyFacultAiStateDirs,
   machineStateProjectScopeId,
   pathIsInsideOrEqual,
@@ -344,4 +346,21 @@ describe("paths", () => {
       projectRootFromAiRoot("C:\\Users\\facult\\agents\\.facult", home)
     ).toBeNull();
   });
+});
+
+it("does not discover project authority above the configured home", async () => {
+  tempHome = await makeTempHome();
+  await mkdir(join(tempHome, ".ai", "instructions"), { recursive: true });
+  const nestedHome = join(tempHome, "nested-home");
+  await mkdir(nestedHome);
+  expect(findNearestProjectAiRoot(nestedHome, nestedHome)).toBeNull();
+});
+
+it("preserves Windows-shaped roots during non-native lexical inspection", () => {
+  if (process.platform === "win32") {
+    return;
+  }
+  expect(
+    canonicalProjectAiRoot("C:\\work\\repo\\.ai", "C:\\Users\\fixture")
+  ).toBe("C:\\work\\repo\\.ai");
 });

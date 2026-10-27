@@ -155,7 +155,7 @@ for (const scenario of [
   });
 }
 
-it("blocks a generated worktree without loop config and names the primary checkout", async () => {
+it("preflights the canonical configuration from a generated worktree", async () => {
   const homeDir = await realpath(
     await mkdtemp(join(tmpdir(), "fclt-preflight-wt-"))
   );
@@ -201,12 +201,10 @@ it("blocks a generated worktree without loop config and names the primary checko
     rootDir,
     scope: "project",
   });
-  expect(result.status).toBe("blocked");
-  expect(result.blocker).toBe("linked-worktree-without-loop-config");
-  expect(result.primaryCheckout).toBe(primary);
+  expect(result.status).toBe("ready");
+  expect(result.blocker).toBeNull();
   expect(result.loopInvoked).toBe(false);
-  expect(result.checks).toEqual([]);
-  expect(result.recovery).toContain(primary);
+  expect(result.checks.length).toBeGreaterThan(0);
   const primaryResult = await preflightEvolutionLoop({
     homeDir,
     rootDir: join(primary, ".ai"),
@@ -226,9 +224,8 @@ it("blocks a generated worktree without loop config and names the primary checko
       rootDir,
       scope: "project",
     });
-    expect(inherited.blocker).toBe("linked-worktree-without-loop-config");
-    expect(inherited.primaryCheckout).toBe(primary);
-    expect(inherited.checks).toEqual([]);
+    expect(inherited.status).toBe("ready");
+    expect(inherited.blocker).toBeNull();
   } finally {
     for (const [name, value] of [
       ["GIT_DIR", previous.dir],
@@ -274,7 +271,7 @@ it("does not report a configured but disabled linked worktree as missing config"
   const rootDir = join(worktree, ".ai");
   await mkdir(rootDir, { recursive: true });
   await Bun.write(
-    join(rootDir, "reconciliation.json"),
+    join(primary, ".ai", "reconciliation.json"),
     JSON.stringify({
       version: 1,
       sources: [{ id: "writebacks", type: "writebacks" }],
@@ -374,6 +371,7 @@ for (const subdir of ["", "packages/app"]) {
     await git(primary, "worktree", "add", "-q", "--detach", worktree);
     const rootDir = join(worktree, subdir, ".ai");
     await mkdir(rootDir, { recursive: true });
+    await mkdir(join(primary, subdir), { recursive: true });
     const dirs = stateDirsFor(homeDir, rootDir);
     const result = await preflightEvolutionLoop({
       homeDir,

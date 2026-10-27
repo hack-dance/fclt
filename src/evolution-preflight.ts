@@ -11,6 +11,7 @@ import {
 } from "node:path";
 import { loadEvolutionLoopConfig } from "./evolution-loop";
 import {
+  canonicalProjectAiRoot,
   facultAiActivityHistoryDir,
   facultAiActivityHistorySegmentDir,
   facultAiDraftDir,
@@ -159,7 +160,19 @@ export async function preflightEvolutionLoop(args: {
   homeDir: string;
   rootDir: string;
   scope?: "project" | "global";
-}) {
+}): Promise<{
+  version: number;
+  status: string;
+  blocker: string | null;
+  queueAvailable: boolean;
+  loopInvoked: boolean;
+  runtime: string;
+  enabled: boolean;
+  configError?: string;
+  primaryCheckout: string | null;
+  checks: Array<{ path: string; writable: boolean; error?: string }>;
+  recovery: string | null;
+}> {
   return await withFacultRootScope(
     {
       rootDir: args.rootDir,
@@ -174,10 +187,8 @@ export async function preflightEvolutionLoop(args: {
         [];
       let enabled = false;
       let configError: string | undefined;
-      let loopConfigAbsent = false;
       try {
         const config = await loadEvolutionLoopConfig(args);
-        loopConfigAbsent = config === null;
         enabled = config?.enabled === true;
         const reconciliation = await loadReconciliationConfig(args);
         selectReconciliationSources(reconciliation.config, config?.sourceIds);
@@ -188,10 +199,27 @@ export async function preflightEvolutionLoop(args: {
       const worktree: WorktreeClassification = projectRoot
         ? linkedWorktreePrimaryCheckout(projectRoot)
         : { linked: false, primary: null, unresolved: null };
-      const reviewConfigAbsent =
-        loopConfigAbsent ||
-        !existsSync(join(args.rootDir, "reconciliation.json"));
-      if ((worktree.linked || worktree.unresolved) && reviewConfigAbsent) {
+      if (worktree.linked && !worktree.unresolved) {
+        try {
+          const canonicalRoot = canonicalProjectAiRoot(
+            args.rootDir,
+            args.homeDir
+          );
+          if (
+            canonicalRoot !== args.rootDir &&
+            existsSync(join(canonicalRoot, "reconciliation.json"))
+          ) {
+            return await preflightEvolutionLoop({
+              ...args,
+              rootDir: canonicalRoot,
+            });
+          }
+        } catch (error) {
+          worktree.unresolved =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
+      if (worktree.unresolved || worktree.linked) {
         // `.ai/` review configuration is machine-local and ignored, so a
         // generated worktree never carries the enrolled loop. Probing writes
         // here would only create orphaned per-worktree state directories.

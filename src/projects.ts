@@ -32,7 +32,6 @@ import {
 import { resolveCliContextRoot } from "./cli-context";
 import { buildIndexSnapshot } from "./index-builder";
 import {
-  executionMachineStateProjectKey,
   facultAiEvolutionLoopLockPath,
   facultAiGraphPath,
   facultAiIndexPath,
@@ -42,9 +41,11 @@ import {
   pathsMayCollide,
   pathsPhysicallyEquivalent,
   preferredGlobalAiRoot,
+  repositoryMachineStateProjectKey,
 } from "./paths";
 import { processStartIdentity } from "./process-identity";
 import {
+  canonicalProjectRoot,
   type RepositoryExecutionIdentity,
   type RepositoryIdentity,
   repositoryExecutionIdentity,
@@ -1717,11 +1718,11 @@ function projectReceiptsDir(homeDir: string): string {
   return join(facultLocalStateRoot(homeDir), "projects", "receipts");
 }
 
-function executionMachineStateDir(homeDir: string, aiRoot: string): string {
+function repositoryMachineStateDir(homeDir: string, aiRoot: string): string {
   return join(
     facultLocalStateRoot(homeDir),
     "projects",
-    executionMachineStateProjectKey(aiRoot, homeDir)
+    repositoryMachineStateProjectKey(aiRoot, homeDir)
   );
 }
 
@@ -1974,7 +1975,7 @@ async function planLegacyProjectStateMigrations(args: {
   legacyAiRoots: string[];
 }): Promise<ProjectStateMigrationPlanEntry[]> {
   const projectsRoot = join(facultLocalStateRoot(args.homeDir), "projects");
-  const selectedKey = executionMachineStateProjectKey(
+  const selectedKey = repositoryMachineStateProjectKey(
     args.aiRoot,
     args.homeDir
   );
@@ -3226,6 +3227,16 @@ async function loadRegistry(homeDir: string): Promise<ProjectRegistry> {
   return parseRegistryText(snapshot.content, pathValue);
 }
 
+/** Read portfolio decisions without scanning checkouts or repairing state. */
+export async function registeredProjectLocations(homeDir: string) {
+  const registry = await loadRegistry(homeDir);
+  return Object.values(registry.projects).map((entry) => ({
+    repositoryId: entry.repositoryId,
+    decision: entry.decision,
+    locations: entry.locations.map((location) => location.path),
+  }));
+}
+
 async function loadRegistrySnapshot(homeDir: string): Promise<{
   before: string | null;
   beforeIdentity: { dev: number; ino: number } | null;
@@ -4176,7 +4187,9 @@ export async function planProjectEnrollment(args: {
       "Project enrollment planning is unsupported on win32 because conditional canonical replacement is unavailable"
     );
   }
-  const projectRoot = await gitRoot(invocationProjectRoot);
+  const projectRoot = canonicalProjectRoot(
+    await gitRoot(invocationProjectRoot)
+  );
   const aiRoot = join(projectRoot, ".ai");
   const globalRoot = resolveCliContextRoot({
     homeDir,
@@ -4263,11 +4276,19 @@ export async function planProjectEnrollment(args: {
   ];
   const generatedWrites = [
     {
-      path: join(executionMachineStateDir(homeDir, aiRoot), "ai", "index.json"),
+      path: join(
+        repositoryMachineStateDir(homeDir, aiRoot),
+        "ai",
+        "index.json"
+      ),
       reason: "Machine-local generated capability index.",
     },
     {
-      path: join(executionMachineStateDir(homeDir, aiRoot), "ai", "graph.json"),
+      path: join(
+        repositoryMachineStateDir(homeDir, aiRoot),
+        "ai",
+        "graph.json"
+      ),
       reason: "Machine-local generated capability graph.",
     },
   ];
@@ -5028,13 +5049,13 @@ export async function applyProjectEnrollment(args: {
     async () => {
       await verifyPreconditions(args.plan, homeDir);
       const stateRoot = facultLocalStateRoot(homeDir);
-      const executionStateDir = executionMachineStateDir(
+      const repositoryStateDir = repositoryMachineStateDir(
         homeDir,
         args.plan.aiRoot
       );
       const expectedGeneratedPaths = [
-        join(executionStateDir, "ai", "index.json"),
-        join(executionStateDir, "ai", "graph.json"),
+        join(repositoryStateDir, "ai", "index.json"),
+        join(repositoryStateDir, "ai", "graph.json"),
       ];
       const expectedMachinePaths = [
         projectRegistryPath(homeDir),
@@ -5046,10 +5067,12 @@ export async function applyProjectEnrollment(args: {
           stableJson(expectedGeneratedPaths) ||
         stableJson(args.plan.machineLocalWrites.map((write) => write.path)) !==
           stableJson(expectedMachinePaths) ||
-        !executionStateDir.endsWith(args.plan.executionIdentity.id)
+        !repositoryStateDir.endsWith(
+          repositoryMachineStateProjectKey(args.plan.aiRoot, homeDir)
+        )
       ) {
         throw new Error(
-          "Enrollment plan was created for a different machine-local execution state root"
+          "Enrollment plan was created for a different machine-local repository state root"
         );
       }
       const currentStateMigrations = await planLegacyProjectStateMigrations({
@@ -5067,7 +5090,7 @@ export async function applyProjectEnrollment(args: {
       }
       legacyRuntimeLocks = await acquireLegacyProjectRuntimeMigrationLocks({
         migration: currentStateMigrations.find(
-          (migration) => migration.destination === executionStateDir
+          (migration) => migration.destination === repositoryStateDir
         ),
       });
       for (const pathValue of expectedGeneratedPaths) {
@@ -5140,7 +5163,7 @@ export async function applyProjectEnrollment(args: {
           homeDir,
           rootDir: args.plan.aiRoot,
           force: true,
-          machineStateDir: executionStateDir,
+          machineStateDir: repositoryStateDir,
         });
         const generatedContents = [
           `${JSON.stringify(snapshot.index, null, 2)}\n`,

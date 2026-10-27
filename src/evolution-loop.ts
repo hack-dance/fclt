@@ -26,6 +26,7 @@ import {
   UnsupportedProposalTargetError,
 } from "./ai";
 import {
+  canonicalProjectAiRoot,
   facultAiEvolutionLoopAuditPath,
   facultAiEvolutionLoopConfigPath,
   facultAiEvolutionLoopLockPath,
@@ -526,7 +527,7 @@ function automationName(args: {
     : "fclt-evolution-global";
 }
 
-async function automationStatus(args: {
+export async function automationStatus(args: {
   homeDir: string;
   name: string;
 }): Promise<{
@@ -621,6 +622,11 @@ async function enableEvolutionLoopScoped(args: {
       ? projectRootFromAiRoot(args.rootDir, args.homeDir)
       : null;
   const name = current?.automationName ?? automationName({ ...args, scope });
+  if (scope === "project" && name.startsWith("fclt-evolution-worktree_")) {
+    throw new Error(
+      "Refusing an execution-named loop automation in canonical project state; review the existing configuration before enabling scheduling"
+    );
+  }
   const sourceIds = unique(
     args.sourceIds && args.sourceIds.length > 0
       ? args.sourceIds
@@ -730,9 +736,13 @@ export async function enableEvolutionLoop(
   const scope =
     args.scope ??
     (projectRootFromAiRoot(args.rootDir, args.homeDir) ? "project" : "global");
+  const rootDir =
+    scope === "project"
+      ? canonicalProjectAiRoot(args.rootDir, args.homeDir)
+      : args.rootDir;
   return await withFacultRootScope(
-    { rootDir: args.rootDir, scope },
-    async () => await enableEvolutionLoopScoped({ ...args, scope })
+    { rootDir, scope },
+    async () => await enableEvolutionLoopScoped({ ...args, rootDir, scope })
   );
 }
 
@@ -806,9 +816,13 @@ export async function disableEvolutionLoop(
   const scope =
     args.scope ??
     (projectRootFromAiRoot(args.rootDir, args.homeDir) ? "project" : "global");
+  const rootDir =
+    scope === "project"
+      ? canonicalProjectAiRoot(args.rootDir, args.homeDir)
+      : args.rootDir;
   return await withFacultRootScope(
-    { rootDir: args.rootDir, scope },
-    async () => await disableEvolutionLoopScoped(args)
+    { rootDir, scope },
+    async () => await disableEvolutionLoopScoped({ ...args, rootDir, scope })
   );
 }
 
@@ -1802,9 +1816,13 @@ export async function evolutionLoopStatus(
   const scope =
     args.scope ??
     (projectRootFromAiRoot(args.rootDir, args.homeDir) ? "project" : "global");
+  const rootDir =
+    scope === "project"
+      ? canonicalProjectAiRoot(args.rootDir, args.homeDir)
+      : args.rootDir;
   return await withFacultRootScope(
-    { rootDir: args.rootDir, scope },
-    async () => await evolutionLoopStatusScoped(args)
+    { rootDir, scope },
+    async () => await evolutionLoopStatusScoped({ ...args, rootDir, scope })
   );
 }
 
@@ -1930,9 +1948,14 @@ export async function latestEvolutionLoopReport(
   const scope =
     args.scope ??
     (projectRootFromAiRoot(args.rootDir, args.homeDir) ? "project" : "global");
+  const rootDir =
+    scope === "project"
+      ? canonicalProjectAiRoot(args.rootDir, args.homeDir)
+      : args.rootDir;
   return await withFacultRootScope(
-    { rootDir: args.rootDir, scope },
-    async () => await latestEvolutionLoopReportScoped(args)
+    { rootDir, scope },
+    async () =>
+      await latestEvolutionLoopReportScoped({ ...args, rootDir, scope })
   );
 }
 
@@ -2479,9 +2502,13 @@ export async function runEvolutionLoop(
   const scope =
     args.scope ??
     (projectRootFromAiRoot(args.rootDir, args.homeDir) ? "project" : "global");
+  const rootDir =
+    scope === "project"
+      ? canonicalProjectAiRoot(args.rootDir, args.homeDir)
+      : args.rootDir;
   return await withFacultRootScope(
-    { rootDir: args.rootDir, scope },
-    async () => await runEvolutionLoopScoped({ ...args, scope })
+    { rootDir, scope },
+    async () => await runEvolutionLoopScoped({ ...args, rootDir, scope })
   );
 }
 
