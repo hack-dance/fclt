@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
 import {
+  automationStatus,
   disableEvolutionLoop,
   enableEvolutionLoop,
   runEvolutionLoop,
@@ -85,6 +86,8 @@ async function cli(args: {
   homeDir: string;
   worktree: string;
   argv: string[];
+  environmentRoot?: string;
+  environmentScope?: string;
 }) {
   const proc = Bun.spawn(
     [
@@ -104,8 +107,8 @@ async function cli(args: {
         XDG_CONFIG_HOME: join(args.homeDir, "config"),
         XDG_DATA_HOME: join(args.homeDir, "data"),
         XDG_CACHE_HOME: join(args.homeDir, "cache"),
-        FACULT_ROOT_DIR: "",
-        FACULT_ROOT_SCOPE: "",
+        FACULT_ROOT_DIR: args.environmentRoot ?? "",
+        FACULT_ROOT_SCOPE: args.environmentScope ?? "",
         // Keep subprocess writes aligned with parent assertions on XDG platforms.
         FACULT_LOCAL_STATE_DIR: facultLocalStateRoot(args.homeDir),
       },
@@ -203,6 +206,51 @@ it("keeps an ordinary checkout's repository store stable despite its worktree-pr
     stale: false,
     schedulerStatus: "ACTIVE",
   });
+});
+
+it("preserves environment-selected loop roots and explicit project precedence from a linked checkout", async () => {
+  const args = await fixture();
+  const globalArgs = {
+    ...args,
+    environmentRoot: join(args.homeDir, ".ai"),
+    environmentScope: "global",
+  };
+  const global = await cli({ ...globalArgs, argv: ["enable"] });
+  const project = await cli({ ...globalArgs, argv: ["enable", "--project"] });
+  expect(global.config.automationName).not.toBe(project.config.automationName);
+  await cli({ ...globalArgs, argv: ["disable"] });
+  expect(
+    (
+      await automationStatus({
+        homeDir: args.homeDir,
+        name: global.config.automationName,
+      })
+    ).status
+  ).toBe("PAUSED");
+  expect(
+    (
+      await automationStatus({
+        homeDir: args.homeDir,
+        name: project.config.automationName,
+      })
+    ).status
+  ).toBe("ACTIVE");
+
+  const other = await fixture();
+  const selected = await cli({
+    ...args,
+    environmentRoot: join(other.worktree, ".ai"),
+    environmentScope: "project",
+    argv: ["enable", "--project"],
+  });
+  expect(selected.configPath).toContain(
+    repositoryMachineStateProjectKey(other.rootDir, args.homeDir)
+  );
+  const explicit = await cli({
+    ...globalArgs,
+    argv: ["status", "--root", join(args.worktree, ".ai"), "--project"],
+  });
+  expect(explicit.config.automationName).toBe(project.config.automationName);
 });
 
 it("enrolls a linked checkout into the canonical repository store without an execution registration", async () => {

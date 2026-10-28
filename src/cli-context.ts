@@ -17,18 +17,26 @@ export function resolveLoopContextRoot(
   if (args?.scope === "global") {
     return resolveCliContextRoot(args);
   }
+  const homeDir = args?.homeDir ?? process.env.HOME ?? "";
+  const environmentRootSelected =
+    process.env.FACULT_ROOT_DIR?.trim() &&
+    (args?.scope !== "project" ||
+      (process.env.FACULT_ROOT_SCOPE?.trim() === "project" &&
+        projectRootFromAiRoot(facultRootDir(homeDir), homeDir)));
+  if (args?.rootArg || environmentRootSelected) {
+    return canonicalProjectAiRoot(resolveCliContextRoot(args), homeDir);
+  }
   const cwd = args?.cwd ?? process.cwd();
-  const canonicalCwd = args?.rootArg ? cwd : canonicalProjectRoot(cwd);
+  const canonicalCwd = canonicalProjectRoot(cwd);
   return canonicalProjectAiRoot(
     resolveCliContextRoot({
       ...args,
       cwd: canonicalCwd,
       rootArg:
-        args?.rootArg ??
-        (canonicalCwd !== resolve(cwd)
+        canonicalCwd !== resolve(cwd)
           ? (findNearestProjectAiRoot(canonicalCwd, args?.homeDir) ??
             join(canonicalCwd, ".ai"))
-          : undefined),
+          : undefined,
     }),
     args?.homeDir
   );
