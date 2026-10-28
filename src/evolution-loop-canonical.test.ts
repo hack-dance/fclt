@@ -4,19 +4,26 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rename,
   symlink,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
-import { enableEvolutionLoop, runEvolutionLoop } from "./evolution-loop";
+import {
+  disableEvolutionLoop,
+  enableEvolutionLoop,
+  runEvolutionLoop,
+} from "./evolution-loop";
 import {
   evolutionLoopPortfolioStatus,
   parseLoopStaleAfter,
 } from "./evolution-loop-portfolio";
 import { preflightEvolutionLoop } from "./evolution-preflight";
+import { buildIndex, buildIndexSnapshot } from "./index-builder";
 import {
+  executionMachineStateProjectKey,
   facultAiEvolutionLoopLockPath,
   facultAiEvolutionLoopStatePath,
   facultAiReconciliationLockPath,
@@ -35,7 +42,9 @@ import { scaffoldCodexAutomationTemplate } from "./remote";
 const EPHEMERAL_RE = /^worktree_/;
 
 async function fixture() {
-  const homeDir = await mkdtemp(join(tmpdir(), "fclt-canonical-loop-"));
+  const homeDir = await realpath(
+    await mkdtemp(join(tmpdir(), "fclt-canonical-loop-"))
+  );
   const primary = join(homeDir, "repo");
   const worktree = join(homeDir, "linked");
   await mkdir(primary);
@@ -94,7 +103,8 @@ async function cli(args: {
         XDG_CACHE_HOME: join(args.homeDir, "cache"),
         FACULT_ROOT_DIR: "",
         FACULT_ROOT_SCOPE: "",
-        FACULT_LOCAL_STATE_DIR: "",
+        // Keep subprocess writes aligned with parent assertions on XDG platforms.
+        FACULT_LOCAL_STATE_DIR: facultLocalStateRoot(args.homeDir),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -230,6 +240,125 @@ it("reuses an existing canonical slug store from a linked checkout", async () =>
       })
     ).status
   ).toBe("ready");
+});
+
+it("keeps subprocess loop writes in the parent's selected machine-state root", async () => {
+  const args = await fixture();
+  const previous = process.env.FACULT_LOCAL_STATE_DIR;
+  process.env.FACULT_LOCAL_STATE_DIR = join(args.homeDir, "selected-state");
+  try {
+    await cli({ ...args, argv: ["enable", "--project"] });
+    await cli({ ...args, argv: ["run", "--project", "--scheduled"] });
+    const state = await Bun.file(
+      facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir)
+    ).json();
+    expect(state.lastRunAt).toBeString();
+    expect(state.lastSuccessfulScheduledRunAt).toBeString();
+  } finally {
+    if (previous === undefined) {
+      Reflect.deleteProperty(process.env, "FACULT_LOCAL_STATE_DIR");
+    } else {
+      process.env.FACULT_LOCAL_STATE_DIR = previous;
+    }
+  }
+});
+
+it("fails closed on prior primary-checkout execution state without changing its automation or data", async () => {
+  const args = await fixture();
+  const enabled = await enableEvolutionLoop(args);
+  const repositoryStore = facultMachineStateDir(args.homeDir, args.rootDir);
+  const executionStore = join(
+    facultLocalStateRoot(args.homeDir),
+    "projects",
+    executionMachineStateProjectKey(args.rootDir, args.homeDir)
+  );
+  const preserved = new Map<string, string>();
+  for (const relativePath of [
+    "ai/project/writebacks/queue.jsonl",
+    "ai/project/evolution/proposals/proposal.json",
+    "ai/project/evolution/loop/state.json",
+    "journal/events.jsonl",
+  ]) {
+    await Bun.write(join(repositoryStore, relativePath), "preserved history\n");
+    preserved.set(join(executionStore, relativePath), "preserved history\n");
+  }
+  await rename(repositoryStore, executionStore);
+  const automationPath = join(enabled.automationPath, "automation.toml");
+  const automation = await readFile(automationPath, "utf8");
+  const message = "primary-checkout execution state requires reconciliation";
+  for (const rootDir of [args.rootDir, join(args.worktree, ".ai")]) {
+    expect(() => facultMachineStateDir(args.homeDir, rootDir)).toThrow(message);
+    await expect(enableEvolutionLoop({ ...args, rootDir })).rejects.toThrow(
+      message
+    );
+    await expect(disableEvolutionLoop({ ...args, rootDir })).rejects.toThrow(
+      message
+    );
+    await expect(runEvolutionLoop({ ...args, rootDir })).rejects.toThrow(
+      message
+    );
+    await expect(
+      planProjectEnrollment({
+        projectRoot: dirname(rootDir),
+        homeDir: args.homeDir,
+      })
+    ).rejects.toThrow(message);
+  }
+  for (const [path, content] of preserved) {
+    expect(await readFile(path, "utf8")).toBe(content);
+  }
+  expect(await readFile(automationPath, "utf8")).toBe(automation);
+  expect(await readdir(join(args.homeDir, ".codex", "automations"))).toEqual([
+    enabled.config.automationName,
+  ]);
+  expect(
+    await Bun.file(join(repositoryStore, "ai", "index.json")).exists()
+  ).toBe(false);
+  expect(
+    await readdir(join(facultLocalStateRoot(args.homeDir), "projects"))
+  ).not.toContain(basename(repositoryStore));
+});
+
+it("uses canonical assets for shared indexes and graphs when a linked checkout has divergent assets", async () => {
+  const args = await fixture();
+  const linkedRoot = join(args.worktree, ".ai");
+  for (const [root, name] of [
+    [args.rootDir, "canonical-only"],
+    [linkedRoot, "linked-only"],
+  ] as const) {
+    await Bun.write(join(root, "skills", name, "SKILL.md"), `# ${name}\n`);
+    await Bun.write(
+      join(root, "skills", "shared", "SKILL.md"),
+      `# ${name} shared\n`
+    );
+  }
+  const canonical = await buildIndex({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+  });
+  for (const force of [false, true]) {
+    const linked = await buildIndex({
+      homeDir: args.homeDir,
+      rootDir: linkedRoot,
+      force,
+    });
+    expect(linked.outputPath).toBe(canonical.outputPath);
+    expect(linked.graphPath).toBe(canonical.graphPath);
+    expect(linked.index.skills["canonical-only"]).toEqual(
+      canonical.index.skills["canonical-only"]
+    );
+    expect(linked.index.skills.shared).toEqual(canonical.index.skills.shared);
+    expect(linked.index.skills["linked-only"]).toBeUndefined();
+    expect(JSON.stringify(linked.graph)).not.toContain(linkedRoot);
+    expect(await Bun.file(linked.outputPath).json()).toEqual(linked.index);
+    expect(await Bun.file(linked.graphPath).json()).toEqual(linked.graph);
+  }
+  const snapshot = await buildIndexSnapshot({
+    homeDir: args.homeDir,
+    rootDir: linkedRoot,
+  });
+  expect(snapshot.index.skills.shared).toEqual(canonical.index.skills.shared);
+  expect(snapshot.index.skills["linked-only"]).toBeUndefined();
 });
 
 it("refuses unresolved linked repositories and execution-named automation scaffolds", async () => {

@@ -18,6 +18,7 @@ import {
   snippetMarkerToSnippetRef,
 } from "./graph";
 import {
+  canonicalProjectAiRoot,
   facultAiGraphPath,
   facultAiIndexPath,
   facultMachineStateDir,
@@ -1593,8 +1594,10 @@ async function buildIndexInternal(
   const force = Boolean(opts?.force);
   const persist = opts?.persist !== false;
   const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
-  const rootDir =
-    opts?.rootDir ?? (homeDir ? facultRootDir(homeDir) : facultRootDir());
+  const rootDir = canonicalProjectAiRoot(
+    opts?.rootDir ?? (homeDir ? facultRootDir(homeDir) : facultRootDir()),
+    homeDir
+  );
   const outputPath = opts?.machineStateDir
     ? join(opts.machineStateDir, "ai", "index.json")
     : facultAiIndexPath(homeDir, rootDir);

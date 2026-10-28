@@ -44,6 +44,10 @@ configuration and durable project store. New stores use repository identity;
 existing canonical slug stores remain readable. Execution identities remain in
 receipts and coordination locks. If the primary checkout cannot be verified,
 the command refuses to proceed. Existing `worktree_*` stores are retained.
+If the primary checkout itself has a nonempty execution-keyed store from an
+older version, commands stop with a reconciliation message before selecting a
+new store. Preserve and reconcile that store's queue, configuration, automation,
+and history before re-enabling the loop; this change does not migrate it.
 
 To check when every registered project last ran, without invoking any loop or
 changing scheduler state:

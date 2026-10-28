@@ -21,6 +21,7 @@ import {
 import {
   canonicalProjectRoot,
   repositoryCommonIdentitySync,
+  repositoryExecutionIdentity,
   resolveRepositoryExecutionIdentitySync,
 } from "./repository-identity";
 import { parseJsonLenient } from "./util/json";
@@ -475,7 +476,21 @@ function repositoryKeyForCanonicalRoot(
     const common = [identity, ...identity.aliases].find(
       (alias) => alias.kind === "git-common-dir"
     );
-    if (common) {
+    if (common && projectRoot) {
+      const executionKey = repositoryExecutionIdentity(projectRoot).id;
+      const executionStore = join(
+        facultLocalStateRoot(home),
+        "projects",
+        executionKey
+      );
+      if (
+        executionKey !== common.id &&
+        safeMachineStateDirExists(executionStore)
+      ) {
+        throw new Error(
+          `Existing primary-checkout execution state requires reconciliation before selecting repository state: ${executionStore}. Preserve this store and reconcile its queues, loop configuration, automation, and history before retrying.`
+        );
+      }
       return common.id;
     }
   }
