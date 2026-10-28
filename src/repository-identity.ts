@@ -359,6 +359,7 @@ function readBoundedRegularFileSync(
   }
 }
 
+/** Checkout identity for receipts and coordination; the worktree_ prefix also applies to primary checkouts. */
 export function repositoryExecutionIdentity(
   projectRoot: string
 ): RepositoryExecutionIdentity {

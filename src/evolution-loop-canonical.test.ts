@@ -38,10 +38,11 @@ import {
   resolveRepositoryExecutionIdentity,
 } from "./projects";
 import { scaffoldCodexAutomationTemplate } from "./remote";
+import { canonicalProjectRoot } from "./repository-identity";
 
 const EPHEMERAL_RE = /^worktree_/;
 
-async function fixture() {
+async function fixture({ linked = true } = {}) {
   const homeDir = await realpath(
     await mkdtemp(join(tmpdir(), "fclt-canonical-loop-"))
   );
@@ -65,7 +66,9 @@ async function fixture() {
     "-qm",
     "init"
   );
-  await git("worktree", "add", "--detach", worktree);
+  if (linked) {
+    await git("worktree", "add", "--detach", worktree);
+  }
   const rootDir = join(primary, ".ai");
   await Bun.write(join(rootDir, "config.toml"), "version = 1\n");
   await Bun.write(
@@ -75,7 +78,7 @@ async function fixture() {
       sources: [{ id: "writebacks", type: "writebacks" }],
     })
   );
-  return { homeDir, primary, worktree, rootDir };
+  return { homeDir, primary, worktree, rootDir, git };
 }
 
 async function cli(args: {
@@ -120,6 +123,87 @@ async function cli(args: {
   }
   return JSON.parse(output);
 }
+
+it("keeps an ordinary checkout's repository store stable despite its worktree-prefixed execution identity", async () => {
+  const args = await fixture({ linked: false });
+  const execution = await resolveRepositoryExecutionIdentity(args.primary);
+  expect(execution.id).toMatch(EPHEMERAL_RE);
+  expect(canonicalProjectRoot(args.primary)).toBe(args.primary);
+  const plan = await planProjectEnrollment({
+    projectRoot: args.primary,
+    homeDir: args.homeDir,
+  });
+  expect(plan.projectRoot).toBe(args.primary);
+  expect(plan.executionIdentity.id).toBe(execution.id);
+  const enrolled = await applyProjectEnrollment({
+    plan,
+    expectedPlanSha256: plan.planSha256,
+    homeDir: args.homeDir,
+  });
+  const primaryArgs = { ...args, worktree: args.primary };
+  const enabled = await cli({ ...primaryArgs, argv: ["enable", "--project"] });
+  const store = facultMachineStateDir(args.homeDir, args.rootDir);
+  expect(basename(store)).toBe(
+    repositoryMachineStateProjectKey(args.rootDir, args.homeDir)
+  );
+  expect(basename(store)).not.toMatch(EPHEMERAL_RE);
+  expect(enabled.config.automationName).toBe(
+    `fclt-evolution-${basename(store)}`
+  );
+  expect(
+    (await cli({ ...primaryArgs, argv: ["preflight", "--project"] })).status
+  ).toBe("ready");
+  await cli({ ...primaryArgs, argv: ["run", "--project", "--scheduled"] });
+  const statePath = facultAiEvolutionLoopStatePath(args.homeDir, args.rootDir);
+  const state = await readFile(statePath, "utf8");
+
+  await args.git(
+    "remote",
+    "add",
+    "origin",
+    "https://example.invalid/team/repo.git"
+  );
+  await args.git("worktree", "add", "--detach", args.worktree);
+  expect((await resolveRepositoryExecutionIdentity(args.primary)).id).toBe(
+    execution.id
+  );
+  expect((await resolveRepositoryExecutionIdentity(args.worktree)).id).not.toBe(
+    execution.id
+  );
+  expect(canonicalProjectRoot(args.primary)).toBe(args.primary);
+  expect(canonicalProjectRoot(args.worktree)).toBe(args.primary);
+  for (const checkout of [args.primary, args.worktree]) {
+    expect(facultMachineStateDir(args.homeDir, join(checkout, ".ai"))).toBe(
+      store
+    );
+    const reenabled = await cli({
+      ...args,
+      worktree: checkout,
+      argv: ["enable", "--project"],
+    });
+    expect(reenabled.config.automationName).toBe(enabled.config.automationName);
+  }
+  expect(await readFile(statePath, "utf8")).toBe(state);
+  expect(
+    (await readdir(join(facultLocalStateRoot(args.homeDir), "projects"))).sort()
+  ).toEqual(
+    ["coordination", "receipts", "registry.json", basename(store)].sort()
+  );
+  expect(await readdir(join(args.homeDir, ".codex", "automations"))).toEqual([
+    enabled.config.automationName,
+  ]);
+  expect(
+    Object.keys((await Bun.file(enrolled.registryPath).json()).projects)
+  ).toEqual([plan.identity.id]);
+  const status = await evolutionLoopPortfolioStatus({ homeDir: args.homeDir });
+  expect(status.projects).toHaveLength(1);
+  expect(status.projects[0]).toMatchObject({
+    projectKey: basename(store),
+    ephemeral: false,
+    stale: false,
+    schedulerStatus: "ACTIVE",
+  });
+});
 
 it("enrolls a linked checkout into the canonical repository store without an execution registration", async () => {
   const args = await fixture();

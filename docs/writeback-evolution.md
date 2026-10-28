@@ -63,7 +63,12 @@ and `stale`. The default threshold is eight days; a missing, invalid, future,
 or older `lastRunAt` is stale. Exactly eight days old is still within the window.
 `stale: false` proves recent execution, not successful scheduled coverage; check
 the successful scheduled timestamp separately. Legacy `worktree_*` stores have
-`ephemeral: true` and are reported without migration or deletion.
+`ephemeral: true` and are reported without migration or deletion. This flag marks
+the legacy execution-key format, not proof that a checkout was disposable: older
+versions also used that format for ordinary primary checkouts. Keep those stores
+until their ownership and contents have been reconciled. New primary checkouts
+use a stable repository store even though their receipt identity has a
+`worktree_` prefix.
 
 The loop can turn complete, correlated source evidence into targeted
 writebacks and reviewable proposals. It does not apply canonical changes or
