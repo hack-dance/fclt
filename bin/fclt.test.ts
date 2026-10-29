@@ -12,7 +12,6 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { facultInstallStatePath, facultRuntimeCacheDir } from "../src/paths";
 
 const version = (await import("../package.json")).version as string;
 const platform =
@@ -35,6 +34,36 @@ const launcherChecksum = require("./fclt.cjs") as {
 
 const tempDirs: string[] = [];
 const localOnly = process.env.FACULT_TEST_SKIP_LOCAL === "1";
+
+async function launcherFixture(prefix: string) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(root);
+  const homeDir = join(root, "home");
+  const cacheRoot = join(homeDir, ".cache", "fclt");
+  const stateRoot = join(homeDir, ".local", "state", "fclt");
+  const directories = {
+    HOME: homeDir,
+    XDG_STATE_HOME: join(root, "state"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_DATA_HOME: join(root, "data"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    TMPDIR: join(root, "tmp"),
+    TMP: join(root, "tmp"),
+    TEMP: join(root, "tmp"),
+    FACULT_LOCAL_STATE_DIR: stateRoot,
+    FACULT_CACHE_DIR: cacheRoot,
+  };
+  await Promise.all(
+    Object.values(directories).map((dir) => mkdir(dir, { recursive: true }))
+  );
+  // Fixture writes must not use product path resolvers that honor ambient overrides.
+  return {
+    homeDir,
+    env: { ...process.env, ...directories },
+    runtimeDir: join(cacheRoot, "runtime", version, `${platform}-${arch}`),
+    installStatePath: join(stateRoot, "install.json"),
+  };
+}
 
 it("verifies downloaded npm-launcher runtimes against one exact checksum entry", async () => {
   const root = await mkdtemp(join(tmpdir(), "fclt-launcher-checksum-"));
@@ -110,14 +139,8 @@ it("does not write install metadata when using a cached runtime binary", async (
     return;
   }
 
-  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-"));
-  tempDirs.push(homeDir);
-
-  const runtimeDir = join(
-    facultRuntimeCacheDir(homeDir),
-    version,
-    `${platform}-${arch}`
-  );
+  const { homeDir, env, runtimeDir, installStatePath } =
+    await launcherFixture("fclt-launcher-");
   await mkdir(runtimeDir, { recursive: true });
 
   const binaryName = process.platform === "win32" ? "fclt.exe" : "fclt";
@@ -130,8 +153,9 @@ it("does not write install metadata when using a cached runtime binary", async (
     cmd: [launcherRuntime, join(repoRoot, "bin", "fclt.cjs"), "help"],
     cwd: homeDir,
     env: {
-      ...process.env,
-      HOME: homeDir,
+      ...env,
+      FACULT_CACHE_DIR: "~/.cache/fclt",
+      FACULT_LOCAL_STATE_DIR: "~/.local/state/fclt",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -144,7 +168,6 @@ it("does not write install metadata when using a cached runtime binary", async (
   expect(stderr).toBe("");
   await expect(stat(join(homeDir, "~"))).rejects.toThrow();
 
-  const installStatePath = facultInstallStatePath(homeDir);
   await expect(stat(installStatePath)).rejects.toThrow();
 });
 
@@ -153,9 +176,8 @@ it("uses a temp runtime cache when the configured cache root is unavailable", as
     return;
   }
 
-  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-"));
-  const tmpHome = await mkdtemp(join(tmpdir(), "fclt-launcher-tmp-"));
-  tempDirs.push(homeDir, tmpHome);
+  const { homeDir, env } = await launcherFixture("fclt-launcher-");
+  const tmpHome = env.TMPDIR;
 
   const badCacheRoot = join(homeDir, "not-a-directory");
   await writeFile(badCacheRoot, "file", "utf8");
@@ -179,10 +201,8 @@ it("uses a temp runtime cache when the configured cache root is unavailable", as
     cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...env,
       FACULT_CACHE_DIR: badCacheRoot,
-      HOME: homeDir,
-      TMPDIR: tmpHome,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -200,14 +220,7 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
     return;
   }
 
-  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-fallback-"));
-  tempDirs.push(homeDir);
-
-  const runtimeDir = join(
-    facultRuntimeCacheDir(homeDir),
-    version,
-    `${platform}-${arch}`
-  );
+  const { env, runtimeDir } = await launcherFixture("fclt-launcher-fallback-");
   await mkdir(runtimeDir, { recursive: true });
   await writeFile(
     join(runtimeDir, `fclt.tmp-${Date.now()}`),
@@ -220,8 +233,7 @@ it("falls back quickly to the bundled source entry when the cached runtime is in
     cmd: [launcherRuntime, "bin/fclt.cjs", "--help"],
     cwd: repoRoot,
     env: {
-      ...process.env,
-      HOME: homeDir,
+      ...env,
       HTTPS_PROXY: "http://127.0.0.1:1",
       HTTP_PROXY: "http://127.0.0.1:1",
     },
@@ -254,14 +266,7 @@ it("waits for a concurrent launcher to finish writing the runtime binary", async
     return;
   }
 
-  const homeDir = await mkdtemp(join(tmpdir(), "fclt-launcher-wait-"));
-  tempDirs.push(homeDir);
-
-  const runtimeDir = join(
-    facultRuntimeCacheDir(homeDir),
-    version,
-    `${platform}-${arch}`
-  );
+  const { env, runtimeDir } = await launcherFixture("fclt-launcher-wait-");
   await mkdir(runtimeDir, { recursive: true });
 
   const binaryName = process.platform === "win32" ? "fclt.exe" : "fclt";
@@ -283,8 +288,7 @@ it("waits for a concurrent launcher to finish writing the runtime binary", async
     cmd: [launcherRuntime, "bin/fclt.cjs", "--version"],
     cwd: repoRoot,
     env: {
-      ...process.env,
-      HOME: homeDir,
+      ...env,
       HTTPS_PROXY: "http://127.0.0.1:1",
       HTTP_PROXY: "http://127.0.0.1:1",
     },
