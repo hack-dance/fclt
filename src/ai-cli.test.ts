@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { aiCommand } from "./ai";
+import { type AiWritebackRecord, addWriteback, aiCommand } from "./ai";
+import { facultAiWritebackQueuePath } from "./paths";
 
 let tempHome: string | null = null;
 const originalHome = process.env.HOME;
@@ -80,6 +81,60 @@ afterEach(async () => {
 });
 
 describe("ai CLI", () => {
+  it.each([
+    false,
+    true,
+  ])("skips malformed queue lines and warns only on stderr (json=%s)", async (json) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    process.env.FACULT_LOCAL_STATE_DIR = join(tempHome, "state");
+    process.chdir(tempHome);
+    const records: AiWritebackRecord[] = [];
+    for (const summary of ["First good record", "Second good record"]) {
+      records.push(
+        await addWriteback({
+          homeDir: tempHome,
+          rootDir,
+          kind: "capability_gap",
+          summary,
+          evidence: [{ type: "session", ref: "malformed-queue-test" }],
+        })
+      );
+    }
+    const queuePath = facultAiWritebackQueuePath(tempHome, rootDir);
+    const content = [
+      JSON.stringify(records[0]),
+      "",
+      "{invalid-queue-record",
+      JSON.stringify(records[1]),
+      "",
+    ].join("\n");
+    await Bun.write(queuePath, content);
+
+    const out = await captureConsole(async () => {
+      await aiCommand(["writeback", "list", ...(json ? ["--json"] : [])]);
+    });
+
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(out.errors).toEqual([
+      `Warning: skipping invalid JSON in ${queuePath} at line 3`,
+    ]);
+    const stdout = out.logs.join("\n");
+    expect(stdout).not.toContain("Warning:");
+    expect(stdout).not.toContain("invalid-queue-record");
+    if (json) {
+      expect(JSON.parse(stdout)).toEqual(JSON.parse(JSON.stringify(records)));
+    } else {
+      for (const record of records) {
+        expect(stdout).toContain(record.id);
+        expect(stdout).toContain(record.summary);
+      }
+    }
+    expect(await Bun.file(queuePath).text()).toBe(content);
+  });
+
   it("repairs a configured scheduler through the CLI without activating it", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
