@@ -8,6 +8,7 @@ import {
   parseCliContextArgs,
   resolveCliContextRoot,
   resolveCliContextScope,
+  resolveLoopContextRoot,
 } from "./cli-context";
 import type { AssetScope, GraphNodeKind } from "./graph";
 import { loadGraph, resolveGraphNode } from "./graph-query";
@@ -2866,6 +2867,7 @@ Usage:
   fclt ai loop enable [--rrule <RRULE>] [--source <configured-id>] [--dry-run] [--json]
   fclt ai loop disable [--dry-run] [--json]
   fclt ai loop status [--json]
+  fclt ai loop status --all-projects [--stale-after <Nd>] [--json]
   fclt ai loop report [--json]
   fclt ai loop activity [--all|--global|--project] [--json]
   fclt ai loop resolve <activity-action-locator> [--json]
@@ -3134,7 +3136,39 @@ async function loopCommand(argv: string[]) {
   }
   const json = commandArgs.includes("--json");
   try {
-    const rootDir = resolveCliContextRoot({
+    if (commandArgs.includes("--all-projects")) {
+      if (sub !== "status" || parsed.rootArg || parsed.scope !== "merged") {
+        throw new Error(
+          "--all-projects requires loop status without a root or scope flag"
+        );
+      }
+      const { evolutionLoopPortfolioStatus } = await import(
+        "./evolution-loop-portfolio"
+      );
+      const result = await evolutionLoopPortfolioStatus({
+        homeDir: process.env.HOME ?? homedir(),
+        staleAfter: parseStringFlag(commandArgs, "--stale-after"),
+      });
+      await writeCliOutput(
+        json
+          ? JSON.stringify(result, null, 2)
+          : result.projects
+              .map(
+                (project) =>
+                  `${project.projectKey} ${project.ephemeral ? "ephemeral " : ""}${project.schedulerStatus} last run: ${project.lastRunAt ?? "never"} stale: ${project.stale}${project.error ? ` (${project.error})` : ""}`
+              )
+              .join("\n") || "No registered projects."
+      );
+      return;
+    }
+    if (
+      commandArgs.some(
+        (arg) => arg === "--stale-after" || arg.startsWith("--stale-after=")
+      )
+    ) {
+      throw new Error("--stale-after requires loop status --all-projects");
+    }
+    const rootDir = resolveLoopContextRoot({
       rootArg: parsed.rootArg,
       scope: parsed.scope,
       cwd: process.cwd(),
@@ -3964,6 +3998,10 @@ export async function aiCommand(
     );
   }
   const [sub, ...rest] = argv;
+  if (sub === "loop") {
+    await loopCommand(rest);
+    return;
+  }
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(aiHelp());
     return;
@@ -4026,10 +4064,6 @@ export async function aiCommand(
   }
   if (sub === "review" || sub === "reconcile") {
     await reviewCommand(sub === "reconcile" ? ["reconcile", ...rest] : rest);
-    return;
-  }
-  if (sub === "loop") {
-    await loopCommand(rest);
     return;
   }
 

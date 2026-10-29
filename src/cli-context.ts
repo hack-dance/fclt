@@ -1,12 +1,46 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { AssetSourceKind } from "./graph";
 import {
+  canonicalProjectAiRoot,
   facultContextRootDir,
   facultRootDir,
   findNearestProjectAiRoot,
   preferredGlobalAiRoot,
   projectRootFromAiRoot,
 } from "./paths";
+import { canonicalProjectRoot } from "./repository-identity";
+
+/** Scheduled worktrees may have no .ai directory; discover configuration in the primary checkout. */
+export function resolveLoopContextRoot(
+  args: Parameters<typeof resolveCliContextRoot>[0]
+): string {
+  if (args?.scope === "global") {
+    return resolveCliContextRoot(args);
+  }
+  const homeDir = args?.homeDir ?? process.env.HOME ?? "";
+  const environmentRootSelected =
+    process.env.FACULT_ROOT_DIR?.trim() &&
+    (args?.scope !== "project" ||
+      (process.env.FACULT_ROOT_SCOPE?.trim() === "project" &&
+        projectRootFromAiRoot(facultRootDir(homeDir), homeDir)));
+  if (args?.rootArg || environmentRootSelected) {
+    return canonicalProjectAiRoot(resolveCliContextRoot(args), homeDir);
+  }
+  const cwd = args?.cwd ?? process.cwd();
+  const canonicalCwd = canonicalProjectRoot(cwd);
+  return canonicalProjectAiRoot(
+    resolveCliContextRoot({
+      ...args,
+      cwd: canonicalCwd,
+      rootArg:
+        canonicalCwd !== resolve(cwd)
+          ? (findNearestProjectAiRoot(canonicalCwd, args?.homeDir) ??
+            join(canonicalCwd, ".ai"))
+          : undefined,
+    }),
+    args?.homeDir
+  );
+}
 
 export type CapabilityScopeMode = "merged" | "global" | "project";
 

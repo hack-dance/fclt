@@ -28,12 +28,19 @@ import {
   MAX_STABLE_REGULAR_FILE_BYTES,
   readStableRegularFile,
 } from "./deployment-plan";
-import { facultMachineStateDir } from "./paths";
+import {
+  canonicalProjectAiRoot,
+  executionMachineStateProjectKey,
+  facultLocalStateRoot,
+  legacyMachineStateProjectKey,
+  projectRootFromAiRoot,
+} from "./paths";
 import {
   buildProjectRenderPlan,
   checkProjectRenderPlan,
   type ProjectRenderPlanV1,
 } from "./project-render";
+import { repositoryCommonIdentitySync } from "./repository-identity";
 
 const RECEIPT_SCHEMA_VERSION = 1 as const;
 const TRANSACTION_SCHEMA_VERSION = 1 as const;
@@ -631,11 +638,10 @@ async function statePaths(
   const root = resolve(
     options.stateRoot ??
       join(
-        facultMachineStateDir(
-          options.homeDir ?? homedir(),
-          options.canonicalRoot
-        ),
-        "project-render"
+        facultLocalStateRoot(options.homeDir ?? homedir()),
+        "project-render",
+        // Receipts and recovery own checkout files, not shared repository state.
+        (await projectId(options.projectRoot)).slice("sha256:".length)
       )
   );
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -656,6 +662,127 @@ async function statePaths(
     root,
     transaction: join(root, "transaction.json"),
   };
+}
+
+function legacyRenderRoots(options: ApplyProjectRenderOptions): string[] {
+  const home = options.homeDir ?? homedir();
+  const localRoot = facultLocalStateRoot(home);
+  if (!projectRootFromAiRoot(options.canonicalRoot, home)) {
+    return [join(localRoot, "global", "project-render")];
+  }
+  const canonicalRoot = canonicalProjectAiRoot(options.canonicalRoot, home);
+  const identity = repositoryCommonIdentitySync(dirname(canonicalRoot));
+  const common = identity
+    ? [identity, ...identity.aliases].find(
+        (alias) => alias.kind === "git-common-dir"
+      )
+    : undefined;
+  const keys = new Set([
+    executionMachineStateProjectKey(options.canonicalRoot, home),
+    legacyMachineStateProjectKey(options.canonicalRoot, home),
+    legacyMachineStateProjectKey(canonicalRoot, home),
+  ]);
+  if (common) {
+    keys.add(common.id);
+  }
+  return [...keys]
+    .sort()
+    .map((key) => join(localRoot, "projects", key, "project-render"));
+}
+
+async function existingLegacyPaths(
+  options: ApplyProjectRenderOptions,
+  root: string
+): Promise<MutationStatePaths | null> {
+  // Check the project directory too: a safe leaf must not hide a symlinked store.
+  for (const path of [dirname(dirname(root)), dirname(root), root]) {
+    const metadata = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        return null;
+      }
+      throw error;
+    });
+    if (!metadata) {
+      return null;
+    }
+    if (
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      groupOrOtherWritable(metadata.mode)
+    ) {
+      throw new Error("Legacy project render state directory is unsafe.");
+    }
+  }
+  return statePaths({ ...options, stateRoot: root });
+}
+
+async function stateProjectId(
+  paths: MutationStatePaths
+): Promise<string | null> {
+  const receiptText = await readOptionalState(paths.receipt);
+  const transactionText = await readOptionalState(paths.transaction);
+  const receiptId = receiptText
+    ? parseReceipt(receiptText).ownership.projectId
+    : null;
+  const transactionId = transactionText
+    ? parseTransaction(transactionText).projectId
+    : null;
+  if (receiptId && transactionId && receiptId !== transactionId) {
+    throw new Error(
+      "Project render receipt and transaction belong to different projects; state reconciliation is required."
+    );
+  }
+  return transactionId ?? receiptId;
+}
+
+/** Preserve legacy state in place, holding its original lock through recovery and mutation. */
+async function withProjectRenderState<T>(
+  options: ApplyProjectRenderOptions,
+  operation: (paths: MutationStatePaths) => Promise<T>
+): Promise<T> {
+  const current = await statePaths(options);
+  return withMutationLock(current, async () => {
+    if (options.stateRoot !== undefined) {
+      return operation(current);
+    }
+    const identity = await projectId(options.projectRoot);
+    const candidates: MutationStatePaths[] = [];
+    for (const root of legacyRenderRoots(options)) {
+      const paths = await existingLegacyPaths(options, root);
+      if (paths) {
+        candidates.push(paths);
+      }
+    }
+    function selectLocked(
+      index: number,
+      owned: MutationStatePaths[]
+    ): Promise<T> {
+      const candidate = candidates[index];
+      if (candidate) {
+        return withMutationLock(candidate, async () =>
+          selectLocked(
+            index + 1,
+            (await stateProjectId(candidate)) === identity
+              ? [...owned, candidate]
+              : owned
+          )
+        );
+      }
+      if (owned.length > 1) {
+        throw new Error(
+          "Conflicting project render state directories require reconciliation."
+        );
+      }
+      return operation(owned[0] ?? current);
+    }
+    const currentId = await stateProjectId(current);
+    if (currentId && currentId !== identity) {
+      throw new Error(
+        "Project render ownership receipt belongs to a different project."
+      );
+    }
+    return selectLocked(0, currentId ? [current] : []);
+  });
 }
 
 async function projectId(projectRoot: string): Promise<string> {
@@ -713,14 +840,13 @@ async function executeOperation(args: {
   index: number;
   operation: TransactionOperationV1;
   options: ApplyProjectRenderOptions;
+  paths: MutationStatePaths;
   revalidatePlan: boolean;
 }): Promise<void> {
   const targetPath = join(args.options.projectRoot, args.operation.path);
   const revalidate = async (): Promise<void> => {
     if (args.revalidatePlan) {
-      const transactionText = await readOptionalState(
-        (await statePaths(args.options)).transaction
-      );
+      const transactionText = await readOptionalState(args.paths.transaction);
       if (!transactionText) {
         throw new Error("Project render transaction disappeared during apply.");
       }
@@ -823,6 +949,7 @@ async function recoverTransaction(args: {
         path: operation.path,
       },
       options: args.options,
+      paths: args.paths,
       revalidatePlan: false,
     });
   }
@@ -955,11 +1082,10 @@ async function withMutationLock<T>(
   }
 }
 
-export async function applyProjectRender(
+export function applyProjectRender(
   options: ApplyProjectRenderOptions
 ): Promise<Readonly<ProjectRenderApplyResultV1>> {
-  const paths = await statePaths(options);
-  return withMutationLock(paths, async () => {
+  return withProjectRenderState(options, async (paths) => {
     const identity = await projectId(options.projectRoot);
     const recovered = await recoverTransaction({
       options,
@@ -1040,6 +1166,7 @@ export async function applyProjectRender(
         index,
         operation,
         options,
+        paths,
         revalidatePlan: true,
       });
     }
@@ -1078,11 +1205,10 @@ function emptyOwnership(projectIdentity: string): ProjectRenderOwnershipV1 {
   };
 }
 
-export async function rollbackProjectRender(
+export function rollbackProjectRender(
   options: ApplyProjectRenderOptions
 ): Promise<Readonly<ProjectRenderRollbackResultV1>> {
-  const paths = await statePaths(options);
-  return withMutationLock(paths, async () => {
+  return withProjectRenderState(options, async (paths) => {
     const identity = await projectId(options.projectRoot);
     await recoverTransaction({ options, paths, projectId: identity });
     const receiptText = await readOptionalState(paths.receipt);
@@ -1162,6 +1288,7 @@ export async function rollbackProjectRender(
         index,
         operation,
         options,
+        paths,
         revalidatePlan: false,
       });
     }

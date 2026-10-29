@@ -47,6 +47,7 @@ import {
   legacyManagedMutationApproved,
 } from "./legacy-mutation-policy";
 import {
+  canonicalProjectAiRoot,
   facultCodexAutomationOwnershipPath,
   facultRootDir,
   pathsPhysicallyEquivalent,
@@ -83,6 +84,7 @@ import {
   SKILLS_SH_INDEX_NAME,
   SMITHERY_INDEX_NAME,
 } from "./remote-types";
+import { canonicalProjectRoot } from "./repository-identity";
 import { validateSnippetMarkerName } from "./snippets";
 import { loadSourceTrustState, type SourceTrustLevel } from "./source-trust";
 import { parseJsonLenient } from "./util/json";
@@ -1314,7 +1316,7 @@ Execution boundaries:
 - Keep unchanged or non-actionable runs quiet unless periodic status reports were explicitly requested. Notify only for meaningful change, completion, failure, or required user action.
 `;
 
-export async function scaffoldCodexAutomationTemplate(args: {
+export async function scaffoldCodexAutomationTemplate(input: {
   homeDir?: string;
   cwd?: string;
   templateId: string;
@@ -1334,7 +1336,27 @@ export async function scaffoldCodexAutomationTemplate(args: {
   dryRun: boolean;
   changedPaths: string[];
 }> {
+  let args = input;
   const home = args.homeDir ?? homedir();
+  if (
+    args.templateId === "closed-loop-review" &&
+    (args.scope ?? "project") === "project"
+  ) {
+    args = {
+      ...args,
+      cwd: canonicalProjectRoot(args.cwd ?? process.cwd()),
+      projectRoot: args.projectRoot
+        ? canonicalProjectRoot(args.projectRoot)
+        : args.projectRoot,
+      rootDir: args.rootDir
+        ? canonicalProjectAiRoot(args.rootDir, home)
+        : args.rootDir,
+      cwds: args.cwds?.map(canonicalProjectRoot),
+      cwdsRaw: args.cwdsRaw
+        ? normalizeCwdList(args.cwdsRaw).map(canonicalProjectRoot).join(",")
+        : args.cwdsRaw,
+    };
+  }
   const cwd = resolve(args.cwd ?? process.cwd());
   const template = BUILTIN_AUTOMATION_TEMPLATES.find(
     (candidate) => candidate.id === args.templateId
@@ -1348,6 +1370,15 @@ export async function scaffoldCodexAutomationTemplate(args: {
     ? args.cwds
     : normalizeCwdList(args.cwdsRaw ?? "");
   const normalizedScope = (args.scope ?? template.scope).trim().toLowerCase();
+  if (
+    template.id === "closed-loop-review" &&
+    normalizedScope === "project" &&
+    safeName.startsWith("fclt-evolution-worktree_")
+  ) {
+    throw new Error(
+      "Execution identities cannot name project loop automations; enable the loop from the canonical project"
+    );
+  }
   const cwds = pickScopeTemplateCwds({
     template,
     requestedScope: args.scope ?? null,

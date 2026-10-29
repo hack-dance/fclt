@@ -10,7 +10,15 @@ import {
   readSync,
   realpathSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
+import { withoutLocalGitEnvironment } from "./util/git-environment";
 
 const SCP_REMOTE_RE = /^([^@/\s]+@)?([^:/\s]+):(.+)$/;
 const GIT_PROTOCOL_PREFIX_RE = /^git\+/;
@@ -351,6 +359,7 @@ function readBoundedRegularFileSync(
   }
 }
 
+/** Checkout identity for receipts and coordination; the worktree_ prefix also applies to primary checkouts. */
 export function repositoryExecutionIdentity(
   projectRoot: string
 ): RepositoryExecutionIdentity {
@@ -408,15 +417,132 @@ function readGit(projectRoot: string, argv: string[]): string | null {
   const result = spawnSync("git", ["-C", projectRoot, ...argv], {
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...withoutLocalGitEnvironment(process.env),
       GIT_OPTIONAL_LOCKS: "0",
     },
     stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5000,
   });
   if (result.status !== 0 || typeof result.stdout !== "string") {
     return null;
   }
   return result.stdout.trim() || null;
+}
+
+function hasGitMetadataAbove(projectRoot: string): boolean {
+  let current = resolve(projectRoot);
+  for (;;) {
+    try {
+      lstatSync(join(current, ".git"));
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        throw error;
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return false;
+    }
+    current = parent;
+  }
+}
+
+/** Resolve durable project authority through Git's common directory, never a remote URL. */
+export function canonicalProjectRoot(projectRoot: string): string {
+  const requested = resolve(projectRoot);
+  if (!hasGitMetadataAbove(requested)) {
+    return requested;
+  }
+  const facts = readGit(requested, [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-dir",
+    "--git-common-dir",
+    "--show-toplevel",
+  ])?.split("\n");
+  if (!facts) {
+    throw new Error(
+      `Cannot safely resolve canonical repository for ${requested}: Git metadata is unavailable or invalid`
+    );
+  }
+  const [gitDir, commonDir, topLevel] = facts;
+  if (
+    facts.length !== 3 ||
+    !gitDir ||
+    !commonDir ||
+    !topLevel ||
+    !facts.every(isAbsolute)
+  ) {
+    throw new Error(
+      `Cannot safely resolve canonical repository for ${requested}: unexpected Git paths`
+    );
+  }
+  for (const path of [gitDir, commonDir]) {
+    const metadata = lstatSync(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      throw new Error(
+        `Cannot safely resolve canonical repository: unsafe Git directory ${path}`
+      );
+    }
+  }
+  // Validate the checkout pointer with the same bounded, no-follow reader used by receipts.
+  repositoryExecutionIdentity(topLevel);
+  const common = realpathSync.native(commonDir);
+  if (realpathSync.native(gitDir) === common) {
+    return realpathSync.native(requested);
+  }
+  const checkoutPointer = readBoundedRegularFileSync(join(gitDir, "gitdir"));
+  if (
+    dirname(realpathSync.native(gitDir)) !== join(common, "worktrees") ||
+    !checkoutPointer ||
+    canonicalRepositoryPath(
+      resolve(gitDir, checkoutPointer.contents.trim())
+    ) !== canonicalRepositoryPath(join(topLevel, ".git"))
+  ) {
+    throw new Error(
+      `Cannot safely resolve canonical repository for ${requested}: linked checkout is not registered in the Git common directory`
+    );
+  }
+  const configuredWorktree = readGit(requested, [
+    "config",
+    "--get",
+    "core.worktree",
+  ]);
+  const primary =
+    basename(common) === ".git"
+      ? dirname(common)
+      : configuredWorktree
+        ? resolve(common, configuredWorktree)
+        : null;
+  const primaryFacts = primary
+    ? readGit(primary, [
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+        "--show-toplevel",
+      ])?.split("\n")
+    : null;
+  if (
+    !primary ||
+    primaryFacts?.length !== 3 ||
+    primaryFacts.some((path) => !isAbsolute(path)) ||
+    realpathSync.native(primaryFacts[0]!) !== common ||
+    realpathSync.native(primaryFacts[1]!) !== common ||
+    canonicalRepositoryPath(primaryFacts[2]!) !==
+      canonicalRepositoryPath(primary)
+  ) {
+    throw new Error(
+      `Cannot safely resolve canonical repository for ${requested}: primary checkout is missing or does not share the Git common directory`
+    );
+  }
+  repositoryExecutionIdentity(primary);
+  return join(
+    realpathSync.native(primary),
+    relative(realpathSync.native(topLevel), realpathSync.native(requested))
+  );
 }
 
 export function resolveRepositoryIdentitySync(
@@ -436,6 +562,29 @@ export function resolveRepositoryIdentitySync(
     rootCommit: readGit(projectRoot, ["rev-list", "--max-parents=0", "HEAD"]),
     commonDir: readGit(projectRoot, ["rev-parse", "--git-common-dir"]),
   });
+}
+
+export function repositoryCommonIdentitySync(
+  projectRoot: string
+): RepositoryIdentity | null {
+  if (!hasGitMetadataAbove(projectRoot)) {
+    return null;
+  }
+  const [commonDir, topLevel] =
+    readGit(projectRoot, [
+      "rev-parse",
+      "--git-common-dir",
+      "--show-toplevel",
+    ])?.split("\n") ?? [];
+  if (
+    !topLevel ||
+    canonicalRepositoryPath(topLevel) !== canonicalRepositoryPath(projectRoot)
+  ) {
+    return null;
+  }
+  return commonDir
+    ? repositoryIdentityFromGitFacts({ projectRoot, commonDir })
+    : null;
 }
 
 export function resolveRepositoryExecutionIdentitySync(

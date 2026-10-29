@@ -19,10 +19,11 @@ discriminator when one exists, so an upstream repository and its fork are not
 merged merely because they share initial history. Root-commit and local Git
 common-directory aliases migrate earlier records, while the machine-local
 registry preserves the selected primary when remotes are later added, renamed,
-or removed. Each checkout/worktree also has a separate location-derived
-execution identity because its generated index and graph contain
-location-specific paths. Review and select repositories individually; the
-command never enrolls its results.
+or removed. Linked worktree enrollment targets the primary checkout and its
+repository store, including the generated index and graph. Independent clones
+keep separate machine-local stores. Execution identities still bind render
+receipts and coordination. Review and select repositories individually; the
+discovery command never enrolls its results.
 
 ## Preview And Apply
 

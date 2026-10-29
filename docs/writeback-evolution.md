@@ -38,6 +38,38 @@ does not prove execution; status reports whether a successful loop run has
 never been observed, is healthy, or is stale. Disable scheduling without
 deleting history with `fclt ai loop disable --project`.
 
+Project loop commands and enrollment from a linked Git worktree resolve the
+primary checkout through the shared Git common directory. They use its canonical
+configuration and durable project store. New stores use repository identity;
+existing canonical slug stores remain readable. Execution identities remain in
+receipts and coordination locks. If the primary checkout cannot be verified,
+the command refuses to proceed. Existing `worktree_*` stores are retained.
+If the primary checkout itself has a nonempty execution-keyed store from an
+older version, commands stop with a reconciliation message before selecting a
+new store. Preserve and reconcile that store's queue, configuration, automation,
+and history before re-enabling the loop; this change does not migrate it.
+
+To check when every registered project last ran, without invoking any loop or
+changing scheduler state:
+
+```bash
+fclt ai loop status --all-projects --stale-after 8d --json
+```
+
+The report includes enrolled projects without loop state and existing project
+stores. Each row includes `schedulerStatus` (`ACTIVE`, `PAUSED`, `missing`, or
+`unknown` when inspection fails), `lastRunAt`, `lastSuccessfulScheduledRunAt`,
+and `stale`. The default threshold is eight days; a missing, invalid, future,
+or older `lastRunAt` is stale. Exactly eight days old is still within the window.
+`stale: false` proves recent execution, not successful scheduled coverage; check
+the successful scheduled timestamp separately. Legacy `worktree_*` stores have
+`ephemeral: true` and are reported without migration or deletion. This flag marks
+the legacy execution-key format, not proof that a checkout was disposable: older
+versions also used that format for ordinary primary checkouts. Keep those stores
+until their ownership and contents have been reconciled. New primary checkouts
+use a stable repository store even though their receipt identity has a
+`worktree_` prefix.
+
 The loop can turn complete, correlated source evidence into targeted
 writebacks and reviewable proposals. It does not apply canonical changes or
 mutate external trackers. Project auto-apply is reported as plan-only until

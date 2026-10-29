@@ -22,7 +22,6 @@ import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
 import { enableEvolutionLoop, runEvolutionLoop } from "./evolution-loop";
 import {
-  executionMachineStateProjectKey,
   facultAiEvolutionLoopLockPath,
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
@@ -35,6 +34,7 @@ import {
   facultMachineStateDir,
   legacyMachineStateProjectKey,
   pathsPhysicallyEquivalent,
+  repositoryMachineStateProjectKey,
 } from "./paths";
 import {
   applyProjectEnrollment,
@@ -1409,7 +1409,7 @@ describe("project enrollment planning", () => {
     ]);
     expect(
       plan.generatedWrites.every((write) =>
-        write.path.includes(plan.executionIdentity.id)
+        write.path.includes(repositoryMachineStateProjectKey(plan.aiRoot, home))
       )
     ).toBe(true);
     expect(
@@ -2127,7 +2127,7 @@ describe("project enrollment lifecycle", () => {
     }
     expect(facultMachineStateDir(home, aiRoot)).toBe(legacyDir);
     const legacyKey = legacyMachineStateProjectKey(aiRoot, home);
-    const executionId = (await resolveRepositoryExecutionIdentity(repo)).id;
+    const executionId = repositoryMachineStateProjectKey(aiRoot, home);
     const reviewMirrors = [
       {
         source: join(
@@ -2202,7 +2202,9 @@ describe("project enrollment lifecycle", () => {
       plan.stateMigrations.every(
         (migration) =>
           migration.reason.includes("Preserve legacy path-keyed") &&
-          migration.destination.includes(plan.executionIdentity.id)
+          migration.destination.includes(
+            repositoryMachineStateProjectKey(plan.aiRoot, home)
+          )
       )
     ).toBe(true);
     const output: string[] = [];
@@ -2448,7 +2450,7 @@ describe("project enrollment lifecycle", () => {
     const selectedDir = join(
       facultLocalStateRoot(home),
       "projects",
-      executionMachineStateProjectKey(aiRoot, home)
+      repositoryMachineStateProjectKey(aiRoot, home)
     );
     await mkdir(join(legacyDir, "journal"), { recursive: true });
     await writeFile(
@@ -2490,7 +2492,7 @@ describe("project enrollment lifecycle", () => {
     const selectedDir = join(
       facultLocalStateRoot(home),
       "projects",
-      executionMachineStateProjectKey(aiRoot, home)
+      repositoryMachineStateProjectKey(aiRoot, home)
     );
     await mkdir(join(legacyDir, "journal"), { recursive: true });
     await writeFile(
@@ -2769,7 +2771,7 @@ describe("project enrollment lifecycle", () => {
     process.env.PATH = join(root, "missing-bin");
     try {
       expect(() => facultMachineStateDir(home, aiRoot)).toThrow(
-        "Unable to resolve machine-local execution identity"
+        "Cannot safely resolve canonical repository"
       );
     } finally {
       process.env.PATH = originalPath;
@@ -2917,7 +2919,7 @@ describe("project enrollment lifecycle", () => {
     const executionState = join(
       facultLocalStateRoot(home),
       "projects",
-      (await resolveRepositoryExecutionIdentity(repo)).id
+      repositoryMachineStateProjectKey(aiRoot, home)
     );
     const legacyJournal = join(legacyState, "journal", "events.jsonl");
     const lateQueue = join(legacyState, "writeback", "late.jsonl");
@@ -3584,7 +3586,7 @@ describe("project enrollment lifecycle", () => {
     ).toBe(true);
     expect(
       facultMachineStateDir(home, join(repo, ".ai")).endsWith(
-        plan.executionIdentity.id
+        repositoryMachineStateProjectKey(plan.aiRoot, home)
       )
     ).toBe(true);
     expect(await Bun.file(result.registryPath).exists()).toBe(true);
@@ -4737,7 +4739,7 @@ describe("project enrollment lifecycle", () => {
     ).toEqual([clone, repo].sort());
   });
 
-  it("uses distinct execution state and preserves registry history for concurrent clone and worktree enrollment", async () => {
+  it("uses distinct clone state and preserves registry history for concurrent clone and worktree enrollment", async () => {
     const { root, home } = await makeFixture();
     const source = join(root, "source");
     const clone = join(root, "clone");
@@ -4817,7 +4819,7 @@ describe("project enrollment lifecycle", () => {
     };
     const entry = registry.projects[clonePlan.identity.id];
     expect(entry?.locations.map((location) => location.path).sort()).toEqual(
-      [clone, worktree].sort()
+      [clone, source].sort()
     );
     expect(
       entry?.history.filter((event) => event.action === "enrolled")
@@ -4826,16 +4828,14 @@ describe("project enrollment lifecycle", () => {
 
     let status = await buildProjectsStatus({
       homeDir: home,
-      discoveryRoots: [clone, worktree],
+      discoveryRoots: [clone, source],
     });
     expect(status.projects[0]).toMatchObject({
       coverage: "covered",
       health: "healthy",
     });
     const nonPrimaryRoot =
-      status.projects[0]?.canonicalRoot === join(clone, ".ai")
-        ? worktree
-        : clone;
+      status.projects[0]?.canonicalRoot === join(clone, ".ai") ? source : clone;
     const nonPrimaryAiRoot = join(nonPrimaryRoot, ".ai");
     const configPath = join(nonPrimaryAiRoot, "config.toml");
     const ignorePath = join(nonPrimaryAiRoot, ".gitignore");
@@ -4852,7 +4852,7 @@ describe("project enrollment lifecycle", () => {
     await rm(configPath);
     status = await buildProjectsStatus({
       homeDir: home,
-      discoveryRoots: [clone, worktree],
+      discoveryRoots: [clone, source],
     });
     expect(status.projects[0]).toMatchObject({
       coverage: "partial",
@@ -4864,7 +4864,7 @@ describe("project enrollment lifecycle", () => {
     await writeFile(ignorePath, "", "utf8");
     status = await buildProjectsStatus({
       homeDir: home,
-      discoveryRoots: [clone, worktree],
+      discoveryRoots: [clone, source],
     });
     expect(status.projects[0]).toMatchObject({
       coverage: "partial",
@@ -4876,7 +4876,7 @@ describe("project enrollment lifecycle", () => {
     await writeFile(indexPath, "{}", "utf8");
     status = await buildProjectsStatus({
       homeDir: home,
-      discoveryRoots: [clone, worktree],
+      discoveryRoots: [clone, source],
     });
     expect(status.projects[0]).toMatchObject({
       health: "degraded",
@@ -4887,7 +4887,7 @@ describe("project enrollment lifecycle", () => {
     await writeFile(graphPath, "{}", "utf8");
     status = await buildProjectsStatus({
       homeDir: home,
-      discoveryRoots: [clone, worktree],
+      discoveryRoots: [clone, source],
     });
     expect(status.projects[0]).toMatchObject({
       health: "degraded",
@@ -4907,7 +4907,7 @@ describe("project enrollment lifecycle", () => {
     );
     status = await buildProjectsStatus({
       homeDir: home,
-      discoveryRoots: [clone, worktree],
+      discoveryRoots: [clone, source],
     });
     expect(status.projects[0]).toMatchObject({
       coverage: "partial",
@@ -4923,7 +4923,7 @@ describe("project enrollment lifecycle", () => {
       "utf8"
     );
 
-    const primaryRoot = nonPrimaryRoot === clone ? worktree : clone;
+    const primaryRoot = nonPrimaryRoot === clone ? source : clone;
     await rm(nonPrimaryRoot, { recursive: true });
     status = await buildProjectsStatus({
       homeDir: home,
@@ -4966,7 +4966,7 @@ describe("project enrollment lifecycle", () => {
     const initialState = join(
       facultLocalStateRoot(home),
       "projects",
-      initialPlan.executionIdentity.id
+      repositoryMachineStateProjectKey(initialPlan.aiRoot, home)
     );
     const journalPath = join(initialState, "journal", "events.jsonl");
     await mkdir(dirname(journalPath), { recursive: true });
@@ -4985,7 +4985,7 @@ describe("project enrollment lifecycle", () => {
     const renamedState = join(
       facultLocalStateRoot(home),
       "projects",
-      renamedPlan.executionIdentity.id
+      repositoryMachineStateProjectKey(renamedPlan.aiRoot, home)
     );
     expect(renamedPlan.executionIdentity.id).toBe(
       initialPlan.executionIdentity.id
@@ -5176,8 +5176,10 @@ describe("project enrollment lifecycle", () => {
     });
     const victimIdentity = await resolveRepositoryIdentity(victim);
     const attackerIdentity = await resolveRepositoryIdentity(attacker);
-    const attackerExecution =
-      await resolveRepositoryExecutionIdentity(attacker);
+    const attackerStateKey = repositoryMachineStateProjectKey(
+      join(attacker, ".ai"),
+      home
+    );
     expect(attackerIdentity.id).not.toBe(victimIdentity.id);
     await mkdir(join(attacker, ".ai"), { recursive: true });
     await writeFile(
@@ -5211,7 +5213,7 @@ describe("project enrollment lifecycle", () => {
     );
     expect(
       facultMachineStateDir(home, join(attacker, ".ai")).endsWith(
-        attackerExecution.id
+        attackerStateKey
       )
     ).toBe(true);
   });

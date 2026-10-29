@@ -18,7 +18,12 @@ import {
   resolve,
   win32,
 } from "node:path";
-import { resolveRepositoryExecutionIdentitySync } from "./repository-identity";
+import {
+  canonicalProjectRoot,
+  repositoryCommonIdentitySync,
+  repositoryExecutionIdentity,
+  resolveRepositoryExecutionIdentitySync,
+} from "./repository-identity";
 import { parseJsonLenient } from "./util/json";
 
 const WINDOWS_ABSOLUTE_PATH_RE = /^[A-Za-z]:[\\/]/;
@@ -409,26 +414,92 @@ export function machineStateProjectKey(
   home: string = defaultHomeDir(),
   config?: FacultConfig | null
 ): string {
-  const executionKey = executionMachineStateProjectKey(rootDir, home, config);
-  const legacyKey = legacyMachineStateProjectKey(rootDir, home, config);
+  const canonicalRoot = canonicalProjectAiRoot(rootDir, home, config);
+  const repositoryKey = repositoryKeyForCanonicalRoot(
+    canonicalRoot,
+    home,
+    config
+  );
+  const legacyKey = legacyMachineStateProjectKey(canonicalRoot, home, config);
   const projectsRoot = join(facultLocalStateRoot(home), "projects");
-  if (executionKey === legacyKey) {
-    safeMachineStateDirExists(join(projectsRoot, executionKey));
-    return executionKey;
+  if (repositoryKey === legacyKey) {
+    safeMachineStateDirExists(join(projectsRoot, repositoryKey));
+    return repositoryKey;
   }
   const legacyExists = safeMachineStateDirExists(join(projectsRoot, legacyKey));
-  const executionExists = safeMachineStateDirExists(
-    join(projectsRoot, executionKey)
+  const repositoryExists = safeMachineStateDirExists(
+    join(projectsRoot, repositoryKey)
   );
-  if (legacyExists && executionExists) {
+  if (legacyExists && repositoryExists) {
     throw new Error(
-      `Conflicting legacy and execution machine-local project state directories require enrollment reconciliation: ${join(projectsRoot, legacyKey)} and ${join(projectsRoot, executionKey)}`
+      `Conflicting legacy and repository machine-local project state directories require enrollment reconciliation: ${join(projectsRoot, legacyKey)} and ${join(projectsRoot, repositoryKey)}`
     );
   }
   if (legacyExists) {
     return legacyKey;
   }
-  return executionKey;
+  return repositoryKey;
+}
+
+export function canonicalProjectAiRoot(
+  rootDir: string,
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
+): string {
+  if (process.platform !== "win32" && looksLikeWindowsAbsolutePath(rootDir)) {
+    return rootDir;
+  }
+  const projectRoot = projectRootFromAiRoot(rootDir, home, config);
+  return projectRoot ? join(canonicalProjectRoot(projectRoot), ".ai") : rootDir;
+}
+
+/** Durable state belongs to the local repository; independent clones remain isolated. */
+export function repositoryMachineStateProjectKey(
+  rootDir: string,
+  home: string = defaultHomeDir(),
+  config?: FacultConfig | null
+): string {
+  const canonicalRoot = canonicalProjectAiRoot(rootDir, home, config);
+  return repositoryKeyForCanonicalRoot(canonicalRoot, home, config);
+}
+
+function repositoryKeyForCanonicalRoot(
+  canonicalRoot: string,
+  home: string,
+  config?: FacultConfig | null
+): string {
+  const projectRoot = projectRootFromAiRoot(canonicalRoot, home, config);
+  const identity = projectRoot
+    ? repositoryCommonIdentitySync(projectRoot)
+    : null;
+  if (identity) {
+    const common = [identity, ...identity.aliases].find(
+      (alias) => alias.kind === "git-common-dir"
+    );
+    if (common && projectRoot) {
+      const executionKey = repositoryExecutionIdentity(projectRoot).id;
+      const executionStore = join(
+        facultLocalStateRoot(home),
+        "projects",
+        executionKey
+      );
+      if (
+        executionKey !== common.id &&
+        safeMachineStateDirExists(executionStore)
+      ) {
+        throw new Error(
+          `Existing primary-checkout execution state requires reconciliation before selecting repository state: ${executionStore}. Preserve this store and reconcile its queues, loop configuration, automation, and history before retrying.`
+        );
+      }
+      return common.id;
+    }
+  }
+  if (projectRoot && safePathEntryExists(join(projectRoot, ".git"))) {
+    throw new Error(
+      `Cannot safely resolve canonical repository state for ${projectRoot}`
+    );
+  }
+  return legacyMachineStateProjectKey(canonicalRoot, home, config);
 }
 
 export function executionMachineStateProjectKey(
@@ -648,7 +719,10 @@ export function facultAiRuntimeCoordinationDir(
         facultLocalStateRoot(home),
         "projects",
         "coordination",
-        executionMachineStateProjectKey(resolvedRoot, home)
+        executionMachineStateProjectKey(
+          canonicalProjectAiRoot(resolvedRoot, home),
+          home
+        )
       )
     : join(facultLocalStateRoot(home), "global", "coordination");
 }
@@ -1015,8 +1089,14 @@ export function findNearestProjectAiRoot(
   let current = resolve(start);
   while (true) {
     const candidate = join(current, ".ai");
-    if (!globalRoots.has(resolve(candidate)) && isProjectAiRoot(candidate)) {
+    if (globalRoots.has(resolve(candidate))) {
+      return null;
+    }
+    if (isProjectAiRoot(candidate)) {
       return candidate;
+    }
+    if (current === resolve(home)) {
+      return null;
     }
     const parent = dirname(current);
     if (parent === current) {
