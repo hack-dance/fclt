@@ -1,3 +1,9 @@
+## [2.32.6](https://github.com/hack-dance/fclt/compare/v2.32.5...v2.32.6) (2026-10-29)
+
+### Bug Fixes
+
+* **loop:** resolve linked worktrees to canonical project store; add loop staleness status ([#99](https://github.com/hack-dance/fclt/issues/99)) ([bf22d2d](https://github.com/hack-dance/fclt/commit/bf22d2d9e19c5230ce481375ba328a472e006c61))
+
 ## [2.32.5](https://github.com/hack-dance/fclt/compare/v2.32.4...v2.32.5) (2026-10-29)
 
 ### Bug Fixes
