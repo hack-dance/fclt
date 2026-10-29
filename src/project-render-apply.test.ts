@@ -13,6 +13,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { runFixtureGit } from "../test/git-fixture";
+import { facultMachineStateDir } from "./paths";
 import { buildProjectRenderPlan } from "./project-render";
 import {
   applyProjectRender,
@@ -76,6 +78,110 @@ async function stateEntries(fixture: ApplyFixture): Promise<string[]> {
 }
 
 describe("transactional project rendering", () => {
+  it("isolates default receipts and transactions across primary and linked checkouts", async () => {
+    const fixture = await createFixture();
+    const homeDir = await mkdtemp(join(tmpdir(), "fclt-render-home-"));
+    const previousStateDir = process.env.FACULT_LOCAL_STATE_DIR;
+    process.env.FACULT_LOCAL_STATE_DIR = join(homeDir, "state");
+    try {
+      const linkedRoot = join(homeDir, "linked");
+      const git = (...argv: string[]) =>
+        runFixtureGit({
+          argv: ["-C", fixture.projectRoot, ...argv],
+          homeDir: join(homeDir, "git-home"),
+          repoDir: fixture.projectRoot,
+        });
+      await git("init", "-q");
+      await git("add", ".ai");
+      await git(
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-qm",
+        "render inputs"
+      );
+      await git("worktree", "add", "--detach", linkedRoot);
+      const primary = {
+        canonicalRoot: fixture.canonicalRoot,
+        homeDir,
+        projectRoot: fixture.projectRoot,
+      };
+      const linked = {
+        canonicalRoot: join(linkedRoot, ".ai"),
+        homeDir,
+        projectRoot: linkedRoot,
+      };
+      await writeFile(
+        join(linked.canonicalRoot, "AGENTS.project.md"),
+        "# Linked\n"
+      );
+
+      expect(await applyProjectRender(primary)).toMatchObject({ written: 2 });
+      expect(await applyProjectRender(linked)).toMatchObject({ written: 2 });
+      expect(await applyProjectRender(primary)).toMatchObject({
+        changed: false,
+      });
+      expect(await applyProjectRender(linked)).toMatchObject({
+        changed: false,
+      });
+
+      await writeFile(
+        join(primary.canonicalRoot, "AGENTS.project.md"),
+        "# Updated\n"
+      );
+      await expect(
+        applyProjectRender({
+          ...primary,
+          hooks: {
+            beforeReceiptCommit: async () => {
+              await Promise.resolve();
+              throw new Error("primary interruption");
+            },
+          },
+        })
+      ).rejects.toThrow("primary interruption");
+      expect(await applyProjectRender(linked)).toMatchObject({
+        changed: false,
+        recovered: false,
+      });
+      expect(await applyProjectRender(primary)).toMatchObject({
+        recovered: true,
+      });
+      expect(await rollbackProjectRender(primary)).toMatchObject({
+        restored: 1,
+      });
+      expect(
+        await readFile(join(primary.projectRoot, "AGENTS.md"), "utf8")
+      ).toBe("# Agents\n");
+      expect(await readFile(join(linkedRoot, "AGENTS.md"), "utf8")).toBe(
+        "# Linked\n"
+      );
+      expect(await applyProjectRender(linked)).toMatchObject({
+        changed: false,
+      });
+      expect(await rollbackProjectRender(linked)).toMatchObject({
+        restored: 2,
+      });
+      expect(await Bun.file(join(linkedRoot, "AGENTS.md")).exists()).toBe(
+        false
+      );
+      expect(
+        await readFile(join(primary.projectRoot, "AGENTS.md"), "utf8")
+      ).toBe("# Agents\n");
+      expect(facultMachineStateDir(homeDir, primary.canonicalRoot)).toBe(
+        facultMachineStateDir(homeDir, linked.canonicalRoot)
+      );
+    } finally {
+      if (previousStateDir === undefined) {
+        Reflect.deleteProperty(process.env, "FACULT_LOCAL_STATE_DIR");
+      } else {
+        process.env.FACULT_LOCAL_STATE_DIR = previousStateDir;
+      }
+    }
+  });
+
   it("materializes missing targets, records ownership, and becomes idempotent", async () => {
     const fixture = await createFixture();
 

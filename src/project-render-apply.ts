@@ -28,7 +28,7 @@ import {
   MAX_STABLE_REGULAR_FILE_BYTES,
   readStableRegularFile,
 } from "./deployment-plan";
-import { facultMachineStateDir } from "./paths";
+import { facultLocalStateRoot } from "./paths";
 import {
   buildProjectRenderPlan,
   checkProjectRenderPlan,
@@ -631,11 +631,10 @@ async function statePaths(
   const root = resolve(
     options.stateRoot ??
       join(
-        facultMachineStateDir(
-          options.homeDir ?? homedir(),
-          options.canonicalRoot
-        ),
-        "project-render"
+        facultLocalStateRoot(options.homeDir ?? homedir()),
+        "project-render",
+        // Receipts and recovery own checkout files, not shared repository state.
+        (await projectId(options.projectRoot)).slice("sha256:".length)
       )
   );
   await mkdir(root, { recursive: true, mode: 0o700 });
