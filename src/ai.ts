@@ -1,13 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import {
-  appendFile,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  rm,
-} from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ensureAiGraphPath } from "./ai-state";
@@ -374,7 +367,20 @@ async function ensureParentDir(pathValue: string) {
 
 async function appendJsonLine(pathValue: string, value: unknown) {
   await ensureParentDir(pathValue);
-  await appendFile(pathValue, `${JSON.stringify(value)}\n`, "utf8");
+  const file = await open(pathValue, "a+");
+  try {
+    const { size } = await file.stat();
+    let separator = "";
+    if (size > 0) {
+      const lastByte = Buffer.alloc(1);
+      await file.read(lastByte, 0, 1, size - 1);
+      separator = lastByte[0] === 10 ? "" : "\n";
+    }
+    // Keep the separator and record in one append so writers cannot split them.
+    await file.appendFile(`${separator}${JSON.stringify(value)}\n`, "utf8");
+  } finally {
+    await file.close();
+  }
 }
 
 async function readJsonLines<T>(pathValue: string): Promise<T[]> {
@@ -382,11 +388,20 @@ async function readJsonLines<T>(pathValue: string): Promise<T[]> {
     return [];
   }
   const text = await readFile(pathValue, "utf8");
-  return text
-    .split(NEWLINE_RE)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as T);
+  const entries: T[] = [];
+  for (const [index, line] of text.split(NEWLINE_RE).entries()) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      entries.push(JSON.parse(line) as T);
+    } catch {
+      console.error(
+        `Warning: skipping invalid JSON in ${pathValue} at line ${index + 1}`
+      );
+    }
+  }
+  return entries;
 }
 
 async function readJsonLinesFromPaths<T>(pathValues: string[]): Promise<T[]> {

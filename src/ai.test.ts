@@ -67,6 +67,49 @@ afterEach(async () => {
 });
 
 describe("ai writeback", () => {
+  it.each([
+    "add",
+    "status",
+    "update",
+  ])("separates records without a trailing newline on %s", async (operation) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: "capability_gap",
+      summary: "First record",
+      evidence: proposalEvidence("newline-test"),
+    });
+    const queuePath = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    await Bun.write(queuePath, JSON.stringify(first));
+
+    let next: typeof first;
+    if (operation === "add") {
+      next = await addWriteback({
+        ...args,
+        kind: "capability_gap",
+        summary: "Second record",
+        evidence: proposalEvidence("newline-test"),
+      });
+    } else if (operation === "status") {
+      next = await dismissWriteback(first.id, args);
+    } else {
+      next = await linkWritebackIssue(first.id, "TEST-1", args);
+    }
+
+    const lines = (await readFile(queuePath, "utf8")).split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe("");
+    expect(lines.slice(0, 2).map((line) => JSON.parse(line))).toEqual([
+      JSON.parse(JSON.stringify(first)),
+      JSON.parse(JSON.stringify(next)),
+    ]);
+    expect(await listWritebacks(args)).toEqual(
+      operation === "add" ? [first, next] : [next]
+    );
+  });
+
   it("degrades evolution assessment when reconciliation state is corrupt", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
