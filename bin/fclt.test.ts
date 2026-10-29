@@ -127,8 +127,8 @@ it("does not write install metadata when using a cached runtime binary", async (
   const launcherRuntime = await resolveLauncherRuntime();
 
   const proc = Bun.spawn({
-    cmd: [launcherRuntime, "bin/fclt.cjs", "help"],
-    cwd: repoRoot,
+    cmd: [launcherRuntime, join(repoRoot, "bin", "fclt.cjs"), "help"],
+    cwd: homeDir,
     env: {
       ...process.env,
       HOME: homeDir,
@@ -142,6 +142,7 @@ it("does not write install metadata when using a cached runtime binary", async (
 
   expect(exitCode).toBe(0);
   expect(stderr).toBe("");
+  await expect(stat(join(homeDir, "~"))).rejects.toThrow();
 
   const installStatePath = facultInstallStatePath(homeDir);
   await expect(stat(installStatePath)).rejects.toThrow();

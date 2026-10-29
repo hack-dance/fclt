@@ -31,31 +31,40 @@ function isHelpLikeArgs(args) {
   );
 }
 
+function resolveHomePath(value, home) {
+  if (value === "~") {
+    return home;
+  }
+  return value.startsWith("~/")
+    ? path.join(home, value.slice(2))
+    : path.resolve(value);
+}
+
 function localStateRoot(home) {
   const override = String(process.env.FACULT_LOCAL_STATE_DIR || "").trim();
   if (override) {
-    return path.resolve(override);
+    return resolveHomePath(override, home);
   }
   if (process.platform === "darwin") {
     return path.join(home, "Library", "Application Support", "fclt");
   }
   const xdg = String(process.env.XDG_STATE_HOME || "").trim();
   return xdg
-    ? path.join(path.resolve(xdg), "fclt")
+    ? path.join(resolveHomePath(xdg, home), "fclt")
     : path.join(home, ".local", "state", "fclt");
 }
 
 function localCacheRoot(home) {
   const override = String(process.env.FACULT_CACHE_DIR || "").trim();
   if (override) {
-    return path.resolve(override);
+    return resolveHomePath(override, home);
   }
   if (process.platform === "darwin") {
     return path.join(localStateRoot(home), "cache");
   }
   const xdg = String(process.env.XDG_CACHE_HOME || "").trim();
   return xdg
-    ? path.join(path.resolve(xdg), "fclt")
+    ? path.join(resolveHomePath(xdg, home), "fclt")
     : path.join(home, ".cache", "fclt");
 }
 
