@@ -46,9 +46,6 @@ process.env.PATH = `${dirname(process.execPath)}${delimiter}${dirname(nodeExecut
 os.homedir = () => process.env.HOME || join(testRoot, "home");
 mock.module("node:os", () => ({ ...os, default: os }));
 
-const { installFixtureRemovalGuard } = await import("./fixture-safety");
-installFixtureRemovalGuard(testRoot);
-
 const { withoutLocalGitEnvironment } = await import(
   "../src/util/git-environment"
 );

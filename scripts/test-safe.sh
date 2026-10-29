@@ -7,7 +7,7 @@ bun_executable=$(bun --print 'process.execPath')
 node_executable=$(node --print 'process.execPath')
 export PATH="$(dirname "$bun_executable"):$(dirname "$node_executable"):$PATH"
 
-# The shared helper resolves physical ancestors and refuses unsafe roots before mkdir.
+# The shared helper captures the original roots before creating an isolated temp root.
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 isolation=$("$bun_executable" "$script_dir/../test/isolation-root.ts")
 {

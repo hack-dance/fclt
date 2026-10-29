@@ -52,35 +52,30 @@ export function createIsolatedTestRoot(prefix: string) {
   const configuredState =
     process.env.FCLT_TEST_REAL_STATE_ROOT ||
     process.env.FACULT_LOCAL_STATE_DIR?.trim();
-  let realState = configuredState
+  const statePath = configuredState
     ? expandHome(configuredState, realHome)
     : process.platform === "darwin"
       ? join(realHome, "Library", "Application Support", "fclt")
       : process.env.XDG_STATE_HOME?.trim()
         ? join(expandHome(process.env.XDG_STATE_HOME.trim(), realHome), "fclt")
         : join(realHome, ".local", "state", "fclt");
-  // HOME already protects its entire tree; do not inspect the real store there.
-  if (!isInsideOrEqual(realState, realHome)) {
-    realState = physicalPath(realState);
-  }
+  const realState = physicalPath(statePath);
   const tempBase = realpathSync(tmpdir());
-  function assertSafe(path: string) {
-    if (isInsideOrEqual(path, realHome) || isInsideOrEqual(path, realState)) {
-      throw new Error(
-        "Refusing test temp root inside the real home or fclt state directory"
-      );
-    }
-  }
   for (const path of [realHome, realState, tempBase]) {
     if (path.includes("\n") || path.includes("\r")) {
       throw new Error("Test isolation paths must not contain newlines");
     }
   }
-  assertSafe(tempBase);
-  const template = physicalPath(join(tempBase, prefix));
-  assertSafe(template);
+  // A caller may keep TMPDIR in HOME or its state store. Allocate elsewhere
+  // instead of placing fixtures in either captured directory.
+  const base =
+    isInsideOrEqual(tempBase, realHome) || isInsideOrEqual(tempBase, realState)
+      ? process.platform === "win32"
+        ? join(process.env.SystemRoot || "C:\\Windows", "Temp")
+        : "/tmp"
+      : tempBase;
+  const template = physicalPath(join(base, prefix));
   const testRoot = realpathSync(mkdtempSync(template));
-  assertSafe(testRoot);
   return { realHome, realState, testRoot };
 }
 

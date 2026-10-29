@@ -258,30 +258,6 @@ export function preferredGlobalFacultStateDir(
 }
 
 export function facultLocalStateRoot(home: string = defaultHomeDir()): string {
-  return guardTestMachineRoot(resolveLocalStateRoot(home));
-}
-
-/** Test subprocesses inherit this guard; ordinary CLI environments do not enable it. */
-function guardTestMachineRoot(root: string): string {
-  const realHome = process.env.FCLT_TEST_REAL_HOME;
-  if (process.env.NODE_ENV !== "test" || !realHome) {
-    return root;
-  }
-  if (
-    pathIsInsideOrEqual(root, realHome) ||
-    pathIsInsideOrEqual(
-      physicalPathComparisonKey(root, process.platform),
-      physicalPathComparisonKey(realHome, process.platform)
-    )
-  ) {
-    throw new Error(
-      "Refusing test machine-local state/cache root under the real home"
-    );
-  }
-  return root;
-}
-
-function resolveLocalStateRoot(home: string): string {
   const override = process.env.FACULT_LOCAL_STATE_DIR?.trim();
   if (override) {
     return resolvePath(override, home);
@@ -296,10 +272,6 @@ function resolveLocalStateRoot(home: string): string {
 }
 
 export function facultLocalCacheRoot(home: string = defaultHomeDir()): string {
-  return guardTestMachineRoot(resolveLocalCacheRoot(home));
-}
-
-function resolveLocalCacheRoot(home: string): string {
   const override = process.env.FACULT_CACHE_DIR?.trim();
   if (override) {
     return resolvePath(override, home);

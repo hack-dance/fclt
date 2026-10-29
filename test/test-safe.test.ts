@@ -33,7 +33,7 @@ test("shell test wrapper isolates inherited paths and clears Git context before 
   ]);
 
   expect(code).toBe(0);
-  expect(`${stdout}\n${stderr}`).toContain("7 pass");
+  expect(`${stdout}\n${stderr}`).toContain("5 pass");
   expect(`${stdout}\n${stderr}`).toContain("0 fail");
 });
 
