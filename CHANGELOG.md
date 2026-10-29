@@ -1,3 +1,9 @@
+## [2.32.4](https://github.com/hack-dance/fclt/compare/v2.32.3...v2.32.4) (2026-10-29)
+
+### Bug Fixes
+
+* handle malformed evidence arrays in evolution assessment ([#98](https://github.com/hack-dance/fclt/issues/98)) ([8bc6133](https://github.com/hack-dance/fclt/commit/8bc61338457a3c6aa3a3cd0100f40d9ff775943a))
+
 ## [2.32.3](https://github.com/hack-dance/fclt/compare/v2.32.2...v2.32.3) (2026-10-20)
 
 ### Bug Fixes
