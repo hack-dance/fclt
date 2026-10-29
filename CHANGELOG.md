@@ -1,3 +1,9 @@
+## [2.32.5](https://github.com/hack-dance/fclt/compare/v2.32.4...v2.32.5) (2026-10-29)
+
+### Bug Fixes
+
+* **writeback:** tolerate missing newlines and malformed queue lines ([#100](https://github.com/hack-dance/fclt/issues/100)) ([4be3ad7](https://github.com/hack-dance/fclt/commit/4be3ad7b05afbf6b90385ebe77b8abdf4bdf2cef))
+
 ## [2.32.4](https://github.com/hack-dance/fclt/compare/v2.32.3...v2.32.4) (2026-10-29)
 
 ### Bug Fixes
