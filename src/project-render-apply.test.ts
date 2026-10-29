@@ -14,7 +14,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
-import { facultMachineStateDir } from "./paths";
+import {
+  executionMachineStateProjectKey,
+  facultLocalStateRoot,
+  facultMachineStateDir,
+  legacyMachineStateProjectKey,
+  repositoryMachineStateProjectKey,
+} from "./paths";
 import { buildProjectRenderPlan } from "./project-render";
 import {
   applyProjectRender,
@@ -76,6 +82,191 @@ function applyOptions(fixture: ApplyFixture) {
 async function stateEntries(fixture: ApplyFixture): Promise<string[]> {
   return (await readdir(fixture.stateRoot)).sort();
 }
+
+async function legacyFixture(kind: "execution" | "slug" | "repository") {
+  const fixture = await createFixture();
+  const homeDir = await mkdtemp(join(tmpdir(), "fclt-legacy-render-home-"));
+  const git = (...argv: string[]) =>
+    runFixtureGit({
+      argv: ["-C", fixture.projectRoot, ...argv],
+      homeDir: join(homeDir, "git-home"),
+      repoDir: fixture.projectRoot,
+    });
+  await git("init", "-q");
+  await git("add", ".ai");
+  await git(
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "render inputs"
+  );
+  const key = {
+    execution: executionMachineStateProjectKey,
+    slug: legacyMachineStateProjectKey,
+    repository: repositoryMachineStateProjectKey,
+  }[kind](fixture.canonicalRoot, homeDir);
+  return {
+    git,
+    homeDir,
+    canonicalRoot: fixture.canonicalRoot,
+    projectRoot: fixture.projectRoot,
+    stateRoot: join(
+      facultLocalStateRoot(homeDir),
+      "projects",
+      key,
+      "project-render"
+    ),
+  };
+}
+
+describe("legacy project render state", () => {
+  for (const kind of ["execution", "slug", "repository"] as const) {
+    it(`preserves ${kind} receipts for default apply and rollback`, async () => {
+      const fixture = await legacyFixture(kind);
+      const { stateRoot, ...options } = fixture;
+      await applyProjectRender(fixture);
+      const receipt = await readFile(join(stateRoot, "receipt.json"), "utf8");
+      expect(await applyProjectRender(options)).toMatchObject({
+        changed: false,
+      });
+      expect(await readFile(join(stateRoot, "receipt.json"), "utf8")).toBe(
+        receipt
+      );
+      expect(await rollbackProjectRender(options)).toMatchObject({
+        restored: 2,
+      });
+      expect(
+        await Bun.file(join(fixture.projectRoot, "AGENTS.md")).exists()
+      ).toBe(false);
+    });
+
+    it(`recovers an interrupted ${kind} transaction through default apply`, async () => {
+      const fixture = await legacyFixture(kind);
+      const { stateRoot, ...options } = fixture;
+      await expect(
+        applyProjectRender({
+          ...fixture,
+          hooks: {
+            beforeReceiptCommit: async () => {
+              await Promise.resolve();
+              throw new Error("legacy interruption");
+            },
+          },
+        })
+      ).rejects.toThrow("legacy interruption");
+      expect(await applyProjectRender(options)).toMatchObject({
+        recovered: true,
+        written: 2,
+      });
+      expect(await Bun.file(join(stateRoot, "transaction.json")).exists()).toBe(
+        false
+      );
+      expect(await rollbackProjectRender(options)).toMatchObject({
+        restored: 2,
+      });
+    });
+  }
+
+  it("does not adopt a shared legacy receipt belonging to another checkout", async () => {
+    const fixture = await legacyFixture("repository");
+    const { stateRoot, ...primary } = fixture;
+    await applyProjectRender(fixture);
+    const receipt = await readFile(join(stateRoot, "receipt.json"), "utf8");
+    const projectRoot = join(fixture.homeDir, "linked");
+    await fixture.git("worktree", "add", "--detach", projectRoot);
+    const linked = {
+      homeDir: fixture.homeDir,
+      projectRoot,
+      canonicalRoot: join(projectRoot, ".ai"),
+    };
+    expect(await applyProjectRender(linked)).toMatchObject({ written: 2 });
+    expect(await applyProjectRender(primary)).toMatchObject({ changed: false });
+    expect(await readFile(join(stateRoot, "receipt.json"), "utf8")).toBe(
+      receipt
+    );
+    await rollbackProjectRender(linked);
+    expect(await applyProjectRender(primary)).toMatchObject({ changed: false });
+  });
+
+  it("refuses conflicting legacy stores without changing their receipts", async () => {
+    const fixture = await legacyFixture("execution");
+    const { stateRoot, ...options } = fixture;
+    await applyProjectRender(fixture);
+    const receipt = await readFile(join(stateRoot, "receipt.json"), "utf8");
+    const other = join(
+      facultLocalStateRoot(fixture.homeDir),
+      "projects",
+      legacyMachineStateProjectKey(fixture.canonicalRoot, fixture.homeDir),
+      "project-render"
+    );
+    await mkdir(other, { recursive: true, mode: 0o700 });
+    await writeFile(join(other, "receipt.json"), receipt);
+    await expect(applyProjectRender(options)).rejects.toThrow(
+      "Conflicting project render state"
+    );
+    await expect(rollbackProjectRender(options)).rejects.toThrow(
+      "Conflicting project render state"
+    );
+    expect(await readFile(join(stateRoot, "receipt.json"), "utf8")).toBe(
+      receipt
+    );
+    expect(await readFile(join(other, "receipt.json"), "utf8")).toBe(receipt);
+  });
+
+  it("honors the existing legacy mutation lock", async () => {
+    const fixture = await legacyFixture("execution");
+    const { stateRoot: _stateRoot, ...options } = fixture;
+    await applyProjectRender({
+      ...fixture,
+      hooks: {
+        beforeReceiptCommit: async () => {
+          await expect(applyProjectRender(options)).rejects.toThrow();
+        },
+      },
+    });
+    expect(await applyProjectRender(options)).toMatchObject({ changed: false });
+  });
+});
+
+describe("legacy render state conflicts", () => {
+  it("refuses conflicting legacy and checkout-keyed state", async () => {
+    const fixture = await legacyFixture("execution");
+    const { stateRoot, ...options } = fixture;
+    await applyProjectRender(fixture);
+    const receipt = await readFile(join(stateRoot, "receipt.json"), "utf8");
+    const saved = `${stateRoot}-saved`;
+    await rename(stateRoot, saved);
+    await unlink(join(fixture.projectRoot, "AGENTS.md"));
+    await unlink(
+      join(fixture.projectRoot, ".agents", "skills", "review", "SKILL.md")
+    );
+    await applyProjectRender(options);
+    await rename(saved, stateRoot);
+    await expect(applyProjectRender(options)).rejects.toThrow(
+      "Conflicting project render state"
+    );
+    expect(await readFile(join(stateRoot, "receipt.json"), "utf8")).toBe(
+      receipt
+    );
+  });
+
+  it("rejects symlinked legacy stores without changing their state", async () => {
+    const fixture = await legacyFixture("execution");
+    const { stateRoot, ...options } = fixture;
+    await applyProjectRender(fixture);
+    const receipt = await readFile(join(stateRoot, "receipt.json"), "utf8");
+    const saved = `${stateRoot}-saved`;
+    await rename(stateRoot, saved);
+    await symlink(saved, stateRoot, "dir");
+    await expect(rollbackProjectRender(options)).rejects.toThrow(
+      "Legacy project render state directory is unsafe"
+    );
+    expect(await readFile(join(saved, "receipt.json"), "utf8")).toBe(receipt);
+  });
+});
 
 describe("transactional project rendering", () => {
   it("isolates default receipts and transactions across primary and linked checkouts", async () => {
