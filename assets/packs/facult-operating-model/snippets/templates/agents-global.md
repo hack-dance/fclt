@@ -32,7 +32,7 @@ workflow detail, not additional approval gates or reasons to expand the requeste
 - For verification and anti-false-positive checks, read ${refs.verification}.
 - For checking integration boundaries, read ${refs.integration}.
 - For learning, decisions, and writeback, read ${refs.learning_writeback}.
-- For capability evolution, proposal kinds, and `facult ai` workflow, read ${refs.evolution}.
+- For capability evolution, proposal kinds, and `fclt ai` workflow, read ${refs.evolution}.
 - For deciding whether something belongs in global or project scope, read ${refs.project_capability}.
 - Add private language, coding, or writing refs in local config only when they belong to the user's own operating layer.
 
