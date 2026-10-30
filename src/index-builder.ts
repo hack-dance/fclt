@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getAdapter } from "./adapters";
@@ -18,6 +18,12 @@ import {
   snippetMarkerToSnippetRef,
 } from "./graph";
 import {
+  indexDirectory,
+  indexFile,
+  indexFiles,
+  withGuardedIndexReads,
+} from "./index-filesystem";
+import {
   canonicalProjectAiRoot,
   facultAiGraphPath,
   facultAiIndexPath,
@@ -27,7 +33,6 @@ import {
   projectSlugFromAiRoot,
   withFacultRootScope,
 } from "./paths";
-import { lastModified } from "./util/skills";
 
 interface AssetEntryBase {
   sourceKind?: AssetSourceKind;
@@ -522,12 +527,15 @@ export function parseSkillMarkdown(md: string): {
 }
 
 async function statIsoTime(p: string): Promise<string | undefined> {
-  const lm = await lastModified(p);
-  return lm ? lm.toISOString() : undefined;
+  try {
+    return (await indexFile(p).stat()).mtime.toISOString();
+  } catch {
+    return undefined;
+  }
 }
 
 async function readJsonSafe(p: string): Promise<unknown> {
-  const txt = await Bun.file(p).text();
+  const txt = await indexFile(p).text();
   return JSON.parse(txt);
 }
 
@@ -577,7 +585,7 @@ function entryScopeMeta(
 
 async function listDirFiles(dir: string): Promise<string[]> {
   try {
-    const ents = await readdir(dir, { withFileTypes: true });
+    const ents = await indexDirectory(dir);
     return ents
       .filter((e) => e.isFile())
       .map((e) => join(dir, e.name))
@@ -590,7 +598,7 @@ async function listDirFiles(dir: string): Promise<string[]> {
 
 async function listSubdirs(dir: string): Promise<string[]> {
   try {
-    const ents = await readdir(dir, { withFileTypes: true });
+    const ents = await indexDirectory(dir);
     return ents
       .filter((e) => e.isDirectory())
       .map((e) => join(dir, e.name))
@@ -611,12 +619,12 @@ async function indexSkills(
   for (const d of dirs) {
     const skillMd = join(d, "SKILL.md");
     try {
-      const st = await Bun.file(skillMd).stat();
+      const st = await indexFile(skillMd).stat();
       if (!st.isFile()) {
         continue;
       }
 
-      const md = await Bun.file(skillMd).text();
+      const md = await indexFile(skillMd).text();
       const { description, tags } = parseSkillMarkdown(md);
       const name = basename(d);
       const canonicalRef = canonicalRefForPath(source, "skills", d);
@@ -658,7 +666,7 @@ async function indexMcpServers(
   const out: Record<string, McpEntry> = {};
 
   try {
-    const st = await Bun.file(mcpConfigPath).stat();
+    const st = await indexFile(mcpConfigPath).stat();
     if (!st.isFile()) {
       return out;
     }
@@ -722,7 +730,7 @@ async function indexAgents(
   for (const dir of await listSubdirs(agentsDir)) {
     const candidate = join(dir, "agent.toml");
     try {
-      const st = await Bun.file(candidate).stat();
+      const st = await indexFile(candidate).stat();
       if (st.isFile()) {
         files.push(candidate);
       }
@@ -743,7 +751,7 @@ async function indexAgents(
     const meta = extractIndexMeta(prev);
     let description: string | undefined;
     try {
-      const raw = await Bun.file(p).text();
+      const raw = await indexFile(p).text();
       const parsed = Bun.TOML.parse(raw) as Record<string, unknown>;
       const parsedDescription = parsed.description;
       if (typeof parsedDescription === "string" && parsedDescription.trim()) {
@@ -779,7 +787,7 @@ async function indexAutomations(
   for (const d of dirs) {
     const automationToml = join(d, "automation.toml");
     try {
-      const st = await Bun.file(automationToml).stat();
+      const st = await indexFile(automationToml).stat();
       if (!st.isFile()) {
         continue;
       }
@@ -809,7 +817,7 @@ async function indexSnippets(
 ): Promise<Record<string, SnippetEntry>> {
   const out: Record<string, SnippetEntry> = {};
   try {
-    const st = await Bun.file(snippetsDir).stat();
+    const st = await indexFile(snippetsDir).stat();
     if (!st.isDirectory()) {
       return out;
     }
@@ -820,7 +828,7 @@ async function indexSnippets(
   // Index all files under snippets/ so names don't collide across scopes.
   const glob = new Bun.Glob("**/*");
   const files: string[] = [];
-  for await (const rel of glob.scan({ cwd: snippetsDir, onlyFiles: true })) {
+  for await (const rel of indexFiles(glob, snippetsDir)) {
     files.push(join(snippetsDir, rel));
   }
 
@@ -830,7 +838,7 @@ async function indexSnippets(
     let description: string | undefined;
     let tags: string[] | undefined;
     try {
-      const raw = await Bun.file(p).text();
+      const raw = await indexFile(p).text();
       const parsed = parseMarkdownAsset(raw);
       description = parsed.description || undefined;
       tags = parsed.tags.length ? parsed.tags : undefined;
@@ -861,7 +869,7 @@ async function indexInstructions(
 ): Promise<Record<string, InstructionEntry>> {
   const out: Record<string, InstructionEntry> = {};
   try {
-    const st = await Bun.file(instructionsDir).stat();
+    const st = await indexFile(instructionsDir).stat();
     if (!st.isDirectory()) {
       return out;
     }
@@ -871,17 +879,14 @@ async function indexInstructions(
 
   const glob = new Bun.Glob("**/*.md");
   const files: string[] = [];
-  for await (const rel of glob.scan({
-    cwd: instructionsDir,
-    onlyFiles: true,
-  })) {
+  for await (const rel of indexFiles(glob, instructionsDir)) {
     files.push(join(instructionsDir, rel));
   }
 
   for (const p of files.sort()) {
     try {
       const rel = relative(instructionsDir, p);
-      const raw = await Bun.file(p).text();
+      const raw = await indexFile(p).text();
       const parsed = parseMarkdownAsset(raw);
       const name = instructionNameFromRelativePath(rel || basename(p));
       out[name] = {
@@ -911,7 +916,7 @@ async function indexToolAssets(
   const toolConfigs: Record<string, ToolAssetEntry> = {};
   const toolRules: Record<string, ToolAssetEntry> = {};
   try {
-    const st = await Bun.file(toolsDir).stat();
+    const st = await indexFile(toolsDir).stat();
     if (!st.isDirectory()) {
       return { toolConfigs, toolRules };
     }
@@ -920,7 +925,7 @@ async function indexToolAssets(
   }
 
   const configGlob = new Bun.Glob("*/config.toml");
-  for await (const rel of configGlob.scan({ cwd: toolsDir, onlyFiles: true })) {
+  for await (const rel of indexFiles(configGlob, toolsDir)) {
     const pathValue = join(toolsDir, rel);
     const name = rel.replace(/\\/g, "/");
     toolConfigs[name] = {
@@ -933,7 +938,7 @@ async function indexToolAssets(
   }
 
   const ruleGlob = new Bun.Glob("*/rules/**/*.rules");
-  for await (const rel of ruleGlob.scan({ cwd: toolsDir, onlyFiles: true })) {
+  for await (const rel of indexFiles(ruleGlob, toolsDir)) {
     const pathValue = join(toolsDir, rel);
     const name = rel.replace(/\\/g, "/");
     toolRules[name] = {
@@ -960,7 +965,7 @@ async function indexSourceAssets(
   const toolsDir = join(source.rootDir, "tools");
   const serversJsonPath = join(source.rootDir, "mcp", "servers.json");
   const mcpJsonPath = join(source.rootDir, "mcp", "mcp.json");
-  const canonicalMcpPath = (await Bun.file(serversJsonPath).exists())
+  const canonicalMcpPath = (await indexFile(serversJsonPath).exists())
     ? serversJsonPath
     : mcpJsonPath;
 
@@ -1074,7 +1079,7 @@ function registerGraphEntries<
 }
 
 async function readTomlRefs(rootDir: string): Promise<Record<string, string>> {
-  const file = Bun.file(join(rootDir, "config.toml"));
+  const file = indexFile(join(rootDir, "config.toml"));
   if (!(await file.exists())) {
     return {};
   }
@@ -1200,7 +1205,7 @@ async function readManagedState(
     "managed.json"
   );
   try {
-    const file = Bun.file(statePath);
+    const file = indexFile(statePath);
     if (!(await file.exists())) {
       return null;
     }
@@ -1242,7 +1247,7 @@ async function addReferenceEdgesForEntries<
     });
     let raw = "";
     try {
-      raw = await Bun.file(entry.path).text();
+      raw = await indexFile(entry.path).text();
     } catch {
       continue;
     }
@@ -1307,7 +1312,7 @@ async function discoverDocs(
   ];
   for (const filePath of candidates) {
     try {
-      const st = await Bun.file(filePath).stat();
+      const st = await indexFile(filePath).stat();
       if (!st.isFile()) {
         continue;
       }
@@ -1628,7 +1633,7 @@ async function buildIndexInternal(
   let previousIndex: Record<string, unknown> | null = null;
   if (!force) {
     try {
-      const existing = Bun.file(outputPath);
+      const existing = indexFile(outputPath);
       if (await existing.exists()) {
         previousIndex = JSON.parse(await existing.text()) as Record<
           string,
@@ -1654,7 +1659,7 @@ async function buildIndexInternal(
   const sources: IndexedSource[] = [];
   const builtinRoot = facultBuiltinPackRoot();
   try {
-    const st = await Bun.file(builtinRoot).stat();
+    const st = await indexFile(builtinRoot).stat();
     if (st.isDirectory()) {
       sources.push({
         sourceKind: "builtin",
@@ -1676,7 +1681,7 @@ async function buildIndexInternal(
     });
   }
 
-  const sourceIndexes = await Promise.all(
+  const sourceResults = await Promise.allSettled(
     sources.map(async (source) => ({
       source,
       assets: await indexSourceAssets(source, previousIndex),
@@ -1684,6 +1689,13 @@ async function buildIndexInternal(
       refs: await readTomlRefs(source.rootDir),
     }))
   );
+
+  const sourceIndexes = sourceResults.map((result) => {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+    return result.value;
+  });
 
   const skills = mergeByName(sourceIndexes.map((entry) => entry.assets.skills));
   const servers = mergeByName(
@@ -1855,10 +1867,26 @@ export async function buildIndex(
 export async function buildIndexSnapshot(
   opts?: BuildIndexOptions
 ): Promise<Pick<BuildIndexResult, "graph" | "index">> {
-  const { graph, index } = await buildIndexInternal({
-    ...opts,
-    persist: false,
-  });
+  const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
+  const rootDir = canonicalProjectAiRoot(
+    opts?.rootDir ?? facultRootDir(homeDir),
+    homeDir
+  );
+  const globalRoot = projectRootFromAiRoot(rootDir, homeDir)
+    ? resolveCliContextRoot({ homeDir, scope: "global" })
+    : rootDir;
+  const roots = [
+    rootDir,
+    globalRoot,
+    facultBuiltinPackRoot(),
+    opts?.machineStateDir ?? facultMachineStateDir(homeDir, rootDir),
+  ];
+  const { graph, index } = await withGuardedIndexReads(roots, () =>
+    buildIndexInternal({
+      ...opts,
+      persist: false,
+    })
+  );
   return { graph, index };
 }
 

@@ -58,7 +58,7 @@ interface DirectoryBinding {
   metadata: Stats;
 }
 
-/** Owns a root descriptor and its ancestry. Every component is opened without following links. */
+/** Binds root and ancestor identities; POSIX additionally opens each component without following links. */
 export class AiDirectoryBoundary {
   readonly physical: string;
   readonly path: string;
@@ -167,6 +167,14 @@ export class AiDirectoryBoundary {
     ) {
       throw new Error("AI bound entry names must be single path segments");
     }
+  }
+
+  metadata(): Stats {
+    this.validate();
+    const metadata =
+      this.fd < 0 ? lstatSync(this.physical) : fstatSync(this.fd);
+    this.validate();
+    return metadata;
   }
 
   open(name: string, flags: number, mode = 0o600): number {

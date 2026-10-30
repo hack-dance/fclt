@@ -450,9 +450,15 @@ Writeback and evolution filesystem operations share a bound directory boundary. 
 Linux, reads, appends, locks, directory creation, and replacements open each component relative
 to a directory descriptor without following links. The boundary verifies file and ancestor
 identities before and after access; apply retains its target snapshot while reading the draft.
-Windows uses file and ancestor identity checks around access and staged replacement. Legacy
-queues must remain within their authorized source scope, and records claiming another scope
-are excluded. Generated graph repair uses the same guarded output path.
+Every operation requires a matching root. Draft references must stay in the proposal draft
+directories, and stored record IDs must be numeric writeback or proposal IDs. Temporary-path
+overrides change storage eligibility without expanding these boundaries. Legacy queues must
+remain within their authorized source scope, and records claiming another scope are excluded.
+Generated graph repair reads its sources and writes its outputs through the same boundary.
+
+Windows supports checked reads and appends. Writeback and evolution operations requiring
+atomic file replacement refuse before mutation until handle-bound replacement is available;
+pathname-based replacement cannot safely prevent a parent-directory swap.
 
 ## Review Artifacts
 

@@ -11,6 +11,7 @@ import {
   withAiMutationScope,
   writeAiText,
 } from "./ai-filesystem";
+import { indexFile, withGuardedIndexReads } from "./index-filesystem";
 
 let fixture: string | undefined;
 afterEach(async () => {
@@ -96,11 +97,22 @@ test("native AI boundary reads, appends and replaces isolated state", async () =
   const homeDir = await directoryFixture();
   await withAiMutationScope({ homeDir, allowEphemeral: true }, async () => {
     const path = join(homeDir, "state/queue.jsonl");
-    await appendAiJsonLine(path, { value: 1 }, homeDir);
-    await appendAiJsonLine(path, { value: 2 }, homeDir);
-    expect(await readAiText(path)).toBe('{"value":1}\n{"value":2}\n');
-    await writeAiText(path, '{"value":3}\n', homeDir);
-    expect(await readAiText(path)).toBe('{"value":3}\n');
+    await appendAiJsonLine(path, { value: 1 }, homeDir, undefined, homeDir);
+    await appendAiJsonLine(path, { value: 2 }, homeDir, undefined, homeDir);
+    expect(await readAiText(path, "utf8", homeDir)).toBe(
+      '{"value":1}\n{"value":2}\n'
+    );
+    if (process.platform === "win32") {
+      await expect(
+        writeAiText(path, '{"value":3}\n', homeDir, undefined, homeDir)
+      ).rejects.toThrow("unavailable on win32");
+      expect(await readAiText(path, "utf8", homeDir)).toBe(
+        '{"value":1}\n{"value":2}\n'
+      );
+    } else {
+      await writeAiText(path, '{"value":3}\n', homeDir, undefined, homeDir);
+      expect(await readAiText(path, "utf8", homeDir)).toBe('{"value":3}\n');
+    }
   });
 });
 
@@ -114,4 +126,22 @@ test("native AI boundary can inspect an absent legacy global queue", async () =>
   await mkdir(rootDir);
   // The explicit root keeps this read isolated even when the caller has a configured store.
   expect(await listWritebacks({ homeDir, rootDir })).toEqual([]);
+});
+
+test("guarded index reads retain the same root identity across files", async () => {
+  const fixtureRoot = await directoryFixture();
+  const root = join(fixtureRoot, "source");
+  await mkdir(root);
+  await writeFile(join(root, "first.md"), "First authorized file\n");
+  await withGuardedIndexReads([root], async () => {
+    expect(await indexFile(join(root, "first.md")).text()).toBe(
+      "First authorized file\n"
+    );
+    await rename(root, `${root}.original`);
+    await mkdir(root);
+    await writeFile(join(root, "second.md"), "Replacement root contents\n");
+    await expect(indexFile(join(root, "second.md")).text()).rejects.toThrow(
+      "bound parent changed"
+    );
+  });
 });
