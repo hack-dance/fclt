@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
   legacyFacultAiStateDirs,
   machineStateProjectScopeId,
   pathIsInsideOrEqual,
+  pathIsPhysicallyInsideOrEqual,
   projectRootFromAiRoot,
 } from "./paths";
 
@@ -69,6 +70,30 @@ afterEach(async () => {
 });
 
 describe("paths", () => {
+  it("checks physical containment through missing descendants and directory links", async () => {
+    tempHome = await makeTempHome();
+    const root = join(tempHome, "root");
+    const alias = join(tempHome, "alias");
+    await mkdir(root);
+    await symlink(
+      root,
+      alias,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    expect(pathIsPhysicallyInsideOrEqual(alias, root)).toBe(true);
+    expect(
+      pathIsPhysicallyInsideOrEqual(join(alias, "missing/file.md"), root)
+    ).toBe(true);
+    expect(
+      pathIsPhysicallyInsideOrEqual(join(root, "..fixture/file.md"), root)
+    ).toBe(true);
+    expect(
+      pathIsPhysicallyInsideOrEqual(join(tempHome, "root-other/file.md"), root)
+    ).toBe(false);
+    expect(
+      pathIsPhysicallyInsideOrEqual(join(alias, "../outside.md"), root)
+    ).toBe(false);
+  });
   it("prefers ~/.ai as the canonical root when present", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

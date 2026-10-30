@@ -19,6 +19,7 @@ $isolation
 EOF
 export FCLT_TEST_REAL_HOME FCLT_TEST_REAL_STATE_ROOT
 export NODE_ENV=test
+export FCLT_ALLOW_EPHEMERAL_AI_PATHS=1
 export FCLT_TEST_SHELL_ROOT="$test_root"
 export HOME="$test_root/home"
 export XDG_STATE_HOME="$test_root/state"

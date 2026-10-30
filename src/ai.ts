@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  type AiSourcePaths,
+  aiPathSafetyIssue,
+  allowEphemeralAiPaths,
+} from "./ai-path-guard";
 import { ensureAiGraphPath } from "./ai-state";
 import {
   parseCliContextArgs,
@@ -109,7 +114,7 @@ export interface AiJournalEvent {
   tags?: string[];
 }
 
-export interface AiWritebackRecord {
+export interface AiWritebackRecord extends AiSourcePaths {
   id: string;
   ts: string;
   updatedAt?: string;
@@ -191,7 +196,7 @@ export interface ProposalDraftHistoryEntry {
   note?: string;
 }
 
-export interface AiProposalRecord {
+export interface AiProposalRecord extends AiSourcePaths {
   id: string;
   ts: string;
   status: ProposalStatus;
@@ -293,6 +298,7 @@ interface AddWritebackArgs {
   asset?: string;
   evidence?: WritebackEvidence[];
   allowEmptyEvidence?: boolean;
+  allowEphemeral?: boolean;
   confidence?: ConfidenceLevel;
   source?: string;
   suggestedDestination?: string;
@@ -739,6 +745,50 @@ function canonicalRefToPath(args: {
   return null;
 }
 
+function aiRecordPathIssue(args: {
+  homeDir: string;
+  rootDir: string;
+  record?: AiSourcePaths & { projectRoot?: string };
+  targets?: (string | undefined)[];
+}): string | undefined {
+  const sourceRoot = args.record?.sourceRoot ?? args.rootDir;
+  const sourceHome = args.record?.sourceHome ?? args.homeDir;
+  const paths = [args.rootDir, sourceRoot, args.record?.projectRoot];
+  for (const ref of args.targets ?? []) {
+    if (!ref) {
+      continue;
+    }
+    paths.push(
+      canonicalRefToPath({ ref, homeDir: sourceHome, rootDir: sourceRoot }) ??
+        resolve(
+          sourceRoot,
+          ref.startsWith("~/") ? join(sourceHome, ref.slice(2)) : ref
+        )
+    );
+  }
+  return aiPathSafetyIssue({
+    homeDir: args.homeDir,
+    sourceHome,
+    paths: paths.filter((value): value is string => Boolean(value)),
+  });
+}
+
+function assertDurableAiPaths(
+  args: Parameters<typeof aiRecordPathIssue>[0] & {
+    allowEphemeral?: boolean;
+  }
+) {
+  if (allowEphemeralAiPaths(args.allowEphemeral)) {
+    return;
+  }
+  const issue = aiRecordPathIssue(args);
+  if (issue) {
+    throw new Error(
+      `Refusing ephemeral AI state: ${issue}. Use --allow-ephemeral or FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.`
+    );
+  }
+}
+
 function numericSuffix(id: string): number {
   const match = NUMERIC_SUFFIX_RE.exec(id);
   return match ? Number.parseInt(match[1] ?? "0", 10) : 0;
@@ -971,6 +1021,11 @@ export async function addWriteback(
   args: AddWritebackArgs
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    targets: [args.asset, args.suggestedDestination],
+  });
   const evidence = (args.evidence ?? []).map((entry) => ({
     type: redactReconciliationText(entry.type),
     ref: redactReconciliationText(entry.ref),
@@ -995,6 +1050,8 @@ export async function addWriteback(
   const record: AiWritebackRecord = {
     id: nextId("WB", [...latest.keys()]),
     ts: nowIso(),
+    sourceRoot: resolve(args.rootDir),
+    sourceHome: resolve(homeDir),
     scope: scopeContext.scope,
     projectSlug: scopeContext.projectSlug,
     projectRoot: scopeContext.projectRoot,
@@ -1028,6 +1085,12 @@ export async function addWriteback(
     status: "recorded",
   };
 
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record,
+    targets: [record.assetRef, record.suggestedDestination],
+  });
   await appendJsonLine(
     facultAiWritebackQueuePath(homeDir, args.rootDir),
     record
@@ -1411,8 +1474,10 @@ export async function proposeEvolution(args: {
   rootDir: string;
   asset?: string;
   writebackIds?: string[];
+  allowEphemeral?: boolean;
 }): Promise<AiProposalRecord[]> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertDurableAiPaths({ ...args, homeDir, targets: [args.asset] });
   const writebacks = await listWritebacks({
     homeDir,
     rootDir: args.rootDir,
@@ -1447,12 +1512,19 @@ export async function proposeEvolution(args: {
     if (entry.evidence.length === 0) {
       return false;
     }
-    if (filterAsset) {
-      return (
-        entry.assetId === filterAsset.assetId ||
-        entry.assetRef === filterAsset.assetRef
-      );
+    if (
+      filterAsset &&
+      entry.assetId !== filterAsset.assetId &&
+      entry.assetRef !== filterAsset.assetRef
+    ) {
+      return false;
     }
+    assertDurableAiPaths({
+      ...args,
+      homeDir,
+      record: entry,
+      targets: [entry.assetRef, entry.suggestedDestination],
+    });
     return Boolean(entry.suggestedDestination ?? entry.assetRef);
   });
 
@@ -1479,6 +1551,11 @@ export async function proposeEvolution(args: {
       rootDir: args.rootDir,
     });
     const targetNode = graph && (resolveGraphNode(graph, target) ?? undefined);
+    assertDurableAiPaths({
+      ...args,
+      homeDir,
+      targets: [target, targetPath ?? undefined, targetNode?.path],
+    });
     const kind = inferProposalKind({
       target,
       targetKind: targetNode?.kind,
@@ -1490,6 +1567,8 @@ export async function proposeEvolution(args: {
     const proposal: AiProposalRecord = {
       id,
       ts: nowIso(),
+      sourceRoot: resolve(args.rootDir),
+      sourceHome: resolve(homeDir),
       status: "proposed",
       scope: scopeContext.scope,
       projectSlug: scopeContext.projectSlug,
@@ -1564,6 +1643,7 @@ export async function assessEvolution(args: {
   homeDir?: string;
   rootDir: string;
   asset?: string;
+  allowEphemeral?: boolean;
 }): Promise<EvolutionAssessment> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
@@ -1577,9 +1657,35 @@ export async function assessEvolution(args: {
     : null;
   const target = filterAsset?.assetRef ?? args.asset;
   const warnings: string[] = [];
-  const writebacks = (
+  const excludedWritebacks = new Set<string>();
+  const includeRecord = (
+    record: AiWritebackRecord | AiProposalRecord,
+    targets: (string | undefined)[]
+  ) => {
+    if (allowEphemeralAiPaths(args.allowEphemeral)) {
+      return true;
+    }
+    const issue = aiRecordPathIssue({ ...args, homeDir, record, targets });
+    if (issue) {
+      warnings.push(`Excluded ${record.id}: ${issue}.`);
+      console.error(`Warning: Excluded ${record.id}: ${issue}.`);
+      return false;
+    }
+    return true;
+  };
+  const safeWritebacks = (
     await listWritebacks({ homeDir, rootDir: args.rootDir, warnings })
-  )
+  ).filter((entry) => {
+    const include = includeRecord(entry, [
+      entry.assetRef,
+      entry.suggestedDestination,
+    ]);
+    if (!include) {
+      excludedWritebacks.add(entry.id);
+    }
+    return include;
+  });
+  const writebacks = safeWritebacks
     .filter((entry) => entry.status !== "dismissed")
     .filter((entry) => entry.status !== "resolved")
     .filter((entry) => entry.status !== "superseded")
@@ -1617,6 +1723,23 @@ export async function assessEvolution(args: {
 
   const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
   const activeProposalIds = proposals
+    .filter((proposal) => {
+      if (
+        !includeRecord(proposal, [...proposal.targets, ...proposal.draftRefs])
+      ) {
+        return false;
+      }
+      if (proposal.sourceWritebacks.some((id) => excludedWritebacks.has(id))) {
+        warnings.push(
+          `Excluded ${proposal.id}: source writeback has ephemeral paths.`
+        );
+        console.error(
+          `Warning: Excluded ${proposal.id}: source writeback has ephemeral paths.`
+        );
+        return false;
+      }
+      return true;
+    })
     .filter(
       (proposal) =>
         ACTIVE_PROPOSAL_STATUSES.includes(proposal.status) ||
@@ -2772,6 +2895,7 @@ export async function promoteProposal(
     homeDir?: string;
     rootDir: string;
     to: "global";
+    allowEphemeral?: boolean;
   }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
@@ -2782,6 +2906,12 @@ export async function promoteProposal(
   if (current.scope !== "project") {
     throw new Error(`Only project-scoped proposals can be promoted: ${id}`);
   }
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: current,
+    targets: current.targets,
+  });
   const sourceWritebacks = (
     await Promise.all(
       current.sourceWritebacks.map(async (writebackId) => {
@@ -2794,11 +2924,20 @@ export async function promoteProposal(
       })
     )
   ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  for (const record of sourceWritebacks) {
+    assertDurableAiPaths({
+      ...args,
+      homeDir,
+      record,
+      targets: [record.assetRef, record.suggestedDestination],
+    });
+  }
   const targetRoot =
     args.to === "global"
       ? resolveCliContextRoot({ homeDir, scope: "global" })
       : args.rootDir;
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
+  assertDurableAiPaths({ ...args, homeDir, rootDir: targetRoot });
   const promoted: AiProposalRecord = {
     ...current,
     id: nextIdValue,
@@ -2910,6 +3049,9 @@ Usage:
   fclt ai writeback summarize [--by <asset|kind|domain>] [--json]
   fclt ai writeback dismiss <id>
   fclt ai writeback promote <id>
+
+Temporary roots and alternate homes are refused on add. Use --allow-ephemeral or
+FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.
 `;
 }
 
@@ -2917,8 +3059,8 @@ function evolveHelp(): string {
   return `fclt ai evolve
 
 Usage:
-  fclt ai evolve assess [--asset <selector>] [--json]
-  fclt ai evolve propose [--asset <selector>] [--json]
+  fclt ai evolve assess [--asset <selector>] [--json] [--allow-ephemeral]
+  fclt ai evolve propose [--asset <selector>] [--json] [--allow-ephemeral]
   fclt ai evolve list [--json]
   fclt ai evolve show <id> [--json]
   fclt ai evolve draft <id> [--append <text>]
@@ -2929,6 +3071,9 @@ Usage:
   fclt ai evolve apply <id>
   fclt ai evolve verify <id> --effectiveness <improved|unchanged|regressed|inconclusive> --evidence <type:ref> [--note <text>] [--allow-early]
   fclt ai evolve promote <id> --to global
+
+Temporary roots and alternate homes are excluded from assess and refused on creation.
+Use --allow-ephemeral or FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.
 `;
 }
 
@@ -3548,6 +3693,7 @@ async function writebackCommand(argv: string[]) {
         sensitivity,
         asset: parseStringFlag(commandArgs, "--asset"),
         allowEmptyEvidence: commandArgs.includes("--allow-empty-evidence"),
+        allowEphemeral: commandArgs.includes("--allow-ephemeral") || undefined,
         confidence:
           (parseStringFlag(commandArgs, "--confidence") as
             | ConfidenceLevel
@@ -3730,6 +3876,7 @@ async function evolveCommand(argv: string[]) {
       const assessment = await assessEvolution({
         rootDir,
         asset: parseStringFlag(commandArgs, "--asset"),
+        allowEphemeral: commandArgs.includes("--allow-ephemeral") || undefined,
       });
       if (commandArgs.includes("--json")) {
         await writeCliOutput(JSON.stringify(assessment, null, 2));
@@ -3755,6 +3902,7 @@ async function evolveCommand(argv: string[]) {
       const proposals = await proposeEvolution({
         rootDir,
         asset: parseStringFlag(commandArgs, "--asset"),
+        allowEphemeral: commandArgs.includes("--allow-ephemeral") || undefined,
       });
       if (commandArgs.includes("--json")) {
         await writeCliOutput(JSON.stringify(proposals, null, 2));
@@ -3867,6 +4015,9 @@ async function evolveCommand(argv: string[]) {
                   : sub === "promote"
                     ? await promoteProposal(id, {
                         rootDir,
+                        allowEphemeral:
+                          commandArgs.includes("--allow-ephemeral") ||
+                          undefined,
                         to:
                           (parseStringFlag(commandArgs, "--to") as
                             | "global"

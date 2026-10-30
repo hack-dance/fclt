@@ -15,6 +15,8 @@ process.env.NODE_ENV = "test";
 process.env.FCLT_TEST_REAL_HOME = realHome;
 process.env.FCLT_TEST_REAL_STATE_ROOT = realState;
 process.env.FCLT_TEST_TEMP_ROOT = testRoot;
+// Fixtures intentionally create writeback/proposal state beneath isolated homes.
+process.env.FCLT_ALLOW_EPHEMERAL_AI_PATHS = "1";
 for (const [name, subdir] of Object.entries({
   HOME: "home",
   XDG_STATE_HOME: "state",

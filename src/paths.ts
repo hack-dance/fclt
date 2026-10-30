@@ -16,6 +16,7 @@ import {
   posix,
   relative,
   resolve,
+  sep,
   win32,
 } from "node:path";
 import {
@@ -136,6 +137,20 @@ export function pathsPhysicallyEquivalent(
   return (
     physicalPathComparisonKey(left, platform) ===
     physicalPathComparisonKey(right, platform)
+  );
+}
+
+export function pathIsPhysicallyInsideOrEqual(
+  pathValue: string,
+  rootDir: string
+): boolean {
+  const rel = relative(
+    physicalPathComparisonKey(rootDir, process.platform),
+    physicalPathComparisonKey(pathValue, process.platform)
+  );
+  return (
+    rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
   );
 }
 
