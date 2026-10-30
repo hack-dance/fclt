@@ -9,9 +9,7 @@ import { resolveWritebackProject } from "./projects";
 import { writebackWarnings } from "./writeback-arrays";
 
 export async function resolveWritebackContext(
-  args: NonNullable<Parameters<typeof resolveCliContextRoot>[0]> & {
-    readOnly?: boolean;
-  }
+  args: NonNullable<Parameters<typeof resolveCliContextRoot>[0]>
 ): Promise<{
   rootDir: string;
   projectTag?: string;
@@ -40,14 +38,9 @@ export async function resolveWritebackContext(
   if (project.enrolledRoot) {
     return { rootDir: join(project.enrolledRoot, ".ai") };
   }
-  if (project.ambiguousRoots && !args.readOnly) {
-    throw new Error(
-      "Multiple enrolled checkouts match this origin; pass --root to select the writeback destination"
-    );
-  }
   const rootDir = resolveCliContextRoot({ ...args, scope: "global" });
-  if (args.scope === "project" || project.ambiguousRoots) {
-    const warning = `Using global destination ${rootDir} with tag ${project.tag}; ${project.ambiguousRoots ? "multiple enrolled checkouts match; use --root to inspect one" : "no usable enrolled checkout was found"}.`;
+  if (args.scope === "project") {
+    const warning = `Using global destination ${rootDir} with tag ${project.tag}; no trusted enrolled checkout was found. Use --root for an explicit destination.`;
     const reported = writebackWarnings.getStore();
     if (!reported?.has(warning)) {
       console.error(`Warning: ${warning}`);

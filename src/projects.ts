@@ -24,6 +24,7 @@ import {
   join,
   relative,
   resolve,
+  sep,
 } from "node:path";
 import {
   replaceVerifiedFileAt,
@@ -46,6 +47,7 @@ import {
 import { processStartIdentity } from "./process-identity";
 import {
   canonicalProjectRoot,
+  hasGitMetadataAbove,
   normalizeRepositoryRemote,
   type RepositoryExecutionIdentity,
   type RepositoryIdentity,
@@ -3238,24 +3240,85 @@ export async function registeredProjectLocations(homeDir: string) {
   }));
 }
 
-/** Resolve writeback authority only through active enrollment and a shared checkout or origin. */
+interface WritebackCheckout {
+  root: string;
+  gitDir: string;
+  commonDir: string;
+}
+
+async function inspectWritebackCheckout(
+  cwd: string
+): Promise<WritebackCheckout | null> {
+  const result = await runGit({
+    cwd,
+    argv: [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-dir",
+      "--git-common-dir",
+      "--show-toplevel",
+    ],
+  });
+  if (result.exitCode !== 0 || !result.stdout) {
+    const gitDirectory = await runGit({
+      cwd,
+      argv: ["rev-parse", "--absolute-git-dir"],
+    });
+    // A bare or broken repository must not fall through to an ancestor's .ai root.
+    if (gitDirectory.exitCode === 0 || hasGitMetadataAbove(cwd)) {
+      throw new Error("Cannot safely resolve the invoking Git worktree");
+    }
+    return null;
+  }
+  const facts = result.stdout.split("\n");
+  const [gitDir, commonDir, root] = facts;
+  if (
+    facts.length !== 3 ||
+    !gitDir ||
+    !commonDir ||
+    !root ||
+    !facts.every(isAbsolute)
+  ) {
+    throw new Error("Cannot safely inspect the invoking Git checkout");
+  }
+  return {
+    root: await realpath(root),
+    gitDir: await realpath(gitDir),
+    commonDir: await realpath(commonDir),
+  };
+}
+
+/** Origin URLs label observations; only a bound checkout and shared Git state grant project authority. */
 export async function resolveWritebackProject(args: {
   cwd: string;
   homeDir: string;
 }): Promise<{
   repositoryRoot: string;
   enrolledRoot?: string;
-  ambiguousRoots?: string[];
   tag: string;
 } | null> {
-  const topLevel = await runGit({
-    cwd: args.cwd,
-    argv: ["rev-parse", "--show-toplevel"],
-  });
-  if (topLevel.exitCode !== 0 || !topLevel.stdout) {
+  const invoking = await inspectWritebackCheckout(args.cwd);
+  if (!invoking) {
     return null;
   }
-  const checkoutRoot = await realpath(topLevel.stdout);
+  // core.worktree can redirect --show-toplevel. Bind the reported root back to
+  // the Git directories discovered from the invoking cwd before using that root.
+  const rooted = await inspectWritebackCheckout(invoking.root);
+  const relativeCwd = relative(invoking.root, await realpath(args.cwd));
+  if (
+    !rooted ||
+    relativeCwd === ".." ||
+    relativeCwd.startsWith(`..${sep}`) ||
+    isAbsolute(relativeCwd) ||
+    !pathsPhysicallyEquivalent(rooted.root, invoking.root) ||
+    !pathsPhysicallyEquivalent(rooted.gitDir, invoking.gitDir) ||
+    !pathsPhysicallyEquivalent(rooted.commonDir, invoking.commonDir)
+  ) {
+    throw new Error(
+      "Refusing unrelated Git worktree redirect from the invoking checkout"
+    );
+  }
+  const checkoutRoot = invoking.root;
   const originResult = await runGit({
     cwd: checkoutRoot,
     argv: ["remote", "get-url", "origin"],
@@ -3274,7 +3337,7 @@ export async function resolveWritebackProject(args: {
     return { repositoryRoot, tag };
   }
   const registry = await loadRegistry(args.homeDir);
-  const matches: Array<{ root: string; sharedCheckout: boolean }> = [];
+  const matches: string[] = [];
   const candidates = Object.values(registry.projects)
     .filter((entry) => entry.decision === "selected")
     .flatMap((entry) =>
@@ -3286,18 +3349,20 @@ export async function resolveWritebackProject(args: {
       candidates.slice(offset, offset + 4).map(async ({ entry, location }) => {
         try {
           const root = canonicalProjectRoot(location.path);
-          const sharedCheckout = root === repositoryRoot;
-          if (!sharedCheckout) {
-            if (!origin) {
-              return null;
-            }
-            const candidateOrigin = await runGit({
-              cwd: root,
-              argv: ["remote", "get-url", "origin"],
-            });
-            if (normalizeRepositoryRemote(candidateOrigin.stdout) !== origin) {
-              return null;
-            }
+          if (!pathsPhysicallyEquivalent(root, repositoryRoot)) {
+            return null;
+          }
+          const candidateCheckout = await inspectWritebackCheckout(root);
+          if (
+            !(
+              candidateCheckout &&
+              pathsPhysicallyEquivalent(
+                candidateCheckout.commonDir,
+                invoking.commonDir
+              )
+            )
+          ) {
+            return null;
           }
           if (
             (await gitRoot(root)) !== root ||
@@ -3312,7 +3377,7 @@ export async function resolveWritebackProject(args: {
           if (candidate.id !== entry.repositoryId) {
             return null;
           }
-          return { root, sharedCheckout };
+          return root;
         } catch {
           // Missing or stale enrollment locations cannot supply writeback authority.
           return null;
@@ -3325,18 +3390,10 @@ export async function resolveWritebackProject(args: {
       }
     }
   }
-  const roots = [
-    ...new Set(
-      (matches.some((match) => match.sharedCheckout)
-        ? matches.filter((match) => match.sharedCheckout)
-        : matches
-      ).map((match) => match.root)
-    ),
-  ];
+  const roots = [...new Set(matches)];
   return {
     repositoryRoot,
     enrolledRoot: roots.length === 1 ? roots[0] : undefined,
-    ambiguousRoots: roots.length > 1 ? roots : undefined,
     tag,
   };
 }

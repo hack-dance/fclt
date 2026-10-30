@@ -236,7 +236,6 @@ it("preserves an error exit for unknown AI subcommands without arguments", async
 it.each([
   "primary",
   "linked",
-  "clone",
 ] as const)("routes %s and nested invocations to the enrolled queue", async (checkout) => {
   const args = await fixture();
   const cwd = join(args[checkout], "nested");
@@ -382,19 +381,19 @@ it("falls back globally when enrollment is disabled or its checkout is unavailab
     homeDir: args.homeDir,
   });
   const disabled = JSON.parse(
-    await cli({ ...args, cwd: args.clone, argv: addArgs })
+    await cli({ ...args, cwd: args.linked, argv: addArgs })
   ) as AiWritebackRecord;
   expect(disabled.scope).toBe("global");
   await Bun.write(registryPath, before);
   await rm(args.rootDir, { recursive: true });
   const stale = JSON.parse(
-    await cli({ ...args, cwd: args.clone, argv: addArgs })
+    await cli({ ...args, cwd: args.linked, argv: addArgs })
   ) as AiWritebackRecord;
   expect(stale.scope).toBe("global");
   expect(stale.tags).toContain("project:example.invalid/team/repo");
 });
 
-it("requires an explicit destination for ambiguous origins and prefers a shared checkout", async () => {
+it("uses global storage for unrelated clones even when several enrolled checkouts share an origin", async () => {
   const args = await fixture();
   const second = join(args.homeDir, "second-enrolled");
   await runFixtureGit({
@@ -412,13 +411,14 @@ it("requires an explicit destination for ambiguous origins and prefers a shared 
     expectedPlanSha256: plan.planSha256,
     homeDir: args.homeDir,
   });
-  await expect(
-    cli({ ...args, cwd: args.clone, argv: addArgs })
-  ).rejects.toThrow("Multiple enrolled checkouts match this origin");
+  const untrusted = JSON.parse(
+    await cli({ ...args, cwd: args.clone, argv: addArgs })
+  ) as AiWritebackRecord;
+  expect(untrusted.scope).toBe("global");
   const read = await cliResult({ ...args, cwd: args.clone, argv: ["list"] });
   expect(read.code).toBe(0);
-  expect(JSON.parse(read.stdout)).toEqual([]);
-  expect(read.stderr).toContain("multiple enrolled checkouts match");
+  expect(JSON.parse(read.stdout)).toEqual([untrusted]);
+  expect(read.stderr).toBe("");
   const record = JSON.parse(
     await cli({ ...args, cwd: args.linked, argv: addArgs })
   ) as AiWritebackRecord;
@@ -431,6 +431,158 @@ it("requires an explicit destination for ambiguous origins and prefers a shared 
     })
   ) as AiWritebackRecord;
   expect(explicit.projectRoot).toBe(args.primary);
+});
+
+it.each([
+  "clone",
+  "empty",
+] as const)("does not grant an unrelated %s project authority from an origin URL", async (kind) => {
+  const args = await fixture();
+  const victim = JSON.parse(
+    await cli({
+      ...args,
+      cwd: args.primary,
+      argv: [...addArgs, "--asset", "AGENTS.md"],
+    })
+  ) as AiWritebackRecord;
+  await cli({
+    ...args,
+    cwd: args.primary,
+    namespace: "evolve",
+    argv: ["propose"],
+  });
+  await cli({
+    ...args,
+    cwd: args.primary,
+    namespace: "review",
+    argv: ["init"],
+  });
+  const queuePath = facultAiWritebackQueuePath(args.homeDir, args.rootDir);
+  const proposalDir = facultAiProposalDir(args.homeDir, args.rootDir);
+  const configPath = join(args.rootDir, "reconciliation.json");
+  const beforeQueue = await readFile(queuePath, "utf8");
+  const beforeProposals = await readdir(proposalDir);
+  const beforeConfig = await readFile(configPath, "utf8");
+  const attacker =
+    kind === "clone" ? args.clone : join(args.homeDir, "empty-attacker");
+  if (kind === "empty") {
+    await mkdir(attacker);
+    await args.git(attacker, "init", "-q");
+    await args.git(attacker, "remote", "add", "origin", origin);
+  }
+  const record = JSON.parse(
+    await cli({ ...args, cwd: attacker, argv: [...addArgs, "--project"] })
+  ) as AiWritebackRecord;
+  expect(record.scope).toBe("global");
+  expect(record.projectRoot).toBeUndefined();
+  expect(record.tags).toContain("project:example.invalid/team/repo");
+  const proposals = JSON.parse(
+    await cli({
+      ...args,
+      cwd: attacker,
+      namespace: "evolve",
+      argv: ["propose", "--project"],
+    })
+  );
+  expect(proposals).toEqual([]);
+  await cli({
+    ...args,
+    cwd: attacker,
+    namespace: "review",
+    argv: ["init", "--force", "--project"],
+  });
+  expect(await readFile(queuePath, "utf8")).toBe(beforeQueue);
+  expect(await readdir(proposalDir)).toEqual(beforeProposals);
+  expect(await readFile(configPath, "utf8")).toBe(beforeConfig);
+  expect(
+    JSON.parse(await cli({ ...args, cwd: args.primary, argv: ["list"] }))
+  ).toEqual([victim]);
+  const explicit = JSON.parse(
+    await cli({
+      ...args,
+      cwd: attacker,
+      argv: [...addArgs, "--root", args.rootDir],
+    })
+  ) as AiWritebackRecord;
+  expect(explicit.scope).toBe("project");
+  expect(explicit.projectRoot).toBe(args.primary);
+});
+
+it.each([
+  "outside",
+  "nested",
+])("rejects a core.worktree redirect from an unrelated %s repository", async (location) => {
+  const args = await fixture();
+  await cli({
+    ...args,
+    cwd: args.primary,
+    argv: [...addArgs, "--asset", "AGENTS.md"],
+  });
+  await cli({
+    ...args,
+    cwd: args.primary,
+    namespace: "evolve",
+    argv: ["propose"],
+  });
+  const queuePath = facultAiWritebackQueuePath(args.homeDir, args.rootDir);
+  const proposalDir = facultAiProposalDir(args.homeDir, args.rootDir);
+  const beforeQueue = await readFile(queuePath, "utf8");
+  const beforeProposals = await readdir(proposalDir);
+  const attacker = join(
+    location === "nested" ? args.primary : args.homeDir,
+    "redirector"
+  );
+  await mkdir(attacker);
+  await args.git(attacker, "init", "-q");
+  await args.git(
+    attacker,
+    "remote",
+    "add",
+    "origin",
+    "https://example.invalid/untrusted/other.git"
+  );
+  await args.git(attacker, "config", "core.worktree", args.primary);
+  for (const command of [
+    { argv: addArgs },
+    { argv: ["list"] },
+    { namespace: "evolve" as const, argv: ["propose"] },
+    { namespace: "review" as const, argv: ["init"] },
+  ]) {
+    const result = await cliResult({ ...args, cwd: attacker, ...command });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Refusing unrelated Git worktree redirect");
+  }
+  expect(await readFile(queuePath, "utf8")).toBe(beforeQueue);
+  expect(await readdir(proposalDir)).toEqual(beforeProposals);
+  expect(
+    await Bun.file(join(args.rootDir, "reconciliation.json")).exists()
+  ).toBe(false);
+});
+
+it.each([
+  "bare",
+  "broken-pointer",
+])("refuses an unresolved nested Git context (%s) instead of inheriting the parent project", async (kind) => {
+  const args = await fixture();
+  await cli({ ...args, cwd: args.primary, argv: addArgs });
+  const queuePath = facultAiWritebackQueuePath(args.homeDir, args.rootDir);
+  const before = await readFile(queuePath, "utf8");
+  const attacker = join(args.primary, "unresolved-attacker");
+  await mkdir(attacker);
+  if (kind === "bare") {
+    await args.git(attacker, "init", "--bare", "-q");
+  } else {
+    await Bun.write(
+      join(attacker, ".git"),
+      `gitdir: ${join(args.homeDir, "missing.git")}\n`
+    );
+  }
+  const result = await cliResult({ ...args, cwd: attacker, argv: addArgs });
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(
+    "Cannot safely resolve the invoking Git worktree"
+  );
+  expect(await readFile(queuePath, "utf8")).toBe(before);
 });
 
 it("rejects unindexed fallback assets and prevents legacy project refs from reaching global files", async () => {
@@ -622,12 +774,9 @@ it.each([
   expect(await Bun.file(join(outside, "NEW.md")).exists()).toBe(false);
 });
 
-it.each([
-  "linked",
-  "clone",
-] as const)("uses the same writeback, evolution, and review roots from %s", async (checkout) => {
+it("uses the same writeback, evolution, and review roots from a linked worktree", async () => {
   const args = await fixture();
-  const cwd = args[checkout];
+  const cwd = args.linked;
   const record = JSON.parse(
     await cli({ ...args, cwd, argv: [...addArgs, "--asset", "AGENTS.md"] })
   ) as AiWritebackRecord;

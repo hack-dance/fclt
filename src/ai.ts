@@ -4146,15 +4146,6 @@ export async function aiCommand(
         rootArg: parsed.rootArg,
         scope: parsed.scope,
         cwd: process.cwd(),
-        readOnly: [
-          "list",
-          "show",
-          "group",
-          "summarize",
-          "assess",
-          "status",
-          "latest",
-        ].includes(parsed.argv[0] ?? ""),
       });
       const { rootDir } = resolvedContext;
       const scope = resolveCliContextScope({
