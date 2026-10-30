@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   acceptProposal,
   addWriteback,
@@ -16,6 +16,7 @@ import {
 } from "./ai";
 import { aiPathSafetyIssue, realUserHome } from "./ai-path-guard";
 import {
+  facultAiDraftDir,
   facultAiGraphPath,
   facultAiJournalPath,
   facultAiProposalDir,
@@ -325,6 +326,7 @@ describe("AI state path guard", () => {
 
   it("keeps a normal indexed skill usable through apply without an override", async () => {
     const fixture = await makeDurableFixture();
+    process.env.FACULT_LOCAL_STATE_DIR = join(fixture, "state");
     const homeDir = await fixtureAccountHome(fixture);
     const rootDir = join(fixture, ".ai");
     const file = await seedIndexedSkill({ homeDir, rootDir, scope: "project" });
@@ -347,6 +349,103 @@ describe("AI state path guard", () => {
       `facult:evolution:${proposal!.id}:start`
     );
   });
+
+  it.each([
+    "temporary",
+    "symlink",
+    "relative",
+  ])("rejects a %s draft source before apply and revision", async (layout) => {
+    const fixture = await makeDurableFixture();
+    process.env.FACULT_LOCAL_STATE_DIR = join(fixture, "state");
+    const homeDir = await fixtureAccountHome(fixture);
+    const rootDir = join(fixture, ".ai");
+    const file = await seedIndexedSkill({ homeDir, rootDir, scope: "project" });
+    const args = {
+      ...writebackArgs(rootDir),
+      homeDir,
+      asset: "skill:guarded",
+      suggestedDestination: undefined,
+    };
+    await addWriteback(args);
+    const [proposal] = await proposeEvolution(args);
+    await draftProposal(proposal!.id, args);
+    const accepted = await acceptProposal(proposal!.id, args);
+    const temporaryDraft = join(tempHome, "external-draft.md");
+    const draftBody = `# External draft\n<!-- facult:evolution:${proposal!.id}:start -->\nExternal temporary content\n<!-- facult:evolution:${proposal!.id}:end -->\n`;
+    await Bun.write(temporaryDraft, draftBody);
+    let draftSource = temporaryDraft;
+    if (layout === "symlink") {
+      draftSource = join(fixture, "draft-link.md");
+      await symlink(temporaryDraft, draftSource);
+    } else if (layout === "relative") {
+      draftSource = relative(process.cwd(), temporaryDraft);
+    }
+    await seedJson(
+      join(facultAiProposalDir(homeDir, rootDir), `${accepted.id}.json`),
+      {
+        ...accepted,
+        draftRefs: [draftSource],
+      }
+    );
+    const original = await Bun.file(file).text();
+    const assessment = await assessEvolution(args);
+    expect(assessment.activeProposalIds).toEqual([]);
+    expect(
+      assessment.warnings.some((warning) => warning.includes(accepted.id))
+    ).toBe(true);
+    await expect(applyProposal(accepted.id, args)).rejects.toThrow(
+      "OS temporary directory"
+    );
+    expect(await Bun.file(file).text()).toBe(original);
+    await expect(
+      draftProposal(accepted.id, { ...args, append: "Revise the guidance" })
+    ).rejects.toThrow("OS temporary directory");
+    expect(await Bun.file(file).text()).toBe(original);
+    expect(await Bun.file(temporaryDraft).text()).toBe(draftBody);
+    const applied = await applyProposal(accepted.id, {
+      ...args,
+      allowEphemeral: true,
+    });
+    expect(applied.status).toBe("applied");
+    expect(await Bun.file(file).text()).toContain("External temporary content");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "checks an automatically selected existing draft before reading it",
+    async () => {
+      const fixture = await makeDurableFixture();
+      process.env.FACULT_LOCAL_STATE_DIR = join(fixture, "state");
+      const homeDir = await fixtureAccountHome(fixture);
+      const rootDir = join(fixture, ".ai");
+      await seedIndexedSkill({ homeDir, rootDir, scope: "project" });
+      const args = {
+        ...writebackArgs(rootDir),
+        homeDir,
+        asset: "skill:guarded",
+        suggestedDestination: undefined,
+      };
+      await addWriteback(args);
+      const [proposal] = await proposeEvolution(args);
+      const temporaryDraft = join(tempHome, "existing-draft.md");
+      const body = `<!-- facult:evolution:${proposal!.id}:start -->\nExisting temporary content\n<!-- facult:evolution:${proposal!.id}:end -->\n`;
+      await Bun.write(temporaryDraft, body);
+      const draftPath = join(
+        facultAiDraftDir(homeDir, rootDir),
+        `${proposal!.id}.md`
+      );
+      await mkdir(dirname(draftPath), { recursive: true });
+      await symlink(temporaryDraft, draftPath);
+      await expect(draftProposal(proposal!.id, args)).rejects.toThrow(
+        "OS temporary directory"
+      );
+      expect(await Bun.file(temporaryDraft).text()).toBe(body);
+      expect(
+        existsSync(
+          join(facultAiDraftDir(homeDir, rootDir), `${proposal!.id}.patch`)
+        )
+      ).toBe(false);
+    }
+  );
 
   it("finds the account home even when Bun starts with an alternate HOME", async () => {
     const modulePath = join(import.meta.dir, "ai-path-guard.ts");

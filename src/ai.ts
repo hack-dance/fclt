@@ -1764,7 +1764,10 @@ export async function assessEvolution(args: {
   const safeProposals: AiProposalRecord[] = [];
   for (const proposal of proposals) {
     if (
-      !includeRecord(proposal, [...proposal.targets, ...proposal.draftRefs])
+      !includeRecord(proposal, [
+        ...proposal.targets,
+        ...proposal.draftRefs.map((path) => resolve(path)),
+      ])
     ) {
       continue;
     }
@@ -2412,7 +2415,11 @@ async function resolveProposalTargetNode(
     ...args,
     homeDir,
     record: proposal,
-    targets: [target, pathValue],
+    targets: [
+      target,
+      pathValue,
+      ...proposal.draftRefs.map((path) => resolve(path)),
+    ],
     graph,
   });
   return {
@@ -2442,6 +2449,15 @@ export async function draftProposal(
     draftPath,
     ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
   ]);
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: current,
+    targets: [
+      ...current.draftRefs.map((path) => resolve(path)),
+      ...(existingDraftPath ? [resolve(existingDraftPath)] : []),
+    ],
+  });
   if (
     current.status !== "proposed" &&
     !args.append &&
