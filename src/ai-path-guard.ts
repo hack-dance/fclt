@@ -70,8 +70,12 @@ export function aiPathSafetyIssue(args: {
   for (const home of [args.homeDir, args.sourceHome].filter(
     (value): value is string => Boolean(value)
   )) {
-    if (!pathsPhysicallyEquivalent(home, realHome)) {
-      return "HOME differs from the real user home";
+    try {
+      if (!pathsPhysicallyEquivalent(home, realHome)) {
+        return "HOME differs from the real user home";
+      }
+    } catch (error) {
+      return `cannot verify HOME path ${home}: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
   const temporaryRoots = [

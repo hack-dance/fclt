@@ -16,7 +16,12 @@ import {
   resolveCliContextScope,
   resolveLoopContextRoot,
 } from "./cli-context";
-import type { AssetScope, GraphNodeKind } from "./graph";
+import type {
+  AssetScope,
+  FacultGraph,
+  GraphNode,
+  GraphNodeKind,
+} from "./graph";
 import { loadGraph, resolveGraphNode } from "./graph-query";
 import {
   facultAiDraftDir,
@@ -746,11 +751,21 @@ function canonicalRefToPath(args: {
   return null;
 }
 
+function proposalTargetFilePath(
+  node: GraphNode | null | undefined,
+  fallbackPath: string | null
+): string | null {
+  return node?.kind === "skill" && node.path
+    ? join(node.path, "SKILL.md")
+    : (node?.path ?? fallbackPath);
+}
+
 function aiRecordPathIssue(args: {
   homeDir: string;
   rootDir: string;
   record?: AiSourcePaths & { projectRoot?: string };
   targets?: (string | undefined)[];
+  graph?: FacultGraph | null;
 }): string | undefined {
   const sourceRoot = args.record?.sourceRoot ?? args.rootDir;
   const sourceHome = args.record?.sourceHome ?? args.homeDir;
@@ -759,12 +774,16 @@ function aiRecordPathIssue(args: {
     if (!ref) {
       continue;
     }
-    paths.push(
+    const fallbackPath =
       canonicalRefToPath({ ref, homeDir: sourceHome, rootDir: sourceRoot }) ??
-        resolve(
-          sourceRoot,
-          ref.startsWith("~/") ? join(sourceHome, ref.slice(2)) : ref
-        )
+      resolve(
+        sourceRoot,
+        ref.startsWith("~/") ? join(sourceHome, ref.slice(2)) : ref
+      );
+    const node = args.graph ? resolveGraphNode(args.graph, ref) : null;
+    paths.push(
+      fallbackPath,
+      proposalTargetFilePath(node, fallbackPath) ?? undefined
     );
   }
   return aiPathSafetyIssue({
@@ -1048,6 +1067,9 @@ export async function addWriteback(
         asset: args.asset,
       })
     : {};
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   const record: AiWritebackRecord = {
     id: nextId("WB", [...latest.keys()]),
     ts: nowIso(),
@@ -1091,6 +1113,7 @@ export async function addWriteback(
     homeDir,
     record,
     targets: [record.assetRef, record.suggestedDestination],
+    graph,
   });
   await appendJsonLine(
     facultAiWritebackQueuePath(homeDir, args.rootDir),
@@ -1484,10 +1507,6 @@ export async function proposeEvolution(args: {
     rootDir: args.rootDir,
   });
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
-  const graph = await loadGraph({
-    homeDir,
-    rootDir: args.rootDir,
-  }).catch(() => null);
   const filterAsset = args.asset
     ? await resolveAssetSelection({
         homeDir,
@@ -1495,6 +1514,9 @@ export async function proposeEvolution(args: {
         asset: args.asset,
       })
     : null;
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   const selectedWritebacks = args.writebackIds?.length
     ? new Set(args.writebackIds)
     : null;
@@ -1525,6 +1547,7 @@ export async function proposeEvolution(args: {
       homeDir,
       record: entry,
       targets: [entry.assetRef, entry.suggestedDestination],
+      graph,
     });
     return Boolean(entry.suggestedDestination ?? entry.assetRef);
   });
@@ -1556,6 +1579,7 @@ export async function proposeEvolution(args: {
       ...args,
       homeDir,
       targets: [target, targetPath ?? undefined, targetNode?.path],
+      graph,
     });
     const kind = inferProposalKind({
       target,
@@ -1657,12 +1681,19 @@ export async function assessEvolution(args: {
       })
     : null;
   const target = filterAsset?.assetRef ?? args.asset;
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   const warnings: string[] = [];
   const excludedWritebacks = new Set<string>();
   const includeRecord = (
     record: AiWritebackRecord | AiProposalRecord,
     targets: (string | undefined)[],
-    context = { homeDir, rootDir: args.rootDir }
+    context: {
+      homeDir: string;
+      rootDir: string;
+      graph?: FacultGraph | null;
+    } = { homeDir, rootDir: args.rootDir, graph }
   ) => {
     if (allowEphemeralAiPaths(args.allowEphemeral)) {
       return true;
@@ -1750,6 +1781,7 @@ export async function assessEvolution(args: {
         ...sourceContext,
         warnings,
       });
+      const sourceGraph = await loadGraph(sourceContext).catch(() => null);
       excludedSources = new Set(
         sourceWritebacks
           .filter(
@@ -1757,7 +1789,7 @@ export async function assessEvolution(args: {
               !includeRecord(
                 entry,
                 [entry.assetRef, entry.suggestedDestination],
-                sourceContext
+                { ...sourceContext, graph: sourceGraph }
               )
           )
           .map((entry) => entry.id)
@@ -2352,7 +2384,7 @@ function insertDraftRevision(
 
 async function resolveProposalTargetNode(
   proposal: AiProposalRecord,
-  args: { homeDir?: string; rootDir: string }
+  args: { homeDir?: string; rootDir: string; allowEphemeral?: boolean }
 ) {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const target = proposal.targets[0];
@@ -2369,16 +2401,20 @@ async function resolveProposalTargetNode(
     homeDir,
     rootDir: args.rootDir,
   });
-  const pathValue =
-    node?.kind === "skill" && node.path
-      ? join(node.path, "SKILL.md")
-      : (node?.path ?? fallbackPath);
+  const pathValue = proposalTargetFilePath(node, fallbackPath);
   if (!pathValue) {
     throw new Error(`Could not resolve target path for ${target}`);
   }
   if (!supportedDraftTarget(pathValue)) {
     throw new UnsupportedProposalTargetError(pathValue);
   }
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: proposal,
+    targets: [target, pathValue],
+    graph,
+  });
   return {
     ...node,
     path: pathValue,
@@ -2388,7 +2424,12 @@ async function resolveProposalTargetNode(
 
 export async function draftProposal(
   id: string,
-  args: { homeDir?: string; rootDir: string; append?: string }
+  args: {
+    homeDir?: string;
+    rootDir: string;
+    append?: string;
+    allowEphemeral?: boolean;
+  }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
@@ -2423,6 +2464,7 @@ export async function draftProposal(
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
     rootDir: args.rootDir,
+    allowEphemeral: args.allowEphemeral,
   });
   await mkdir(dirname(draftPath), { recursive: true });
   const generatedBody = renderDraftBody(current, writebacks);
@@ -2630,6 +2672,7 @@ export async function applyProposal(
   args: {
     homeDir?: string;
     rootDir: string;
+    allowEphemeral?: boolean;
     verificationDelayHours?: number;
     verificationGraceHours?: number;
     now?: () => Date;
@@ -2685,6 +2728,7 @@ export async function applyProposal(
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
     rootDir: args.rootDir,
+    allowEphemeral: args.allowEphemeral,
   });
   const draftPath = current.draftRefs[0];
   if (!draftPath) {
@@ -2942,11 +2986,15 @@ export async function promoteProposal(
   if (current.scope !== "project") {
     throw new Error(`Only project-scoped proposals can be promoted: ${id}`);
   }
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   assertDurableAiPaths({
     ...args,
     homeDir,
     record: current,
     targets: current.targets,
+    graph,
   });
   const sourceWritebacks = (
     await Promise.all(
@@ -2966,6 +3014,7 @@ export async function promoteProposal(
       homeDir,
       record,
       targets: [record.assetRef, record.suggestedDestination],
+      graph,
     });
   }
   const targetRoot =
@@ -2975,7 +3024,16 @@ export async function promoteProposal(
   const targets = current.targets.map((target) =>
     promoteTargetRef(target, args.to)
   );
-  assertDurableAiPaths({ ...args, homeDir, rootDir: targetRoot, targets });
+  const targetGraph = await loadGraph({ homeDir, rootDir: targetRoot }).catch(
+    () => null
+  );
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    rootDir: targetRoot,
+    targets,
+    graph: targetGraph,
+  });
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
   const promoted: AiProposalRecord = {
     ...current,
@@ -3104,12 +3162,12 @@ Usage:
   fclt ai evolve propose [--asset <selector>] [--json] [--allow-ephemeral]
   fclt ai evolve list [--json]
   fclt ai evolve show <id> [--json]
-  fclt ai evolve draft <id> [--append <text>]
+  fclt ai evolve draft <id> [--append <text>] [--allow-ephemeral]
   fclt ai evolve review <id>
   fclt ai evolve accept <id>
   fclt ai evolve reject <id> --reason <text>
   fclt ai evolve supersede <id> --by <proposal-id>
-  fclt ai evolve apply <id>
+  fclt ai evolve apply <id> [--allow-ephemeral]
   fclt ai evolve verify <id> --effectiveness <improved|unchanged|regressed|inconclusive> --evidence <type:ref> [--note <text>] [--allow-early]
   fclt ai evolve promote <id> --to global
 
@@ -4078,6 +4136,7 @@ async function evolveCommand(argv: string[]) {
           ? await draftProposal(id, {
               rootDir,
               append: parseStringFlag(commandArgs, "--append"),
+              allowEphemeral: parseEphemeralOverride(argv),
             })
           : sub === "review"
             ? await reviewProposal(id, { rootDir })
@@ -4113,7 +4172,10 @@ async function evolveCommand(argv: string[]) {
                             throw new Error("evolve promote requires --to");
                           })(),
                       })
-                    : await applyProposal(id, { rootDir });
+                    : await applyProposal(id, {
+                        rootDir,
+                        allowEphemeral: parseEphemeralOverride(argv),
+                      });
       const verb =
         sub === "draft"
           ? "Drafted"

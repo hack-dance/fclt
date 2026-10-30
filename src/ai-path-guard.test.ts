@@ -4,8 +4,11 @@ import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  acceptProposal,
   addWriteback,
+  applyProposal,
   assessEvolution,
+  draftProposal,
   listProposals,
   listWritebacks,
   promoteProposal,
@@ -13,6 +16,7 @@ import {
 } from "./ai";
 import { aiPathSafetyIssue, realUserHome } from "./ai-path-guard";
 import {
+  facultAiGraphPath,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
@@ -116,7 +120,234 @@ async function seedJson(path: string, value: unknown) {
   await Bun.write(path, `${JSON.stringify(value)}\n`);
 }
 
+async function seedIndexedSkill(args: {
+  homeDir: string;
+  rootDir: string;
+  scope: "project" | "global";
+  temporaryTarget?: string;
+}) {
+  const directory = join(args.rootDir, "skills/guarded");
+  const file = join(directory, "SKILL.md");
+  await mkdir(directory, { recursive: true });
+  if (args.temporaryTarget) {
+    await symlink(args.temporaryTarget, file);
+  } else {
+    await Bun.write(
+      file,
+      "---\nname: guarded\ndescription: Guard fixture.\n---\n\n# Guarded skill\n"
+    );
+  }
+  const id = `skill:${args.scope}:global:guarded`;
+  await seedJson(facultAiGraphPath(args.homeDir, args.rootDir), {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    edges: [],
+    nodes: {
+      [id]: {
+        id,
+        kind: "skill",
+        name: "guarded",
+        sourceKind: args.scope,
+        scope: args.scope,
+        canonicalRef: `@${args.scope === "project" ? "project" : "ai"}/skills/guarded`,
+        path: directory,
+      },
+    },
+  });
+  return file;
+}
+
 describe("AI state path guard", () => {
+  it.skipIf(process.platform === "win32")(
+    "excludes dangling source homes without losing healthy writebacks and proposals",
+    async () => {
+      const fixture = await makeDurableFixture();
+      const homeDir = await fixtureAccountHome(fixture);
+      const rootDir = join(fixture, ".ai");
+      process.env.FACULT_ROOT_DIR = rootDir;
+      process.env.FACULT_ROOT_SCOPE = "global";
+      const args = { ...writebackArgs(rootDir), homeDir };
+      const healthyWriteback = await addWriteback(args);
+      const [healthyProposal] = await proposeEvolution(args);
+      const brokenHome = join(fixture, "broken-home");
+      await symlink(join(tempHome, "missing-home"), brokenHome, "dir");
+      expect(
+        aiPathSafetyIssue({ homeDir, sourceHome: brokenHome, paths: [rootDir] })
+      ).toContain("cannot verify HOME path");
+      expect(
+        aiPathSafetyIssue({ homeDir: brokenHome, paths: [rootDir] })
+      ).toContain("dangling symbolic link");
+      const badWriteback = {
+        ...healthyWriteback,
+        id: "WB-00002",
+        sourceHome: brokenHome,
+      };
+      await Bun.write(
+        facultAiWritebackQueuePath(homeDir, rootDir),
+        [healthyWriteback, badWriteback]
+          .map((entry) => `${JSON.stringify(entry)}\n`)
+          .join("")
+      );
+      await seedJson(
+        join(facultAiProposalDir(homeDir, rootDir), "EV-00002.json"),
+        {
+          ...healthyProposal,
+          id: "EV-00002",
+          sourceHome: brokenHome,
+          sourceWritebacks: [badWriteback.id],
+        }
+      );
+      const assessment = await assessEvolution(args);
+      expect(assessment.recommendation).toBe("review_existing_proposal");
+      expect(assessment.sourceWritebacks).toEqual([healthyWriteback.id]);
+      expect(assessment.activeProposalIds).toEqual([healthyProposal!.id]);
+      expect(assessment.warnings).toHaveLength(2);
+      expect(
+        assessment.warnings.every((warning) =>
+          warning.includes("dangling symbolic link")
+        )
+      ).toBe(true);
+    }
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "checks SKILL.md links at creation, assessment, draft and apply",
+    async () => {
+      const fixture = await makeDurableFixture();
+      const homeDir = await fixtureAccountHome(fixture);
+      const rootDir = join(fixture, ".ai");
+      const temporaryTarget = join(tempHome, "SKILL.md");
+      const original = "# Temporary target must stay unchanged\n";
+      await Bun.write(temporaryTarget, original);
+      await seedIndexedSkill({
+        homeDir,
+        rootDir,
+        scope: "project",
+        temporaryTarget,
+      });
+      const args = {
+        ...writebackArgs(rootDir),
+        homeDir,
+        asset: "skill:guarded",
+        suggestedDestination: undefined,
+      };
+      await expect(addWriteback(args)).rejects.toThrow(
+        "OS temporary directory"
+      );
+      expect(existsSync(facultAiWritebackQueuePath(homeDir, rootDir))).toBe(
+        false
+      );
+      const writeback = await addWriteback({ ...args, allowEphemeral: true });
+      await expect(proposeEvolution(args)).rejects.toThrow(
+        "OS temporary directory"
+      );
+      const [proposal] = await proposeEvolution({
+        ...args,
+        allowEphemeral: true,
+      });
+      const assessment = await assessEvolution(args);
+      expect(assessment.activeProposalIds).toEqual([]);
+      expect(assessment.sourceWritebacks).toEqual([]);
+      expect(
+        assessment.warnings.some((warning) => warning.includes(writeback.id))
+      ).toBe(true);
+      expect(
+        assessment.warnings.some((warning) => warning.includes(proposal!.id))
+      ).toBe(true);
+      await expect(draftProposal(proposal!.id, args)).rejects.toThrow(
+        "OS temporary directory"
+      );
+      await draftProposal(proposal!.id, { ...args, allowEphemeral: true });
+      await acceptProposal(proposal!.id, args);
+      await expect(applyProposal(proposal!.id, args)).rejects.toThrow(
+        "OS temporary directory"
+      );
+      expect(await Bun.file(temporaryTarget).text()).toBe(original);
+      await applyProposal(proposal!.id, { ...args, allowEphemeral: true });
+      expect(await Bun.file(temporaryTarget).text()).toContain(
+        `facult:evolution:${proposal!.id}:start`
+      );
+    }
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "validates the promoted skill's final SKILL.md file in the destination graph",
+    async () => {
+      const fixture = await makeDurableFixture();
+      const homeDir = await fixtureAccountHome(fixture);
+      const rootDir = join(fixture, "project/.ai");
+      const globalRoot = join(fixture, "global/.ai");
+      process.env.FACULT_ROOT_DIR = globalRoot;
+      process.env.FACULT_ROOT_SCOPE = "global";
+      const temporaryTarget = join(tempHome, "SKILL.md");
+      await Bun.write(temporaryTarget, "# Temporary global skill\n");
+      await seedIndexedSkill({ homeDir, rootDir, scope: "project" });
+      await seedIndexedSkill({
+        homeDir,
+        rootDir: globalRoot,
+        scope: "global",
+        temporaryTarget,
+      });
+      const args = {
+        ...writebackArgs(rootDir),
+        homeDir,
+        asset: "skill:guarded",
+        suggestedDestination: undefined,
+      };
+      await addWriteback(args);
+      const [proposal] = await proposeEvolution(args);
+      await expect(
+        promoteProposal(proposal!.id, { homeDir, rootDir, to: "global" })
+      ).rejects.toThrow("OS temporary directory");
+      expect(existsSync(facultAiProposalDir(homeDir, globalRoot))).toBe(false);
+      const promoted = await promoteProposal(proposal!.id, {
+        homeDir,
+        rootDir,
+        to: "global",
+        allowEphemeral: true,
+      });
+      const assessmentArgs = {
+        homeDir,
+        rootDir: globalRoot,
+        asset: "skill:guarded",
+      };
+      const assessment = await assessEvolution(assessmentArgs);
+      expect(assessment.activeProposalIds).toEqual([]);
+      expect(
+        assessment.warnings.some((warning) => warning.includes(promoted.id))
+      ).toBe(true);
+      expect(
+        (await assessEvolution({ ...assessmentArgs, allowEphemeral: true }))
+          .activeProposalIds
+      ).toEqual([promoted.id]);
+    }
+  );
+
+  it("keeps a normal indexed skill usable through apply without an override", async () => {
+    const fixture = await makeDurableFixture();
+    const homeDir = await fixtureAccountHome(fixture);
+    const rootDir = join(fixture, ".ai");
+    const file = await seedIndexedSkill({ homeDir, rootDir, scope: "project" });
+    const args = {
+      ...writebackArgs(rootDir),
+      homeDir,
+      asset: "skill:guarded",
+      suggestedDestination: undefined,
+    };
+    await addWriteback(args);
+    const [proposal] = await proposeEvolution(args);
+    expect((await assessEvolution(args)).activeProposalIds).toEqual([
+      proposal!.id,
+    ]);
+    await draftProposal(proposal!.id, args);
+    await acceptProposal(proposal!.id, args);
+    const applied = await applyProposal(proposal!.id, args);
+    expect(applied.applyResult?.changedFiles).toEqual([file]);
+    expect(await Bun.file(file).text()).toContain(
+      `facult:evolution:${proposal!.id}:start`
+    );
+  });
+
   it("finds the account home even when Bun starts with an alternate HOME", async () => {
     const modulePath = join(import.meta.dir, "ai-path-guard.ts");
     const child = Bun.spawn(
@@ -468,7 +699,7 @@ describe("AI state path guard", () => {
     ).rejects.toThrow("HOME differs");
   });
 
-  it("CLI flag permits isolated writebacks and proposals while the default refuses", async () => {
+  it("CLI flag permits isolated creation, draft and apply while defaults refuse", async () => {
     const args = writebackArgs();
     const cli = join(import.meta.dir, "index.ts");
     async function run(argv: string[]) {
@@ -510,9 +741,9 @@ describe("AI state path guard", () => {
     expect((await run(command)).code).toBe(1);
     expect((await run([...command, "--allow-ephemeral"])).code).toBe(0);
     expect((await run(["evolve", "propose"])).code).toBe(1);
-    expect((await run(["evolve", "propose", "--allow-ephemeral"])).code).toBe(
-      0
-    );
+    const proposed = await run(["evolve", "propose", "--allow-ephemeral"]);
+    expect(proposed.code).toBe(0);
+    const id = JSON.parse(proposed.stdout)[0].id as string;
     const assessment = await run(["evolve", "assess"]);
     expect(assessment.code).toBe(0);
     expect(JSON.parse(assessment.stdout).activeProposalIds).toEqual([]);
@@ -520,6 +751,16 @@ describe("AI state path guard", () => {
     expect(JSON.parse(override.stdout).recommendation).toBe(
       "review_existing_proposal"
     );
+    expect((await run(["evolve", "draft", id])).code).toBe(1);
+    expect(
+      (await run(["evolve", "draft", id, "--append", "--allow-ephemeral"])).code
+    ).toBe(1);
+    const draft = await run(["evolve", "draft", id, "--allow-ephemeral"]);
+    expect(draft.code, draft.stderr).toBe(0);
+    expect((await run(["evolve", "accept", id])).code).toBe(0);
+    expect((await run(["evolve", "apply", id])).code).toBe(1);
+    const applied = await run(["evolve", "apply", id, "--allow-ephemeral"]);
+    expect(applied.code, applied.stderr).toBe(0);
   });
 
   it("excludes legacy contamination and linked proposals while retaining normal entries", async () => {
