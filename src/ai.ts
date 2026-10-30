@@ -12,6 +12,7 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { aiPathWithin } from "./ai-boundary";
 import {
   aiFileExists,
   appendAiJsonLine,
@@ -491,21 +492,20 @@ function stateSourceBoundary(
   context: { homeDir: string; rootDir: string }
 ): string {
   const runtime = facultAiRuntimeScopeDir(context.homeDir, context.rootDir);
-  const suffix = relative(runtime, path);
-  if (suffix && !suffix.startsWith("..") && !isAbsolute(suffix)) {
+  if (aiPathWithin(path, runtime)) {
     return facultMachineStateDir(context.homeDir, context.rootDir);
   }
   const project = projectRootFromAiRoot(context.rootDir, context.homeDir);
   if (project) {
     return project;
   }
-  if (path.startsWith(`${context.rootDir}/`)) {
+  if (aiPathWithin(path, context.rootDir)) {
     return context.rootDir;
   }
   const legacy = legacyAiRuntimeScopeDirs(
     context.homeDir,
     context.rootDir
-  ).find((dir) => path.startsWith(`${dir}/`));
+  ).find((dir) => aiPathWithin(path, dir));
   return legacy ? dirname(legacy) : context.rootDir;
 }
 
@@ -1273,7 +1273,7 @@ async function resolveAssetSelection(args: {
     copyGenerated: async (source, destination) => {
       const root =
         projectRootFromAiRoot(args.rootDir, args.homeDir) ??
-        (source.startsWith(`${args.rootDir}/`)
+        (aiPathWithin(source, args.rootDir)
           ? args.rootDir
           : dirname(dirname(source)));
       await writeAiText(

@@ -9,7 +9,15 @@ import {
   type Stats,
   unlinkSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
+import {
+  dirname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  sep,
+  win32,
+} from "node:path";
 import {
   mutateEntryAt,
   openFileAt,
@@ -30,10 +38,17 @@ export function sameAiIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-export function aiPathWithin(path: string, root: string): boolean {
-  const suffix = relative(root, path);
+export function aiPathWithin(
+  path: string,
+  root: string,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  const paths = platform === "win32" ? win32 : { relative, sep, isAbsolute };
+  const suffix = paths.relative(root, path);
   return (
-    suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix)
+    suffix !== ".." &&
+    !suffix.startsWith(`..${paths.sep}`) &&
+    !paths.isAbsolute(suffix)
   );
 }
 
@@ -47,14 +62,23 @@ interface DirectoryBinding {
 export class AiDirectoryBoundary {
   readonly physical: string;
   readonly path: string;
+  private readonly platform: NodeJS.Platform;
   private readonly directories: DirectoryBinding[] = [];
 
-  constructor(path: string, create = false) {
+  constructor(
+    path: string,
+    create = false,
+    platform: NodeJS.Platform = process.platform
+  ) {
+    this.platform = platform;
     this.path = absoluteFilesystemPath(path);
     this.physical = resolvePhysicalPath(this.path);
     try {
       const root = parse(this.physical).root;
-      this.add(openSync(root, DIRECTORY_FLAGS), root);
+      this.add(
+        this.platform === "win32" ? -1 : openSync(root, DIRECTORY_FLAGS),
+        root
+      );
       this.descend(
         relative(root, this.physical).split(sep).filter(Boolean),
         create
@@ -71,7 +95,7 @@ export class AiDirectoryBoundary {
   }
 
   private add(fd: number, path: string): void {
-    const metadata = fstatSync(fd);
+    const metadata = fd < 0 ? lstatSync(path) : fstatSync(fd);
     this.directories.push({ fd, path, metadata });
     if (!metadata.isDirectory()) {
       throw new Error(`AI boundary is not a directory: ${path}`);
@@ -82,6 +106,19 @@ export class AiDirectoryBoundary {
     for (const segment of segments) {
       const path = join(this.directories.at(-1)!.path, segment);
       this.validateEntries();
+      if (this.platform === "win32") {
+        try {
+          lstatSync(path);
+        } catch (error) {
+          if (!create || (error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw error;
+          }
+          this.mkdir(segment);
+        }
+        this.add(-1, path);
+        this.validateEntries();
+        continue;
+      }
       let fd: number;
       try {
         fd = this.open(segment, DIRECTORY_FLAGS);
@@ -103,7 +140,8 @@ export class AiDirectoryBoundary {
       if (
         mapped.isSymbolicLink() ||
         !sameAiIdentity(mapped, directory.metadata) ||
-        !sameAiIdentity(fstatSync(directory.fd), directory.metadata)
+        (directory.fd >= 0 &&
+          !sameAiIdentity(fstatSync(directory.fd), directory.metadata))
       ) {
         throw new Error(`AI bound parent changed: ${directory.path}`);
       }
@@ -117,17 +155,33 @@ export class AiDirectoryBoundary {
     }
   }
 
+  private validateName(name: string): void {
+    if (
+      !name ||
+      name === "." ||
+      name === ".." ||
+      name.includes("/") ||
+      name.includes("\\") ||
+      name.includes("\0") ||
+      (this.platform === "win32" && name.includes(":"))
+    ) {
+      throw new Error("AI bound entry names must be single path segments");
+    }
+  }
+
   open(name: string, flags: number, mode = 0o600): number {
+    this.validateName(name);
     this.validateEntries();
-    if (process.platform === "win32") {
+    if (this.platform === "win32") {
       return openSync(join(this.directories.at(-1)!.path, name), flags, mode);
     }
     return openFileAt({ directoryFd: this.fd, fileName: name, flags, mode });
   }
 
   mkdir(name: string): void {
+    this.validateName(name);
     this.validateEntries();
-    if (process.platform === "win32") {
+    if (this.platform === "win32") {
       mkdirSync(join(this.directories.at(-1)!.path, name));
     } else {
       mutateEntryAt({
@@ -140,8 +194,9 @@ export class AiDirectoryBoundary {
   }
 
   unlink(name: string): void {
+    this.validateName(name);
     this.validate();
-    if (process.platform === "win32") {
+    if (this.platform === "win32") {
       unlinkSync(join(this.physical, name));
     } else {
       mutateEntryAt({
@@ -156,7 +211,7 @@ export class AiDirectoryBoundary {
   entries(): string[] {
     this.validate();
     const entries =
-      process.platform === "win32"
+      this.platform === "win32"
         ? readdirSync(this.physical)
         : readDirectoryEntriesAt({
             directoryFd: this.fd,
@@ -180,12 +235,13 @@ export class AiDirectoryBoundary {
       path: dirname(physical),
       physical: dirname(physical),
       directories: [],
+      platform: this.platform,
     });
     try {
       for (const binding of this.directories) {
         parent.add(
-          process.platform === "win32"
-            ? openSync(binding.path, DIRECTORY_FLAGS)
+          this.platform === "win32"
+            ? -1
             : openFileAt({
                 directoryFd: binding.fd,
                 fileName: ".",
@@ -209,7 +265,9 @@ export class AiDirectoryBoundary {
 
   close(): void {
     for (const directory of this.directories.splice(0).reverse()) {
-      closeSync(directory.fd);
+      if (directory.fd >= 0) {
+        closeSync(directory.fd);
+      }
     }
   }
 }
