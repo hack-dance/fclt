@@ -1,3 +1,9 @@
+## [2.32.8](https://github.com/hack-dance/fclt/compare/v2.32.7...v2.32.8) (2026-10-30)
+
+### Bug Fixes
+
+* reject ephemeral writeback and evolution sources ([#104](https://github.com/hack-dance/fclt/issues/104)) ([0e93950](https://github.com/hack-dance/fclt/commit/0e939504e9f48e46ed75908fbf9a1c45fff98095))
+
 ## [2.32.7](https://github.com/hack-dance/fclt/compare/v2.32.6...v2.32.7) (2026-10-30)
 
 ### Bug Fixes
