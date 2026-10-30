@@ -112,7 +112,7 @@ jobs:
             target_os: darwin
             target_arch: x64
             ext: ""
-          - os: macos-14
+          - os: macos-15
             target_os: darwin
             target_arch: arm64
             ext: ""
