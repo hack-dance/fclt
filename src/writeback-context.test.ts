@@ -156,7 +156,8 @@ async function cliResult(args: {
   argv: string[];
   environmentRoot?: string;
   environmentScope?: string;
-  namespace?: "writeback" | "evolve" | "review";
+  namespace?: "writeback" | "evolve" | "review" | "unknown";
+  json?: boolean;
 }) {
   const child = Bun.spawn(
     [
@@ -165,7 +166,7 @@ async function cliResult(args: {
       "ai",
       args.namespace ?? "writeback",
       ...args.argv,
-      "--json",
+      ...(args.json === false ? [] : ["--json"]),
     ],
     {
       cwd: args.cwd,
@@ -217,6 +218,20 @@ const addArgs = [
   "--tag",
   "fixture",
 ];
+
+it("preserves an error exit for unknown AI subcommands without arguments", async () => {
+  const homeDir = process.env.HOME as string;
+  const result = await cliResult({
+    homeDir,
+    cwd: homeDir,
+    argv: [],
+    namespace: "unknown",
+    json: false,
+  });
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("Unknown ai command: unknown");
+  expect(result.stdout).toBe("");
+});
 
 it.each([
   "primary",

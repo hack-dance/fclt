@@ -4121,10 +4121,11 @@ export async function aiCommand(
     return;
   }
   if (
-    rest.includes("--help") ||
-    rest.includes("-h") ||
-    rest[0] === "help" ||
-    rest.length === 0
+    ["writeback", "evolve", "review", "reconcile"].includes(sub) &&
+    (rest.includes("--help") ||
+      rest.includes("-h") ||
+      rest[0] === "help" ||
+      rest.length === 0)
   ) {
     if (sub === "writeback") {
       console.log(writebackHelp());
