@@ -1,26 +1,49 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   constants,
   fstatSync,
+  fsyncSync,
   lstatSync,
   readFileSync,
+  readSync,
   renameSync,
+  type Stats,
+  writeSync,
 } from "node:fs";
-import { lstat, mkdir, open, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname } from "node:path";
-import { aiPathSafetyIssue, allowEphemeralAiPaths } from "./ai-path-guard";
-import { resolvePhysicalPath } from "./paths";
+import { basename, dirname, parse } from "node:path";
+import {
+  AiDirectoryBoundary,
+  aiPathWithin,
+  sameAiIdentity,
+} from "./ai-boundary";
+import {
+  aiPathSafetyIssue,
+  allowEphemeralAiPaths,
+  realUserHome,
+} from "./ai-path-guard";
+import {
+  absoluteFilesystemPath,
+  facultAiStateDir,
+  facultMachineStateDir,
+  preferredGlobalAiRoot,
+  projectRootFromAiRoot,
+  resolvePhysicalPath,
+} from "./paths";
 
 interface MutationScope {
   homeDir: string;
   allowEphemeral: boolean;
+  boundaries: Map<string, AiDirectoryBoundary>;
+  roots: string[];
+  rootDir?: string;
 }
-
 const mutationScope = new AsyncLocalStorage<MutationScope>();
 
 export function needsAiMutationScope(args: {
+  rootDir?: string;
   homeDir: string;
   allowEphemeral?: boolean;
 }): boolean {
@@ -28,25 +51,40 @@ export function needsAiMutationScope(args: {
   return (
     !current ||
     current.homeDir !== args.homeDir ||
+    (args.rootDir !== undefined && current.rootDir !== args.rootDir) ||
     (args.allowEphemeral !== undefined &&
       current.allowEphemeral !== args.allowEphemeral)
   );
 }
 
-export function withAiMutationScope<T>(
-  args: { homeDir: string; allowEphemeral?: boolean },
+export async function withAiMutationScope<T>(
+  args: { homeDir: string; rootDir?: string; allowEphemeral?: boolean },
   operation: () => Promise<T>
 ): Promise<T> {
-  return mutationScope.run(
-    {
-      homeDir: args.homeDir,
-      allowEphemeral:
-        args.allowEphemeral ??
-        mutationScope.getStore()?.allowEphemeral ??
-        allowEphemeralAiPaths(),
-    },
-    operation
-  );
+  const scope: MutationScope = {
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    allowEphemeral:
+      args.allowEphemeral ??
+      mutationScope.getStore()?.allowEphemeral ??
+      allowEphemeralAiPaths(),
+    boundaries: new Map(),
+    roots: args.rootDir
+      ? [
+          facultMachineStateDir(args.homeDir, args.rootDir),
+          projectRootFromAiRoot(args.rootDir, args.homeDir) ?? args.rootDir,
+          facultAiStateDir(args.homeDir, args.rootDir),
+          preferredGlobalAiRoot(args.homeDir),
+        ]
+      : [],
+  };
+  try {
+    return await mutationScope.run(scope, operation);
+  } finally {
+    for (const boundary of scope.boundaries.values()) {
+      boundary.close();
+    }
+  }
 }
 
 export function assertAiOutputPaths(paths: string[], homeDir?: string): void {
@@ -65,172 +103,245 @@ export function assertAiOutputPaths(paths: string[], homeDir?: string): void {
   }
 }
 
-async function prepareOutput(path: string, homeDir?: string): Promise<string> {
-  assertAiOutputPaths([path], homeDir);
-  const physical = resolvePhysicalPath(path);
-  await mkdir(dirname(physical), { recursive: true });
-  assertAiOutputPaths([path, physical], homeDir);
-  if (resolvePhysicalPath(path) !== physical) {
-    throw new Error(`AI output changed during path resolution: ${path}`);
-  }
-  return physical;
-}
-
-/** Stage exclusive files and replace the directory entry; never truncate through a swapped leaf link. */
-export async function writeAiText(
+function bindPath(
   path: string,
-  contents: string,
-  homeDir?: string,
-  beforeRename?: () => Promise<void>
-): Promise<void> {
-  if (process.platform !== "win32") {
-    const snapshot = await readAiTarget(path, homeDir);
-    await replaceAiTarget({
-      path,
-      contents,
-      snapshot,
-      beforeCommit: beforeRename,
-      homeDir,
-      mode: 0o600,
-    });
-    return;
+  args: {
+    root?: string;
+    create?: boolean;
+    homeDir?: string;
+    output?: boolean;
+    read?: boolean;
+  } = {}
+) {
+  const lexical = absoluteFilesystemPath(path);
+  const scope = mutationScope.getStore();
+  const checkSafety = args.output || (args.read && scope?.rootDir);
+  if (checkSafety) {
+    assertAiOutputPaths([lexical], args.homeDir);
   }
-  const physical = await prepareOutput(path, homeDir);
-  const temporary = `${physical}.${randomUUID()}.tmp`;
-  const parent = await lstat(dirname(physical));
-  let owned: { dev: number; ino: number } | undefined;
-  try {
-    const file = await open(
-      temporary,
-      constants.O_WRONLY +
-        constants.O_CREAT +
-        constants.O_EXCL +
-        (constants.O_NOFOLLOW ?? 0),
-      0o600
+  const temporaryReadOverride =
+    !args.output &&
+    (scope?.allowEphemeral ?? allowEphemeralAiPaths()) &&
+    aiPathSafetyIssue({ homeDir: realUserHome(), paths: [lexical] })?.includes(
+      "OS temporary directory"
     );
-    try {
-      const metadata = await file.stat();
-      owned = { dev: metadata.dev, ino: metadata.ino };
-      await file.writeFile(contents, "utf8");
-      await file.sync();
-      await beforeRename?.();
-      assertAiOutputPaths([path, physical], homeDir);
-      const currentParent = lstatSync(dirname(physical));
-      const staged = lstatSync(temporary);
-      const bound = fstatSync(file.fd);
-      if (
-        resolvePhysicalPath(path) !== physical ||
-        currentParent.isSymbolicLink() ||
-        parent.dev !== currentParent.dev ||
-        parent.ino !== currentParent.ino ||
-        staged.isSymbolicLink() ||
-        staged.dev !== bound.dev ||
-        staged.ino !== bound.ino ||
-        readFileSync(temporary, "utf8") !== contents
-      ) {
-        throw new Error(
-          `AI staging file or parent changed before commit: ${path}`
-        );
-      }
-      renameSync(temporary, physical);
-      const committed = lstatSync(physical);
-      if (committed.dev !== bound.dev || committed.ino !== bound.ino) {
-        throw new Error(`AI staging identity changed at commit: ${path}`);
-      }
-      owned = undefined;
-    } finally {
-      await file.close();
-    }
-  } finally {
-    if (owned) {
-      const remaining = await lstat(temporary).catch(() => null);
-      if (remaining?.dev === owned.dev && remaining.ino === owned.ino) {
-        await rm(temporary, { force: true });
-      }
-    }
-  }
-}
-
-export async function appendAiJsonLine(
-  path: string,
-  value: unknown,
-  homeDir?: string
-): Promise<void> {
-  const physical = await prepareOutput(path, homeDir);
-  const file = await open(
-    physical,
-    constants.O_RDWR +
-      constants.O_CREAT +
-      constants.O_APPEND +
-      (constants.O_NOFOLLOW ?? 0),
-    0o600
+  const rootPath = absoluteFilesystemPath(
+    temporaryReadOverride
+      ? parse(lexical).root
+      : (args.root ??
+          (scope?.allowEphemeral
+            ? undefined
+            : scope?.roots.find((candidate) =>
+                aiPathWithin(lexical, candidate)
+              )) ??
+          parse(lexical).root)
   );
+  if (!aiPathWithin(lexical, rootPath)) {
+    throw new Error(`AI path escapes authorized scope boundary: ${path}`);
+  }
+  let root = scope?.boundaries.get(rootPath);
+  const owned = !scope;
+  if (!root) {
+    root = new AiDirectoryBoundary(rootPath, args.create);
+    scope?.boundaries.set(rootPath, root);
+  }
+  let parent: AiDirectoryBoundary;
   try {
-    assertAiOutputPaths([path, physical], homeDir);
+    parent = root.parentFor(lexical, args.create ?? false);
+  } catch (error) {
+    if (owned) {
+      root.close();
+    }
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      assertAiOutputPaths(
+        [lexical],
+        args.output ? args.homeDir : realUserHome()
+      );
+    }
+    throw error;
+  }
+  const physical = resolvePhysicalPath(lexical);
+  const validate = () => {
+    if (checkSafety) {
+      assertAiOutputPaths([lexical, physical], args.homeDir);
+    }
+    root.validate();
+    parent.validate();
     if (
-      resolvePhysicalPath(path) !== physical ||
-      !(await file.stat()).isFile()
+      resolvePhysicalPath(lexical) !== physical ||
+      !aiPathWithin(physical, root.physical)
     ) {
-      throw new Error(`AI append destination changed: ${path}`);
+      throw new Error(`AI bound path changed: ${path}`);
     }
-    const { size } = await file.stat();
-    let separator = "";
-    if (size > 0) {
-      const last = Buffer.alloc(1);
-      await file.read(last, 0, 1, size - 1);
-      separator = last[0] === 10 ? "" : "\n";
+  };
+  return {
+    physical,
+    parent,
+    validate,
+    close: () => {
+      parent.close();
+      if (owned) {
+        root.close();
+      }
+    },
+  };
+}
+
+function validateFile(
+  binding: ReturnType<typeof bindPath>,
+  fd: number,
+  before?: Stats
+): Stats {
+  binding.validate();
+  const metadata = fstatSync(fd);
+  const mapped = lstatSync(binding.physical);
+  if (
+    !metadata.isFile() ||
+    metadata.nlink !== 1 ||
+    mapped.isSymbolicLink() ||
+    !sameAiIdentity(metadata, mapped) ||
+    (before &&
+      (!sameAiIdentity(metadata, before) ||
+        before.size !== metadata.size ||
+        before.mtimeMs !== metadata.mtimeMs ||
+        before.ctimeMs !== metadata.ctimeMs))
+  ) {
+    throw new Error(`AI bound file changed: ${binding.physical}`);
+  }
+  return metadata;
+}
+
+/** Reads and mutations share a descriptor-bound root, ancestry, parent and leaf identity. */
+export async function readAiTarget(
+  path: string,
+  homeDir?: string,
+  root?: string
+) {
+  await Promise.resolve();
+  const binding = bindPath(path, { homeDir, root, create: true, output: true });
+  try {
+    let fd: number;
+    try {
+      fd = binding.parent.open(
+        basename(binding.physical),
+        constants.O_RDONLY +
+          (constants.O_NOFOLLOW ?? 0) +
+          (constants.O_NONBLOCK ?? 0)
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { ...binding, contents: "", expected: null };
+      }
+      throw error;
     }
-    await file.appendFile(`${separator}${JSON.stringify(value)}\n`, "utf8");
-  } finally {
-    await file.close();
+    try {
+      const metadata = validateFile(binding, fd);
+      const contents = readFileSync(fd, "utf8");
+      validateFile(binding, fd, metadata);
+      return {
+        ...binding,
+        contents,
+        expected: {
+          contents,
+          identity: { dev: metadata.dev, ino: metadata.ino },
+          mode: metadata.mode % 0o1000,
+        },
+      };
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    binding.close();
+    throw error;
   }
 }
 
-export async function readAiTarget(path: string, homeDir?: string) {
-  const physical = await prepareOutput(path, homeDir);
-  let file: Awaited<ReturnType<typeof open>>;
+export async function readAiText(
+  path: string,
+  _encoding: "utf8" = "utf8",
+  root?: string
+): Promise<string> {
+  await Promise.resolve();
+  const binding = bindPath(path, { root, read: true });
   try {
-    file = await open(
-      physical,
+    const fd = binding.parent.open(
+      basename(binding.physical),
       constants.O_RDONLY +
         (constants.O_NOFOLLOW ?? 0) +
         (constants.O_NONBLOCK ?? 0)
     );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { physical, contents: "", expected: null };
+    try {
+      const before = validateFile(binding, fd);
+      const contents = readFileSync(fd, "utf8");
+      validateFile(binding, fd, before);
+      return contents;
+    } finally {
+      closeSync(fd);
     }
-    throw error;
-  }
-  try {
-    const metadata = await file.stat();
-    assertAiOutputPaths([path, physical], homeDir);
-    const mapped = await lstat(physical);
-    if (
-      !metadata.isFile() ||
-      mapped.isSymbolicLink() ||
-      metadata.dev !== mapped.dev ||
-      metadata.ino !== mapped.ino ||
-      resolvePhysicalPath(path) !== physical
-    ) {
-      throw new Error(`Proposal target changed before read: ${path}`);
-    }
-    const contents = await file.readFile("utf8");
-    return {
-      physical,
-      contents,
-      expected: {
-        contents,
-        identity: { dev: metadata.dev, ino: metadata.ino },
-        mode: metadata.mode % 0o1000,
-      },
-    };
   } finally {
-    await file.close();
+    binding.close();
   }
 }
 
-/** Use the existing descriptor-relative conditional replacement to bind both the file and its parent. */
+export async function aiFileExists(
+  path: string,
+  root?: string
+): Promise<boolean> {
+  await Promise.resolve();
+  let binding: ReturnType<typeof bindPath> | undefined;
+  try {
+    binding = bindPath(path, { root });
+    const fd = binding.parent.open(
+      basename(binding.physical),
+      constants.O_RDONLY +
+        (constants.O_NOFOLLOW ?? 0) +
+        (constants.O_NONBLOCK ?? 0)
+    );
+    try {
+      binding.validate();
+      return fstatSync(fd).isFile();
+    } finally {
+      closeSync(fd);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  } finally {
+    binding?.close();
+  }
+}
+
+export async function readAiDirectory(
+  path: string,
+  root?: string
+): Promise<string[]> {
+  await Promise.resolve();
+  const binding = bindPath(`${path}/.fclt-directory-entry`, { root });
+  try {
+    binding.validate();
+    return binding.parent.entries();
+  } finally {
+    binding.close();
+  }
+}
+
+export async function mkdirAiDirectory(
+  path: string,
+  homeDir?: string
+): Promise<void> {
+  await Promise.resolve();
+  assertAiOutputPaths([path], homeDir);
+  const boundary = new AiDirectoryBoundary(path, true);
+  try {
+    assertAiOutputPaths([boundary.physical], homeDir);
+    boundary.validate();
+  } finally {
+    boundary.close();
+  }
+}
+
 export async function replaceAiTarget(args: {
   path: string;
   contents: string;
@@ -240,50 +351,195 @@ export async function replaceAiTarget(args: {
   beforeCommit?: () => Promise<void>;
 }): Promise<void> {
   const validate = () => {
+    args.snapshot.validate();
     assertAiOutputPaths([args.path, args.snapshot.physical], args.homeDir);
-    if (resolvePhysicalPath(args.path) !== args.snapshot.physical) {
-      throw new Error(`Proposal target changed before write: ${args.path}`);
+  };
+  try {
+    validate();
+    if (process.platform === "win32") {
+      await replaceAiTargetOnWindows(args, validate);
+      return;
+    }
+    const { replaceVerifiedFileAt } = await import("./audit/safe-openat");
+    await replaceVerifiedFileAt({
+      directoryFd: args.snapshot.parent.fd,
+      directoryPath: dirname(args.snapshot.physical),
+      fileName: basename(args.snapshot.physical),
+      contents: args.contents,
+      expected: args.snapshot.expected,
+      mode: args.mode ?? args.snapshot.expected?.mode ?? 0o644,
+      maxBytes: Math.max(
+        Buffer.byteLength(args.snapshot.contents),
+        Buffer.byteLength(args.contents)
+      ),
+      validateBoundary: validate,
+      beforeCommit: async () => {
+        await args.beforeCommit?.();
+        validate();
+      },
+      beforeExchange: () => {
+        validate();
+        return Promise.resolve();
+      },
+    });
+    validate();
+  } finally {
+    args.snapshot.close();
+  }
+}
+
+/** Windows uses the same bound ancestry and leaf checks around its synchronous rename. */
+async function replaceAiTargetOnWindows(
+  args: {
+    snapshot: Awaited<ReturnType<typeof readAiTarget>>;
+    contents: string;
+    mode?: number;
+    beforeCommit?: () => Promise<void>;
+  },
+  validate: () => void
+): Promise<void> {
+  const { snapshot } = args;
+  const name = `${basename(snapshot.physical)}.${randomUUID()}.tmp`;
+  const temporary = `${dirname(snapshot.physical)}/${name}`;
+  const fd = snapshot.parent.open(
+    name,
+    constants.O_RDWR +
+      constants.O_CREAT +
+      constants.O_EXCL +
+      (constants.O_NOFOLLOW ?? 0),
+    args.mode ?? snapshot.expected?.mode ?? 0o644
+  );
+  const staged = fstatSync(fd);
+  let committed = false;
+  try {
+    writeSync(fd, args.contents, null, "utf8");
+    fsyncSync(fd);
+    await args.beforeCommit?.();
+    validate();
+    const existing = await readAiTarget(snapshot.physical);
+    try {
+      if (
+        JSON.stringify(existing.expected) !== JSON.stringify(snapshot.expected)
+      ) {
+        throw new Error("AI bound target changed before commit");
+      }
+    } finally {
+      existing.close();
+    }
+    if (
+      !sameAiIdentity(lstatSync(temporary), staged) ||
+      readFileSync(temporary, "utf8") !== args.contents
+    ) {
+      throw new Error("AI staging file changed before commit");
+    }
+    validate();
+    renameSync(temporary, snapshot.physical);
+    if (!sameAiIdentity(lstatSync(snapshot.physical), staged)) {
+      throw new Error("AI staging identity changed at commit");
+    }
+    committed = true;
+    validate();
+  } finally {
+    closeSync(fd);
+    if (!committed) {
+      try {
+        snapshot.validate();
+        if (sameAiIdentity(lstatSync(temporary), staged)) {
+          snapshot.parent.unlink(name);
+        }
+      } catch {
+        /* Preserve entries whose identity or parent changed. */
+      }
+    }
+  }
+}
+
+export async function writeAiText(
+  path: string,
+  contents: string,
+  homeDir?: string,
+  beforeRename?: () => Promise<void>
+): Promise<void> {
+  const snapshot = await readAiTarget(path, homeDir);
+  await replaceAiTarget({
+    path,
+    contents,
+    snapshot,
+    beforeCommit: beforeRename,
+    homeDir,
+    mode: 0o600,
+  });
+}
+
+export async function appendAiJsonLine(
+  path: string,
+  value: unknown,
+  homeDir?: string,
+  afterOpen?: () => Promise<void>
+): Promise<void> {
+  const binding = bindPath(path, { homeDir, create: true, output: true });
+  try {
+    const fd = binding.parent.open(
+      basename(binding.physical),
+      constants.O_RDWR +
+        constants.O_CREAT +
+        constants.O_APPEND +
+        (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    try {
+      const before = validateFile(binding, fd);
+      await afterOpen?.();
+      validateFile(binding, fd, before);
+      const last = Buffer.alloc(1);
+      if (before.size > 0) {
+        readSync(fd, last, 0, 1, before.size - 1);
+      }
+      const text = `${before.size > 0 && last[0] !== 10 ? "\n" : ""}${JSON.stringify(value)}\n`;
+      validateFile(binding, fd, before);
+      writeSync(fd, text, null, "utf8");
+      fsyncSync(fd);
+      validateFile(binding, fd);
+    } finally {
+      closeSync(fd);
+    }
+  } finally {
+    binding.close();
+  }
+}
+
+/** Locks are created and removed only through the same owned directory entry. */
+export async function createAiLock(
+  path: string,
+  contents: string,
+  homeDir: string
+): Promise<() => void> {
+  await Promise.resolve();
+  const binding = bindPath(path, { homeDir, create: true, output: true });
+  let fd: number;
+  try {
+    fd = binding.parent.open(
+      basename(binding.physical),
+      constants.O_WRONLY +
+        constants.O_CREAT +
+        constants.O_EXCL +
+        (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+    validateFile(binding, fd);
+    writeSync(fd, contents, null, "utf8");
+    validateFile(binding, fd);
+  } catch (error) {
+    binding.close();
+    throw error;
+  }
+  return () => {
+    try {
+      validateFile(binding, fd);
+      binding.parent.unlink(basename(binding.physical));
+    } finally {
+      closeSync(fd);
+      binding.close();
     }
   };
-  validate();
-  // Windows has no descriptor-relative exchange in the audit helper. Stage in
-  // the validated parent and rename, with a fresh identity/content check.
-  if (process.platform === "win32") {
-    await writeAiText(args.path, args.contents, args.homeDir, async () => {
-      await args.beforeCommit?.();
-      validate();
-      const current = await readAiTarget(args.path, args.homeDir);
-      if (
-        current.contents !== args.snapshot.contents ||
-        current.expected?.identity.dev !==
-          args.snapshot.expected?.identity.dev ||
-        current.expected?.identity.ino !==
-          args.snapshot.expected?.identity.ino ||
-        current.expected?.mode !== args.snapshot.expected?.mode
-      ) {
-        throw new Error(`Proposal target changed before write: ${args.path}`);
-      }
-    });
-    return;
-  }
-  const { replaceVerifiedFileAt } = await import("./audit/safe-openat");
-  await replaceVerifiedFileAt({
-    directoryPath: dirname(args.snapshot.physical),
-    fileName: basename(args.snapshot.physical),
-    contents: args.contents,
-    expected: args.snapshot.expected,
-    mode: args.mode ?? args.snapshot.expected?.mode ?? 0o644,
-    maxBytes: Math.max(
-      Buffer.byteLength(args.snapshot.contents),
-      Buffer.byteLength(args.contents)
-    ),
-    beforeCommit: async () => {
-      await args.beforeCommit?.();
-      validate();
-    },
-    beforeExchange: () => {
-      validate();
-      return Promise.resolve();
-    },
-  });
 }

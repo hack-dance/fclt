@@ -26,7 +26,7 @@ import {
   promoteProposal,
   proposeEvolution,
 } from "./ai";
-import { writeAiText } from "./ai-filesystem";
+import { withAiMutationScope, writeAiText } from "./ai-filesystem";
 import { aiPathSafetyIssue, realUserHome } from "./ai-path-guard";
 import {
   facultAiDraftDir,
@@ -933,7 +933,7 @@ describe("AI state path guard", () => {
     const base = {
       id: "WB-00001",
       ts: "2026-10-01T00:00:00Z",
-      scope: "global",
+      scope: "project",
       ...writebackArgs(rootDir),
       status: "recorded",
       tags: [],
@@ -959,7 +959,7 @@ describe("AI state path guard", () => {
     const proposal = {
       id: "EV-00001",
       ts: base.ts,
-      scope: "global",
+      scope: "project",
       status: "proposed",
       kind: "update_asset",
       targets: [base.suggestedDestination],
@@ -997,8 +997,8 @@ describe("AI state path guard", () => {
     expect(assessment.recommendation).toBe("review_existing_proposal");
     expect(assessment.activeProposalIds).toEqual([proposal.id]);
     expect(assessment.sourceWritebacks).toEqual([base.id]);
-    expect(assessment.warnings).toHaveLength(9);
-    expect(await listWritebacks(args)).toHaveLength(5);
+    expect(assessment.warnings).toHaveLength(11);
+    expect(await listWritebacks(args)).toHaveLength(3);
     expect(await listProposals(args)).toHaveLength(6);
     await rm(
       join(facultAiProposalDir(homeDir, rootDir), `${proposal.id}.json`)
@@ -1299,9 +1299,21 @@ describe("AI filesystem mutation boundaries", () => {
     expect(await Bun.file(proposalPath).text()).toBe(beforeProposal);
     await operation(true);
     if (capture) {
-      expect((await listWritebacks(args)).length).toBe(2);
+      expect(
+        (
+          await withAiMutationScope({ homeDir, allowEphemeral: true }, () =>
+            listWritebacks(args)
+          )
+        ).length
+      ).toBe(2);
     } else {
-      expect((await listProposals(args))[0]!.status).toBe("drafted");
+      expect(
+        (
+          await withAiMutationScope({ homeDir, allowEphemeral: true }, () =>
+            listProposals(args)
+          )
+        )[0]!.status
+      ).toBe("drafted");
     }
   });
 
@@ -1507,7 +1519,13 @@ describe("AI generated-state repair guard", () => {
       expect(
         JSON.parse(await Bun.file(indexPath).text()).version
       ).toBeDefined();
-      expect((await listWritebacks(args)).length).toBe(1);
+      expect(
+        (
+          await withAiMutationScope({ homeDir, allowEphemeral: true }, () =>
+            listWritebacks(args)
+          )
+        ).length
+      ).toBe(1);
       expect((await listProposals(args)).length).toBe(
         operation === "propose" ? 1 : 0
       );
@@ -1747,6 +1765,159 @@ describe("security review r4 regressions", () => {
       expect(await Bun.file(join(movedParent, "record.md")).text()).toBe(
         "Original destination\n"
       );
+    }
+  });
+});
+
+describe("security review r5 descriptor boundaries", () => {
+  it("keeps the capability-root snapshot bound across the draft read", async () => {
+    const { fixture, file, args, proposal } = await durableProposalFixture();
+    const drafted = await draftProposal(proposal.id, args);
+    await acceptProposal(proposal.id, args);
+    const outside = join(fixture, "outside.md");
+    await Bun.write(outside, "# Outside must stay unchanged\n");
+    const fs = await import("node:fs/promises");
+    const filesystem = await import("./ai-filesystem");
+    const originalRead = fs.readFile;
+    const boundRead = filesystem.readAiText;
+    let swapped = false;
+    const swap = async (path: unknown) => {
+      if (String(path) === drafted.draftRefs[0] && !swapped) {
+        swapped = true;
+        await rename(file, `${file}.original`);
+        await symlink(outside, file);
+      }
+    };
+    const legacyRead = spyOn(fs, "readFile").mockImplementation((async (
+      ...params: Parameters<typeof fs.readFile>
+    ) => {
+      const result = await originalRead(...params);
+      await swap(params[0]);
+      return result;
+    }) as typeof fs.readFile);
+    const guardedRead =
+      typeof boundRead === "function"
+        ? spyOn(filesystem, "readAiText").mockImplementation(
+            async (...params) => {
+              const result = await boundRead(...params);
+              await swap(params[0]);
+              return result;
+            }
+          )
+        : undefined;
+    try {
+      await expect(applyProposal(proposal.id, args)).rejects.toThrow(
+        STAGING_ERROR_RE
+      );
+      expect(swapped).toBe(true);
+      expect(await Bun.file(outside).text()).toBe(
+        "# Outside must stay unchanged\n"
+      );
+    } finally {
+      legacyRead.mockRestore();
+      guardedRead?.mockRestore();
+    }
+  });
+
+  it("refuses a legacy source queue redirected to another project's runtime store", async () => {
+    const { fixture, args, proposal, writeback } =
+      await durableProposalFixture();
+    const otherRoot = join(fixture, "other/.ai");
+    await mkdir(otherRoot, { recursive: true });
+    const otherQueue = facultAiWritebackQueuePath(args.homeDir, otherRoot);
+    await seedJson(otherQueue, {
+      ...writeback,
+      sourceRoot: otherRoot,
+      projectRoot: dirname(otherRoot),
+      summary: "PRIVATE OTHER PROJECT SUMMARY",
+    });
+    const legacy = join(args.rootDir, ".facult/ai/project");
+    await mkdir(join(legacy, "writeback"), { recursive: true });
+    await symlink(otherQueue, join(legacy, "writeback/queue.jsonl"));
+    await seedJson(
+      join(legacy, "evolution/proposals", `${proposal.id}.json`),
+      proposal
+    );
+    const runtimeProposal = join(
+      facultAiProposalDir(args.homeDir, args.rootDir),
+      `${proposal.id}.json`
+    );
+    await rename(runtimeProposal, `${runtimeProposal}.original`);
+    await expect(draftProposal(proposal.id, args)).rejects.toThrow(
+      SCOPE_ERROR_RE
+    );
+    expect(
+      existsSync(
+        join(facultAiDraftDir(args.homeDir, args.rootDir), `${proposal.id}.md`)
+      )
+    ).toBe(false);
+    expect(await Bun.file(otherQueue).text()).toContain(
+      "PRIVATE OTHER PROJECT SUMMARY"
+    );
+  });
+
+  it("does not return another scope's record from an otherwise local queue", async () => {
+    const { fixture, args, writeback } = await durableProposalFixture();
+    const otherRoot = join(fixture, "other/.ai");
+    await seedJson(facultAiWritebackQueuePath(args.homeDir, args.rootDir), {
+      ...writeback,
+      sourceRoot: otherRoot,
+      projectRoot: dirname(otherRoot),
+    });
+    const { showWriteback } = await import("./ai");
+    expect(await showWriteback(writeback.id, args)).toBeNull();
+  });
+
+  it.each([
+    "parent",
+    "leaf",
+  ])("binds the append descriptor when its %s is replaced after open", async (layout) => {
+    const fixture = await makeDurableFixture();
+    const homeDir = await fixtureAccountHome(fixture);
+    const parent = join(fixture, "queue");
+    const queue = join(parent, "queue.jsonl");
+    await mkdir(parent);
+    await Bun.write(queue, '{"old":true}\n');
+    const temporary = join(fixture, "temporary");
+    await mkdir(temporary);
+    process.env.TMPDIR = temporary;
+    const moved = join(temporary, "moved");
+    const fs = await import("node:fs/promises");
+    const originalOpen = fs.open;
+    let swapped = false;
+    const swap = async () => {
+      if (swapped) {
+        return;
+      }
+      swapped = true;
+      if (layout === "parent") {
+        await rename(parent, moved);
+        await mkdir(parent);
+      } else {
+        await rename(queue, moved);
+        await Bun.write(queue, '{"replacement":true}\n');
+      }
+    };
+    const opened = spyOn(fs, "open").mockImplementation(async (...params) => {
+      const handle = await originalOpen(...params);
+      if (String(params[0]) === queue) {
+        await swap();
+      }
+      return handle;
+    });
+    const { appendAiJsonLine } = await import("./ai-filesystem");
+    try {
+      await expect(
+        appendAiJsonLine(queue, { new: true }, homeDir, swap)
+      ).rejects.toThrow(STAGING_ERROR_RE);
+      expect(swapped).toBe(true);
+      expect(
+        await Bun.file(
+          layout === "parent" ? join(moved, "queue.jsonl") : moved
+        ).text()
+      ).toBe('{"old":true}\n');
+    } finally {
+      opened.mockRestore();
     }
   });
 });

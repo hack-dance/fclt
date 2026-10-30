@@ -446,6 +446,14 @@ global writeback to a promoted project proposal is refused because writeback IDs
 each scope. Canonical `@ai/` and `@project/` references require relative suffixes, even when
 temporary paths are explicitly allowed.
 
+Writeback and evolution filesystem operations share a bound directory boundary. On macOS and
+Linux, reads, appends, locks, directory creation, and replacements open each component relative
+to a directory descriptor without following links. The boundary verifies file and ancestor
+identities before and after access; apply retains its target snapshot while reading the draft.
+Windows uses file and ancestor identity checks around access and staged replacement. Legacy
+queues must remain within their authorized source scope, and records claiming another scope
+are excluded. Generated graph repair uses the same guarded output path.
+
 ## Review Artifacts
 
 Runtime JSON queues, proposal metadata, draft patches, and journals stay in machine-local `fclt` state.

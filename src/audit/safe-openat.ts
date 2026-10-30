@@ -12,6 +12,7 @@ import {
   closeSync,
   constants,
   type Dirent,
+  fchmodSync,
   fstatSync,
   lstatSync,
   openSync,
@@ -538,6 +539,121 @@ export function openReadOnlyAt(args: {
   }
 }
 
+/** Descriptor-relative operations shared by the AI filesystem boundary. */
+export function openFileAt(args: {
+  directoryFd: number;
+  fileName: string;
+  flags: number;
+  mode?: number;
+}): number {
+  if (
+    !args.fileName ||
+    args.fileName.includes("/") ||
+    args.fileName.includes("\\") ||
+    args.fileName.includes("\0") ||
+    args.fileName === ".."
+  ) {
+    throw new Error("Bound file names must be single path segments");
+  }
+  const creates = Math.floor(args.flags / constants.O_CREAT) % 2 === 1;
+  const exclusive = Math.floor(args.flags / constants.O_EXCL) % 2 === 1;
+  if (creates && !exclusive) {
+    const existing = { ...args, flags: args.flags - constants.O_CREAT };
+    try {
+      return openFileAt(existing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+    try {
+      return openFileAt({ ...args, flags: args.flags + constants.O_EXCL });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      return openFileAt(existing);
+    }
+  }
+  const libc = openSystemLibc(
+    platformConfiguration(),
+    process.platform === "darwin"
+      ? DARWIN_SYSTEM_LIBC_PROBE_SYMBOLS
+      : LINUX_SYSTEM_LIBC_PROBE_SYMBOLS
+  );
+  try {
+    const fd = libc.symbols.openat(
+      args.directoryFd,
+      ptr(Buffer.from(`${args.fileName}\0`)),
+      args.flags,
+      args.mode ?? 0
+    );
+    if (fd < 0) {
+      const pointer =
+        "__error" in libc.symbols
+          ? libc.symbols.__error()
+          : libc.symbols.__errno_location();
+      if (!pointer) {
+        throw new Error("Cannot read descriptor-relative open error");
+      }
+      const errno = new DataView(toArrayBuffer(pointer, 0, 4)).getInt32(
+        0,
+        true
+      );
+      const error = new Error(
+        `Bound open failed: ${args.fileName} (errno ${errno})`
+      ) as NodeJS.ErrnoException;
+      error.code = errno === 2 ? "ENOENT" : errno === 17 ? "EEXIST" : "EIO";
+      throw error;
+    }
+    if (creates) {
+      try {
+        // Darwin arm64 passes variadic openat modes differently; set mode on
+        // the exclusively created inode, never on a pre-existing entry.
+        fchmodSync(fd, args.mode ?? 0o600);
+      } catch (error) {
+        closeSync(fd);
+        throw error;
+      }
+    }
+    return fd;
+  } finally {
+    libc.close();
+  }
+}
+
+export function mutateEntryAt(args: {
+  directoryFd: number;
+  fileName: string;
+  operation: "mkdir" | "unlink";
+}): void {
+  if (
+    !args.fileName ||
+    args.fileName === "." ||
+    args.fileName === ".." ||
+    args.fileName.includes("/") ||
+    args.fileName.includes("\\")
+  ) {
+    throw new Error("Bound entry names must be single path segments");
+  }
+  const libc = openSystemLibc(
+    platformConfiguration(),
+    COMMON_SYSTEM_LIBC_PROBE_SYMBOLS
+  );
+  try {
+    const name = ptr(Buffer.from(`${args.fileName}\0`));
+    const result =
+      args.operation === "mkdir"
+        ? libc.symbols.mkdirat(args.directoryFd, name, 0o700)
+        : libc.symbols.unlinkat(args.directoryFd, name, 0);
+    if (result !== 0) {
+      throw new Error(`Bound ${args.operation} failed: ${args.fileName}`);
+    }
+  } finally {
+    libc.close();
+  }
+}
+
 interface VerifiedFileUnlinkOptions {
   /** @internal Adversarial test hook; production callers must not set this. */
   afterQuarantine?: () => Promise<void>;
@@ -553,6 +669,8 @@ interface VerifiedFileUnlinkOptions {
 }
 
 interface VerifiedFileReplaceOptions {
+  directoryFd?: number;
+  validateBoundary?: () => void;
   /** @internal Adversarial test hook; production callers must not set this. */
   beforeCommit?: () => Promise<void>;
   /** @internal Adversarial test hook; production callers must not set this. */
@@ -1430,6 +1548,7 @@ export async function replaceVerifiedFileAt(
     }
   };
   const assertDirectoryMapping = (expected: Stats): void => {
+    args.validateBoundary?.();
     assertSafeRootBoundary(safeRootBoundary, args.directoryPath);
     const descriptorMetadata = fstatSync(directoryFd);
     const pathMetadata = lstatSync(args.directoryPath);
@@ -1446,6 +1565,7 @@ export async function replaceVerifiedFileAt(
     }
   };
   const exchange = (): void => {
+    args.validateBoundary?.();
     const result =
       process.platform === "darwin"
         ? symbols.renameatx_np!(
@@ -1468,8 +1588,16 @@ export async function replaceVerifiedFileAt(
   };
 
   try {
-    directoryFd = openSync(args.directoryPath, directoryFlags);
+    directoryFd =
+      args.directoryFd === undefined
+        ? openSync(args.directoryPath, directoryFlags)
+        : openFileAt({
+            directoryFd: args.directoryFd,
+            fileName: ".",
+            flags: directoryFlags,
+          });
     const directoryIdentity = fstatSync(directoryFd);
+    args.validateBoundary?.();
     assertDirectoryMapping(directoryIdentity);
     const existing = readSnapshot(targetName, "Bound canonical file");
     existingFd = existing?.descriptor ?? -1;
