@@ -4,6 +4,7 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  readdir,
   rename,
   rm,
   symlink,
@@ -18,12 +19,14 @@ import {
   applyProposal,
   assessEvolution,
   draftProposal,
+  linkProposalWriteback,
   linkWritebackEvidence,
   listProposals,
   listWritebacks,
   promoteProposal,
   proposeEvolution,
 } from "./ai";
+import { writeAiText } from "./ai-filesystem";
 import { aiPathSafetyIssue, realUserHome } from "./ai-path-guard";
 import {
   facultAiDraftDir,
@@ -37,6 +40,10 @@ import {
   resolvePhysicalPath,
 } from "./paths";
 
+const CANONICAL_ERROR_RE = /canonical/i;
+const PROVENANCE_ERROR_RE = /provenance|promotion/i;
+const SCOPE_ERROR_RE = /scope/i;
+const STAGING_ERROR_RE = /stag|chang|bound|parent/i;
 const realHome = realUserHome();
 const savedEnv = { ...process.env };
 let tempHome: string;
@@ -293,16 +300,30 @@ describe("AI state path guard", () => {
       await expect(draftProposal(proposal!.id, args)).rejects.toThrow(
         "OS temporary directory"
       );
-      await draftProposal(proposal!.id, { ...args, allowEphemeral: true });
-      await acceptProposal(proposal!.id, args);
+      // The main branch also confines final targets to the capability root.
+      await expect(
+        draftProposal(proposal!.id, { ...args, allowEphemeral: true })
+      ).rejects.toThrow("Automatic drafting");
+      const draft = join(fixture, "accepted-draft.md");
+      await Bun.write(
+        draft,
+        `<!-- facult:evolution:${proposal!.id}:start -->\nApproved content\n<!-- facult:evolution:${proposal!.id}:end -->\n`
+      );
+      await seedJson(
+        join(facultAiProposalDir(homeDir, rootDir), `${proposal!.id}.json`),
+        {
+          ...proposal,
+          status: "accepted",
+          draftRefs: [draft],
+        }
+      );
       await expect(applyProposal(proposal!.id, args)).rejects.toThrow(
         "OS temporary directory"
       );
+      await expect(
+        applyProposal(proposal!.id, { ...args, allowEphemeral: true })
+      ).rejects.toThrow("Automatic drafting");
       expect(await Bun.file(temporaryTarget).text()).toBe(original);
-      await applyProposal(proposal!.id, { ...args, allowEphemeral: true });
-      expect(await Bun.file(temporaryTarget).text()).toContain(
-        `facult:evolution:${proposal!.id}:start`
-      );
     }
   );
 
@@ -1515,5 +1536,217 @@ describe("AI generated-state repair guard", () => {
       proposal!.id,
     ]);
     expect(existsSync(facultAiGraphPath(homeDir, rootDir))).toBe(true);
+  });
+});
+
+describe("security review r4 regressions", () => {
+  it.each([
+    "@ai/",
+    "@project/",
+  ])("rejects an absolute suffix after %s", async (prefix) => {
+    const { fixture, file, args, proposal } = await durableProposalFixture();
+    const outside = join(fixture, "outside.md");
+    await Bun.write(outside, "# Outside file\n");
+    const ref = `${prefix}${outside}`;
+    await expect(
+      addWriteback({ ...args, asset: undefined, suggestedDestination: ref })
+    ).rejects.toThrow(CANONICAL_ERROR_RE);
+    await draftProposal(proposal.id, args);
+    const accepted = await acceptProposal(proposal.id, args);
+    await seedJson(
+      join(
+        facultAiProposalDir(args.homeDir, args.rootDir),
+        `${proposal.id}.json`
+      ),
+      {
+        ...accepted,
+        targets: [ref],
+      }
+    );
+    await expect(
+      draftProposal(proposal.id, { ...args, append: "Review update" })
+    ).rejects.toThrow(CANONICAL_ERROR_RE);
+    await expect(applyProposal(proposal.id, args)).rejects.toThrow(
+      CANONICAL_ERROR_RE
+    );
+    await expect(
+      applyProposal(proposal.id, { ...args, allowEphemeral: true })
+    ).rejects.toThrow(CANONICAL_ERROR_RE);
+    expect(
+      (await assessEvolution({ ...args, asset: undefined })).activeProposalIds
+    ).toEqual([]);
+    expect(await Bun.file(outside).text()).toBe("# Outside file\n");
+    expect(await Bun.file(file).text()).not.toContain(
+      `facult:evolution:${proposal.id}:start`
+    );
+  });
+
+  it.each([
+    "project",
+    "legacy",
+    "promoted",
+    "promoted-current-scope",
+  ])("rejects forged %s proposal provenance before applying", async (layout) => {
+    const { fixture, args, proposal, homeDir, rootDir, file, writeback } =
+      await durableProposalFixture();
+    const otherRoot = join(fixture, "other/.ai");
+    await seedIndexedSkill({ homeDir, rootDir: otherRoot, scope: "project" });
+    const otherQueue = facultAiWritebackQueuePath(homeDir, otherRoot);
+    await seedJson(otherQueue, {
+      ...writeback,
+      sourceRoot: otherRoot,
+      summary: "Unrelated project evidence",
+    });
+    let selected = proposal;
+    let selectedArgs = args;
+    let targetFile = file;
+    if (layout.startsWith("promoted")) {
+      const globalRoot = join(fixture, "global/.ai");
+      process.env.FACULT_ROOT_DIR = globalRoot;
+      process.env.FACULT_ROOT_SCOPE = "global";
+      targetFile = await seedIndexedSkill({
+        homeDir,
+        rootDir: globalRoot,
+        scope: "global",
+      });
+      selected = await promoteProposal(proposal.id, {
+        homeDir,
+        rootDir,
+        to: "global",
+      });
+      selectedArgs = { ...args, rootDir: globalRoot };
+    }
+    await draftProposal(selected.id, selectedArgs);
+    const accepted = await acceptProposal(selected.id, selectedArgs);
+    const originalTarget = await Bun.file(targetFile).text();
+    const originalOtherQueue = await Bun.file(otherQueue).text();
+    const storedPath = join(
+      facultAiProposalDir(homeDir, selectedArgs.rootDir),
+      `${selected.id}.json`
+    );
+    const legacyPath = join(
+      rootDir,
+      ".facult/ai/project/evolution/proposals",
+      `${selected.id}.json`
+    );
+    await seedJson(layout === "legacy" ? legacyPath : storedPath, {
+      ...accepted,
+      sourceRoot:
+        layout === "promoted-current-scope" ? selectedArgs.rootDir : otherRoot,
+    });
+    if (layout === "legacy") {
+      await rm(storedPath);
+    }
+    await expect(applyProposal(selected.id, selectedArgs)).rejects.toThrow(
+      PROVENANCE_ERROR_RE
+    );
+    await expect(
+      applyProposal(selected.id, { ...selectedArgs, allowEphemeral: true })
+    ).rejects.toThrow(PROVENANCE_ERROR_RE);
+    await expect(
+      draftProposal(selected.id, { ...selectedArgs, append: "Forged revision" })
+    ).rejects.toThrow(PROVENANCE_ERROR_RE);
+    expect((await assessEvolution(selectedArgs)).activeProposalIds).toEqual([]);
+    expect(await Bun.file(targetFile).text()).toBe(originalTarget);
+    expect(await Bun.file(otherQueue).text()).toBe(originalOtherQueue);
+  });
+
+  it("rejects mixed-scope writeback links after promotion despite ID collisions", async () => {
+    const { fixture, args, proposal, homeDir, rootDir } =
+      await durableProposalFixture();
+    const otherProjectWriteback = await addWriteback({
+      ...args,
+      summary: "Unrelated project WB-00002",
+    });
+    const globalRoot = join(fixture, "global/.ai");
+    process.env.FACULT_ROOT_DIR = globalRoot;
+    process.env.FACULT_ROOT_SCOPE = "global";
+    await seedIndexedSkill({ homeDir, rootDir: globalRoot, scope: "global" });
+    const globalArgs = { ...args, rootDir: globalRoot };
+    await addWriteback(globalArgs);
+    const globalWriteback = await addWriteback({
+      ...globalArgs,
+      summary: "Global evidence WB-00002",
+    });
+    expect(globalWriteback.id).toBe(otherProjectWriteback.id);
+    const promoted = await promoteProposal(proposal.id, {
+      homeDir,
+      rootDir,
+      to: "global",
+    });
+    const proposalPath = join(
+      facultAiProposalDir(homeDir, globalRoot),
+      `${promoted.id}.json`
+    );
+    const original = await Bun.file(proposalPath).text();
+    await expect(
+      linkProposalWriteback(promoted.id, globalWriteback.id, globalArgs)
+    ).rejects.toThrow(SCOPE_ERROR_RE);
+    expect(await Bun.file(proposalPath).text()).toBe(original);
+    const linked = await linkProposalWriteback(
+      proposal.id,
+      otherProjectWriteback.id,
+      args
+    );
+    expect(linked.sourceWritebacks).toContain(otherProjectWriteback.id);
+    const promotedLinked = await promoteProposal(proposal.id, {
+      homeDir,
+      rootDir,
+      to: "global",
+    });
+    await draftProposal(promotedLinked.id, globalArgs);
+    await acceptProposal(promotedLinked.id, globalArgs);
+    await applyProposal(promotedLinked.id, globalArgs);
+    expect(
+      (await listWritebacks(args)).every((entry) => entry.status === "promoted")
+    ).toBe(true);
+    expect(
+      (await listWritebacks(globalArgs)).every(
+        (entry) => entry.status === "recorded"
+      )
+    ).toBe(true);
+  });
+
+  it.each([
+    "existing",
+    "missing",
+    "in-place",
+    "parent",
+  ])("binds the staged inode and parent for %s output", async (layout) => {
+    const fixture = await makeDurableFixture();
+    const homeDir = await fixtureAccountHome(fixture);
+    const parent = join(fixture, "output");
+    await mkdir(parent);
+    const target = join(parent, "record.md");
+    if (layout !== "missing") {
+      await Bun.write(target, "Original destination\n");
+    }
+    const movedParent = `${parent}.before`;
+    await expect(
+      writeAiText(target, "Trusted generated bytes\n", homeDir, async () => {
+        const name = (await readdir(parent)).find((entry) =>
+          entry.endsWith(".tmp")
+        );
+        expect(name).toBeDefined();
+        const staged = join(parent, name!);
+        if (layout === "parent") {
+          await rename(parent, movedParent);
+          await mkdir(parent);
+        } else if (layout !== "in-place") {
+          await rename(staged, `${staged}.original`);
+        }
+        await Bun.write(staged, "Attacker replacement\n");
+      })
+    ).rejects.toThrow(STAGING_ERROR_RE);
+    if (layout === "missing" || layout === "parent") {
+      expect(existsSync(target)).toBe(false);
+    } else {
+      expect(await Bun.file(target).text()).toBe("Original destination\n");
+    }
+    if (layout === "parent") {
+      expect(await Bun.file(join(movedParent, "record.md")).text()).toBe(
+        "Original destination\n"
+      );
+    }
   });
 });

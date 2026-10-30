@@ -435,6 +435,17 @@ Promote project proposals to global only after repeated reuse:
 fclt ai evolve promote EV-00003 --to global --project
 ```
 
+Promotion records the original source scope and linked writeback IDs in the destination's
+machine-local journal. Draft, assessment, apply, and source status updates check that receipt
+before accessing another scope. Imported proposal JSON cannot grant cross-scope access.
+Older promoted proposals without a matching receipt must be promoted again from the original
+project proposal.
+
+Link additional writebacks to the original project proposal before promoting it. Linking a
+global writeback to a promoted project proposal is refused because writeback IDs are local to
+each scope. Canonical `@ai/` and `@project/` references require relative suffixes, even when
+temporary paths are explicitly allowed.
+
 ## Review Artifacts
 
 Runtime JSON queues, proposal metadata, draft patches, and journals stay in machine-local `fclt` state.

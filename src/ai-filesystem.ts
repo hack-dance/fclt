@@ -1,7 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import {
+  constants,
+  fstatSync,
+  lstatSync,
+  readFileSync,
+  renameSync,
+} from "node:fs";
+import { lstat, mkdir, open, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname } from "node:path";
 import { aiPathSafetyIssue, allowEphemeralAiPaths } from "./ai-path-guard";
@@ -77,8 +83,21 @@ export async function writeAiText(
   homeDir?: string,
   beforeRename?: () => Promise<void>
 ): Promise<void> {
+  if (process.platform !== "win32") {
+    const snapshot = await readAiTarget(path, homeDir);
+    await replaceAiTarget({
+      path,
+      contents,
+      snapshot,
+      beforeCommit: beforeRename,
+      homeDir,
+      mode: 0o600,
+    });
+    return;
+  }
   const physical = await prepareOutput(path, homeDir);
   const temporary = `${physical}.${randomUUID()}.tmp`;
+  const parent = await lstat(dirname(physical));
   let owned: { dev: number; ino: number } | undefined;
   try {
     const file = await open(
@@ -89,21 +108,39 @@ export async function writeAiText(
         (constants.O_NOFOLLOW ?? 0),
       0o600
     );
-    const metadata = await file.stat();
-    owned = { dev: metadata.dev, ino: metadata.ino };
     try {
+      const metadata = await file.stat();
+      owned = { dev: metadata.dev, ino: metadata.ino };
       await file.writeFile(contents, "utf8");
       await file.sync();
+      await beforeRename?.();
+      assertAiOutputPaths([path, physical], homeDir);
+      const currentParent = lstatSync(dirname(physical));
+      const staged = lstatSync(temporary);
+      const bound = fstatSync(file.fd);
+      if (
+        resolvePhysicalPath(path) !== physical ||
+        currentParent.isSymbolicLink() ||
+        parent.dev !== currentParent.dev ||
+        parent.ino !== currentParent.ino ||
+        staged.isSymbolicLink() ||
+        staged.dev !== bound.dev ||
+        staged.ino !== bound.ino ||
+        readFileSync(temporary, "utf8") !== contents
+      ) {
+        throw new Error(
+          `AI staging file or parent changed before commit: ${path}`
+        );
+      }
+      renameSync(temporary, physical);
+      const committed = lstatSync(physical);
+      if (committed.dev !== bound.dev || committed.ino !== bound.ino) {
+        throw new Error(`AI staging identity changed at commit: ${path}`);
+      }
+      owned = undefined;
     } finally {
       await file.close();
     }
-    await beforeRename?.();
-    assertAiOutputPaths([path, physical], homeDir);
-    if (resolvePhysicalPath(path) !== physical) {
-      throw new Error(`AI output changed before commit: ${path}`);
-    }
-    await rename(temporary, physical);
-    owned = undefined;
   } finally {
     if (owned) {
       const remaining = await lstat(temporary).catch(() => null);
@@ -149,8 +186,8 @@ export async function appendAiJsonLine(
   }
 }
 
-export async function readAiTarget(path: string) {
-  const physical = await prepareOutput(path);
+export async function readAiTarget(path: string, homeDir?: string) {
+  const physical = await prepareOutput(path, homeDir);
   let file: Awaited<ReturnType<typeof open>>;
   try {
     file = await open(
@@ -167,7 +204,7 @@ export async function readAiTarget(path: string) {
   }
   try {
     const metadata = await file.stat();
-    assertAiOutputPaths([path, physical]);
+    assertAiOutputPaths([path, physical], homeDir);
     const mapped = await lstat(physical);
     if (
       !metadata.isFile() ||
@@ -198,10 +235,12 @@ export async function replaceAiTarget(args: {
   path: string;
   contents: string;
   snapshot: Awaited<ReturnType<typeof readAiTarget>>;
+  homeDir?: string;
+  mode?: number;
   beforeCommit?: () => Promise<void>;
 }): Promise<void> {
   const validate = () => {
-    assertAiOutputPaths([args.path, args.snapshot.physical]);
+    assertAiOutputPaths([args.path, args.snapshot.physical], args.homeDir);
     if (resolvePhysicalPath(args.path) !== args.snapshot.physical) {
       throw new Error(`Proposal target changed before write: ${args.path}`);
     }
@@ -210,10 +249,10 @@ export async function replaceAiTarget(args: {
   // Windows has no descriptor-relative exchange in the audit helper. Stage in
   // the validated parent and rename, with a fresh identity/content check.
   if (process.platform === "win32") {
-    await writeAiText(args.path, args.contents, undefined, async () => {
+    await writeAiText(args.path, args.contents, args.homeDir, async () => {
       await args.beforeCommit?.();
       validate();
-      const current = await readAiTarget(args.path);
+      const current = await readAiTarget(args.path, args.homeDir);
       if (
         current.contents !== args.snapshot.contents ||
         current.expected?.identity.dev !==
@@ -233,7 +272,7 @@ export async function replaceAiTarget(args: {
     fileName: basename(args.snapshot.physical),
     contents: args.contents,
     expected: args.snapshot.expected,
-    mode: args.snapshot.expected?.mode ?? 0o644,
+    mode: args.mode ?? args.snapshot.expected?.mode ?? 0o644,
     maxBytes: Math.max(
       Buffer.byteLength(args.snapshot.contents),
       Buffer.byteLength(args.contents)

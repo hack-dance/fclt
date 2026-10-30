@@ -24,6 +24,7 @@ import {
   join,
   relative,
   resolve,
+  sep,
 } from "node:path";
 import {
   replaceVerifiedFileAt,
@@ -46,12 +47,15 @@ import {
 import { processStartIdentity } from "./process-identity";
 import {
   canonicalProjectRoot,
+  hasGitMetadataAbove,
+  normalizeRepositoryRemote,
   type RepositoryExecutionIdentity,
   type RepositoryIdentity,
   repositoryExecutionIdentity,
   repositoryIdentityAliasForPrimary,
   repositoryIdentityFromGitFacts,
 } from "./repository-identity";
+import { withoutLocalGitEnvironment } from "./util/git-environment";
 
 const DEFAULT_MAX_VISITS = 10_000;
 const DEFAULT_MAX_RESULTS = 250;
@@ -449,7 +453,7 @@ async function runGit(args: {
     cmd: [gitBinary, ...args.argv],
     cwd: args.cwd,
     env: {
-      ...process.env,
+      ...withoutLocalGitEnvironment(),
       GIT_OPTIONAL_LOCKS: "0",
     },
     stdin: args.stdin === undefined ? "ignore" : "pipe",
@@ -3235,6 +3239,164 @@ export async function registeredProjectLocations(homeDir: string) {
     decision: entry.decision,
     locations: entry.locations.map((location) => location.path),
   }));
+}
+
+interface WritebackCheckout {
+  root: string;
+  gitDir: string;
+  commonDir: string;
+}
+
+async function inspectWritebackCheckout(
+  cwd: string
+): Promise<WritebackCheckout | null> {
+  const result = await runGit({
+    cwd,
+    argv: [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-dir",
+      "--git-common-dir",
+      "--show-toplevel",
+    ],
+  });
+  if (result.exitCode !== 0 || !result.stdout) {
+    const gitDirectory = await runGit({
+      cwd,
+      argv: ["rev-parse", "--absolute-git-dir"],
+    });
+    // A bare or broken repository must not fall through to an ancestor's .ai root.
+    if (gitDirectory.exitCode === 0 || hasGitMetadataAbove(cwd)) {
+      throw new Error("Cannot safely resolve the invoking Git worktree");
+    }
+    return null;
+  }
+  const facts = result.stdout.split("\n");
+  const [gitDir, commonDir, root] = facts;
+  if (
+    facts.length !== 3 ||
+    !gitDir ||
+    !commonDir ||
+    !root ||
+    !facts.every(isAbsolute)
+  ) {
+    throw new Error("Cannot safely inspect the invoking Git checkout");
+  }
+  return {
+    root: await realpath(root),
+    gitDir: await realpath(gitDir),
+    commonDir: await realpath(commonDir),
+  };
+}
+
+/** Origin URLs label observations; only a bound checkout and shared Git state grant project authority. */
+export async function resolveWritebackProject(args: {
+  cwd: string;
+  homeDir: string;
+}): Promise<{
+  repositoryRoot: string;
+  enrolledRoot?: string;
+  tag: string;
+} | null> {
+  const invoking = await inspectWritebackCheckout(args.cwd);
+  if (!invoking) {
+    return null;
+  }
+  // core.worktree can redirect --show-toplevel. Bind the reported root back to
+  // the Git directories discovered from the invoking cwd before using that root.
+  const rooted = await inspectWritebackCheckout(invoking.root);
+  const relativeCwd = relative(invoking.root, await realpath(args.cwd));
+  if (
+    !rooted ||
+    relativeCwd === ".." ||
+    relativeCwd.startsWith(`..${sep}`) ||
+    isAbsolute(relativeCwd) ||
+    !pathsPhysicallyEquivalent(rooted.root, invoking.root) ||
+    !pathsPhysicallyEquivalent(rooted.gitDir, invoking.gitDir) ||
+    !pathsPhysicallyEquivalent(rooted.commonDir, invoking.commonDir)
+  ) {
+    throw new Error(
+      "Refusing unrelated Git worktree redirect from the invoking checkout"
+    );
+  }
+  const checkoutRoot = invoking.root;
+  const originResult = await runGit({
+    cwd: checkoutRoot,
+    argv: ["remote", "get-url", "origin"],
+  });
+  const origin = normalizeRepositoryRemote(originResult.stdout);
+  let repositoryRoot = checkoutRoot;
+  let canonicalAvailable = true;
+  try {
+    repositoryRoot = await realpath(canonicalProjectRoot(checkoutRoot));
+  } catch {
+    // Bare-repository worktrees and missing primary checkouts have no durable enrollment authority.
+    canonicalAvailable = false;
+  }
+  const tag = `project:${origin ?? `${basename(repositoryRoot)}-${sha256(repositoryRoot).slice(0, 8)}`}`;
+  if (!canonicalAvailable) {
+    return { repositoryRoot, tag };
+  }
+  const registry = await loadRegistry(args.homeDir);
+  const matches: string[] = [];
+  const candidates = Object.values(registry.projects)
+    .filter((entry) => entry.decision === "selected")
+    .flatMap((entry) =>
+      entry.locations.map((location) => ({ entry, location }))
+    );
+  // Bound subprocess pressure while checking independent enrolled locations concurrently.
+  for (let offset = 0; offset < candidates.length; offset += 4) {
+    const batch = await Promise.all(
+      candidates.slice(offset, offset + 4).map(async ({ entry, location }) => {
+        try {
+          const root = canonicalProjectRoot(location.path);
+          if (!pathsPhysicallyEquivalent(root, repositoryRoot)) {
+            return null;
+          }
+          const candidateCheckout = await inspectWritebackCheckout(root);
+          if (
+            !(
+              candidateCheckout &&
+              pathsPhysicallyEquivalent(
+                candidateCheckout.commonDir,
+                invoking.commonDir
+              )
+            )
+          ) {
+            return null;
+          }
+          if (
+            (await gitRoot(root)) !== root ||
+            !(await validProjectEnrollmentConfig(
+              join(root, ".ai/config.toml"),
+              entry
+            ))
+          ) {
+            return null;
+          }
+          const candidate = await resolveRepositoryIdentity(root, args.homeDir);
+          if (candidate.id !== entry.repositoryId) {
+            return null;
+          }
+          return root;
+        } catch {
+          // Missing or stale enrollment locations cannot supply writeback authority.
+          return null;
+        }
+      })
+    );
+    for (const match of batch) {
+      if (match) {
+        matches.push(match);
+      }
+    }
+  }
+  const roots = [...new Set(matches)];
+  return {
+    repositoryRoot,
+    enrolledRoot: roots.length === 1 ? roots[0] : undefined,
+    tag,
+  };
 }
 
 async function loadRegistrySnapshot(homeDir: string): Promise<{

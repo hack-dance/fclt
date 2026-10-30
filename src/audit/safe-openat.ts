@@ -1535,11 +1535,35 @@ export async function replaceVerifiedFileAt(
       throw new Error("Verified canonical temporary file is unsafe");
     }
 
+    const assertStagingIdentity = (): void => {
+      const staged = readSnapshot(temporaryName, "Staged canonical file");
+      try {
+        if (
+          !(
+            staged &&
+            sameObjectIdentity(temporaryMetadata, staged.metadata) &&
+            sameObjectIdentity(temporaryMetadata, fstatSync(temporaryFd))
+          ) ||
+          staged.metadata.mode !== temporaryMetadata.mode ||
+          staged.metadata.nlink !== 1 ||
+          !staged.contents.equals(bytes)
+        ) {
+          throw new Error("Bound staging file changed before commit");
+        }
+      } finally {
+        if (staged) {
+          symbols.close(staged.descriptor);
+        }
+      }
+    };
+
     await args.beforeCommit?.();
     assertDirectoryMapping(directoryIdentity);
+    assertStagingIdentity();
     if (existing === null) {
       await args.beforeExchange?.();
       assertDirectoryMapping(directoryIdentity);
+      assertStagingIdentity();
       if (
         symbols.linkat(
           directoryFd,
@@ -1589,6 +1613,7 @@ export async function replaceVerifiedFileAt(
 
     await args.beforeExchange?.();
     assertDirectoryMapping(directoryIdentity);
+    assertStagingIdentity();
     exchange();
     const displaced = readSnapshot(temporaryName, "Displaced canonical file");
     const displacedMatches =
@@ -1621,6 +1646,34 @@ export async function replaceVerifiedFileAt(
       throw new Error(
         "Canonical target changed at the conditional commit boundary"
       );
+    }
+    let committed: ReturnType<typeof readSnapshot>;
+    try {
+      committed = readSnapshot(targetName, "Committed canonical file");
+    } catch (error) {
+      preserveTemporary = true;
+      symbols.close(displaced.descriptor);
+      throw error;
+    }
+    try {
+      if (
+        !(
+          committed && sameObjectIdentity(temporaryMetadata, committed.metadata)
+        )
+      ) {
+        preserveTemporary = true;
+        if (committed) {
+          exchange();
+        }
+        symbols.close(displaced.descriptor);
+        throw new Error(
+          "Bound staging identity changed at the commit boundary; displaced data was preserved"
+        );
+      }
+    } finally {
+      if (committed) {
+        symbols.close(committed.descriptor);
+      }
     }
     try {
       assertDirectoryMapping(directoryIdentity);
@@ -1657,11 +1710,21 @@ export async function replaceVerifiedFileAt(
     if (existingFd >= 0) {
       symbols.close(existingFd);
     }
+    if (directoryFd >= 0 && temporaryFd >= 0 && !preserveTemporary) {
+      try {
+        const staged = readSnapshot(temporaryName, "Remaining staging file");
+        if (staged) {
+          if (sameObjectIdentity(fstatSync(temporaryFd), staged.metadata)) {
+            symbols.unlinkat(directoryFd, ptr(temporaryName), 0);
+          }
+          symbols.close(staged.descriptor);
+        }
+      } catch {
+        // Preserve entries whose identity can no longer be established.
+      }
+    }
     if (temporaryFd >= 0) {
       symbols.close(temporaryFd);
-    }
-    if (directoryFd >= 0 && !preserveTemporary) {
-      symbols.unlinkat(directoryFd, ptr(temporaryName), 0);
     }
     if (directoryFd >= 0) {
       closeSync(directoryFd);
