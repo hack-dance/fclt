@@ -1661,12 +1661,13 @@ export async function assessEvolution(args: {
   const excludedWritebacks = new Set<string>();
   const includeRecord = (
     record: AiWritebackRecord | AiProposalRecord,
-    targets: (string | undefined)[]
+    targets: (string | undefined)[],
+    context = { homeDir, rootDir: args.rootDir }
   ) => {
     if (allowEphemeralAiPaths(args.allowEphemeral)) {
       return true;
     }
-    const issue = aiRecordPathIssue({ ...args, homeDir, record, targets });
+    const issue = aiRecordPathIssue({ ...context, record, targets });
     if (issue) {
       warnings.push(`Excluded ${record.id}: ${issue}.`);
       console.error(`Warning: Excluded ${record.id}: ${issue}.`);
@@ -1723,24 +1724,58 @@ export async function assessEvolution(args: {
         })[0] ?? [target, []]);
 
   const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
-  const activeProposalIds = proposals
-    .filter((proposal) => {
-      if (
-        !includeRecord(proposal, [...proposal.targets, ...proposal.draftRefs])
-      ) {
-        return false;
-      }
-      if (proposal.sourceWritebacks.some((id) => excludedWritebacks.has(id))) {
-        warnings.push(
-          `Excluded ${proposal.id}: source writeback has ephemeral paths.`
-        );
-        console.error(
-          `Warning: Excluded ${proposal.id}: source writeback has ephemeral paths.`
-        );
-        return false;
-      }
-      return true;
-    })
+  const excludedBySource = new Map<string, Set<string>>([
+    [
+      JSON.stringify([resolve(homeDir), resolve(args.rootDir)]),
+      excludedWritebacks,
+    ],
+  ]);
+  const safeProposals: AiProposalRecord[] = [];
+  for (const proposal of proposals) {
+    if (
+      !includeRecord(proposal, [...proposal.targets, ...proposal.draftRefs])
+    ) {
+      continue;
+    }
+    const sourceHome = proposal.sourceHome ?? homeDir;
+    const sourceRoot = proposal.sourceRoot ?? args.rootDir;
+    const sourceKey = JSON.stringify([
+      resolve(sourceHome),
+      resolve(sourceRoot),
+    ]);
+    let excludedSources = excludedBySource.get(sourceKey);
+    if (!excludedSources && proposal.sourceWritebacks.length > 0) {
+      const sourceContext = { homeDir: sourceHome, rootDir: sourceRoot };
+      const sourceWritebacks = await listWritebacks({
+        ...sourceContext,
+        warnings,
+      });
+      excludedSources = new Set(
+        sourceWritebacks
+          .filter(
+            (entry) =>
+              !includeRecord(
+                entry,
+                [entry.assetRef, entry.suggestedDestination],
+                sourceContext
+              )
+          )
+          .map((entry) => entry.id)
+      );
+      excludedBySource.set(sourceKey, excludedSources);
+    }
+    if (proposal.sourceWritebacks.some((id) => excludedSources?.has(id))) {
+      warnings.push(
+        `Excluded ${proposal.id}: source writeback has ephemeral paths.`
+      );
+      console.error(
+        `Warning: Excluded ${proposal.id}: source writeback has ephemeral paths.`
+      );
+      continue;
+    }
+    safeProposals.push(proposal);
+  }
+  const activeProposalIds = safeProposals
     .filter(
       (proposal) =>
         ACTIVE_PROPOSAL_STATUSES.includes(proposal.status) ||
@@ -2944,6 +2979,8 @@ export async function promoteProposal(
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
   const promoted: AiProposalRecord = {
     ...current,
+    sourceRoot: current.sourceRoot ?? resolve(args.rootDir),
+    sourceHome: current.sourceHome ?? resolve(homeDir),
     id: nextIdValue,
     ts: nowIso(),
     status: "proposed",

@@ -610,6 +610,94 @@ describe("AI state path guard", () => {
     );
   });
 
+  it.each([
+    "current",
+    "legacy",
+  ])("checks promoted source writebacks with %s metadata despite global ID collisions", async (metadata) => {
+    const fixture = await makeDurableFixture();
+    const homeDir = await fixtureAccountHome(fixture);
+    const projectRoot = join(fixture, "project/.ai");
+    const globalRoot = join(fixture, "global/.ai");
+    for (const root of [projectRoot, globalRoot]) {
+      await mkdir(join(root, "instructions"), { recursive: true });
+      await Bun.write(
+        join(root, "instructions/VERIFICATION.md"),
+        "# Verification\n"
+      );
+    }
+    process.env.FACULT_ROOT_DIR = globalRoot;
+    process.env.FACULT_ROOT_SCOPE = "global";
+    const projectArgs = {
+      ...writebackArgs(projectRoot),
+      homeDir,
+      suggestedDestination: "@project/instructions/VERIFICATION.md",
+    };
+    const projectWriteback = await addWriteback(projectArgs);
+    const [projectProposal] = await proposeEvolution(projectArgs);
+    if (metadata === "legacy") {
+      await seedJson(
+        join(
+          facultAiProposalDir(homeDir, projectRoot),
+          `${projectProposal!.id}.json`
+        ),
+        {
+          ...projectProposal,
+          sourceRoot: undefined,
+          sourceHome: undefined,
+        }
+      );
+    }
+    const promoted = await promoteProposal(projectProposal!.id, {
+      homeDir,
+      rootDir: projectRoot,
+      to: "global",
+    });
+    const globalArgs = { ...writebackArgs(globalRoot), homeDir };
+    const badGlobalWriteback = await addWriteback({
+      ...globalArgs,
+      suggestedDestination: "/tmp/unrelated-global-target.md",
+      allowEphemeral: true,
+    });
+    const safeGlobalWriteback = await addWriteback(globalArgs);
+    expect(badGlobalWriteback.id).toBe(projectWriteback.id);
+    expect(promoted.sourceRoot).toBe(projectRoot);
+    expect(promoted.sourceHome).toBe(homeDir);
+    const assessmentArgs = { homeDir, rootDir: globalRoot };
+    const assessment = await assessEvolution(assessmentArgs);
+    expect(assessment.recommendation).toBe("review_existing_proposal");
+    expect(assessment.activeProposalIds).toEqual([promoted.id]);
+    expect(assessment.sourceWritebacks).toEqual([safeGlobalWriteback.id]);
+
+    // Reverse the contamination: a safe global ID must not hide its unsafe project namesake.
+    await Bun.write(
+      facultAiWritebackQueuePath(homeDir, globalRoot),
+      [
+        {
+          ...badGlobalWriteback,
+          suggestedDestination: globalArgs.suggestedDestination,
+        },
+        safeGlobalWriteback,
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join("")
+    );
+    await seedJson(facultAiWritebackQueuePath(homeDir, projectRoot), {
+      ...projectWriteback,
+      suggestedDestination: "/tmp/actual-project-source.md",
+    });
+    const contaminated = await assessEvolution(assessmentArgs);
+    expect(contaminated.activeProposalIds).toEqual([]);
+    expect(contaminated.recommendation).toBe("propose");
+    expect(contaminated.writebackCount).toBe(2);
+    expect(contaminated.warnings).toContain(
+      `Excluded ${promoted.id}: source writeback has ephemeral paths.`
+    );
+    expect(
+      (await assessEvolution({ ...assessmentArgs, allowEphemeral: true }))
+        .activeProposalIds
+    ).toEqual([promoted.id]);
+  });
+
   it("recognizes a symlink into temporary storage for missing target files", async () => {
     const link = join(tempHome, "link");
     await symlink(
