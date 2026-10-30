@@ -55,6 +55,7 @@ import {
   repositoryIdentityAliasForPrimary,
   repositoryIdentityFromGitFacts,
 } from "./repository-identity";
+import { withoutLocalGitEnvironment } from "./util/git-environment";
 
 const DEFAULT_MAX_VISITS = 10_000;
 const DEFAULT_MAX_RESULTS = 250;
@@ -452,7 +453,7 @@ async function runGit(args: {
     cmd: [gitBinary, ...args.argv],
     cwd: args.cwd,
     env: {
-      ...process.env,
+      ...withoutLocalGitEnvironment(),
       GIT_OPTIONAL_LOCKS: "0",
     },
     stdin: args.stdin === undefined ? "ignore" : "pipe",

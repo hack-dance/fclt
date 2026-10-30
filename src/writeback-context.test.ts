@@ -158,6 +158,7 @@ async function cliResult(args: {
   environmentScope?: string;
   namespace?: "writeback" | "evolve" | "review" | "unknown";
   json?: boolean;
+  gitEnvironment?: Record<string, string>;
 }) {
   const child = Bun.spawn(
     [
@@ -183,6 +184,7 @@ async function cliResult(args: {
         FACULT_ROOT_SCOPE: args.environmentScope ?? "",
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+        ...args.gitEnvironment,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -817,7 +819,7 @@ it("warns when explicit project scope falls back to the global destination", asy
   expect(JSON.parse(result.stdout).scope).toBe("global");
 });
 
-it("ignores inherited state overrides and Git discovery variables in CLI children", async () => {
+it("keeps CLI test state isolated from inherited FACULT overrides", async () => {
   const args = await fixture();
   const decoy = join(args.homeDir, "decoy");
   await mkdir(decoy);
@@ -825,16 +827,89 @@ it("ignores inherited state overrides and Git discovery variables in CLI childre
   process.env.FACULT_CACHE_DIR = decoy;
   process.env.FACULT_ROOT_DIR = decoy;
   process.env.FACULT_ROOT_SCOPE = "global";
-  process.env.GIT_DIR = join(decoy, "missing.git");
-  process.env.GIT_WORK_TREE = decoy;
-  process.env.GIT_CONFIG_COUNT = "1";
-  process.env.GIT_CONFIG_KEY_0 = "core.worktree";
-  process.env.GIT_CONFIG_VALUE_0 = decoy;
   const record = JSON.parse(
     await cli({ ...args, cwd: args.linked, argv: addArgs })
   ) as AiWritebackRecord;
   expect(record.projectRoot).toBe(args.primary);
   expect(await readdir(decoy)).toEqual([]);
+});
+
+it.each([
+  "environment",
+  "dotenv",
+  "inline-config",
+  "global-config",
+] as const)("does not grant a nested checkout project authority via %s Git overrides", async (source) => {
+  const args = await fixture();
+  await cli({ ...args, cwd: args.primary, argv: addArgs });
+  const queuePath = facultAiWritebackQueuePath(args.homeDir, args.rootDir);
+  const before = await readFile(queuePath, "utf8");
+  const attacker = join(args.primary, "independent");
+  await mkdir(attacker);
+  await args.git(attacker, "init", "-q");
+  await args.git(
+    attacker,
+    "remote",
+    "add",
+    "origin",
+    "https://example.invalid/untrusted/child.git"
+  );
+  let overrides: Record<string, string>;
+  if (source === "inline-config") {
+    overrides = {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.worktree",
+      GIT_CONFIG_VALUE_0: args.primary,
+    };
+  } else if (source === "global-config") {
+    const configPath = join(args.homeDir, "untrusted.gitconfig");
+    await Bun.write(
+      configPath,
+      `[core]\n\tworktree = ${JSON.stringify(args.primary)}\n`
+    );
+    overrides = { GIT_CONFIG_GLOBAL: configPath };
+  } else {
+    overrides = {
+      GIT_DIR: join(args.primary, ".git"),
+      GIT_WORK_TREE: args.primary,
+      GIT_COMMON_DIR: join(args.primary, ".git"),
+      GIT_CEILING_DIRECTORIES: args.primary,
+    };
+  }
+  if (source === "dotenv") {
+    await Bun.write(
+      join(attacker, ".env"),
+      `${Object.entries(overrides)
+        .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+        .join("\n")}\n`
+    );
+  }
+  const invocation = {
+    ...args,
+    cwd: attacker,
+    gitEnvironment: source === "dotenv" ? undefined : overrides,
+  };
+  const record = JSON.parse(
+    await cli({ ...invocation, argv: addArgs })
+  ) as AiWritebackRecord;
+  expect(record.scope).toBe("global");
+  expect(record.projectRoot).toBeUndefined();
+  expect(record.tags).toContain("project:example.invalid/untrusted/child");
+  expect(JSON.parse(await cli({ ...invocation, argv: ["list"] }))).toEqual([
+    record,
+  ]);
+  expect(
+    JSON.parse(
+      await cli({ ...invocation, namespace: "evolve", argv: ["propose"] })
+    )
+  ).toEqual([]);
+  const status = JSON.parse(
+    await cli({ ...invocation, namespace: "review", argv: ["status"] })
+  ) as { configPath: string };
+  expect(status.configPath).toBe(
+    join(args.homeDir, ".ai", "reconciliation.json")
+  );
+  expect(await readFile(queuePath, "utf8")).toBe(before);
 });
 
 it("keeps historical project queues accessible by explicit root while new captures and evolution use global", async () => {
