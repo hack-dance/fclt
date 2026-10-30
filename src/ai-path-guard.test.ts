@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rename, rm, symlink } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  symlink,
+  utimes,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,6 +29,7 @@ import {
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
+  facultAiIndexPath,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
@@ -1417,5 +1426,94 @@ describe("AI filesystem mutation boundaries", () => {
       { type: "file", ref: healthyPath },
       { type: "session", ref: "test-session" },
     ]);
+  });
+});
+
+describe("AI generated-state repair guard", () => {
+  for (const operation of ["capture", "propose"] as const) {
+    it.each([
+      "index",
+      "graph",
+      "directory",
+    ])(`checks the generated %s destination before ${operation} repairs the graph`, async (layout) => {
+      const fixture = await makeDurableFixture();
+      const homeDir = await fixtureAccountHome(fixture);
+      const rootDir = join(homeDir, ".ai");
+      process.env.FACULT_ROOT_DIR = rootDir;
+      process.env.FACULT_ROOT_SCOPE = "global";
+      await seedIndexedSkill({ homeDir, rootDir, scope: "global" });
+      const args = {
+        ...writebackArgs(rootDir),
+        homeDir,
+        asset: "skill:guarded",
+        suggestedDestination: undefined,
+      };
+      if (operation === "propose") {
+        await addWriteback(args);
+      }
+      const indexPath = facultAiIndexPath(homeDir, rootDir);
+      const graphPath = facultAiGraphPath(homeDir, rootDir);
+      const temporary = join(tempHome, "generated-output");
+      if (layout === "directory") {
+        await rm(dirname(graphPath), { recursive: true });
+        await mkdir(temporary);
+        await symlink(temporary, dirname(graphPath), "dir");
+      } else {
+        await rm(graphPath);
+        await Bun.write(temporary, "{}\n");
+        // A present graph must be stale to exercise the rebuild branch.
+        await utimes(temporary, 0, 0);
+        await symlink(temporary, layout === "index" ? indexPath : graphPath);
+      }
+      const queue = facultAiWritebackQueuePath(homeDir, rootDir);
+      const journal = facultAiJournalPath(homeDir, rootDir);
+      const snapshot = async () =>
+        await Promise.all(
+          [indexPath, graphPath, queue, journal].map(async (path) =>
+            existsSync(path) ? await Bun.file(path).text() : null
+          )
+        );
+      const before = await snapshot();
+      const mutate = (allowEphemeral = false) =>
+        operation === "capture"
+          ? addWriteback({ ...args, allowEphemeral })
+          : proposeEvolution({ ...args, allowEphemeral });
+      await expect(mutate()).rejects.toThrow("OS temporary directory");
+      expect(await snapshot()).toEqual(before);
+      expect(existsSync(facultAiProposalDir(homeDir, rootDir))).toBe(false);
+      await mutate(true);
+      expect(JSON.parse(await Bun.file(graphPath).text()).nodes).toBeDefined();
+      expect(
+        JSON.parse(await Bun.file(indexPath).text()).version
+      ).toBeDefined();
+      expect((await listWritebacks(args)).length).toBe(1);
+      expect((await listProposals(args)).length).toBe(
+        operation === "propose" ? 1 : 0
+      );
+    });
+  }
+
+  it("repairs durable generated outputs during capture and proposal creation", async () => {
+    const fixture = await makeDurableFixture();
+    const homeDir = await fixtureAccountHome(fixture);
+    const rootDir = join(homeDir, ".ai");
+    process.env.FACULT_ROOT_DIR = rootDir;
+    process.env.FACULT_ROOT_SCOPE = "global";
+    await seedIndexedSkill({ homeDir, rootDir, scope: "global" });
+    await rm(facultAiGraphPath(homeDir, rootDir));
+    const args = {
+      ...writebackArgs(rootDir),
+      homeDir,
+      asset: "skill:guarded",
+      suggestedDestination: undefined,
+    };
+    await addWriteback(args);
+    expect(existsSync(facultAiIndexPath(homeDir, rootDir))).toBe(true);
+    await rm(facultAiGraphPath(homeDir, rootDir));
+    const [proposal] = await proposeEvolution(args);
+    expect((await assessEvolution(args)).activeProposalIds).toEqual([
+      proposal!.id,
+    ]);
+    expect(existsSync(facultAiGraphPath(homeDir, rootDir))).toBe(true);
   });
 });

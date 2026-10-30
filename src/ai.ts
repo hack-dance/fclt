@@ -44,6 +44,8 @@ import {
   absoluteFilesystemPath,
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
+  facultAiGraphPath,
+  facultAiIndexPath,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiStateDir,
@@ -1058,6 +1060,15 @@ async function resolveAssetSelection(args: {
   assetId?: string;
   assetType?: string;
 }> {
+  if (args.repairGraph !== false) {
+    assertAiOutputPaths(
+      [
+        facultAiIndexPath(args.homeDir, args.rootDir),
+        facultAiGraphPath(args.homeDir, args.rootDir),
+      ],
+      args.homeDir
+    );
+  }
   await ensureAiGraphPath({
     homeDir: args.homeDir,
     rootDir: args.rootDir,
