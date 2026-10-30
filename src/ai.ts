@@ -2,8 +2,25 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import {
+  appendAiJsonLine,
+  assertAiOutputPaths,
+  needsAiMutationScope,
+  readAiTarget,
+  replaceAiTarget,
+  withAiMutationScope,
+  writeAiText,
+} from "./ai-filesystem";
 import {
   type AiSourcePaths,
   aiPathSafetyIssue,
@@ -24,6 +41,7 @@ import type {
 } from "./graph";
 import { loadGraph, resolveGraphNode } from "./graph-query";
 import {
+  absoluteFilesystemPath,
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
   facultAiJournalPath,
@@ -374,26 +392,12 @@ async function fileExists(pathValue: string): Promise<boolean> {
   }
 }
 
-async function ensureParentDir(pathValue: string) {
-  await mkdir(dirname(pathValue), { recursive: true });
-}
-
-async function appendJsonLine(pathValue: string, value: unknown) {
-  await ensureParentDir(pathValue);
-  const file = await open(pathValue, "a+");
-  try {
-    const { size } = await file.stat();
-    let separator = "";
-    if (size > 0) {
-      const lastByte = Buffer.alloc(1);
-      await file.read(lastByte, 0, 1, size - 1);
-      separator = lastByte[0] === 10 ? "" : "\n";
-    }
-    // Keep the separator and record in one append so writers cannot split them.
-    await file.appendFile(`${separator}${JSON.stringify(value)}\n`, "utf8");
-  } finally {
-    await file.close();
-  }
+async function appendJsonLine(
+  pathValue: string,
+  value: unknown,
+  homeDir?: string
+) {
+  await appendAiJsonLine(pathValue, value, homeDir);
 }
 
 async function readJsonLines<T>(pathValue: string): Promise<T[]> {
@@ -549,7 +553,6 @@ async function writeWritebackReviewArtifact(args: {
     args.rootDir,
     args.record.id
   );
-  await ensureParentDir(pathValue);
   const body = [
     renderFrontmatter({
       id: args.record.id,
@@ -607,7 +610,7 @@ async function writeWritebackReviewArtifact(args: {
     `- issues: ${(args.record.issueLinks ?? []).join(", ") || "none"}`,
     "",
   ].join("\n");
-  await Bun.write(pathValue, `${body.trimEnd()}\n`);
+  await writeAiText(pathValue, `${body.trimEnd()}\n`, args.homeDir);
 }
 
 async function writeProposalReviewArtifact(args: {
@@ -622,7 +625,6 @@ async function writeProposalReviewArtifact(args: {
     args.rootDir,
     args.proposal.id
   );
-  await ensureParentDir(pathValue);
   const body = [
     renderFrontmatter({
       id: args.proposal.id,
@@ -698,7 +700,7 @@ async function writeProposalReviewArtifact(args: {
         ]
       : []),
   ].join("\n");
-  await Bun.write(pathValue, `${body.trimEnd()}\n`);
+  await writeAiText(pathValue, `${body.trimEnd()}\n`, args.homeDir);
 }
 
 async function currentDraftBodyForProposal(
@@ -733,14 +735,14 @@ function canonicalRefToPath(args: {
           scope: "global",
         })
       : args.rootDir;
-    return join(globalRoot, args.ref.slice("@ai/".length));
+    return absoluteFilesystemPath(args.ref.slice("@ai/".length), globalRoot);
   }
   if (args.ref.startsWith("@project/")) {
     const relPath = args.ref.slice("@project/".length);
-    const canonicalPath = join(args.rootDir, relPath);
+    const canonicalPath = absoluteFilesystemPath(relPath, args.rootDir);
     const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
     if (projectRoot) {
-      const projectPath = join(projectRoot, relPath);
+      const projectPath = absoluteFilesystemPath(relPath, projectRoot);
       if (existsSync(canonicalPath)) {
         return canonicalPath;
       }
@@ -756,29 +758,40 @@ function proposalTargetFilePath(
   fallbackPath: string | null
 ): string | null {
   return node?.kind === "skill" && node.path
-    ? join(node.path, "SKILL.md")
+    ? absoluteFilesystemPath("SKILL.md", node.path)
     : (node?.path ?? fallbackPath);
 }
 
 function aiRecordPathIssue(args: {
   homeDir: string;
   rootDir: string;
-  record?: AiSourcePaths & { projectRoot?: string };
+  record?: AiSourcePaths & {
+    projectRoot?: string;
+    evidence?: WritebackEvidence[];
+  };
   targets?: (string | undefined)[];
   graph?: FacultGraph | null;
+  filesystemPaths?: string[];
 }): string | undefined {
   const sourceRoot = args.record?.sourceRoot ?? args.rootDir;
   const sourceHome = args.record?.sourceHome ?? args.homeDir;
-  const paths = [args.rootDir, sourceRoot, args.record?.projectRoot];
+  const paths = [
+    args.rootDir,
+    sourceRoot,
+    args.record?.projectRoot,
+    ...(args.filesystemPaths ?? []),
+  ];
   for (const ref of args.targets ?? []) {
     if (!ref) {
       continue;
     }
     const fallbackPath =
       canonicalRefToPath({ ref, homeDir: sourceHome, rootDir: sourceRoot }) ??
-      resolve(
-        sourceRoot,
-        ref.startsWith("~/") ? join(sourceHome, ref.slice(2)) : ref
+      absoluteFilesystemPath(
+        ref.startsWith("~/")
+          ? absoluteFilesystemPath(ref.slice(2), sourceHome)
+          : ref,
+        sourceRoot
       );
     const node = args.graph ? resolveGraphNode(args.graph, ref) : null;
     paths.push(
@@ -786,11 +799,54 @@ function aiRecordPathIssue(args: {
       proposalTargetFilePath(node, fallbackPath) ?? undefined
     );
   }
+  try {
+    paths.push(
+      ...filesystemEvidencePaths(args.record?.evidence ?? [], {
+        homeDir: sourceHome,
+        base:
+          args.record?.projectRoot ??
+          projectRootFromAiRoot(sourceRoot, sourceHome) ??
+          sourceRoot,
+      })
+    );
+  } catch (error) {
+    return `cannot resolve filesystem evidence: ${error instanceof Error ? error.message : String(error)}`;
+  }
   return aiPathSafetyIssue({
     homeDir: args.homeDir,
     sourceHome,
     paths: paths.filter((value): value is string => Boolean(value)),
   });
+}
+
+function filesystemEvidencePaths(
+  evidence: WritebackEvidence[],
+  args: { homeDir: string; base: string }
+): string[] {
+  return evidence.flatMap((entry) => {
+    if (!isFilesystemEvidence(entry)) {
+      return [];
+    }
+    const ref = entry.ref.startsWith("file://")
+      ? fileURLToPath(entry.ref)
+      : entry.ref.startsWith("file:")
+        ? decodeURIComponent(entry.ref.slice(5))
+        : entry.ref;
+    return [
+      ref.startsWith("~/")
+        ? absoluteFilesystemPath(ref.slice(2), args.homeDir)
+        : absoluteFilesystemPath(ref, args.base),
+    ];
+  });
+}
+
+function isFilesystemEvidence(entry: WritebackEvidence): boolean {
+  return (
+    ["file", "path", "filesystem"].includes(entry.type.toLowerCase()) ||
+    entry.ref.startsWith("file:") ||
+    entry.ref.startsWith("~/") ||
+    isAbsolute(entry.ref)
+  );
 }
 
 function assertDurableAiPaths(
@@ -866,7 +922,7 @@ async function appendEvent(
       existing.map((entry) => entry.id)
     ),
   };
-  await appendJsonLine(pathValue, next);
+  await appendJsonLine(pathValue, next, homeDir);
 }
 
 function proposalVerificationAuditId(
@@ -906,19 +962,23 @@ async function ensureProposalVerificationEvent(args: {
     return;
   }
   await args.onBeforeAppend?.();
-  await appendJsonLine(journalPath, {
-    id: auditId,
-    ts: args.record.verifiedAt,
-    kind: "proposal_verified",
-    source: "facult:evolution",
-    scope: args.proposal.scope,
-    projectSlug: args.proposal.projectSlug,
-    projectRoot: args.proposal.projectRoot,
-    summary: `${args.proposal.id} effectiveness -> ${args.record.effectiveness}`,
-    refs: [args.proposal.id, ...args.proposal.targets],
-    evidence: args.record.evidence,
-    tags: [],
-  } satisfies AiJournalEvent);
+  await appendJsonLine(
+    journalPath,
+    {
+      id: auditId,
+      ts: args.record.verifiedAt,
+      kind: "proposal_verified",
+      source: "facult:evolution",
+      scope: args.proposal.scope,
+      projectSlug: args.proposal.projectSlug,
+      projectRoot: args.proposal.projectRoot,
+      summary: `${args.proposal.id} effectiveness -> ${args.record.effectiveness}`,
+      refs: [args.proposal.id, ...args.proposal.targets],
+      evidence: args.record.evidence,
+      tags: [],
+    } satisfies AiJournalEvent,
+    args.homeDir
+  );
 }
 
 async function withProposalVerificationLock<T>(args: {
@@ -934,6 +994,7 @@ async function withProposalVerificationLock<T>(args: {
     .digest("hex")
     .slice(0, 20);
   const lockPath = join(lockDir, `proposal-${lockId}.lock`);
+  assertAiOutputPaths([lockPath, journalPath], args.homeDir);
   await mkdir(lockDir, { recursive: true });
   let lock: Awaited<ReturnType<typeof open>> | undefined;
   for (let attempt = 0; attempt < 200 && !lock; attempt += 1) {
@@ -1041,6 +1102,12 @@ export async function addWriteback(
   args: AddWritebackArgs
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, allowEphemeral: args.allowEphemeral })) {
+    return withAiMutationScope(
+      { homeDir, allowEphemeral: args.allowEphemeral },
+      () => addWriteback(args)
+    );
+  }
   assertDurableAiPaths({
     ...args,
     homeDir,
@@ -1050,6 +1117,23 @@ export async function addWriteback(
     type: redactReconciliationText(entry.type),
     ref: redactReconciliationText(entry.ref),
   }));
+  const captureEvidencePaths = filesystemEvidencePaths(evidence, {
+    homeDir,
+    base: process.cwd(),
+  });
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    filesystemPaths: captureEvidencePaths,
+  });
+  for (const entry of evidence) {
+    if (isFilesystemEvidence(entry)) {
+      entry.ref = filesystemEvidencePaths([entry], {
+        homeDir,
+        base: process.cwd(),
+      })[0]!;
+    }
+  }
   if (evidence.length === 0 && !args.allowEmptyEvidence) {
     throw new Error(
       "writeback add requires at least one evidence item; pass --evidence <type:ref> or use --allow-empty-evidence for scratch/demo notes"
@@ -1060,6 +1144,15 @@ export async function addWriteback(
     homeDir,
     rootDir: args.rootDir,
   });
+  const recordId = nextId("WB", [...latest.keys()]);
+  assertAiOutputPaths(
+    [
+      facultAiWritebackQueuePath(homeDir, args.rootDir),
+      facultAiJournalPath(homeDir, args.rootDir),
+      writebackReviewPath(homeDir, args.rootDir, recordId),
+    ],
+    homeDir
+  );
   const asset = args.asset
     ? await resolveAssetSelection({
         homeDir,
@@ -1071,7 +1164,7 @@ export async function addWriteback(
     () => null
   );
   const record: AiWritebackRecord = {
-    id: nextId("WB", [...latest.keys()]),
+    id: recordId,
     ts: nowIso(),
     sourceRoot: resolve(args.rootDir),
     sourceHome: resolve(homeDir),
@@ -1117,7 +1210,8 @@ export async function addWriteback(
   });
   await appendJsonLine(
     facultAiWritebackQueuePath(homeDir, args.rootDir),
-    record
+    record,
+    homeDir
   );
   await appendEvent(homeDir, args.rootDir, {
     id: nextId("EVT", []),
@@ -1209,7 +1303,19 @@ async function updateWritebackStatus(
     updatedAt: nowIso(),
   };
   const eventTs = next.updatedAt ?? next.ts;
-  await appendJsonLine(facultAiWritebackQueuePath(homeDir, args.rootDir), next);
+  assertAiOutputPaths(
+    [
+      facultAiWritebackQueuePath(homeDir, args.rootDir),
+      writebackReviewPath(homeDir, args.rootDir, id),
+      facultAiJournalPath(homeDir, args.rootDir),
+    ],
+    homeDir
+  );
+  await appendJsonLine(
+    facultAiWritebackQueuePath(homeDir, args.rootDir),
+    next,
+    homeDir
+  );
   await appendEvent(homeDir, args.rootDir, {
     id: nextId("EVT", []),
     ts: eventTs,
@@ -1241,7 +1347,18 @@ async function updateWriteback(
     throw new Error(`Writeback not found: ${id}`);
   }
   const next = { ...mutate(current), updatedAt: nowIso() };
-  await appendJsonLine(facultAiWritebackQueuePath(homeDir, args.rootDir), next);
+  assertAiOutputPaths(
+    [
+      facultAiWritebackQueuePath(homeDir, args.rootDir),
+      writebackReviewPath(homeDir, args.rootDir, id),
+    ],
+    homeDir
+  );
+  await appendJsonLine(
+    facultAiWritebackQueuePath(homeDir, args.rootDir),
+    next,
+    homeDir
+  );
   await writeWritebackReviewArtifact({
     homeDir,
     rootDir: args.rootDir,
@@ -1266,20 +1383,40 @@ export async function linkWritebackEvidence(
   evidence: WritebackEvidence,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiWritebackRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    filesystemPaths: filesystemEvidencePaths([evidence], {
+      homeDir,
+      base: process.cwd(),
+    }),
+  });
+  const normalizedEvidence = isFilesystemEvidence(evidence)
+    ? {
+        type: evidence.type,
+        ref: filesystemEvidencePaths([evidence], {
+          homeDir,
+          base: process.cwd(),
+        })[0]!,
+      }
+    : evidence;
   const current = await showWriteback(id, args);
   if (!current) {
     throw new Error(`Writeback not found: ${id}`);
   }
   if (
     current.evidence.some(
-      (entry) => entry.type === evidence.type && entry.ref === evidence.ref
+      (entry) =>
+        entry.type === normalizedEvidence.type &&
+        entry.ref === normalizedEvidence.ref
     )
   ) {
     return current;
   }
   return await updateWriteback(id, args, (record) => ({
     ...record,
-    evidence: [...record.evidence, evidence],
+    evidence: [...record.evidence, normalizedEvidence],
   }));
 }
 
@@ -1485,10 +1622,17 @@ async function writeProposalFile(
   proposal: AiProposalRecord
 ) {
   const dir = facultAiProposalDir(homeDir, rootDir);
-  await mkdir(dir, { recursive: true });
-  await Bun.write(
+  assertAiOutputPaths(
+    [
+      join(dir, `${proposal.id}.json`),
+      proposalReviewPath(homeDir, rootDir, proposal.id),
+    ],
+    homeDir
+  );
+  await writeAiText(
     join(dir, `${proposal.id}.json`),
-    `${JSON.stringify(proposal, null, 2)}\n`
+    `${JSON.stringify(proposal, null, 2)}\n`,
+    homeDir
   );
   await writeProposalReviewArtifact({ homeDir, rootDir, proposal });
 }
@@ -1501,7 +1645,22 @@ export async function proposeEvolution(args: {
   allowEphemeral?: boolean;
 }): Promise<AiProposalRecord[]> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, allowEphemeral: args.allowEphemeral })) {
+    return withAiMutationScope(
+      { homeDir, allowEphemeral: args.allowEphemeral },
+      () => proposeEvolution(args)
+    );
+  }
   assertDurableAiPaths({ ...args, homeDir, targets: [args.asset] });
+  const proposedId = await nextProposalId(homeDir, args.rootDir);
+  assertAiOutputPaths(
+    [
+      join(facultAiProposalDir(homeDir, args.rootDir), `${proposedId}.json`),
+      proposalReviewPath(homeDir, args.rootDir, proposedId),
+      facultAiJournalPath(homeDir, args.rootDir),
+    ],
+    homeDir
+  );
   const writebacks = await listWritebacks({
     homeDir,
     rootDir: args.rootDir,
@@ -1766,7 +1925,7 @@ export async function assessEvolution(args: {
     if (
       !includeRecord(proposal, [
         ...proposal.targets,
-        ...proposal.draftRefs.map((path) => resolve(path)),
+        ...proposal.draftRefs.map((path) => absoluteFilesystemPath(path)),
       ])
     ) {
       continue;
@@ -2107,6 +2266,7 @@ export async function refreshAiReviewArtifacts(args: {
 
   const writebackReviewDir = facultAiWritebackReviewDir(homeDir, args.rootDir);
   const evolutionReviewDir = facultAiEvolutionReviewDir(homeDir, args.rootDir);
+  assertAiOutputPaths([writebackReviewDir, evolutionReviewDir], homeDir);
   await mkdir(writebackReviewDir, { recursive: true });
   await mkdir(evolutionReviewDir, { recursive: true });
 
@@ -2418,7 +2578,7 @@ async function resolveProposalTargetNode(
     targets: [
       target,
       pathValue,
-      ...proposal.draftRefs.map((path) => resolve(path)),
+      ...proposal.draftRefs.map((path) => absoluteFilesystemPath(path)),
     ],
     graph,
   });
@@ -2427,6 +2587,37 @@ async function resolveProposalTargetNode(
     path: pathValue,
     canonicalRef: node?.canonicalRef ?? target,
   };
+}
+
+async function validatedProposalWritebacks(
+  proposal: AiProposalRecord,
+  args: { homeDir: string; rootDir: string; allowEphemeral?: boolean }
+) {
+  assertDurableAiPaths({
+    ...args,
+    record: proposal,
+    targets: proposal.targets,
+  });
+  const context = {
+    homeDir: proposal.sourceHome ?? args.homeDir,
+    rootDir: proposal.sourceRoot ?? args.rootDir,
+  };
+  const graph = await loadGraph(context).catch(() => null);
+  const writebacks = (
+    await Promise.all(
+      proposal.sourceWritebacks.map((id) => showWriteback(id, context))
+    )
+  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  for (const record of writebacks) {
+    assertDurableAiPaths({
+      ...context,
+      allowEphemeral: args.allowEphemeral,
+      record,
+      targets: [record.assetRef, record.suggestedDestination],
+      graph,
+    });
+  }
+  return { context, writebacks };
 }
 
 export async function draftProposal(
@@ -2439,12 +2630,28 @@ export async function draftProposal(
   }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, allowEphemeral: args.allowEphemeral })) {
+    return withAiMutationScope(
+      { homeDir, allowEphemeral: args.allowEphemeral },
+      () => draftProposal(id, args)
+    );
+  }
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
   }
   const draftPath = draftRefForProposal(homeDir, args.rootDir, id);
   const patchPath = patchRefForProposal(homeDir, args.rootDir, id);
+  assertAiOutputPaths(
+    [
+      draftPath,
+      patchPath,
+      join(facultAiProposalDir(homeDir, args.rootDir), `${id}.json`),
+      proposalReviewPath(homeDir, args.rootDir, id),
+      facultAiJournalPath(homeDir, args.rootDir),
+    ],
+    homeDir
+  );
   const existingDraftPath = await firstExistingFile([
     draftPath,
     ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
@@ -2454,9 +2661,13 @@ export async function draftProposal(
     homeDir,
     record: current,
     targets: [
-      ...current.draftRefs.map((path) => resolve(path)),
-      ...(existingDraftPath ? [resolve(existingDraftPath)] : []),
+      ...current.draftRefs.map((path) => absoluteFilesystemPath(path)),
+      ...(existingDraftPath ? [absoluteFilesystemPath(existingDraftPath)] : []),
     ],
+  });
+  const { writebacks } = await validatedProposalWritebacks(current, {
+    ...args,
+    homeDir,
   });
   if (
     current.status !== "proposed" &&
@@ -2466,23 +2677,11 @@ export async function draftProposal(
   ) {
     return current;
   }
-  const writebacks = (
-    await Promise.all(
-      current.sourceWritebacks.map(async (writebackId) => {
-        const entry = await showWriteback(writebackId, {
-          homeDir,
-          rootDir: args.rootDir,
-        });
-        return entry ?? null;
-      })
-    )
-  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
     rootDir: args.rootDir,
     allowEphemeral: args.allowEphemeral,
   });
-  await mkdir(dirname(draftPath), { recursive: true });
   const generatedBody = renderDraftBody(current, writebacks);
   const priorDraft = existingDraftPath
     ? await readFile(existingDraftPath, "utf8")
@@ -2493,7 +2692,7 @@ export async function draftProposal(
       ? insertDraftRevision(id, baseDraft, args.append)
       : `${baseDraft.trimEnd()}\n\n## Draft Revision\n${args.append.trim()}\n`
     : baseDraft;
-  await Bun.write(draftPath, `${draftBody}\n`);
+  await writeAiText(draftPath, `${draftBody}\n`, homeDir);
   const currentText = (await fileExists(targetNode.path!))
     ? await readFile(targetNode.path!, "utf8")
     : "";
@@ -2503,13 +2702,14 @@ export async function draftProposal(
   const nextText = currentText.includes(appliedContent)
     ? currentText
     : `${currentText.trimEnd()}\n\n${appliedContent}\n`;
-  await Bun.write(
+  await writeAiText(
     patchPath,
     `${renderPatchBody({
       targetPath: targetNode.path!,
       currentText,
       nextText,
-    })}\n`
+    })}\n`,
+    homeDir
   );
 
   const actor = proposalActor();
@@ -2689,12 +2889,20 @@ export async function applyProposal(
     homeDir?: string;
     rootDir: string;
     allowEphemeral?: boolean;
+    /** @internal Regression seam for swaps at the validated write boundary. */
+    onBeforeTargetWrite?: () => Promise<void>;
     verificationDelayHours?: number;
     verificationGraceHours?: number;
     now?: () => Date;
   }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, allowEphemeral: args.allowEphemeral })) {
+    return withAiMutationScope(
+      { homeDir, allowEphemeral: args.allowEphemeral },
+      () => applyProposal(id, args)
+    );
+  }
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2733,13 +2941,28 @@ export async function applyProposal(
   const verificationOverdueAt = new Date(
     Date.parse(verificationDueAt) + verificationGraceHours * 60 * 60 * 1000
   ).toISOString();
-  const sourceWritebacks = (
-    await Promise.all(
-      current.sourceWritebacks.map((writebackId) =>
-        showWriteback(writebackId, { homeDir, rootDir: args.rootDir })
-      )
-    )
-  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  const { writebacks: sourceWritebacks, context: sourceContext } =
+    await validatedProposalWritebacks(current, { ...args, homeDir });
+  assertAiOutputPaths(
+    [
+      join(facultAiProposalDir(homeDir, args.rootDir), `${id}.json`),
+      proposalReviewPath(homeDir, args.rootDir, id),
+      facultAiJournalPath(homeDir, args.rootDir),
+      ...sourceWritebacks.flatMap((entry) => [
+        facultAiWritebackQueuePath(
+          sourceContext.homeDir,
+          sourceContext.rootDir
+        ),
+        writebackReviewPath(
+          sourceContext.homeDir,
+          sourceContext.rootDir,
+          entry.id
+        ),
+        facultAiJournalPath(sourceContext.homeDir, sourceContext.rootDir),
+      ]),
+    ],
+    homeDir
+  );
 
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
@@ -2751,9 +2974,8 @@ export async function applyProposal(
     throw new Error(`Proposal ${id} has no primary draft ref`);
   }
   const draftText = await readFile(draftPath, "utf8");
-  const existingTarget = (await fileExists(targetNode.path!))
-    ? await readFile(targetNode.path!, "utf8")
-    : "";
+  const snapshot = await readAiTarget(targetNode.path!);
+  const existingTarget = snapshot.contents;
   const nextText = isAppendProposalKind(current.kind)
     ? (() => {
         const addition = extractDraftAddition(id, draftText);
@@ -2762,12 +2984,16 @@ export async function applyProposal(
           : `${existingTarget.trimEnd()}\n\n${addition}\n`;
       })()
     : `${draftText.trimEnd()}\n`;
-  await Bun.write(targetNode.path!, nextText);
+  await replaceAiTarget({
+    path: targetNode.path!,
+    contents: nextText,
+    snapshot,
+    beforeCommit: args.onBeforeTargetWrite,
+  });
 
   for (const writeback of sourceWritebacks) {
     await updateWritebackStatus(writeback.id, "promoted", {
-      homeDir,
-      rootDir: args.rootDir,
+      ...sourceContext,
     });
   }
 
@@ -2995,6 +3221,12 @@ export async function promoteProposal(
   }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, allowEphemeral: args.allowEphemeral })) {
+    return withAiMutationScope(
+      { homeDir, allowEphemeral: args.allowEphemeral },
+      () => promoteProposal(id, args)
+    );
+  }
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -3051,6 +3283,14 @@ export async function promoteProposal(
     graph: targetGraph,
   });
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
+  assertAiOutputPaths(
+    [
+      join(facultAiProposalDir(homeDir, targetRoot), `${nextIdValue}.json`),
+      proposalReviewPath(homeDir, targetRoot, nextIdValue),
+      facultAiJournalPath(homeDir, targetRoot),
+    ],
+    homeDir
+  );
   const promoted: AiProposalRecord = {
     ...current,
     sourceRoot: current.sourceRoot ?? resolve(args.rootDir),
@@ -4338,8 +4578,10 @@ export async function aiCommand(
         rootDir,
         scope: parsed.scope,
       });
-      await withFacultRootScope({ rootDir, scope }, async () =>
-        aiCommand(argv, true)
+      await withAiMutationScope(
+        { homeDir, allowEphemeral: parseEphemeralOverride(rest) },
+        () =>
+          withFacultRootScope({ rootDir, scope }, () => aiCommand(argv, true))
       );
       return;
     } catch (error) {

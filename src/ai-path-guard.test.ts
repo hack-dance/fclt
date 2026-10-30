@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   acceptProposal,
   addWriteback,
   applyProposal,
   assessEvolution,
   draftProposal,
+  linkWritebackEvidence,
   listProposals,
   listWritebacks,
   promoteProposal,
@@ -17,10 +19,13 @@ import {
 import { aiPathSafetyIssue, realUserHome } from "./ai-path-guard";
 import {
   facultAiDraftDir,
+  facultAiEvolutionReviewDir,
   facultAiGraphPath,
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiWritebackQueuePath,
+  facultAiWritebackReviewDir,
+  resolvePhysicalPath,
 } from "./paths";
 
 const realHome = realUserHome();
@@ -69,6 +74,7 @@ async function makeDurableFixture() {
 
 /** Model only account-home identity; even a regressed guard must write into owned fixtures. */
 async function fixtureAccountHome(fixture: string) {
+  process.env.FACULT_LOCAL_STATE_DIR = join(fixture, "state");
   const homeDir = join(fixture, "home");
   await mkdir(homeDir);
   const checkPaths = aiPathSafetyIssue;
@@ -82,7 +88,27 @@ async function fixtureAccountHome(fixture: string) {
       sourceHome: args.sourceHome === homeDir ? realHome : args.sourceHome,
     })
   );
-  restorePathGuard = () => mocked.mockRestore();
+  // These are untracked fixture directories. Do not inherit the surrounding
+  // checkout's Git authority or spend each path lookup probing its worktree.
+  const identity = await import("./repository-identity");
+  const canonicalRoot = identity.canonicalProjectRoot;
+  const commonIdentity = identity.repositoryCommonIdentitySync;
+  const inFixture = (path: string) =>
+    path === fixture || path.startsWith(`${fixture}${sep}`);
+  const mockedRoot = spyOn(identity, "canonicalProjectRoot").mockImplementation(
+    (path) => (inFixture(path) ? path : canonicalRoot(path))
+  );
+  const mockedIdentity = spyOn(
+    identity,
+    "repositoryCommonIdentitySync"
+  ).mockImplementation((path) =>
+    inFixture(path) ? null : commonIdentity(path)
+  );
+  restorePathGuard = () => {
+    mocked.mockRestore();
+    mockedRoot.mockRestore();
+    mockedIdentity.mockRestore();
+  };
   return homeDir;
 }
 
@@ -486,6 +512,8 @@ describe("AI state path guard", () => {
     "/var/tmp/fclt-source/.ai",
     "/private/var/tmp/fclt-source/.ai",
   ])("refuses proposal creation rooted at %s before writing state", async (rootDir) => {
+    process.env.FACULT_ROOT_DIR = rootDir;
+    process.env.FACULT_ROOT_SCOPE = "global";
     await expect(
       proposeEvolution({ homeDir: realHome, rootDir })
     ).rejects.toThrow("OS temporary directory");
@@ -856,7 +884,10 @@ describe("AI state path guard", () => {
     ).toBe(1);
     const draft = await run(["evolve", "draft", id, "--allow-ephemeral"]);
     expect(draft.code, draft.stderr).toBe(0);
-    expect((await run(["evolve", "accept", id])).code).toBe(0);
+    expect((await run(["evolve", "accept", id])).code).toBe(1);
+    expect(
+      (await run(["evolve", "accept", id, "--allow-ephemeral"])).code
+    ).toBe(0);
     expect((await run(["evolve", "apply", id])).code).toBe(1);
     const applied = await run(["evolve", "apply", id, "--allow-ephemeral"]);
     expect(applied.code, applied.stderr).toBe(0);
@@ -1051,5 +1082,340 @@ describe("AI state path guard", () => {
         paths: [join(link, "missing.md")],
       })
     ).toContain("OS temporary directory");
+  });
+});
+
+async function durableProposalFixture() {
+  const fixture = await makeDurableFixture();
+  const homeDir = await fixtureAccountHome(fixture);
+  const rootDir = join(fixture, "project/.ai");
+  const file = await seedIndexedSkill({ homeDir, rootDir, scope: "project" });
+  const args = {
+    ...writebackArgs(rootDir),
+    homeDir,
+    asset: "skill:guarded",
+    suggestedDestination: undefined,
+  };
+  const writeback = await addWriteback(args);
+  const [proposal] = await proposeEvolution(args);
+  return {
+    fixture,
+    homeDir,
+    rootDir,
+    file,
+    args,
+    writeback,
+    proposal: proposal!,
+  };
+}
+
+describe("AI filesystem mutation boundaries", () => {
+  it.skipIf(process.platform === "win32")(
+    "resolves symlinks before parent components for existing and missing targets",
+    async () => {
+      const fixture = await makeDurableFixture();
+      const homeDir = await fixtureAccountHome(fixture);
+      const rootDir = join(fixture, "project/.ai");
+      await mkdir(rootDir, { recursive: true });
+      const child = join(tempHome, "job/child");
+      await mkdir(child, { recursive: true });
+      const link = join(fixture, "link");
+      await symlink(child, link, "dir");
+      const victim = join(tempHome, "job/victim.md");
+      for (const existing of [false, true]) {
+        if (existing) {
+          await Bun.write(victim, "Original evidence\n");
+        }
+        // join()/resolve() would erase the filesystem semantics under test.
+        const raw = `${link}/../victim.md`;
+        expect(resolvePhysicalPath(raw)).toBe(resolvePhysicalPath(victim));
+        expect(aiPathSafetyIssue({ homeDir, paths: [raw] })).toContain(
+          "OS temporary directory"
+        );
+        await expect(
+          addWriteback({
+            ...writebackArgs(rootDir),
+            homeDir,
+            suggestedDestination: raw,
+          })
+        ).rejects.toThrow("OS temporary directory");
+      }
+      const args = { ...writebackArgs(rootDir), homeDir };
+      const healthy = await addWriteback(args);
+      await seedJson(facultAiWritebackQueuePath(homeDir, rootDir), {
+        ...healthy,
+        suggestedDestination: `${link}/../victim.md`,
+      });
+      expect((await assessEvolution(args)).sourceWritebacks).toEqual([]);
+      await expect(proposeEvolution(args)).rejects.toThrow(
+        "OS temporary directory"
+      );
+      expect(await Bun.file(victim).text()).toBe("Original evidence\n");
+    }
+  );
+
+  it.each([
+    "target",
+    "ancestor",
+  ])("refuses an apply-time %s symlink swap without modifying either file", async (layout) => {
+    const { file, args, proposal } = await durableProposalFixture();
+    await draftProposal(proposal.id, args);
+    await acceptProposal(proposal.id, args);
+    const original = await Bun.file(file).text();
+    const temporaryDirectory = join(tempHome, "swapped");
+    await mkdir(temporaryDirectory);
+    const victim = join(temporaryDirectory, "SKILL.md");
+    await Bun.write(victim, "Temporary target must survive\n");
+    const swapped = layout === "target" ? file : dirname(file);
+    const moved = `${swapped}.before`;
+    await expect(
+      applyProposal(proposal.id, {
+        ...args,
+        onBeforeTargetWrite: async () => {
+          await rename(swapped, moved);
+          await symlink(
+            layout === "target" ? victim : temporaryDirectory,
+            swapped,
+            layout === "target" ? "file" : "dir"
+          );
+        },
+      })
+    ).rejects.toThrow("OS temporary directory");
+    expect(await Bun.file(victim).text()).toBe(
+      "Temporary target must survive\n"
+    );
+    expect(
+      await Bun.file(
+        layout === "target" ? moved : join(moved, "SKILL.md")
+      ).text()
+    ).toBe(original);
+    expect((await listProposals(args))[0]!.status).toBe("accepted");
+  });
+
+  it.each([
+    "queue",
+    "journal",
+    "writeback review",
+    "proposal",
+    "proposal review",
+    "draft",
+    "patch",
+    "runtime directory",
+    "review directory",
+  ])("checks the complete %s output path before mutating state", async (layout) => {
+    const { homeDir, rootDir, args, proposal } = await durableProposalFixture();
+    const queue = facultAiWritebackQueuePath(homeDir, rootDir);
+    const journal = facultAiJournalPath(homeDir, rootDir);
+    const proposalPath = join(
+      facultAiProposalDir(homeDir, rootDir),
+      `${proposal.id}.json`
+    );
+    const draft = join(facultAiDraftDir(homeDir, rootDir), `${proposal.id}.md`);
+    const writebackReview = join(
+      facultAiWritebackReviewDir(homeDir, rootDir),
+      "WB-00002.md"
+    );
+    const proposalReview = join(
+      facultAiEvolutionReviewDir(homeDir, rootDir),
+      `${proposal.id}.md`
+    );
+    const paths: Record<string, string> = {
+      queue,
+      journal,
+      "writeback review": writebackReview,
+      proposal: proposalPath,
+      "proposal review": proposalReview,
+      draft,
+      patch: `${draft.slice(0, -3)}.patch`,
+      "runtime directory": dirname(queue),
+      "review directory": facultAiWritebackReviewDir(homeDir, rootDir),
+    };
+    const path = paths[layout]!;
+    const directory = layout.endsWith("directory");
+    const temporary = join(tempHome, "redirected");
+    await mkdir(dirname(path), { recursive: true });
+    if (directory) {
+      await cp(path, temporary, { recursive: true });
+      await rm(path, { recursive: true });
+    } else {
+      await Bun.write(
+        temporary,
+        existsSync(path)
+          ? await Bun.file(path).text()
+          : layout === "draft"
+            ? `<!-- facult:evolution:${proposal.id}:start -->\nGuard fixture\n<!-- facult:evolution:${proposal.id}:end -->\n`
+            : ""
+      );
+      await rm(path, { force: true });
+    }
+    await symlink(temporary, path, directory ? "dir" : "file");
+    const beforeQueue = await Bun.file(queue).text();
+    const beforeJournal = await Bun.file(journal).text();
+    const beforeProposal = await Bun.file(proposalPath).text();
+    const capture = [
+      "queue",
+      "journal",
+      "writeback review",
+      "runtime directory",
+      "review directory",
+    ].includes(layout);
+    const operation = (allowEphemeral = false) =>
+      capture
+        ? addWriteback({ ...args, allowEphemeral })
+        : draftProposal(proposal.id, { ...args, allowEphemeral });
+    await expect(operation()).rejects.toThrow("OS temporary directory");
+    expect(await Bun.file(queue).text()).toBe(beforeQueue);
+    expect(await Bun.file(journal).text()).toBe(beforeJournal);
+    expect(await Bun.file(proposalPath).text()).toBe(beforeProposal);
+    await operation(true);
+    if (capture) {
+      expect((await listWritebacks(args)).length).toBe(2);
+    } else {
+      expect((await listProposals(args))[0]!.status).toBe("drafted");
+    }
+  });
+
+  it("revalidates original-scope writebacks during draft and apply of a promoted proposal", async () => {
+    const { fixture, homeDir, rootDir, file, args, writeback, proposal } =
+      await durableProposalFixture();
+    const globalRoot = join(fixture, "global/.ai");
+    process.env.FACULT_ROOT_DIR = globalRoot;
+    process.env.FACULT_ROOT_SCOPE = "global";
+    const globalFile = await seedIndexedSkill({
+      homeDir,
+      rootDir: globalRoot,
+      scope: "global",
+    });
+    const globalArgs = { ...args, rootDir: globalRoot };
+    const unrelated = await addWriteback(globalArgs);
+    expect(unrelated.id).toBe(writeback.id);
+    const promoted = await promoteProposal(proposal.id, {
+      homeDir,
+      rootDir,
+      to: "global",
+    });
+    const queue = facultAiWritebackQueuePath(homeDir, rootDir);
+    await seedJson(queue, {
+      ...writeback,
+      suggestedDestination: join(tempHome, "source.md"),
+    });
+    await expect(draftProposal(promoted.id, globalArgs)).rejects.toThrow(
+      "OS temporary directory"
+    );
+    expect(
+      existsSync(
+        join(facultAiDraftDir(homeDir, globalRoot), `${promoted.id}.md`)
+      )
+    ).toBe(false);
+    await seedJson(queue, writeback);
+    // The unrelated global namesake must not prevent a healthy project source.
+    await seedJson(facultAiWritebackQueuePath(homeDir, globalRoot), {
+      ...unrelated,
+      suggestedDestination: join(tempHome, "unrelated.md"),
+    });
+    await draftProposal(promoted.id, globalArgs);
+    await acceptProposal(promoted.id, globalArgs);
+    const original = await Bun.file(globalFile).text();
+    await seedJson(queue, {
+      ...writeback,
+      evidence: [{ type: "file", ref: join(tempHome, "source.md") }],
+    });
+    await expect(draftProposal(promoted.id, globalArgs)).rejects.toThrow(
+      "OS temporary directory"
+    );
+    await expect(applyProposal(promoted.id, globalArgs)).rejects.toThrow(
+      "OS temporary directory"
+    );
+    expect(await Bun.file(globalFile).text()).toBe(original);
+    await seedJson(queue, writeback);
+    expect((await applyProposal(promoted.id, globalArgs)).status).toBe(
+      "applied"
+    );
+    expect((await listWritebacks(args))[0]!.status).toBe("promoted");
+    expect((await listWritebacks(globalArgs))[0]!.status).toBe("recorded");
+    expect(await Bun.file(file).text()).not.toContain(
+      `facult:evolution:${promoted.id}:start`
+    );
+  });
+
+  it.each([
+    "file scheme",
+    "file URL",
+    "absolute ref",
+    "typed path",
+    "symlink",
+    "parent traversal",
+  ])("guards %s evidence at capture, assessment and proposal creation", async (layout) => {
+    const { fixture, homeDir, rootDir, args, writeback, proposal } =
+      await durableProposalFixture();
+    const evidencePath = join(tempHome, "evidence.md");
+    await Bun.write(evidencePath, "Temporary evidence\n");
+    let evidence = { type: "file", ref: evidencePath };
+    if (layout === "file scheme") {
+      evidence = { type: "ref", ref: `file:${evidencePath}` };
+    } else if (layout === "file URL") {
+      evidence.ref = pathToFileURL(evidencePath).href;
+    } else if (layout === "absolute ref") {
+      evidence.type = "ref";
+    } else if (layout === "typed path") {
+      evidence.type = "path";
+    } else if (layout === "symlink") {
+      evidence.ref = join(fixture, "evidence-link.md");
+      await symlink(evidencePath, evidence.ref);
+    } else {
+      const child = join(tempHome, "child");
+      await mkdir(child);
+      const link = join(fixture, "evidence-link");
+      await symlink(child, link, "dir");
+      evidence.ref = `${link}/../evidence.md`;
+    }
+    await expect(
+      addWriteback({ ...args, evidence: [evidence] })
+    ).rejects.toThrow("OS temporary directory");
+    await expect(
+      linkWritebackEvidence(writeback.id, evidence, args)
+    ).rejects.toThrow("OS temporary directory");
+    const legacy = { ...writeback, evidence: [evidence] };
+    await seedJson(facultAiWritebackQueuePath(homeDir, rootDir), legacy);
+    const assessment = await assessEvolution(args);
+    expect(assessment.sourceWritebacks).toEqual([]);
+    expect(assessment.activeProposalIds).toEqual([]);
+    expect(assessment.recommendation).not.toBe("review_existing_proposal");
+    await expect(proposeEvolution(args)).rejects.toThrow(
+      "OS temporary directory"
+    );
+    const overridden = await addWriteback({
+      ...args,
+      evidence: [evidence],
+      allowEphemeral: true,
+    });
+    expect(overridden.evidence[0]!.type).toBe(evidence.type);
+    expect(
+      (await assessEvolution({ ...args, allowEphemeral: true }))
+        .activeProposalIds
+    ).toContain(proposal.id);
+    const healthyPath = join(fixture, "evidence.md");
+    await Bun.write(healthyPath, "Durable evidence\n");
+    await seedJson(facultAiWritebackQueuePath(homeDir, rootDir), {
+      ...writeback,
+      evidence: [
+        { type: "file", ref: healthyPath },
+        { type: "session", ref: "test-session" },
+      ],
+    });
+    expect((await assessEvolution(args)).activeProposalIds).toContain(
+      proposal.id
+    );
+    const healthy = await addWriteback({
+      ...args,
+      evidence: [
+        { type: "file", ref: healthyPath },
+        { type: "session", ref: "test-session" },
+      ],
+    });
+    expect(healthy.evidence).toEqual([
+      { type: "file", ref: healthyPath },
+      { type: "session", ref: "test-session" },
+    ]);
   });
 });
