@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { mkdir, open, readdir, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import {
   basename,
@@ -9,7 +8,33 @@ import {
   join,
   relative,
   resolve,
+  win32,
 } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { aiPathWithin } from "./ai-boundary";
+import {
+  aiFileExists,
+  appendAiJsonLine,
+  assertAiAtomicReplacementSupported,
+  assertAiOutputPaths,
+  assertAiRecordId,
+  createAiLock,
+  mkdirAiDirectory,
+  needsAiMutationScope,
+  readAiDirectory,
+  readAiTarget,
+  readAiText,
+  replaceAiTarget,
+  withAiMutationScope,
+  withAiReadCache,
+  writeAiText,
+} from "./ai-filesystem";
+import {
+  type AiSourcePaths,
+  aiPathSafetyIssue,
+  allowEphemeralAiPaths,
+} from "./ai-path-guard";
 import { ensureAiGraphPath } from "./ai-state";
 import {
   parseCliContextArgs,
@@ -17,19 +42,34 @@ import {
   resolveCliContextScope,
   resolveLoopContextRoot,
 } from "./cli-context";
-import type { AssetScope, GraphNodeKind } from "./graph";
-import { loadGraph, resolveGraphNode } from "./graph-query";
+import type {
+  AssetScope,
+  FacultGraph,
+  GraphNode,
+  GraphNodeKind,
+} from "./graph";
+import { resolveGraphNode } from "./graph-query";
+import { buildIndexSnapshot } from "./index-builder";
 import {
+  absoluteFilesystemPath,
+  canonicalProjectAiRoot,
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
+  facultAiGraphPath,
+  facultAiIndexPath,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiRuntimeScopeDir,
   facultAiStateDir,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
+  facultMachineStateDir,
   legacyFacultAiStateDirs,
+  pathsPhysicallyEquivalent,
+  preferredGlobalAiRoot,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
+  resolvePhysicalPath,
   withFacultRootScope,
 } from "./paths";
 import { redactReconciliationText } from "./reconciliation-adapters";
@@ -103,6 +143,14 @@ export interface WritebackEvidence {
   ref: string;
 }
 
+interface ProposalPromotionBinding {
+  proposalId: string;
+  sourceProposalId: string;
+  sourceRoot: string;
+  sourceHome: string;
+  sourceWritebacks: string[];
+}
+
 export interface AiJournalEvent {
   id: string;
   ts: string;
@@ -115,9 +163,10 @@ export interface AiJournalEvent {
   refs?: string[];
   evidence?: WritebackEvidence[];
   tags?: string[];
+  promotion?: ProposalPromotionBinding;
 }
 
-export interface AiWritebackRecord {
+export interface AiWritebackRecord extends AiSourcePaths {
   id: string;
   ts: string;
   updatedAt?: string;
@@ -199,7 +248,7 @@ export interface ProposalDraftHistoryEntry {
   note?: string;
 }
 
-export interface AiProposalRecord {
+export interface AiProposalRecord extends AiSourcePaths {
   id: string;
   ts: string;
   status: ProposalStatus;
@@ -301,6 +350,7 @@ interface AddWritebackArgs {
   asset?: string;
   evidence?: WritebackEvidence[];
   allowEmptyEvidence?: boolean;
+  allowEphemeral?: boolean;
   confidence?: ConfidenceLevel;
   source?: string;
   suggestedDestination?: string;
@@ -361,42 +411,42 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-async function fileExists(pathValue: string): Promise<boolean> {
-  try {
-    await Bun.file(pathValue).stat();
-    return true;
-  } catch {
-    return false;
-  }
+function fileExists(pathValue: string, root?: string): Promise<boolean> {
+  return aiFileExists(pathValue, root);
 }
 
-async function ensureParentDir(pathValue: string) {
-  await mkdir(dirname(pathValue), { recursive: true });
-}
-
-async function appendJsonLine(pathValue: string, value: unknown) {
-  await ensureParentDir(pathValue);
-  const file = await open(pathValue, "a+");
+async function loadGraph(args: {
+  homeDir: string;
+  rootDir: string;
+}): Promise<FacultGraph> {
+  const path = facultAiGraphPath(args.homeDir, args.rootDir);
+  const root = facultAiStateDir(args.homeDir, args.rootDir);
   try {
-    const { size } = await file.stat();
-    let separator = "";
-    if (size > 0) {
-      const lastByte = Buffer.alloc(1);
-      await file.read(lastByte, 0, 1, size - 1);
-      separator = lastByte[0] === 10 ? "" : "\n";
+    return JSON.parse(await readAiText(path, "utf8", root)) as FacultGraph;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`Graph not found at ${path}. Run "fclt index".`);
     }
-    // Keep the separator and record in one append so writers cannot split them.
-    await file.appendFile(`${separator}${JSON.stringify(value)}\n`, "utf8");
-  } finally {
-    await file.close();
+    throw error;
   }
 }
 
-async function readJsonLines<T>(pathValue: string): Promise<T[]> {
-  if (!(await fileExists(pathValue))) {
+async function appendJsonLine(
+  pathValue: string,
+  value: unknown,
+  homeDir?: string
+) {
+  await appendAiJsonLine(pathValue, value, homeDir);
+}
+
+async function readJsonLines<T>(
+  pathValue: string,
+  root?: string
+): Promise<T[]> {
+  if (!(await fileExists(pathValue, root))) {
     return [];
   }
-  const text = await readFile(pathValue, "utf8");
+  const text = await readAiText(pathValue, "utf8", root);
   const entries: T[] = [];
   for (const [index, line] of text.split(NEWLINE_RE).entries()) {
     if (!line.trim()) {
@@ -413,10 +463,18 @@ async function readJsonLines<T>(pathValue: string): Promise<T[]> {
   return entries;
 }
 
-async function readJsonLinesFromPaths<T>(pathValues: string[]): Promise<T[]> {
+async function readJsonLinesFromPaths<T>(
+  pathValues: string[],
+  context: { homeDir: string; rootDir: string }
+): Promise<T[]> {
   const entries: T[] = [];
   for (const pathValue of pathValues) {
-    entries.push(...(await readJsonLines<T>(pathValue)));
+    entries.push(
+      ...(await readJsonLines<T>(
+        pathValue,
+        stateSourceBoundary(pathValue, context)
+      ))
+    );
   }
   return entries;
 }
@@ -431,6 +489,73 @@ function legacyAiRuntimeScopeDirs(homeDir: string, rootDir: string): string[] {
     join(facultAiStateDir(homeDir, rootDir), scope),
     ...legacyFacultAiStateDirs(homeDir, rootDir).map((dir) => join(dir, scope)),
   ]);
+}
+
+function stateSourceBoundary(
+  path: string,
+  context: { homeDir: string; rootDir: string }
+): string {
+  const runtime = facultAiRuntimeScopeDir(context.homeDir, context.rootDir);
+  if (aiPathWithin(path, runtime)) {
+    return facultMachineStateDir(context.homeDir, context.rootDir);
+  }
+  const project = projectRootFromAiRoot(context.rootDir, context.homeDir);
+  if (project) {
+    return project;
+  }
+  if (aiPathWithin(path, context.rootDir)) {
+    return context.rootDir;
+  }
+  const legacy = legacyAiRuntimeScopeDirs(
+    context.homeDir,
+    context.rootDir
+  ).find((dir) => aiPathWithin(path, dir));
+  return legacy ? dirname(legacy) : context.rootDir;
+}
+
+function proposalDraftRoot(
+  path: string,
+  homeDir: string,
+  rootDir: string
+): string {
+  const roots = [
+    facultAiDraftDir(homeDir, rootDir),
+    ...legacyAiRuntimeScopeDirs(homeDir, rootDir).map((dir) =>
+      join(dir, "evolution", "drafts")
+    ),
+  ];
+  const root = roots.find((candidate) =>
+    aiPathWithin(absoluteFilesystemPath(path), candidate)
+  );
+  if (!root) {
+    throw new Error(
+      "Draft path is outside authorized proposal draft directories"
+    );
+  }
+  return root;
+}
+
+async function validateProposalDraftAccess(
+  proposal: AiProposalRecord,
+  context: { homeDir: string; rootDir: string }
+): Promise<void> {
+  if (proposal.draftRefs.length === 0) {
+    return;
+  }
+  const anchors = [
+    facultMachineStateDir(context.homeDir, context.rootDir),
+    context.rootDir,
+    projectRootFromAiRoot(context.rootDir, context.homeDir) ?? context.rootDir,
+    preferredGlobalAiRoot(context.homeDir),
+  ];
+  await withAiReadCache(anchors, async () => {
+    for (const path of proposal.draftRefs) {
+      await aiFileExists(
+        absoluteFilesystemPath(path),
+        proposalDraftRoot(path, context.homeDir, context.rootDir)
+      );
+    }
+  });
 }
 
 function aiWritebackQueueReadPaths(homeDir: string, rootDir: string): string[] {
@@ -460,9 +585,18 @@ function aiProposalReadDirs(homeDir: string, rootDir: string): string[] {
   ]);
 }
 
-async function firstExistingFile(paths: string[]): Promise<string | null> {
+async function firstExistingFile(
+  paths: string[],
+  homeDir: string,
+  rootDir: string
+): Promise<string | null> {
   for (const pathValue of paths) {
-    if (await fileExists(pathValue)) {
+    if (
+      await fileExists(
+        pathValue,
+        proposalDraftRoot(pathValue, homeDir, rootDir)
+      )
+    ) {
       return pathValue;
     }
   }
@@ -478,21 +612,6 @@ export class UnsupportedProposalTargetError extends Error {
   }
 }
 
-function physicalPathForTarget(pathValue: string): string {
-  let ancestor = resolve(pathValue);
-  while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
-    const parent = dirname(ancestor);
-    if (parent === ancestor) {
-      throw new Error("No existing target ancestor");
-    }
-    ancestor = parent;
-  }
-  return resolve(
-    realpathSync(ancestor),
-    relative(ancestor, resolve(pathValue))
-  );
-}
-
 function withinCapabilityRoot(pathValue: string, root: string): boolean {
   const rel = relative(resolve(root), resolve(pathValue));
   if (
@@ -505,8 +624,8 @@ function withinCapabilityRoot(pathValue: string, root: string): boolean {
   // Resolve existing ancestors as well as leaves so new files cannot escape through a symlink.
   try {
     const physicalRelative = relative(
-      physicalPathForTarget(root),
-      physicalPathForTarget(pathValue)
+      resolvePhysicalPath(root),
+      resolvePhysicalPath(pathValue)
     );
     return (
       physicalRelative !== ".." &&
@@ -576,6 +695,7 @@ function writebackReviewPath(
   rootDir: string,
   id: string
 ): string {
+  assertAiRecordId(id, "WB");
   return join(facultAiWritebackReviewDir(homeDir, rootDir), `${id}.md`);
 }
 
@@ -584,6 +704,7 @@ function proposalReviewPath(
   rootDir: string,
   id: string
 ): string {
+  assertAiRecordId(id, "EV");
   return join(facultAiEvolutionReviewDir(homeDir, rootDir), `${id}.md`);
 }
 
@@ -592,12 +713,17 @@ async function writeWritebackReviewArtifact(args: {
   rootDir: string;
   record: AiWritebackRecord;
 }): Promise<void> {
+  if (needsAiMutationScope({ homeDir: args.homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope(
+      { homeDir: args.homeDir, rootDir: args.rootDir },
+      () => writeWritebackReviewArtifact(args)
+    );
+  }
   const pathValue = writebackReviewPath(
     args.homeDir,
     args.rootDir,
     args.record.id
   );
-  await ensureParentDir(pathValue);
   const body = [
     renderFrontmatter({
       id: args.record.id,
@@ -655,7 +781,7 @@ async function writeWritebackReviewArtifact(args: {
     `- issues: ${(args.record.issueLinks ?? []).join(", ") || "none"}`,
     "",
   ].join("\n");
-  await Bun.write(pathValue, `${body.trimEnd()}\n`);
+  await writeAiText(pathValue, `${body.trimEnd()}\n`, args.homeDir);
 }
 
 async function writeProposalReviewArtifact(args: {
@@ -665,12 +791,17 @@ async function writeProposalReviewArtifact(args: {
   writebacks?: AiWritebackRecord[];
   draftBody?: string | null;
 }): Promise<void> {
+  if (needsAiMutationScope({ homeDir: args.homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope(
+      { homeDir: args.homeDir, rootDir: args.rootDir },
+      () => writeProposalReviewArtifact(args)
+    );
+  }
   const pathValue = proposalReviewPath(
     args.homeDir,
     args.rootDir,
     args.proposal.id
   );
-  await ensureParentDir(pathValue);
   const body = [
     renderFrontmatter({
       id: args.proposal.id,
@@ -746,19 +877,32 @@ async function writeProposalReviewArtifact(args: {
         ]
       : []),
   ].join("\n");
-  await Bun.write(pathValue, `${body.trimEnd()}\n`);
+  await writeAiText(pathValue, `${body.trimEnd()}\n`, args.homeDir);
 }
 
 async function currentDraftBodyForProposal(
-  proposal: AiProposalRecord
+  proposal: AiProposalRecord,
+  context: { homeDir: string; rootDir: string }
 ): Promise<string | null> {
   const draftPath = proposal.draftRefs.find((pathValue) =>
     pathValue.endsWith(".md")
   );
-  if (!(draftPath && (await fileExists(draftPath)))) {
+  if (
+    !(
+      draftPath &&
+      (await fileExists(
+        draftPath,
+        proposalDraftRoot(draftPath, context.homeDir, context.rootDir)
+      ))
+    )
+  ) {
     return null;
   }
-  return readFile(draftPath, "utf8");
+  return readAiText(
+    draftPath,
+    "utf8",
+    proposalDraftRoot(draftPath, context.homeDir, context.rootDir)
+  );
 }
 
 function slugToTitle(value: string): string {
@@ -773,29 +917,194 @@ function canonicalRefToPath(args: {
   ref: string;
   homeDir: string;
   rootDir: string;
+  checkOnly?: boolean;
 }): string | null {
+  const suffix = canonicalReferenceSuffix(args.ref);
   if (args.ref.startsWith("@ai/")) {
-    if (projectRootFromAiRoot(args.rootDir, args.homeDir)) {
+    const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
+    if (projectRoot && !args.checkOnly) {
       return null;
     }
-    const pathValue = resolve(args.rootDir, args.ref.slice("@ai/".length));
-    return withinCapabilityRoot(pathValue, args.rootDir) ? pathValue : null;
+    const root = projectRoot
+      ? resolveCliContextRoot({ homeDir: args.homeDir, scope: "global" })
+      : args.rootDir;
+    const pathValue = absoluteFilesystemPath(suffix!, root);
+    return args.checkOnly || withinCapabilityRoot(pathValue, root)
+      ? pathValue
+      : null;
   }
   if (args.ref.startsWith("@project/")) {
-    const relPath = args.ref.slice("@project/".length);
     const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
-    if (!projectRoot) {
+    if (!(projectRoot || args.checkOnly)) {
       return null;
     }
-    const canonicalPath = resolve(args.rootDir, relPath);
-    const projectPath = resolve(projectRoot, relPath);
+    const canonicalPath = absoluteFilesystemPath(suffix!, args.rootDir);
+    const projectPath = absoluteFilesystemPath(
+      suffix!,
+      projectRoot ?? args.rootDir
+    );
     const pathValue =
       existsSync(canonicalPath) || !existsSync(projectPath)
         ? canonicalPath
         : projectPath;
-    return withinCapabilityRoot(pathValue, projectRoot) ? pathValue : null;
+    return args.checkOnly ||
+      withinCapabilityRoot(pathValue, projectRoot ?? args.rootDir)
+      ? pathValue
+      : null;
   }
   return null;
+}
+
+function canonicalReferenceSuffix(ref: string): string | null {
+  const prefix = ["@ai/", "@project/"].find((value) => ref.startsWith(value));
+  if (!prefix) {
+    return null;
+  }
+  const suffix = ref.slice(prefix.length);
+  if (isAbsolute(suffix) || win32.isAbsolute(suffix)) {
+    throw new Error("Canonical reference suffix must be relative");
+  }
+  return suffix;
+}
+
+function canonicalReferenceIssue(
+  refs: (string | undefined)[]
+): string | undefined {
+  try {
+    for (const ref of refs) {
+      if (ref) {
+        canonicalReferenceSuffix(ref);
+      }
+    }
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function proposalTargetFilePath(
+  node: GraphNode | null | undefined,
+  fallbackPath: string | null
+): string | null {
+  return node?.kind === "skill" && node.path
+    ? absoluteFilesystemPath("SKILL.md", node.path)
+    : (node?.path ?? fallbackPath);
+}
+
+function aiRecordPathIssue(args: {
+  homeDir: string;
+  rootDir: string;
+  record?: AiSourcePaths & {
+    projectRoot?: string;
+    evidence?: WritebackEvidence[];
+  };
+  targets?: (string | undefined)[];
+  graph?: FacultGraph | null;
+  filesystemPaths?: string[];
+}): string | undefined {
+  const canonicalIssue = canonicalReferenceIssue(args.targets ?? []);
+  if (canonicalIssue) {
+    return canonicalIssue;
+  }
+  const sourceRoot = args.record?.sourceRoot ?? args.rootDir;
+  const sourceHome = args.record?.sourceHome ?? args.homeDir;
+  const paths = [
+    args.rootDir,
+    sourceRoot,
+    args.record?.projectRoot,
+    ...(args.filesystemPaths ?? []),
+  ];
+  for (const ref of args.targets ?? []) {
+    if (!ref) {
+      continue;
+    }
+    const fallbackPath =
+      canonicalRefToPath({
+        ref,
+        homeDir: sourceHome,
+        rootDir: sourceRoot,
+        checkOnly: true,
+      }) ??
+      absoluteFilesystemPath(
+        ref.startsWith("~/")
+          ? absoluteFilesystemPath(ref.slice(2), sourceHome)
+          : ref,
+        sourceRoot
+      );
+    const node = args.graph ? resolveGraphNode(args.graph, ref) : null;
+    paths.push(
+      fallbackPath,
+      proposalTargetFilePath(node, fallbackPath) ?? undefined
+    );
+  }
+  try {
+    paths.push(
+      ...filesystemEvidencePaths(args.record?.evidence ?? [], {
+        homeDir: sourceHome,
+        base:
+          args.record?.projectRoot ??
+          projectRootFromAiRoot(sourceRoot, sourceHome) ??
+          sourceRoot,
+      })
+    );
+  } catch (error) {
+    return `cannot resolve filesystem evidence: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return aiPathSafetyIssue({
+    homeDir: args.homeDir,
+    sourceHome,
+    paths: paths.filter((value): value is string => Boolean(value)),
+  });
+}
+
+function filesystemEvidencePaths(
+  evidence: WritebackEvidence[],
+  args: { homeDir: string; base: string }
+): string[] {
+  return evidence.flatMap((entry) => {
+    if (!isFilesystemEvidence(entry)) {
+      return [];
+    }
+    const ref = entry.ref.startsWith("file://")
+      ? fileURLToPath(entry.ref)
+      : entry.ref.startsWith("file:")
+        ? decodeURIComponent(entry.ref.slice(5))
+        : entry.ref;
+    return [
+      ref.startsWith("~/")
+        ? absoluteFilesystemPath(ref.slice(2), args.homeDir)
+        : absoluteFilesystemPath(ref, args.base),
+    ];
+  });
+}
+
+function isFilesystemEvidence(entry: WritebackEvidence): boolean {
+  return (
+    ["file", "path", "filesystem"].includes(entry.type.toLowerCase()) ||
+    entry.ref.startsWith("file:") ||
+    entry.ref.startsWith("~/") ||
+    isAbsolute(entry.ref)
+  );
+}
+
+function assertDurableAiPaths(
+  args: Parameters<typeof aiRecordPathIssue>[0] & {
+    allowEphemeral?: boolean;
+  }
+) {
+  const canonicalIssue = canonicalReferenceIssue(args.targets ?? []);
+  if (canonicalIssue) {
+    throw new Error(canonicalIssue);
+  }
+  if (allowEphemeralAiPaths(args.allowEphemeral)) {
+    return;
+  }
+  const issue = aiRecordPathIssue(args);
+  if (issue) {
+    throw new Error(
+      `Refusing ephemeral AI state: ${issue}. Use --allow-ephemeral or FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.`
+    );
+  }
 }
 
 function numericSuffix(id: string): number {
@@ -825,12 +1134,49 @@ async function latestWritebackMap(args: {
   homeDir: string;
   rootDir: string;
   warnings?: string[];
+  excludedIds?: Set<string>;
 }): Promise<Map<string, AiWritebackRecord>> {
   const entries = await readJsonLinesFromPaths<AiWritebackRecord>(
-    aiWritebackQueueReadPaths(args.homeDir, args.rootDir)
+    aiWritebackQueueReadPaths(args.homeDir, args.rootDir),
+    args
   );
   const latest = new Map<string, AiWritebackRecord>();
   for (const entry of entries) {
+    try {
+      assertAiRecordId(entry.id, "WB");
+    } catch {
+      args.warnings?.push(
+        "Excluded writeback with an invalid record identity."
+      );
+      continue;
+    }
+
+    const scope = resolveScopeContext(args.rootDir, args.homeDir);
+    let authorized = entry.scope === scope.scope;
+    try {
+      authorized =
+        authorized &&
+        ((entry.projectRoot &&
+          scope.projectRoot &&
+          pathsPhysicallyEquivalent(entry.projectRoot, scope.projectRoot)) ||
+          !entry.sourceRoot ||
+          pathsPhysicallyEquivalent(
+            canonicalProjectAiRoot(entry.sourceRoot, args.homeDir),
+            canonicalProjectAiRoot(args.rootDir, args.homeDir)
+          )) &&
+        (!(entry.projectRoot && scope.projectRoot) ||
+          pathsPhysicallyEquivalent(entry.projectRoot, scope.projectRoot));
+    } catch {
+      authorized = false;
+    }
+    if (!authorized) {
+      args.warnings?.push(
+        `Excluded ${entry.id}: writeback is outside authorized scope.`
+      );
+      args.excludedIds?.add(entry.id);
+      latest.delete(entry.id);
+      continue;
+    }
     latest.set(entry.id, entry);
   }
   for (const [id, entry] of latest) {
@@ -844,9 +1190,15 @@ async function appendEvent(
   rootDir: string,
   event: AiJournalEvent
 ): Promise<void> {
+  if (needsAiMutationScope({ homeDir, rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir }, () =>
+      appendEvent(homeDir, rootDir, event)
+    );
+  }
   const pathValue = facultAiJournalPath(homeDir, rootDir);
   const existing = await readJsonLinesFromPaths<AiJournalEvent>(
-    aiJournalReadPaths(homeDir, rootDir)
+    aiJournalReadPaths(homeDir, rootDir),
+    { homeDir, rootDir }
   );
   const next = {
     ...event,
@@ -855,7 +1207,7 @@ async function appendEvent(
       existing.map((entry) => entry.id)
     ),
   };
-  await appendJsonLine(pathValue, next);
+  await appendJsonLine(pathValue, next, homeDir);
 }
 
 function proposalVerificationAuditId(
@@ -889,25 +1241,30 @@ async function ensureProposalVerificationEvent(args: {
     proposalVerificationAuditId(args.proposal.id, args.record);
   const journalPath = facultAiJournalPath(args.homeDir, args.rootDir);
   const existing = await readJsonLinesFromPaths<AiJournalEvent>(
-    aiJournalReadPaths(args.homeDir, args.rootDir)
+    aiJournalReadPaths(args.homeDir, args.rootDir),
+    args
   );
   if (existing.some((event) => event.id === auditId)) {
     return;
   }
   await args.onBeforeAppend?.();
-  await appendJsonLine(journalPath, {
-    id: auditId,
-    ts: args.record.verifiedAt,
-    kind: "proposal_verified",
-    source: "facult:evolution",
-    scope: args.proposal.scope,
-    projectSlug: args.proposal.projectSlug,
-    projectRoot: args.proposal.projectRoot,
-    summary: `${args.proposal.id} effectiveness -> ${args.record.effectiveness}`,
-    refs: [args.proposal.id, ...args.proposal.targets],
-    evidence: args.record.evidence,
-    tags: [],
-  } satisfies AiJournalEvent);
+  await appendJsonLine(
+    journalPath,
+    {
+      id: auditId,
+      ts: args.record.verifiedAt,
+      kind: "proposal_verified",
+      source: "facult:evolution",
+      scope: args.proposal.scope,
+      projectSlug: args.proposal.projectSlug,
+      projectRoot: args.proposal.projectRoot,
+      summary: `${args.proposal.id} effectiveness -> ${args.record.effectiveness}`,
+      refs: [args.proposal.id, ...args.proposal.targets],
+      evidence: args.record.evidence,
+      tags: [],
+    } satisfies AiJournalEvent,
+    args.homeDir
+  );
 }
 
 async function withProposalVerificationLock<T>(args: {
@@ -923,40 +1280,34 @@ async function withProposalVerificationLock<T>(args: {
     .digest("hex")
     .slice(0, 20);
   const lockPath = join(lockDir, `proposal-${lockId}.lock`);
-  await mkdir(lockDir, { recursive: true });
-  let lock: Awaited<ReturnType<typeof open>> | undefined;
-  for (let attempt = 0; attempt < 200 && !lock; attempt += 1) {
+  assertAiOutputPaths([lockPath, journalPath], args.homeDir);
+  let release: (() => void) | undefined;
+  const token = createHash("sha256")
+    .update(`${process.pid}:${Date.now()}:${Math.random()}`)
+    .digest("hex");
+  for (let attempt = 0; attempt < 200 && !release; attempt += 1) {
     try {
-      lock = await open(lockPath, "wx");
+      release = await createAiLock(
+        lockPath,
+        `${JSON.stringify({ pid: process.pid, token, proposalId: args.proposalId })}\n`,
+        args.homeDir
+      );
     } catch (error) {
-      if (
-        !(error instanceof Error && "code" in error) ||
-        (error as NodeJS.ErrnoException).code !== "EEXIST"
-      ) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
     }
   }
-  if (!lock) {
+  if (!release) {
     throw new Error(
       `Timed out waiting for proposal verification lock ${lockPath}. Inspect its owner before explicitly removing an abandoned lock.`
     );
   }
-  const token = createHash("sha256")
-    .update(`${process.pid}:${Date.now()}:${Math.random()}`)
-    .digest("hex");
-  await lock.writeFile(
-    `${JSON.stringify({ pid: process.pid, token, proposalId: args.proposalId })}\n`
-  );
   try {
     return await args.operation();
   } finally {
-    await lock.close();
-    const owner = await readFile(lockPath, "utf8").catch(() => "");
-    if (owner.includes(`"token":"${token}"`)) {
-      await rm(lockPath, { force: true });
-    }
+    release();
   }
 }
 
@@ -986,10 +1337,50 @@ async function resolveAssetSelection(args: {
   assetId?: string;
   assetType?: string;
 }> {
+  if (args.repairGraph !== false) {
+    assertAiOutputPaths(
+      [
+        facultAiIndexPath(args.homeDir, args.rootDir),
+        facultAiGraphPath(args.homeDir, args.rootDir),
+      ],
+      args.homeDir
+    );
+  }
   await ensureAiGraphPath({
     homeDir: args.homeDir,
     rootDir: args.rootDir,
     repair: args.repairGraph,
+    rebuild: async () => {
+      const snapshot = await buildIndexSnapshot({
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+        force: true,
+      });
+      await writeAiText(
+        facultAiIndexPath(args.homeDir, args.rootDir),
+        `${JSON.stringify(snapshot.index, null, 2)}\n`,
+        args.homeDir
+      );
+      const graphPath = facultAiGraphPath(args.homeDir, args.rootDir);
+      await writeAiText(
+        graphPath,
+        `${JSON.stringify(snapshot.graph, null, 2)}\n`,
+        args.homeDir
+      );
+      return { graphPath };
+    },
+    copyGenerated: async (source, destination) => {
+      const root =
+        projectRootFromAiRoot(args.rootDir, args.homeDir) ??
+        (aiPathWithin(source, args.rootDir)
+          ? args.rootDir
+          : dirname(dirname(source)));
+      await writeAiText(
+        destination,
+        await readAiText(source, "utf8", root),
+        args.homeDir
+      );
+    },
   });
   const graph = await loadGraph({
     homeDir: args.homeDir,
@@ -1005,7 +1396,7 @@ async function resolveAssetSelection(args: {
         relPath &&
         !relPath.startsWith("..") &&
         !relPath.includes("\0") &&
-        (await fileExists(resolvedPath))
+        (await fileExists(resolvedPath, projectRoot))
       ) {
         const normalizedRef = relPath.replaceAll("\\", "/");
         return {
@@ -1039,10 +1430,45 @@ export async function addWriteback(
   args: AddWritebackArgs
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (
+    needsAiMutationScope({
+      homeDir,
+      rootDir: args.rootDir,
+      allowEphemeral: args.allowEphemeral,
+    })
+  ) {
+    return withAiMutationScope(
+      { homeDir, rootDir: args.rootDir, allowEphemeral: args.allowEphemeral },
+      () => addWriteback(args)
+    );
+  }
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    targets: [args.asset, args.suggestedDestination],
+  });
   const evidence = (args.evidence ?? []).map((entry) => ({
     type: redactReconciliationText(entry.type),
     ref: redactReconciliationText(entry.ref),
   }));
+  const captureEvidencePaths = filesystemEvidencePaths(evidence, {
+    homeDir,
+    base: process.cwd(),
+  });
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    filesystemPaths: captureEvidencePaths,
+  });
+  for (const entry of evidence) {
+    if (isFilesystemEvidence(entry)) {
+      entry.ref = filesystemEvidencePaths([entry], {
+        homeDir,
+        base: process.cwd(),
+      })[0]!;
+    }
+  }
   if (evidence.length === 0 && !args.allowEmptyEvidence) {
     throw new Error(
       "writeback add requires at least one evidence item; pass --evidence <type:ref> or use --allow-empty-evidence for scratch/demo notes"
@@ -1061,6 +1487,15 @@ export async function addWriteback(
     homeDir,
     rootDir: args.rootDir,
   });
+  const recordId = nextId("WB", [...latest.keys()]);
+  assertAiOutputPaths(
+    [
+      facultAiWritebackQueuePath(homeDir, args.rootDir),
+      facultAiJournalPath(homeDir, args.rootDir),
+      writebackReviewPath(homeDir, args.rootDir, recordId),
+    ],
+    homeDir
+  );
   const asset = args.asset
     ? await resolveAssetSelection({
         homeDir,
@@ -1068,9 +1503,14 @@ export async function addWriteback(
         asset: args.asset,
       })
     : {};
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   const record: AiWritebackRecord = {
-    id: nextId("WB", [...latest.keys()]),
+    id: recordId,
     ts: nowIso(),
+    sourceRoot: resolve(args.rootDir),
+    sourceHome: resolve(homeDir),
     scope: scopeContext.scope,
     projectSlug: scopeContext.projectSlug,
     projectRoot: scopeContext.projectRoot,
@@ -1104,9 +1544,17 @@ export async function addWriteback(
     status: "recorded",
   };
 
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record,
+    targets: [record.assetRef, record.suggestedDestination],
+    graph,
+  });
   await appendJsonLine(
     facultAiWritebackQueuePath(homeDir, args.rootDir),
-    record
+    record,
+    homeDir
   );
   await appendEvent(homeDir, args.rootDir, {
     id: nextId("EVT", []),
@@ -1133,6 +1581,7 @@ export async function listWritebacks(args?: {
   homeDir?: string;
   rootDir: string;
   warnings?: string[];
+  excludedIds?: Set<string>;
 }): Promise<AiWritebackRecord[]> {
   if (!args) {
     throw new Error("listWritebacks requires a rootDir");
@@ -1142,6 +1591,7 @@ export async function listWritebacks(args?: {
     homeDir,
     rootDir: args.rootDir,
     warnings: args.warnings,
+    excludedIds: args.excludedIds,
   });
   return [...latest.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -1175,6 +1625,7 @@ export async function showWriteback(
   id: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiWritebackRecord | null> {
+  assertAiRecordId(id, "WB");
   const latest = await latestWritebackMap({
     homeDir: args.homeDir ?? process.env.HOME ?? homedir(),
     rootDir: args.rootDir,
@@ -1188,6 +1639,12 @@ async function updateWritebackStatus(
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      updateWritebackStatus(id, status, args)
+    );
+  }
   const current = await showWriteback(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Writeback not found: ${id}`);
@@ -1198,7 +1655,19 @@ async function updateWritebackStatus(
     updatedAt: nowIso(),
   };
   const eventTs = next.updatedAt ?? next.ts;
-  await appendJsonLine(facultAiWritebackQueuePath(homeDir, args.rootDir), next);
+  assertAiOutputPaths(
+    [
+      facultAiWritebackQueuePath(homeDir, args.rootDir),
+      writebackReviewPath(homeDir, args.rootDir, id),
+      facultAiJournalPath(homeDir, args.rootDir),
+    ],
+    homeDir
+  );
+  await appendJsonLine(
+    facultAiWritebackQueuePath(homeDir, args.rootDir),
+    next,
+    homeDir
+  );
   await appendEvent(homeDir, args.rootDir, {
     id: nextId("EVT", []),
     ts: eventTs,
@@ -1225,12 +1694,29 @@ async function updateWriteback(
   mutate: (record: AiWritebackRecord) => AiWritebackRecord
 ): Promise<AiWritebackRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      updateWriteback(id, args, mutate)
+    );
+  }
   const current = await showWriteback(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Writeback not found: ${id}`);
   }
   const next = { ...mutate(current), updatedAt: nowIso() };
-  await appendJsonLine(facultAiWritebackQueuePath(homeDir, args.rootDir), next);
+  assertAiOutputPaths(
+    [
+      facultAiWritebackQueuePath(homeDir, args.rootDir),
+      writebackReviewPath(homeDir, args.rootDir, id),
+    ],
+    homeDir
+  );
+  await appendJsonLine(
+    facultAiWritebackQueuePath(homeDir, args.rootDir),
+    next,
+    homeDir
+  );
   await writeWritebackReviewArtifact({
     homeDir,
     rootDir: args.rootDir,
@@ -1255,20 +1741,45 @@ export async function linkWritebackEvidence(
   evidence: WritebackEvidence,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiWritebackRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      linkWritebackEvidence(id, evidence, args)
+    );
+  }
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    filesystemPaths: filesystemEvidencePaths([evidence], {
+      homeDir,
+      base: process.cwd(),
+    }),
+  });
+  const normalizedEvidence = isFilesystemEvidence(evidence)
+    ? {
+        type: evidence.type,
+        ref: filesystemEvidencePaths([evidence], {
+          homeDir,
+          base: process.cwd(),
+        })[0]!,
+      }
+    : evidence;
   const current = await showWriteback(id, args);
   if (!current) {
     throw new Error(`Writeback not found: ${id}`);
   }
   if (
     current.evidence.some(
-      (entry) => entry.type === evidence.type && entry.ref === evidence.ref
+      (entry) =>
+        entry.type === normalizedEvidence.type &&
+        entry.ref === normalizedEvidence.ref
     )
   ) {
     return current;
   }
   return await updateWriteback(id, args, (record) => ({
     ...record,
-    evidence: [...record.evidence, evidence],
+    evidence: [...record.evidence, normalizedEvidence],
   }));
 }
 
@@ -1403,7 +1914,10 @@ async function nextProposalId(
 ): Promise<string> {
   const ids: string[] = [];
   for (const dir of aiProposalReadDirs(homeDir, rootDir)) {
-    const entries = await readdir(dir).catch(() => [] as string[]);
+    const entries = await readAiDirectory(
+      dir,
+      stateSourceBoundary(join(dir, ".entry"), { homeDir, rootDir })
+    ).catch(() => [] as string[]);
     ids.push(
       ...entries
         .filter((entry) => entry.endsWith(".json"))
@@ -1472,12 +1986,25 @@ async function writeProposalFile(
   homeDir: string,
   rootDir: string,
   proposal: AiProposalRecord
-) {
+): Promise<void> {
+  assertAiRecordId(proposal.id, "EV");
+  if (needsAiMutationScope({ homeDir, rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir }, () =>
+      writeProposalFile(homeDir, rootDir, proposal)
+    );
+  }
   const dir = facultAiProposalDir(homeDir, rootDir);
-  await mkdir(dir, { recursive: true });
-  await Bun.write(
+  assertAiOutputPaths(
+    [
+      join(dir, `${proposal.id}.json`),
+      proposalReviewPath(homeDir, rootDir, proposal.id),
+    ],
+    homeDir
+  );
+  await writeAiText(
     join(dir, `${proposal.id}.json`),
-    `${JSON.stringify(proposal, null, 2)}\n`
+    `${JSON.stringify(proposal, null, 2)}\n`,
+    homeDir
   );
   await writeProposalReviewArtifact({ homeDir, rootDir, proposal });
 }
@@ -1487,17 +2014,37 @@ export async function proposeEvolution(args: {
   rootDir: string;
   asset?: string;
   writebackIds?: string[];
+  allowEphemeral?: boolean;
 }): Promise<AiProposalRecord[]> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (
+    needsAiMutationScope({
+      homeDir,
+      rootDir: args.rootDir,
+      allowEphemeral: args.allowEphemeral,
+    })
+  ) {
+    return withAiMutationScope(
+      { homeDir, rootDir: args.rootDir, allowEphemeral: args.allowEphemeral },
+      () => proposeEvolution(args)
+    );
+  }
+  assertDurableAiPaths({ ...args, homeDir, targets: [args.asset] });
+  const proposedId = await nextProposalId(homeDir, args.rootDir);
+  assertAiOutputPaths(
+    [
+      join(facultAiProposalDir(homeDir, args.rootDir), `${proposedId}.json`),
+      proposalReviewPath(homeDir, args.rootDir, proposedId),
+      facultAiJournalPath(homeDir, args.rootDir),
+    ],
+    homeDir
+  );
   const writebacks = await listWritebacks({
     homeDir,
     rootDir: args.rootDir,
   });
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
-  const graph = await loadGraph({
-    homeDir,
-    rootDir: args.rootDir,
-  }).catch(() => null);
   const filterAsset = args.asset
     ? await resolveAssetSelection({
         homeDir,
@@ -1505,6 +2052,9 @@ export async function proposeEvolution(args: {
         asset: args.asset,
       })
     : null;
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   const selectedWritebacks = args.writebackIds?.length
     ? new Set(args.writebackIds)
     : null;
@@ -1523,12 +2073,20 @@ export async function proposeEvolution(args: {
     if (entry.evidence.length === 0) {
       return false;
     }
-    if (filterAsset) {
-      return (
-        entry.assetId === filterAsset.assetId ||
-        entry.assetRef === filterAsset.assetRef
-      );
+    if (
+      filterAsset &&
+      entry.assetId !== filterAsset.assetId &&
+      entry.assetRef !== filterAsset.assetRef
+    ) {
+      return false;
     }
+    assertDurableAiPaths({
+      ...args,
+      homeDir,
+      record: entry,
+      targets: [entry.assetRef, entry.suggestedDestination],
+      graph,
+    });
     return Boolean(entry.suggestedDestination ?? entry.assetRef);
   });
 
@@ -1572,17 +2130,31 @@ export async function proposeEvolution(args: {
       rootDir: args.rootDir,
     });
     const targetNode = graph && (resolveGraphNode(graph, target) ?? undefined);
+    assertDurableAiPaths({
+      ...args,
+      homeDir,
+      targets: [target, targetPath ?? undefined, targetNode?.path],
+      graph,
+    });
     const kind = inferProposalKind({
       target,
       targetKind: targetNode?.kind,
       targetPath:
         targetNode?.path ??
-        ((targetPath && (await fileExists(targetPath)) && targetPath) || null),
+        ((targetPath &&
+          (await fileExists(
+            targetPath,
+            projectRootFromAiRoot(args.rootDir, homeDir) ?? args.rootDir
+          )) &&
+          targetPath) ||
+          null),
     });
     const policy = policyProfileForProposal(scopeContext.scope, kind);
     const proposal: AiProposalRecord = {
       id,
       ts: nowIso(),
+      sourceRoot: resolve(args.rootDir),
+      sourceHome: resolve(homeDir),
       status: "proposed",
       scope: scopeContext.scope,
       projectSlug: scopeContext.projectSlug,
@@ -1657,6 +2229,7 @@ export async function assessEvolution(args: {
   homeDir?: string;
   rootDir: string;
   asset?: string;
+  allowEphemeral?: boolean;
 }): Promise<EvolutionAssessment> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
@@ -1669,10 +2242,50 @@ export async function assessEvolution(args: {
       })
     : null;
   const target = filterAsset?.assetRef ?? args.asset;
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
   const warnings: string[] = [];
-  const writebacks = (
-    await listWritebacks({ homeDir, rootDir: args.rootDir, warnings })
-  )
+  const excludedWritebacks = new Set<string>();
+  const includeRecord = (
+    record: AiWritebackRecord | AiProposalRecord,
+    targets: (string | undefined)[],
+    context: {
+      homeDir: string;
+      rootDir: string;
+      graph?: FacultGraph | null;
+    } = { homeDir, rootDir: args.rootDir, graph }
+  ) => {
+    const issue =
+      canonicalReferenceIssue(targets) ??
+      (allowEphemeralAiPaths(args.allowEphemeral)
+        ? undefined
+        : aiRecordPathIssue({ ...context, record, targets }));
+    if (issue) {
+      warnings.push(`Excluded ${record.id}: ${issue}.`);
+      console.error(`Warning: Excluded ${record.id}: ${issue}.`);
+      return false;
+    }
+    return true;
+  };
+  const safeWritebacks = (
+    await listWritebacks({
+      homeDir,
+      rootDir: args.rootDir,
+      warnings,
+      excludedIds: excludedWritebacks,
+    })
+  ).filter((entry) => {
+    const include = includeRecord(entry, [
+      entry.assetRef,
+      entry.suggestedDestination,
+    ]);
+    if (!include) {
+      excludedWritebacks.add(entry.id);
+    }
+    return include;
+  });
+  const writebacks = safeWritebacks
     .filter((entry) => entry.status !== "dismissed")
     .filter((entry) => entry.status !== "resolved")
     .filter((entry) => entry.status !== "superseded")
@@ -1709,7 +2322,81 @@ export async function assessEvolution(args: {
         })[0] ?? [target, []]);
 
   const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
-  const activeProposalIds = proposals
+  const excludedBySource = new Map<string, Set<string>>([
+    [
+      JSON.stringify([resolve(homeDir), resolve(args.rootDir)]),
+      excludedWritebacks,
+    ],
+  ]);
+  const safeProposals: AiProposalRecord[] = [];
+  for (const proposal of proposals) {
+    if (
+      !includeRecord(proposal, [
+        ...proposal.targets,
+        ...proposal.draftRefs.map((path) => absoluteFilesystemPath(path)),
+      ])
+    ) {
+      continue;
+    }
+    let sourceContext: { homeDir: string; rootDir: string };
+    try {
+      sourceContext = await trustedProposalSourceContext(proposal, {
+        homeDir,
+        rootDir: args.rootDir,
+      });
+      await validateProposalDraftAccess(proposal, {
+        homeDir,
+        rootDir: args.rootDir,
+      });
+    } catch (error) {
+      const warning = `Excluded ${proposal.id}: ${error instanceof Error ? error.message : String(error)}.`;
+      warnings.push(warning);
+      console.error(`Warning: ${warning}`);
+      continue;
+    }
+    const { homeDir: sourceHome, rootDir: sourceRoot } = sourceContext;
+    const sourceKey = JSON.stringify([
+      resolve(sourceHome),
+      resolve(sourceRoot),
+    ]);
+    let excludedSources = excludedBySource.get(sourceKey);
+    if (!excludedSources && proposal.sourceWritebacks.length > 0) {
+      const rejectedSourceIds = new Set<string>();
+      const sourceWritebacks = await listWritebacks({
+        ...sourceContext,
+        warnings,
+        excludedIds: rejectedSourceIds,
+      });
+      const sourceGraph = await loadGraph(sourceContext).catch(() => null);
+      excludedSources = new Set(
+        sourceWritebacks
+          .filter(
+            (entry) =>
+              !includeRecord(
+                entry,
+                [entry.assetRef, entry.suggestedDestination],
+                { ...sourceContext, graph: sourceGraph }
+              )
+          )
+          .map((entry) => entry.id)
+      );
+      for (const id of rejectedSourceIds) {
+        excludedSources.add(id);
+      }
+      excludedBySource.set(sourceKey, excludedSources);
+    }
+    if (proposal.sourceWritebacks.some((id) => excludedSources?.has(id))) {
+      warnings.push(
+        `Excluded ${proposal.id}: source writeback has ephemeral paths.`
+      );
+      console.error(
+        `Warning: Excluded ${proposal.id}: source writeback has ephemeral paths.`
+      );
+      continue;
+    }
+    safeProposals.push(proposal);
+  }
+  const activeProposalIds = safeProposals
     .filter(
       (proposal) =>
         ACTIVE_PROPOSAL_STATUSES.includes(proposal.status) ||
@@ -1954,13 +2641,32 @@ export async function listProposals(args?: {
   const homeDir = args?.homeDir ?? process.env.HOME ?? homedir();
   const byId = new Map<string, AiProposalRecord>();
   for (const dir of [...aiProposalReadDirs(homeDir, args.rootDir)].reverse()) {
-    const entries = await readdir(dir).catch(() => [] as string[]);
+    const entries = await readAiDirectory(
+      dir,
+      stateSourceBoundary(join(dir, ".entry"), {
+        homeDir,
+        rootDir: args.rootDir,
+      })
+    ).catch(() => [] as string[]);
     for (const entry of entries.sort()) {
       if (!entry.endsWith(".json")) {
         continue;
       }
-      const raw = await readFile(join(dir, entry), "utf8");
+      const raw = await readAiText(
+        join(dir, entry),
+        "utf8",
+        stateSourceBoundary(join(dir, entry), {
+          homeDir,
+          rootDir: args.rootDir,
+        })
+      );
       const parsed = JSON.parse(raw) as AiProposalRecord;
+      if (entry !== `${parsed.id}.json`) {
+        console.error(
+          `Warning: Ignored proposal with mismatched filename: ${entry}`
+        );
+        continue;
+      }
       byId.set(parsed.id, parsed);
     }
   }
@@ -1977,7 +2683,15 @@ export async function refreshAiReviewArtifacts(args: {
   evolutionReviewDir: string;
 }> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      refreshAiReviewArtifacts(args)
+    );
+  }
   const writebacks = await listWritebacks({ homeDir, rootDir: args.rootDir });
+  if (writebacks.length > 0) {
+    assertAiAtomicReplacementSupported();
+  }
   for (const record of writebacks) {
     await writeWritebackReviewArtifact({
       homeDir,
@@ -1987,12 +2701,23 @@ export async function refreshAiReviewArtifacts(args: {
   }
 
   const proposals = await listProposals({ homeDir, rootDir: args.rootDir });
+  if (proposals.length > 0) {
+    assertAiAtomicReplacementSupported();
+  }
   for (const proposal of proposals) {
+    const sourceContext = await trustedProposalSourceContext(proposal, {
+      homeDir,
+      rootDir: args.rootDir,
+    }).catch(() => null);
+    if (!sourceContext) {
+      console.error(
+        `Warning: Skipped review sources with untrusted promotion provenance: ${proposal.id}`
+      );
+      continue;
+    }
     const sourceWritebacks = (
       await Promise.all(
-        proposal.sourceWritebacks.map((id) =>
-          showWriteback(id, { homeDir, rootDir: args.rootDir })
-        )
+        proposal.sourceWritebacks.map((id) => showWriteback(id, sourceContext))
       )
     ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
     await writeProposalReviewArtifact({
@@ -2000,14 +2725,18 @@ export async function refreshAiReviewArtifacts(args: {
       rootDir: args.rootDir,
       proposal,
       writebacks: sourceWritebacks,
-      draftBody: await currentDraftBodyForProposal(proposal),
+      draftBody: await currentDraftBodyForProposal(proposal, {
+        homeDir,
+        rootDir: args.rootDir,
+      }),
     });
   }
 
   const writebackReviewDir = facultAiWritebackReviewDir(homeDir, args.rootDir);
   const evolutionReviewDir = facultAiEvolutionReviewDir(homeDir, args.rootDir);
-  await mkdir(writebackReviewDir, { recursive: true });
-  await mkdir(evolutionReviewDir, { recursive: true });
+  assertAiOutputPaths([writebackReviewDir, evolutionReviewDir], homeDir);
+  await mkdirAiDirectory(writebackReviewDir, homeDir, writebackReviewDir);
+  await mkdirAiDirectory(evolutionReviewDir, homeDir, evolutionReviewDir);
 
   return {
     writebackCount: writebacks.length,
@@ -2021,14 +2750,31 @@ export async function showProposal(
   id: string,
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord | null> {
+  assertAiRecordId(id, "EV");
+  if (id.includes("/") || id.includes("\\") || id === "." || id === "..") {
+    throw new Error("Proposal identity must be a single filename segment");
+  }
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   for (const dir of aiProposalReadDirs(homeDir, args.rootDir)) {
     const pathValue = join(dir, `${id}.json`);
-    if (!(await fileExists(pathValue))) {
+    if (
+      !(await fileExists(
+        pathValue,
+        stateSourceBoundary(pathValue, { homeDir, rootDir: args.rootDir })
+      ))
+    ) {
       continue;
     }
-    const raw = await readFile(pathValue, "utf8");
-    return JSON.parse(raw) as AiProposalRecord;
+    const raw = await readAiText(
+      pathValue,
+      "utf8",
+      stateSourceBoundary(pathValue, { homeDir, rootDir: args.rootDir })
+    );
+    const proposal = JSON.parse(raw) as AiProposalRecord;
+    if (proposal.id !== id) {
+      throw new Error("Proposal identity does not match its stored filename");
+    }
+    return proposal;
   }
   return null;
 }
@@ -2074,6 +2820,12 @@ async function updateProposal(
   args: { homeDir?: string; rootDir: string },
   mutate: (proposal: AiProposalRecord) => AiProposalRecord
 ): Promise<AiProposalRecord> {
+  const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      updateProposal(id, args, mutate)
+    );
+  }
   const current = await showProposal(id, args);
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2089,13 +2841,30 @@ export async function linkProposalWriteback(
   args: { homeDir?: string; rootDir: string }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
-  const [proposal, writeback] = await Promise.all([
-    showProposal(id, { homeDir, rootDir: args.rootDir }),
-    showWriteback(writebackId, { homeDir, rootDir: args.rootDir }),
-  ]);
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      linkProposalWriteback(id, writebackId, args)
+    );
+  }
+  const proposal = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!proposal) {
     throw new Error(`Proposal not found: ${id}`);
   }
+  const sourceContext = await trustedProposalSourceContext(proposal, {
+    homeDir,
+    rootDir: args.rootDir,
+  });
+  if (
+    !sameProposalSourceScope(sourceContext, { homeDir, rootDir: args.rootDir })
+  ) {
+    throw new Error(
+      "Cannot link writebacks from a different scope to a promoted proposal; link them to the original source proposal before promotion."
+    );
+  }
+  const writeback = await showWriteback(writebackId, {
+    homeDir,
+    rootDir: args.rootDir,
+  });
   if (!writeback) {
     throw new Error(`Writeback not found: ${writebackId}`);
   }
@@ -2122,7 +2891,11 @@ export async function linkProposalWriteback(
   ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
   const draftPath = linked.draftRefs.find((ref) => ref.endsWith(".md"));
   const draftBody = draftPath
-    ? await readFile(draftPath, "utf8").catch(() => undefined)
+    ? await readAiText(
+        draftPath,
+        "utf8",
+        proposalDraftRoot(draftPath, homeDir, args.rootDir)
+      ).catch(() => undefined)
     : undefined;
   await writeProposalReviewArtifact({
     homeDir,
@@ -2286,7 +3059,7 @@ function insertDraftRevision(
 
 async function resolveProposalTargetNode(
   proposal: AiProposalRecord,
-  args: { homeDir?: string; rootDir: string }
+  args: { homeDir?: string; rootDir: string; allowEphemeral?: boolean }
 ) {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
   const target = proposal.targets[0]?.trim();
@@ -2299,6 +3072,26 @@ async function resolveProposalTargetNode(
   }).catch(() => null);
   const node = graph ? resolveGraphNode(graph, target) : null;
   const canonicalTarget = node?.canonicalRef ?? target;
+  const fallbackPath = canonicalRefToPath({
+    ref: canonicalTarget,
+    homeDir,
+    rootDir: args.rootDir,
+  });
+  const pathValue = proposalTargetFilePath(node, fallbackPath);
+  if (!pathValue) {
+    throw new Error(`Could not resolve target path for ${target}`);
+  }
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: proposal,
+    targets: [
+      target,
+      pathValue,
+      ...proposal.draftRefs.map((path) => absoluteFilesystemPath(path)),
+    ],
+    graph,
+  });
   if (
     (canonicalTarget.startsWith("@project/") ||
       canonicalTarget.startsWith("@ai/")) &&
@@ -2312,18 +3105,6 @@ async function resolveProposalTargetNode(
       `Could not resolve target within the current capability root: ${target}`
     );
   }
-  const fallbackPath = canonicalRefToPath({
-    ref: canonicalTarget,
-    homeDir,
-    rootDir: args.rootDir,
-  });
-  const pathValue =
-    node?.kind === "skill" && node.path
-      ? join(node.path, "SKILL.md")
-      : (node?.path ?? fallbackPath);
-  if (!pathValue) {
-    throw new Error(`Could not resolve target path for ${target}`);
-  }
   if (!supportedDraftTarget({ pathValue, rootDir: args.rootDir, homeDir })) {
     throw new UnsupportedProposalTargetError(pathValue);
   }
@@ -2334,48 +3115,192 @@ async function resolveProposalTargetNode(
   };
 }
 
+function sameProposalSourceScope(
+  left: { homeDir: string; rootDir: string },
+  right: { homeDir: string; rootDir: string }
+): boolean {
+  return (
+    pathsPhysicallyEquivalent(left.homeDir, right.homeDir) &&
+    pathsPhysicallyEquivalent(
+      canonicalProjectAiRoot(left.rootDir, left.homeDir),
+      canonicalProjectAiRoot(right.rootDir, right.homeDir)
+    )
+  );
+}
+
+/** Only the destination's machine-local promotion journal can grant another source scope. */
+async function trustedProposalSourceContext(
+  proposal: AiProposalRecord,
+  args: { homeDir: string; rootDir: string }
+): Promise<{ homeDir: string; rootDir: string }> {
+  assertAiRecordId(proposal.id, "EV");
+  for (const sourceId of proposal.sourceWritebacks) {
+    assertAiRecordId(sourceId, "WB");
+  }
+  const claimed = {
+    homeDir: proposal.sourceHome ?? args.homeDir,
+    rootDir: proposal.sourceRoot ?? args.rootDir,
+  };
+  // Do not read repo-local legacy journals as authority for imported proposal JSON.
+  const events = await readJsonLines<AiJournalEvent>(
+    facultAiJournalPath(args.homeDir, args.rootDir),
+    facultMachineStateDir(args.homeDir, args.rootDir)
+  );
+  const binding = events.findLast(
+    (event) =>
+      event?.kind === "proposal_promoted" &&
+      event.ts === proposal.ts &&
+      event.promotion?.proposalId === proposal.id
+  )?.promotion;
+  if (
+    !binding &&
+    proposal.kind !== "promote_asset" &&
+    sameProposalSourceScope(claimed, args)
+  ) {
+    return { homeDir: args.homeDir, rootDir: args.rootDir };
+  }
+  if (
+    !binding ||
+    typeof binding.sourceHome !== "string" ||
+    typeof binding.sourceRoot !== "string" ||
+    typeof binding.sourceProposalId !== "string" ||
+    !Array.isArray(binding.sourceWritebacks) ||
+    !binding.sourceWritebacks.every((id) => typeof id === "string") ||
+    proposal.kind !== "promote_asset" ||
+    proposal.scope !== "global" ||
+    !proposal.sourceProposals?.includes(binding.sourceProposalId) ||
+    !pathsPhysicallyEquivalent(claimed.homeDir, binding.sourceHome) ||
+    !pathsPhysicallyEquivalent(claimed.rootDir, binding.sourceRoot) ||
+    JSON.stringify([...proposal.sourceWritebacks].sort()) !==
+      JSON.stringify([...binding.sourceWritebacks].sort())
+  ) {
+    throw new Error(
+      `Untrusted proposal provenance for ${proposal.id}; cross-scope sources require matching trusted promotion state. Promote the original source proposal again`
+    );
+  }
+  return { homeDir: binding.sourceHome, rootDir: binding.sourceRoot };
+}
+
+async function validatedProposalWritebacks(
+  proposal: AiProposalRecord,
+  args: { homeDir: string; rootDir: string; allowEphemeral?: boolean }
+) {
+  const context = await trustedProposalSourceContext(proposal, args);
+  assertDurableAiPaths({
+    ...args,
+    record: proposal,
+    targets: proposal.targets,
+    filesystemPaths: proposal.draftRefs.map((path) =>
+      absoluteFilesystemPath(path)
+    ),
+  });
+  await validateProposalDraftAccess(proposal, args);
+  const graph = await loadGraph(context).catch(() => null);
+  const writebacks = (
+    await Promise.all(
+      proposal.sourceWritebacks.map((id) => showWriteback(id, context))
+    )
+  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  for (const record of writebacks) {
+    assertDurableAiPaths({
+      ...context,
+      allowEphemeral: args.allowEphemeral,
+      record,
+      targets: [record.assetRef, record.suggestedDestination],
+      graph,
+    });
+  }
+  return { context, writebacks };
+}
+
 export async function draftProposal(
   id: string,
-  args: { homeDir?: string; rootDir: string; append?: string }
+  args: {
+    homeDir?: string;
+    rootDir: string;
+    append?: string;
+    allowEphemeral?: boolean;
+  }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (
+    needsAiMutationScope({
+      homeDir,
+      rootDir: args.rootDir,
+      allowEphemeral: args.allowEphemeral,
+    })
+  ) {
+    return withAiMutationScope(
+      { homeDir, rootDir: args.rootDir, allowEphemeral: args.allowEphemeral },
+      () => draftProposal(id, args)
+    );
+  }
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
   }
+  const { writebacks } = await validatedProposalWritebacks(current, {
+    ...args,
+    homeDir,
+  });
   const draftPath = draftRefForProposal(homeDir, args.rootDir, id);
   const patchPath = patchRefForProposal(homeDir, args.rootDir, id);
-  const existingDraftPath = await firstExistingFile([
-    draftPath,
-    ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
-  ]);
+  assertAiOutputPaths(
+    [
+      draftPath,
+      patchPath,
+      join(facultAiProposalDir(homeDir, args.rootDir), `${id}.json`),
+      proposalReviewPath(homeDir, args.rootDir, id),
+      facultAiJournalPath(homeDir, args.rootDir),
+    ],
+    homeDir
+  );
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: current,
+    filesystemPaths: current.draftRefs.map((path) =>
+      absoluteFilesystemPath(path)
+    ),
+  });
+  const existingDraftPath = await firstExistingFile(
+    [
+      draftPath,
+      ...current.draftRefs.filter((pathValue) => pathValue.endsWith(".md")),
+    ],
+    homeDir,
+    args.rootDir
+  );
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: current,
+    targets: [
+      ...current.draftRefs.map((path) => absoluteFilesystemPath(path)),
+      ...(existingDraftPath ? [absoluteFilesystemPath(existingDraftPath)] : []),
+    ],
+  });
   if (
     current.status !== "proposed" &&
     !args.append &&
     existingDraftPath &&
-    (await fileExists(patchPath))
+    (await fileExists(patchPath, facultAiDraftDir(homeDir, args.rootDir)))
   ) {
     return current;
   }
-  const writebacks = (
-    await Promise.all(
-      current.sourceWritebacks.map(async (writebackId) => {
-        const entry = await showWriteback(writebackId, {
-          homeDir,
-          rootDir: args.rootDir,
-        });
-        return entry ?? null;
-      })
-    )
-  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
     rootDir: args.rootDir,
+    allowEphemeral: args.allowEphemeral,
   });
-  await mkdir(dirname(draftPath), { recursive: true });
   const generatedBody = renderDraftBody(current, writebacks);
   const priorDraft = existingDraftPath
-    ? await readFile(existingDraftPath, "utf8")
+    ? await readAiText(
+        existingDraftPath,
+        "utf8",
+        proposalDraftRoot(existingDraftPath, homeDir, args.rootDir)
+      )
     : null;
   const baseDraft = priorDraft ?? generatedBody;
   const draftBody = args.append
@@ -2383,9 +3308,16 @@ export async function draftProposal(
       ? insertDraftRevision(id, baseDraft, args.append)
       : `${baseDraft.trimEnd()}\n\n## Draft Revision\n${args.append.trim()}\n`
     : baseDraft;
-  await Bun.write(draftPath, `${draftBody}\n`);
-  const currentText = (await fileExists(targetNode.path!))
-    ? await readFile(targetNode.path!, "utf8")
+  await writeAiText(draftPath, `${draftBody}\n`, homeDir);
+  const currentText = (await fileExists(
+    targetNode.path!,
+    projectRootFromAiRoot(args.rootDir, homeDir) ?? args.rootDir
+  ))
+    ? await readAiText(
+        targetNode.path!,
+        "utf8",
+        projectRootFromAiRoot(args.rootDir, homeDir) ?? args.rootDir
+      )
     : "";
   const appliedContent = isAppendProposalKind(current.kind)
     ? extractDraftAddition(id, draftBody)
@@ -2393,13 +3325,14 @@ export async function draftProposal(
   const nextText = currentText.includes(appliedContent)
     ? currentText
     : `${currentText.trimEnd()}\n\n${appliedContent}\n`;
-  await Bun.write(
+  await writeAiText(
     patchPath,
     `${renderPatchBody({
       targetPath: targetNode.path!,
       currentText,
       nextText,
-    })}\n`
+    })}\n`,
+    homeDir
   );
 
   const actor = proposalActor();
@@ -2506,7 +3439,20 @@ export async function rejectProposal(
   args: { homeDir?: string; rootDir: string; reason: string }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      rejectProposal(id, args)
+    );
+  }
   const actor = proposalActor();
+  const original = await showProposal(id, { homeDir, rootDir: args.rootDir });
+  if (!original) {
+    throw new Error(`Proposal not found: ${id}`);
+  }
+  const sourceContext = await trustedProposalSourceContext(original, {
+    homeDir,
+    rootDir: args.rootDir,
+  });
   const rejected = await updateProposal(
     id,
     { homeDir, rootDir: args.rootDir },
@@ -2531,15 +3477,9 @@ export async function rejectProposal(
     }
   );
   for (const writebackId of rejected.sourceWritebacks) {
-    const writeback = await showWriteback(writebackId, {
-      homeDir,
-      rootDir: args.rootDir,
-    });
+    const writeback = await showWriteback(writebackId, sourceContext);
     if (writeback?.status === "promoted") {
-      await updateWritebackStatus(writebackId, "recorded", {
-        homeDir,
-        rootDir: args.rootDir,
-      });
+      await updateWritebackStatus(writebackId, "recorded", sourceContext);
     }
   }
   return rejected;
@@ -2578,12 +3518,28 @@ export async function applyProposal(
   args: {
     homeDir?: string;
     rootDir: string;
+    allowEphemeral?: boolean;
+    /** @internal Regression seam for swaps at the validated write boundary. */
+    onBeforeTargetWrite?: () => Promise<void>;
     verificationDelayHours?: number;
     verificationGraceHours?: number;
     now?: () => Date;
   }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (
+    needsAiMutationScope({
+      homeDir,
+      rootDir: args.rootDir,
+      allowEphemeral: args.allowEphemeral,
+    })
+  ) {
+    return withAiMutationScope(
+      { homeDir, rootDir: args.rootDir, allowEphemeral: args.allowEphemeral },
+      () => applyProposal(id, args)
+    );
+  }
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2622,40 +3578,71 @@ export async function applyProposal(
   const verificationOverdueAt = new Date(
     Date.parse(verificationDueAt) + verificationGraceHours * 60 * 60 * 1000
   ).toISOString();
-  const sourceWritebacks = (
-    await Promise.all(
-      current.sourceWritebacks.map((writebackId) =>
-        showWriteback(writebackId, { homeDir, rootDir: args.rootDir })
-      )
-    )
-  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  const { writebacks: sourceWritebacks, context: sourceContext } =
+    await validatedProposalWritebacks(current, { ...args, homeDir });
+  assertAiOutputPaths(
+    [
+      join(facultAiProposalDir(homeDir, args.rootDir), `${id}.json`),
+      proposalReviewPath(homeDir, args.rootDir, id),
+      facultAiJournalPath(homeDir, args.rootDir),
+      ...sourceWritebacks.flatMap((entry) => [
+        facultAiWritebackQueuePath(
+          sourceContext.homeDir,
+          sourceContext.rootDir
+        ),
+        writebackReviewPath(
+          sourceContext.homeDir,
+          sourceContext.rootDir,
+          entry.id
+        ),
+        facultAiJournalPath(sourceContext.homeDir, sourceContext.rootDir),
+      ]),
+    ],
+    homeDir
+  );
 
   const targetNode = await resolveProposalTargetNode(current, {
     homeDir,
     rootDir: args.rootDir,
+    allowEphemeral: args.allowEphemeral,
   });
   const draftPath = current.draftRefs[0];
   if (!draftPath) {
     throw new Error(`Proposal ${id} has no primary draft ref`);
   }
-  const draftText = await readFile(draftPath, "utf8");
-  const existingTarget = (await fileExists(targetNode.path!))
-    ? await readFile(targetNode.path!, "utf8")
-    : "";
-  const nextText = isAppendProposalKind(current.kind)
-    ? (() => {
-        const addition = extractDraftAddition(id, draftText);
-        return existingTarget.includes(addition)
-          ? existingTarget
-          : `${existingTarget.trimEnd()}\n\n${addition}\n`;
-      })()
-    : `${draftText.trimEnd()}\n`;
-  await Bun.write(targetNode.path!, nextText);
+  const snapshot = await readAiTarget(
+    targetNode.path!,
+    homeDir,
+    projectRootFromAiRoot(args.rootDir, homeDir) ?? args.rootDir
+  );
+  try {
+    const draftText = await readAiText(
+      draftPath,
+      "utf8",
+      proposalDraftRoot(draftPath, homeDir, args.rootDir)
+    );
+    const existingTarget = snapshot.contents;
+    const nextText = isAppendProposalKind(current.kind)
+      ? (() => {
+          const addition = extractDraftAddition(id, draftText);
+          return existingTarget.includes(addition)
+            ? existingTarget
+            : `${existingTarget.trimEnd()}\n\n${addition}\n`;
+        })()
+      : `${draftText.trimEnd()}\n`;
+    await replaceAiTarget({
+      path: targetNode.path!,
+      contents: nextText,
+      snapshot,
+      beforeCommit: args.onBeforeTargetWrite,
+    });
+  } finally {
+    snapshot.close();
+  }
 
   for (const writeback of sourceWritebacks) {
     await updateWritebackStatus(writeback.id, "promoted", {
-      homeDir,
-      rootDir: args.rootDir,
+      ...sourceContext,
     });
   }
 
@@ -2762,17 +3749,15 @@ async function verifyProposalEffectivenessUnlocked(
       : args.effectiveness === "inconclusive"
         ? "promoted"
         : "recorded";
+  const sourceContext = await trustedProposalSourceContext(current, {
+    homeDir,
+    rootDir: args.rootDir,
+  });
   const reconcileSourceStatuses = async () => {
     for (const writebackId of current.sourceWritebacks) {
-      const writeback = await showWriteback(writebackId, {
-        homeDir,
-        rootDir: args.rootDir,
-      });
+      const writeback = await showWriteback(writebackId, sourceContext);
       if (writeback?.status !== sourceStatus) {
-        await updateWritebackStatus(writebackId, sourceStatus, {
-          homeDir,
-          rootDir: args.rootDir,
-        });
+        await updateWritebackStatus(writebackId, sourceStatus, sourceContext);
       }
     }
   };
@@ -2864,7 +3849,13 @@ export async function verifyProposalEffectiveness(
   id: string,
   args: VerifyProposalEffectivenessArgs
 ): Promise<AiProposalRecord> {
+  assertAiAtomicReplacementSupported();
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  if (needsAiMutationScope({ homeDir, rootDir: args.rootDir })) {
+    return withAiMutationScope({ homeDir, rootDir: args.rootDir }, () =>
+      verifyProposalEffectiveness(id, args)
+    );
+  }
   return await withProposalVerificationLock({
     homeDir,
     rootDir: args.rootDir,
@@ -2879,9 +3870,23 @@ export async function promoteProposal(
     homeDir?: string;
     rootDir: string;
     to: "global";
+    allowEphemeral?: boolean;
   }
 ): Promise<AiProposalRecord> {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
+  assertAiAtomicReplacementSupported();
+  if (
+    needsAiMutationScope({
+      homeDir,
+      rootDir: args.rootDir,
+      allowEphemeral: args.allowEphemeral,
+    })
+  ) {
+    return withAiMutationScope(
+      { homeDir, rootDir: args.rootDir, allowEphemeral: args.allowEphemeral },
+      () => promoteProposal(id, args)
+    );
+  }
   const current = await showProposal(id, { homeDir, rootDir: args.rootDir });
   if (!current) {
     throw new Error(`Proposal not found: ${id}`);
@@ -2889,25 +3894,48 @@ export async function promoteProposal(
   if (current.scope !== "project") {
     throw new Error(`Only project-scoped proposals can be promoted: ${id}`);
   }
-  const sourceWritebacks = (
-    await Promise.all(
-      current.sourceWritebacks.map(async (writebackId) => {
-        return (
-          (await showWriteback(writebackId, {
-            homeDir,
-            rootDir: args.rootDir,
-          })) ?? null
-        );
-      })
-    )
-  ).filter((entry): entry is AiWritebackRecord => Boolean(entry));
+  const graph = await loadGraph({ homeDir, rootDir: args.rootDir }).catch(
+    () => null
+  );
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    record: current,
+    targets: current.targets,
+    graph,
+  });
+  const { context: sourceContext, writebacks: sourceWritebacks } =
+    await validatedProposalWritebacks(current, { ...args, homeDir });
   const targetRoot =
     args.to === "global"
       ? resolveCliContextRoot({ homeDir, scope: "global" })
       : args.rootDir;
+  const targets = current.targets.map((target) =>
+    promoteTargetRef(target, args.to)
+  );
+  const targetGraph = await loadGraph({ homeDir, rootDir: targetRoot }).catch(
+    () => null
+  );
+  assertDurableAiPaths({
+    ...args,
+    homeDir,
+    rootDir: targetRoot,
+    targets,
+    graph: targetGraph,
+  });
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
+  assertAiOutputPaths(
+    [
+      join(facultAiProposalDir(homeDir, targetRoot), `${nextIdValue}.json`),
+      proposalReviewPath(homeDir, targetRoot, nextIdValue),
+      facultAiJournalPath(homeDir, targetRoot),
+    ],
+    homeDir
+  );
   const promoted: AiProposalRecord = {
     ...current,
+    sourceRoot: sourceContext.rootDir,
+    sourceHome: sourceContext.homeDir,
     id: nextIdValue,
     ts: nowIso(),
     status: "proposed",
@@ -2915,7 +3943,7 @@ export async function promoteProposal(
     projectSlug: undefined,
     projectRoot: undefined,
     kind: "promote_asset",
-    targets: current.targets.map((target) => promoteTargetRef(target, args.to)),
+    targets,
     summary: sourceWritebacks[0]?.summary ?? current.summary,
     rationale: `Promoted from project proposal ${current.id} targeting ${current.targets.join(", ")}. ${current.rationale}`,
     policyClass: "high-risk",
@@ -2947,6 +3975,13 @@ export async function promoteProposal(
     id: "",
     ts: promoted.ts,
     kind: "proposal_promoted",
+    promotion: {
+      proposalId: promoted.id,
+      sourceProposalId: current.id,
+      sourceRoot: sourceContext.rootDir,
+      sourceHome: sourceContext.homeDir,
+      sourceWritebacks: [...current.sourceWritebacks],
+    },
     source: proposalActor(),
     scope: promoted.scope,
     summary: `Promoted ${current.id} -> ${promoted.id}`,
@@ -3017,6 +4052,9 @@ Usage:
   fclt ai writeback summarize [--by <asset|kind|domain>] [--json]
   fclt ai writeback dismiss <id>
   fclt ai writeback promote <id>
+
+Temporary roots and alternate homes are refused on add. Use --allow-ephemeral or
+FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.
 `;
 }
 
@@ -3024,19 +4062,70 @@ function evolveHelp(): string {
   return `fclt ai evolve
 
 Usage:
-  fclt ai evolve assess [--asset <selector>] [--json]
-  fclt ai evolve propose [--asset <selector>] [--json]
+  fclt ai evolve assess [--asset <selector>] [--json] [--allow-ephemeral]
+  fclt ai evolve propose [--asset <selector>] [--json] [--allow-ephemeral]
   fclt ai evolve list [--json]
   fclt ai evolve show <id> [--json]
-  fclt ai evolve draft <id> [--append <text>]
+  fclt ai evolve draft <id> [--append <text>] [--allow-ephemeral]
   fclt ai evolve review <id>
   fclt ai evolve accept <id>
   fclt ai evolve reject <id> --reason <text>
   fclt ai evolve supersede <id> --by <proposal-id>
-  fclt ai evolve apply <id>
+  fclt ai evolve apply <id> [--allow-ephemeral]
   fclt ai evolve verify <id> --effectiveness <improved|unchanged|regressed|inconclusive> --evidence <type:ref> [--note <text>] [--allow-early]
   fclt ai evolve promote <id> --to global
+
+Temporary roots and alternate homes are excluded from assess and refused on creation.
+Use --allow-ephemeral or FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.
 `;
+}
+
+/** Consume value options before interpreting the explicit safety override. */
+function parseEphemeralOverride(argv: string[]): true | undefined {
+  const valueOptions = [
+    "root",
+    "scope",
+    "source",
+    "kind",
+    "summary",
+    "category",
+    "details",
+    "impact",
+    "attempted-workaround",
+    "desired-outcome",
+    "sensitivity",
+    "asset",
+    "confidence",
+    "suggested-destination",
+    "tag",
+    "evidence",
+    "by",
+    "issue",
+    "type",
+    "target",
+    "next-trigger",
+    "expected-outcome",
+    "append",
+    "reason",
+    "effectiveness",
+    "note",
+    "to",
+  ];
+  const { values } = parseArgs({
+    args: argv,
+    strict: false,
+    allowPositionals: true,
+    options: {
+      ...Object.fromEntries(
+        valueOptions.map((name) => [
+          name,
+          { type: "string" as const, multiple: true },
+        ])
+      ),
+      "allow-ephemeral": { type: "boolean" },
+    },
+  });
+  return values["allow-ephemeral"] === true ? true : undefined;
 }
 
 function parseStringFlag(argv: string[], flag: string): string | undefined {
@@ -3672,6 +4761,7 @@ async function writebackCommand(
         sensitivity,
         asset: parseStringFlag(commandArgs, "--asset"),
         allowEmptyEvidence: commandArgs.includes("--allow-empty-evidence"),
+        allowEphemeral: parseEphemeralOverride(argv),
         confidence:
           (parseStringFlag(commandArgs, "--confidence") as
             | ConfidenceLevel
@@ -3851,6 +4941,7 @@ async function evolveCommand(argv: string[], rootDir: string) {
       const assessment = await assessEvolution({
         rootDir,
         asset: parseStringFlag(commandArgs, "--asset"),
+        allowEphemeral: parseEphemeralOverride(argv),
       });
       if (commandArgs.includes("--json")) {
         await writeCliOutput(JSON.stringify(assessment, null, 2));
@@ -3876,6 +4967,7 @@ async function evolveCommand(argv: string[], rootDir: string) {
       const proposals = await proposeEvolution({
         rootDir,
         asset: parseStringFlag(commandArgs, "--asset"),
+        allowEphemeral: parseEphemeralOverride(argv),
       });
       if (commandArgs.includes("--json")) {
         await writeCliOutput(JSON.stringify(proposals, null, 2));
@@ -3962,6 +5054,7 @@ async function evolveCommand(argv: string[], rootDir: string) {
           ? await draftProposal(id, {
               rootDir,
               append: parseStringFlag(commandArgs, "--append"),
+              allowEphemeral: parseEphemeralOverride(argv),
             })
           : sub === "review"
             ? await reviewProposal(id, { rootDir })
@@ -3988,6 +5081,7 @@ async function evolveCommand(argv: string[], rootDir: string) {
                   : sub === "promote"
                     ? await promoteProposal(id, {
                         rootDir,
+                        allowEphemeral: parseEphemeralOverride(argv),
                         to:
                           (parseStringFlag(commandArgs, "--to") as
                             | "global"
@@ -3996,7 +5090,10 @@ async function evolveCommand(argv: string[], rootDir: string) {
                             throw new Error("evolve promote requires --to");
                           })(),
                       })
-                    : await applyProposal(id, { rootDir });
+                    : await applyProposal(id, {
+                        rootDir,
+                        allowEphemeral: parseEphemeralOverride(argv),
+                      });
       const verb =
         sub === "draft"
           ? "Drafted"
@@ -4153,8 +5250,12 @@ export async function aiCommand(
         rootDir,
         scope: parsed.scope === "global" ? "global" : "merged",
       });
-      await withFacultRootScope({ rootDir, scope }, async () =>
-        aiCommand(argv, true, resolvedContext)
+      await withAiMutationScope(
+        { homeDir, allowEphemeral: parseEphemeralOverride(rest) },
+        () =>
+          withFacultRootScope({ rootDir, scope }, () =>
+            aiCommand(argv, true, resolvedContext)
+          )
       );
       return;
     } catch (error) {

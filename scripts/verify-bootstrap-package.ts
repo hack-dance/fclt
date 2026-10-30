@@ -116,6 +116,7 @@ async function main(): Promise<void> {
       : ["bun", "run", sourceEntry];
     const env = {
       HOME: homeDir,
+      FCLT_ALLOW_EPHEMERAL_AI_PATHS: "1",
       FACULT_LOCAL_STATE_DIR: join(homeDir, ".local-state"),
     };
     const setup = await run({

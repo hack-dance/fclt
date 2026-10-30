@@ -29,6 +29,7 @@ async function execute(args: string[]): Promise<{
     env: {
       ...env,
       HOME: tempHome,
+      FCLT_ALLOW_EPHEMERAL_AI_PATHS: "1",
       USERPROFILE: tempHome,
       APPDATA: join(tempHome, "AppData", "Roaming"),
       LOCALAPPDATA: join(tempHome, "AppData", "Local"),

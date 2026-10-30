@@ -13,9 +13,11 @@ import {
   dirname,
   isAbsolute,
   join,
+  parse,
   posix,
   relative,
   resolve,
+  sep,
   win32,
 } from "node:path";
 import {
@@ -27,6 +29,8 @@ import {
 import { parseJsonLenient } from "./util/json";
 
 const WINDOWS_ABSOLUTE_PATH_RE = /^[A-Za-z]:[\\/]/;
+const WINDOWS_PATH_COMPONENT_RE = /[\\/]/;
+const PARENT_PATH_COMPONENT_RE = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
 
 export interface FacultConfig {
   /**
@@ -102,30 +106,91 @@ function physicalPathComparisonKey(
     return platform === "win32" ? resolved.toLowerCase() : resolved;
   }
 
-  const missingParts: string[] = [];
-  let existingAncestor = resolved;
-  while (true) {
+  const physical = resolvePhysicalPath(pathValue);
+  return platform === "win32" ? physical.toLowerCase() : physical;
+}
+
+/** Preserve parent components until preceding symlinks have been resolved, as filesystem I/O does. */
+export function absoluteFilesystemPath(
+  pathValue: string,
+  base = process.cwd()
+): string {
+  return isAbsolute(pathValue) ? pathValue : `${base}${sep}${pathValue}`;
+}
+
+export function resolvePhysicalPath(pathValue: string): string {
+  const absolute = absoluteFilesystemPath(pathValue);
+  try {
+    return realpathSync.native(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  if (!PARENT_PATH_COMPONENT_RE.test(absolute)) {
+    let ancestor = absolute;
+    const missing: string[] = [];
+    while (ancestor !== parse(ancestor).root) {
+      try {
+        const metadata = lstatSync(ancestor);
+        if (metadata.isSymbolicLink()) {
+          // A missing symlink destination is not an ordinary missing suffix.
+          try {
+            return join(realpathSync.native(ancestor), ...missing.reverse());
+          } catch {
+            throw new Error(
+              `Cannot resolve dangling symbolic link: ${ancestor}`
+            );
+          }
+        }
+        return join(realpathSync.native(ancestor), ...missing.reverse());
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+        missing.push(basename(ancestor));
+        ancestor = dirname(ancestor);
+      }
+    }
+    return join(ancestor, ...missing.reverse());
+  }
+  const root = parse(absolute).root;
+  const components = absolute
+    .slice(root.length)
+    .split(process.platform === "win32" ? WINDOWS_PATH_COMPONENT_RE : "/");
+  let current = root;
+  for (const component of components) {
+    if (!component || component === ".") {
+      continue;
+    }
+    if (component === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const candidate = join(current, component);
     try {
-      const physicalAncestor = realpathSync.native(existingAncestor);
-      const comparisonPath = missingParts.reduce(
-        (current, part) => pathApi.join(current, part),
-        physicalAncestor
-      );
-      return platform === "win32"
-        ? comparisonPath.toLowerCase()
-        : comparisonPath;
+      if (lstatSync(candidate).isSymbolicLink()) {
+        try {
+          current = realpathSync.native(candidate);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            throw new Error(
+              `Cannot resolve dangling symbolic link: ${candidate}`
+            );
+          }
+          throw error;
+        }
+      } else {
+        current = candidate;
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
-      const parent = pathApi.dirname(existingAncestor);
-      if (parent === existingAncestor) {
-        return platform === "win32" ? resolved.toLowerCase() : resolved;
-      }
-      missingParts.unshift(pathApi.basename(existingAncestor));
-      existingAncestor = parent;
+      current = candidate;
     }
   }
+  return current;
 }
 
 export function pathsPhysicallyEquivalent(
@@ -136,6 +201,20 @@ export function pathsPhysicallyEquivalent(
   return (
     physicalPathComparisonKey(left, platform) ===
     physicalPathComparisonKey(right, platform)
+  );
+}
+
+export function pathIsPhysicallyInsideOrEqual(
+  pathValue: string,
+  rootDir: string
+): boolean {
+  const rel = relative(
+    physicalPathComparisonKey(rootDir, process.platform),
+    physicalPathComparisonKey(pathValue, process.platform)
+  );
+  return (
+    rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
   );
 }
 

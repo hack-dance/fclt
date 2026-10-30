@@ -231,6 +231,8 @@ export async function ensureAiGraphPath(args: {
   homeDir: string;
   rootDir: string;
   repair?: boolean;
+  rebuild?: () => Promise<{ graphPath: string }>;
+  copyGenerated?: (source: string, destination: string) => Promise<void>;
 }): Promise<{
   path: string;
   rebuilt: boolean;
@@ -249,11 +251,13 @@ export async function ensureAiGraphPath(args: {
         indexPath: freshnessAnchor,
       }))
     ) {
-      const { graphPath } = await buildIndex({
-        rootDir: args.rootDir,
-        homeDir: args.homeDir,
-        force: false,
-      });
+      const { graphPath } = await (args.rebuild
+        ? args.rebuild()
+        : buildIndex({
+            rootDir: args.rootDir,
+            homeDir: args.homeDir,
+            force: false,
+          }));
       return { path: graphPath, rebuilt: true };
     }
     return { path: generatedPath, rebuilt: false };
@@ -272,26 +276,34 @@ export async function ensureAiGraphPath(args: {
             indexPath: legacyGeneratedPath,
           })
         ) {
-          const { graphPath } = await buildIndex({
-            rootDir: args.rootDir,
-            homeDir: args.homeDir,
-            force: false,
-          });
+          const { graphPath } = await (args.rebuild
+            ? args.rebuild()
+            : buildIndex({
+                rootDir: args.rootDir,
+                homeDir: args.homeDir,
+                force: false,
+              }));
           return { path: graphPath, rebuilt: true };
         }
-        await mkdir(dirname(generatedPath), { recursive: true });
-        await copyFile(legacyGeneratedPath, generatedPath);
+        if (args.copyGenerated) {
+          await args.copyGenerated(legacyGeneratedPath, generatedPath);
+        } else {
+          await mkdir(dirname(generatedPath), { recursive: true });
+          await copyFile(legacyGeneratedPath, generatedPath);
+        }
       }
       return { path: generatedPath, rebuilt: args.repair !== false };
     }
   }
 
   if (args.repair !== false) {
-    const { graphPath } = await buildIndex({
-      rootDir: args.rootDir,
-      homeDir: args.homeDir,
-      force: false,
-    });
+    const { graphPath } = await (args.rebuild
+      ? args.rebuild()
+      : buildIndex({
+          rootDir: args.rootDir,
+          homeDir: args.homeDir,
+          force: false,
+        }));
     return { path: graphPath, rebuilt: true };
   }
 

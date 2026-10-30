@@ -435,6 +435,31 @@ Promote project proposals to global only after repeated reuse:
 fclt ai evolve promote EV-00003 --to global --project
 ```
 
+Promotion records the original source scope and linked writeback IDs in the destination's
+machine-local journal. Draft, assessment, apply, and source status updates check that receipt
+before accessing another scope. Imported proposal JSON cannot grant cross-scope access.
+Older promoted proposals without a matching receipt must be promoted again from the original
+project proposal.
+
+Link additional writebacks to the original project proposal before promoting it. Linking a
+global writeback to a promoted project proposal is refused because writeback IDs are local to
+each scope. Canonical `@ai/` and `@project/` references require relative suffixes, even when
+temporary paths are explicitly allowed.
+
+Writeback and evolution filesystem operations share a bound directory boundary. On macOS and
+Linux, reads, appends, locks, directory creation, and replacements open each component relative
+to a directory descriptor without following links. The boundary verifies file and ancestor
+identities before and after access; apply retains its target snapshot while reading the draft.
+Every operation requires a matching root. Draft references must stay in the proposal draft
+directories, and stored record IDs must be numeric writeback or proposal IDs. Temporary-path
+overrides change storage eligibility without expanding these boundaries. Legacy queues must
+remain within their authorized source scope, and records claiming another scope are excluded.
+Generated graph repair reads its sources and writes its outputs through the same boundary.
+
+Windows supports checked reads and appends. Writeback and evolution operations requiring
+atomic file replacement refuse before mutation until handle-bound replacement is available;
+pathname-based replacement cannot safely prevent a parent-directory swap.
+
 ## Review Artifacts
 
 Runtime JSON queues, proposal metadata, draft patches, and journals stay in machine-local `fclt` state.
