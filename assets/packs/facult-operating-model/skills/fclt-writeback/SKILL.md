@@ -26,6 +26,26 @@ reports were requested.
 
 ## Workflow
 
+Writeback commands resolve linked Git worktrees to the canonical enrolled checkout.
+Automatic project routing requires a validated checkout relationship and the same
+Git common directory. Matching `origin` URLs are discovery metadata and project
+labels, not permission to use another checkout's store. Independent clones use the
+global fallback unless an explicit destination is selected with `--root`.
+Without active enrollment, a Git repo uses the global store and adds a
+`project:<remote-or-repo-name-and-path-hash>` tag; it does not create a project store.
+An explicit `--project` fallback warns with the destination and tag. Bare-repo
+worktrees and worktrees without a usable main checkout also use this fallback.
+Fallback `--asset` selectors must resolve in the global graph; unindexed repository
+files are rejected. Omit `--asset` to record a tagged observation without a target.
+Global evolution never treats `@project/` references as global files.
+Keep sensitive project details out of global records. Explicit `--global`, `--root`,
+and applicable environment root selections retain precedence. Writeback, evolve,
+and review commands share this resolution. Unrelated `core.worktree` redirects and
+unresolved Git contexts are rejected before they can inherit project authority.
+Historical queues remain accessible with `--root <old-checkout>/.ai`; they are not
+automatically merged or removed. An unenrolled submodule stays separate from its
+enrolled superproject.
+
 1. Choose project scope when the learning depends on a repo, architecture, test harness,
    or team workflow. Choose global scope for broadly reusable learning.
 2. Target the smallest affected instruction, snippet, skill, agent, MCP/tool config, or

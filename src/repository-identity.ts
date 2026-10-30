@@ -429,7 +429,7 @@ function readGit(projectRoot: string, argv: string[]): string | null {
   return result.stdout.trim() || null;
 }
 
-function hasGitMetadataAbove(projectRoot: string): boolean {
+export function hasGitMetadataAbove(projectRoot: string): boolean {
   let current = resolve(projectRoot);
   for (;;) {
     try {

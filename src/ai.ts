@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { ensureAiGraphPath } from "./ai-state";
 import {
   parseCliContextArgs,
@@ -31,6 +38,7 @@ import {
   normalizeWritebackArrays,
   writebackWarnings,
 } from "./writeback-arrays";
+import { resolveWritebackContext } from "./writeback-context";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -470,8 +478,60 @@ export class UnsupportedProposalTargetError extends Error {
   }
 }
 
-function supportedDraftTarget(pathValue: string): boolean {
-  return pathValue.toLowerCase().endsWith(".md");
+function physicalPathForTarget(pathValue: string): string {
+  let ancestor = resolve(pathValue);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) {
+      throw new Error("No existing target ancestor");
+    }
+    ancestor = parent;
+  }
+  return resolve(
+    realpathSync(ancestor),
+    relative(ancestor, resolve(pathValue))
+  );
+}
+
+function withinCapabilityRoot(pathValue: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(pathValue));
+  if (
+    rel === ".." ||
+    rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(rel)
+  ) {
+    return false;
+  }
+  // Resolve existing ancestors as well as leaves so new files cannot escape through a symlink.
+  try {
+    const physicalRelative = relative(
+      physicalPathForTarget(root),
+      physicalPathForTarget(pathValue)
+    );
+    return (
+      physicalRelative !== ".." &&
+      !physicalRelative.startsWith(
+        `..${process.platform === "win32" ? "\\" : "/"}`
+      ) &&
+      !isAbsolute(physicalRelative)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function supportedDraftTarget(args: {
+  pathValue: string;
+  rootDir: string;
+  homeDir: string;
+}): boolean {
+  return (
+    args.pathValue.toLowerCase().endsWith(".md") &&
+    withinCapabilityRoot(
+      args.pathValue,
+      projectRootFromAiRoot(args.rootDir, args.homeDir) ?? args.rootDir
+    )
+  );
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -715,26 +775,25 @@ function canonicalRefToPath(args: {
   rootDir: string;
 }): string | null {
   if (args.ref.startsWith("@ai/")) {
-    const globalRoot = projectRootFromAiRoot(args.rootDir, args.homeDir)
-      ? resolveCliContextRoot({
-          homeDir: args.homeDir,
-          scope: "global",
-        })
-      : args.rootDir;
-    return join(globalRoot, args.ref.slice("@ai/".length));
+    if (projectRootFromAiRoot(args.rootDir, args.homeDir)) {
+      return null;
+    }
+    const pathValue = resolve(args.rootDir, args.ref.slice("@ai/".length));
+    return withinCapabilityRoot(pathValue, args.rootDir) ? pathValue : null;
   }
   if (args.ref.startsWith("@project/")) {
     const relPath = args.ref.slice("@project/".length);
-    const canonicalPath = join(args.rootDir, relPath);
     const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
-    if (projectRoot) {
-      const projectPath = join(projectRoot, relPath);
-      if (existsSync(canonicalPath)) {
-        return canonicalPath;
-      }
-      return existsSync(projectPath) ? projectPath : canonicalPath;
+    if (!projectRoot) {
+      return null;
     }
-    return canonicalPath;
+    const canonicalPath = resolve(args.rootDir, relPath);
+    const projectPath = resolve(projectRoot, relPath);
+    const pathValue =
+      existsSync(canonicalPath) || !existsSync(projectPath)
+        ? canonicalPath
+        : projectPath;
+    return withinCapabilityRoot(pathValue, projectRoot) ? pathValue : null;
   }
   return null;
 }
@@ -960,8 +1019,17 @@ async function resolveAssetSelection(args: {
       `Asset not found in graph: ${args.asset}. Run "fclt graph show <selector>" to check indexed assets, or use a project-relative file path that exists.`
     );
   }
+  const assetRef = node.canonicalRef ?? node.id;
+  if (
+    assetRef.startsWith("@project/") &&
+    !projectRootFromAiRoot(args.rootDir, args.homeDir)
+  ) {
+    throw new Error(
+      `Project asset cannot be selected from global scope: ${args.asset}`
+    );
+  }
   return {
-    assetRef: node.canonicalRef ?? node.id,
+    assetRef,
     assetId: node.id,
     assetType: mapGraphNodeKind(node.kind),
   };
@@ -981,6 +1049,14 @@ export async function addWriteback(
     );
   }
   const scopeContext = resolveScopeContext(args.rootDir, homeDir);
+  if (
+    scopeContext.scope === "global" &&
+    args.suggestedDestination?.trim().startsWith("@project/")
+  ) {
+    throw new Error(
+      "Project destinations require project scope; choose an indexed global asset or omit the destination"
+    );
+  }
   const latest = await latestWritebackMap({
     homeDir,
     rootDir: args.rootDir,
@@ -1458,8 +1534,25 @@ export async function proposeEvolution(args: {
 
   const groups = new Map<string, AiWritebackRecord[]>();
   for (const entry of candidates) {
-    const target = entry.suggestedDestination ?? entry.assetRef;
+    const target = (entry.suggestedDestination ?? entry.assetRef)?.trim();
     if (!target) {
+      continue;
+    }
+    const canonicalTarget = graph
+      ? (resolveGraphNode(graph, target)?.canonicalRef ?? target)
+      : target;
+    if (
+      (canonicalTarget.startsWith("@project/") ||
+        canonicalTarget.startsWith("@ai/")) &&
+      !canonicalRefToPath({
+        ref: canonicalTarget,
+        homeDir,
+        rootDir: args.rootDir,
+      })
+    ) {
+      console.error(
+        `Warning: skipping writeback ${entry.id}: target ${target} cannot resolve within the current capability root.`
+      );
       continue;
     }
     const next = groups.get(target) ?? [];
@@ -2196,7 +2289,7 @@ async function resolveProposalTargetNode(
   args: { homeDir?: string; rootDir: string }
 ) {
   const homeDir = args.homeDir ?? process.env.HOME ?? homedir();
-  const target = proposal.targets[0];
+  const target = proposal.targets[0]?.trim();
   if (!target) {
     throw new Error(`Proposal ${proposal.id} has no targets`);
   }
@@ -2205,8 +2298,22 @@ async function resolveProposalTargetNode(
     rootDir: args.rootDir,
   }).catch(() => null);
   const node = graph ? resolveGraphNode(graph, target) : null;
+  const canonicalTarget = node?.canonicalRef ?? target;
+  if (
+    (canonicalTarget.startsWith("@project/") ||
+      canonicalTarget.startsWith("@ai/")) &&
+    !canonicalRefToPath({
+      ref: canonicalTarget,
+      homeDir,
+      rootDir: args.rootDir,
+    })
+  ) {
+    throw new Error(
+      `Could not resolve target within the current capability root: ${target}`
+    );
+  }
   const fallbackPath = canonicalRefToPath({
-    ref: target,
+    ref: canonicalTarget,
     homeDir,
     rootDir: args.rootDir,
   });
@@ -2217,7 +2324,7 @@ async function resolveProposalTargetNode(
   if (!pathValue) {
     throw new Error(`Could not resolve target path for ${target}`);
   }
-  if (!supportedDraftTarget(pathValue)) {
+  if (!supportedDraftTarget({ pathValue, rootDir: args.rootDir, homeDir })) {
     throw new UnsupportedProposalTargetError(pathValue);
   }
   return {
@@ -3486,7 +3593,10 @@ function parseEvidence(argv: string[]): WritebackEvidence[] {
   });
 }
 
-async function writebackCommand(argv: string[]) {
+async function writebackCommand(
+  argv: string[],
+  context?: Awaited<ReturnType<typeof resolveWritebackContext>>
+) {
   const parsed = parseCliContextArgs(argv);
   const [sub, ...commandArgs] = parsed.argv;
 
@@ -3500,13 +3610,27 @@ async function writebackCommand(argv: string[]) {
     return;
   }
 
-  const rootDir = resolveCliContextRoot({
-    rootArg: parsed.rootArg,
-    scope: parsed.scope,
-    cwd: process.cwd(),
-  });
-
   try {
+    const resolvedContext =
+      context ??
+      (await resolveWritebackContext({
+        rootArg: parsed.rootArg,
+        scope: parsed.scope,
+        cwd: process.cwd(),
+      }));
+    const { rootDir, projectTag } = resolvedContext;
+    if (!context) {
+      const scope =
+        parsed.scope === "global"
+          ? "global"
+          : projectRootFromAiRoot(rootDir)
+            ? "project"
+            : "global";
+      await withFacultRootScope({ rootDir, scope }, () =>
+        writebackCommand(argv, resolvedContext)
+      );
+      return;
+    }
     if (sub === "add") {
       const kind = parseStringFlag(commandArgs, "--kind");
       const summary = parseStringFlag(commandArgs, "--summary");
@@ -3556,7 +3680,10 @@ async function writebackCommand(argv: string[]) {
           commandArgs,
           "--suggested-destination"
         ),
-        tags: parseRepeatedFlag(commandArgs, "--tag"),
+        tags: [
+          ...parseRepeatedFlag(commandArgs, "--tag"),
+          ...(projectTag ? [projectTag] : []),
+        ],
         evidence: parseEvidence(commandArgs),
       });
       if (commandArgs.includes("--json")) {
@@ -3705,7 +3832,7 @@ async function writebackCommand(argv: string[]) {
   }
 }
 
-async function evolveCommand(argv: string[]) {
+async function evolveCommand(argv: string[], rootDir: string) {
   const parsed = parseCliContextArgs(argv);
   const [sub, ...commandArgs] = parsed.argv;
 
@@ -3718,12 +3845,6 @@ async function evolveCommand(argv: string[]) {
     console.log(evolveHelp());
     return;
   }
-
-  const rootDir = resolveCliContextRoot({
-    rootArg: parsed.rootArg,
-    scope: parsed.scope,
-    cwd: process.cwd(),
-  });
 
   try {
     if (sub === "assess") {
@@ -3903,7 +4024,7 @@ async function evolveCommand(argv: string[]) {
   }
 }
 
-async function reviewCommand(argv: string[]): Promise<void> {
+async function reviewCommand(argv: string[], rootDir: string): Promise<void> {
   const parsed = parseCliContextArgs(argv);
   const [sub, ...commandArgs] = parsed.argv;
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
@@ -3914,11 +4035,6 @@ async function reviewCommand(argv: string[]): Promise<void> {
     console.log(reviewHelp());
     return;
   }
-  const rootDir = resolveCliContextRoot({
-    rootArg: parsed.rootArg,
-    scope: parsed.scope,
-    cwd: process.cwd(),
-  });
   const homeDir = process.env.HOME ?? homedir();
   const json = commandArgs.includes("--json");
   try {
@@ -3929,10 +4045,7 @@ async function reviewCommand(argv: string[]): Promise<void> {
       const result = await initializeReconciliationConfig({
         homeDir,
         rootDir,
-        scope:
-          parsed.scope === "global" || parsed.scope === "project"
-            ? parsed.scope
-            : undefined,
+        scope: projectRootFromAiRoot(rootDir, homeDir) ? "project" : "global",
         dryRun: commandArgs.includes("--dry-run"),
         force: commandArgs.includes("--force"),
       });
@@ -3990,11 +4103,12 @@ async function reviewCommand(argv: string[]): Promise<void> {
 
 export async function aiCommand(
   argv: string[],
-  rootScopeActive = false
+  rootScopeActive = false,
+  context?: Awaited<ReturnType<typeof resolveWritebackContext>>
 ): Promise<void> {
   if (!writebackWarnings.getStore()) {
     return writebackWarnings.run(new Set(), () =>
-      aiCommand(argv, rootScopeActive)
+      aiCommand(argv, rootScopeActive, context)
     );
   }
   const [sub, ...rest] = argv;
@@ -4006,24 +4120,41 @@ export async function aiCommand(
     console.log(aiHelp());
     return;
   }
+  if (
+    ["writeback", "evolve", "review", "reconcile"].includes(sub) &&
+    (rest.includes("--help") ||
+      rest.includes("-h") ||
+      rest[0] === "help" ||
+      rest.length === 0)
+  ) {
+    if (sub === "writeback") {
+      console.log(writebackHelp());
+    } else if (sub === "evolve") {
+      console.log(evolveHelp());
+    } else {
+      console.log(reviewHelp());
+    }
+    return;
+  }
 
   if (!rootScopeActive) {
     try {
       const parsed = parseCliContextArgs(rest);
       const homeDir = process.env.HOME ?? homedir();
-      const rootDir = resolveCliContextRoot({
+      const resolvedContext = await resolveWritebackContext({
         homeDir,
         rootArg: parsed.rootArg,
         scope: parsed.scope,
         cwd: process.cwd(),
       });
+      const { rootDir } = resolvedContext;
       const scope = resolveCliContextScope({
         homeDir,
         rootDir,
-        scope: parsed.scope,
+        scope: parsed.scope === "global" ? "global" : "merged",
       });
       await withFacultRootScope({ rootDir, scope }, async () =>
-        aiCommand(argv, true)
+        aiCommand(argv, true, resolvedContext)
       );
       return;
     } catch (error) {
@@ -4054,16 +4185,18 @@ export async function aiCommand(
   }
 
   if (sub === "writeback") {
-    await writebackCommand(rest);
+    await writebackCommand(rest, context);
     return;
   }
-
   if (sub === "evolve") {
-    await evolveCommand(rest);
+    await evolveCommand(rest, context?.rootDir ?? resolveCliContextRoot());
     return;
   }
   if (sub === "review" || sub === "reconcile") {
-    await reviewCommand(sub === "reconcile" ? ["reconcile", ...rest] : rest);
+    await reviewCommand(
+      sub === "reconcile" ? ["reconcile", ...rest] : rest,
+      context?.rootDir ?? resolveCliContextRoot()
+    );
     return;
   }
 
