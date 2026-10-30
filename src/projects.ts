@@ -3245,10 +3245,9 @@ export async function resolveWritebackProject(args: {
 }): Promise<{
   repositoryRoot: string;
   enrolledRoot?: string;
+  ambiguousRoots?: string[];
   tag: string;
 } | null> {
-  // Validate linked-worktree metadata before consulting any remote identity.
-  canonicalProjectRoot(args.cwd);
   const topLevel = await runGit({
     cwd: args.cwd,
     argv: ["rev-parse", "--show-toplevel"],
@@ -3256,48 +3255,73 @@ export async function resolveWritebackProject(args: {
   if (topLevel.exitCode !== 0 || !topLevel.stdout) {
     return null;
   }
-  const repositoryRoot = await realpath(canonicalProjectRoot(topLevel.stdout));
+  const checkoutRoot = await realpath(topLevel.stdout);
   const originResult = await runGit({
-    cwd: repositoryRoot,
+    cwd: checkoutRoot,
     argv: ["remote", "get-url", "origin"],
   });
   const origin = normalizeRepositoryRemote(originResult.stdout);
+  let repositoryRoot = checkoutRoot;
+  let canonicalAvailable = true;
+  try {
+    repositoryRoot = await realpath(canonicalProjectRoot(checkoutRoot));
+  } catch {
+    // Bare-repository worktrees and missing primary checkouts have no durable enrollment authority.
+    canonicalAvailable = false;
+  }
+  const tag = `project:${origin ?? `${basename(repositoryRoot)}-${sha256(repositoryRoot).slice(0, 8)}`}`;
+  if (!canonicalAvailable) {
+    return { repositoryRoot, tag };
+  }
   const registry = await loadRegistry(args.homeDir);
   const matches: Array<{ root: string; sharedCheckout: boolean }> = [];
-  for (const entry of Object.values(registry.projects)) {
-    if (entry.decision !== "selected") {
-      continue;
-    }
-    for (const location of entry.locations) {
-      try {
-        const root = canonicalProjectRoot(location.path);
-        if (
-          (await gitRoot(root)) !== root ||
-          !(await validProjectEnrollmentConfig(
-            join(root, ".ai/config.toml"),
-            entry
-          ))
-        ) {
-          continue;
+  const candidates = Object.values(registry.projects)
+    .filter((entry) => entry.decision === "selected")
+    .flatMap((entry) =>
+      entry.locations.map((location) => ({ entry, location }))
+    );
+  // Bound subprocess pressure while checking independent enrolled locations concurrently.
+  for (let offset = 0; offset < candidates.length; offset += 4) {
+    const batch = await Promise.all(
+      candidates.slice(offset, offset + 4).map(async ({ entry, location }) => {
+        try {
+          const root = canonicalProjectRoot(location.path);
+          const sharedCheckout = root === repositoryRoot;
+          if (!sharedCheckout) {
+            if (!origin) {
+              return null;
+            }
+            const candidateOrigin = await runGit({
+              cwd: root,
+              argv: ["remote", "get-url", "origin"],
+            });
+            if (normalizeRepositoryRemote(candidateOrigin.stdout) !== origin) {
+              return null;
+            }
+          }
+          if (
+            (await gitRoot(root)) !== root ||
+            !(await validProjectEnrollmentConfig(
+              join(root, ".ai/config.toml"),
+              entry
+            ))
+          ) {
+            return null;
+          }
+          const candidate = await resolveRepositoryIdentity(root, args.homeDir);
+          if (candidate.id !== entry.repositoryId) {
+            return null;
+          }
+          return { root, sharedCheckout };
+        } catch {
+          // Missing or stale enrollment locations cannot supply writeback authority.
+          return null;
         }
-        const candidate = await resolveRepositoryIdentity(root, args.homeDir);
-        if (candidate.id !== entry.repositoryId) {
-          continue;
-        }
-        const sharedCheckout = root === repositoryRoot;
-        const candidateOrigin = await runGit({
-          cwd: root,
-          argv: ["remote", "get-url", "origin"],
-        });
-        if (
-          sharedCheckout ||
-          (origin &&
-            normalizeRepositoryRemote(candidateOrigin.stdout) === origin)
-        ) {
-          matches.push({ root, sharedCheckout });
-        }
-      } catch {
-        // Missing or stale enrollment locations cannot supply writeback authority.
+      })
+    );
+    for (const match of batch) {
+      if (match) {
+        matches.push(match);
       }
     }
   }
@@ -3309,15 +3333,11 @@ export async function resolveWritebackProject(args: {
       ).map((match) => match.root)
     ),
   ];
-  if (roots.length > 1) {
-    throw new Error(
-      "Multiple enrolled checkouts match this origin; pass --root to select the writeback destination"
-    );
-  }
   return {
     repositoryRoot,
-    enrolledRoot: roots[0],
-    tag: `project:${origin ?? basename(repositoryRoot)}`,
+    enrolledRoot: roots.length === 1 ? roots[0] : undefined,
+    ambiguousRoots: roots.length > 1 ? roots : undefined,
+    tag,
   };
 }
 

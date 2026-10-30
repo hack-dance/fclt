@@ -27,11 +27,19 @@ reports were requested.
 Writeback commands resolve linked Git worktrees to the canonical enrolled checkout.
 Scratch clones also use that checkout when their normalized `origin` remote matches.
 Without active enrollment, a Git repo uses the global store and adds a
-`project:<remote-or-repo-name>` tag; it does not create a project store, even with
-`--project`. Project-relative `--asset` paths remain usable in this fallback.
+`project:<remote-or-repo-name-and-path-hash>` tag; it does not create a project store.
+An explicit `--project` fallback warns with the destination and tag. Bare-repo
+worktrees and worktrees without a usable main checkout also use this fallback.
+Fallback `--asset` selectors must resolve in the global graph; unindexed repository
+files are rejected. Omit `--asset` to record a tagged observation without a target.
+Global evolution never treats `@project/` references as global files.
 Keep sensitive project details out of global records. Explicit `--global`, `--root`,
 and applicable environment root selections retain precedence. If several enrolled
-checkouts match an origin, select the intended destination with `--root`.
+checkouts match an origin, writes require an explicit `--root`; reads use the global
+store with a warning. Writeback, evolve, and review commands share this resolution.
+Historical queues remain accessible with `--root <old-checkout>/.ai`; they are not
+automatically merged or removed. An unenrolled submodule stays separate from its
+enrolled superproject.
 
 1. Decide scope:
 

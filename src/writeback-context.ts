@@ -6,13 +6,15 @@ import {
   projectRootFromAiRoot,
 } from "./paths";
 import { resolveWritebackProject } from "./projects";
+import { writebackWarnings } from "./writeback-arrays";
 
 export async function resolveWritebackContext(
-  args: NonNullable<Parameters<typeof resolveCliContextRoot>[0]>
+  args: NonNullable<Parameters<typeof resolveCliContextRoot>[0]> & {
+    readOnly?: boolean;
+  }
 ): Promise<{
   rootDir: string;
   projectTag?: string;
-  assetProjectRoot?: string;
 }> {
   const homeDir = args.homeDir ?? process.env.HOME ?? "";
   if (args.scope === "global") {
@@ -38,9 +40,22 @@ export async function resolveWritebackContext(
   if (project.enrolledRoot) {
     return { rootDir: join(project.enrolledRoot, ".ai") };
   }
+  if (project.ambiguousRoots && !args.readOnly) {
+    throw new Error(
+      "Multiple enrolled checkouts match this origin; pass --root to select the writeback destination"
+    );
+  }
+  const rootDir = resolveCliContextRoot({ ...args, scope: "global" });
+  if (args.scope === "project" || project.ambiguousRoots) {
+    const warning = `Using global destination ${rootDir} with tag ${project.tag}; ${project.ambiguousRoots ? "multiple enrolled checkouts match; use --root to inspect one" : "no usable enrolled checkout was found"}.`;
+    const reported = writebackWarnings.getStore();
+    if (!reported?.has(warning)) {
+      console.error(`Warning: ${warning}`);
+      reported?.add(warning);
+    }
+  }
   return {
-    rootDir: resolveCliContextRoot({ ...args, scope: "global" }),
+    rootDir,
     projectTag: project.tag,
-    assetProjectRoot: project.repositoryRoot,
   };
 }
