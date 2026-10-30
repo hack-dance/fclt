@@ -79,17 +79,28 @@ export function aiPathSafetyIssue(args: {
     process.env.TMPDIR,
     ...(process.platform === "win32"
       ? []
-      : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
+      : [
+          "/tmp",
+          "/private/tmp",
+          "/var/tmp",
+          "/private/var/tmp",
+          "/var/folders",
+          "/private/var/folders",
+        ]),
   ].filter((value): value is string => Boolean(value));
   for (const path of args.paths) {
-    if (
-      temporaryRoots.some(
-        (root) =>
-          pathIsInsideOrEqual(path, root) ||
-          pathIsPhysicallyInsideOrEqual(path, root)
-      )
-    ) {
-      return `path is under an OS temporary directory: ${path}`;
+    try {
+      if (
+        temporaryRoots.some(
+          (root) =>
+            pathIsInsideOrEqual(path, root) ||
+            pathIsPhysicallyInsideOrEqual(path, root)
+        )
+      ) {
+        return `path is under an OS temporary directory: ${path}`;
+      }
+    } catch (error) {
+      return `cannot verify physical path ${path}: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
   return undefined;

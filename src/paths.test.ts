@@ -20,6 +20,7 @@ import {
   machineStateProjectScopeId,
   pathIsInsideOrEqual,
   pathIsPhysicallyInsideOrEqual,
+  pathsPhysicallyEquivalent,
   projectRootFromAiRoot,
 } from "./paths";
 
@@ -70,6 +71,27 @@ afterEach(async () => {
 });
 
 describe("paths", () => {
+  it.skipIf(process.platform === "win32")(
+    "rejects dangling links instead of reconstructing a durable lexical location",
+    async () => {
+      tempHome = await makeTempHome();
+      const root = join(tempHome, "root");
+      await mkdir(root);
+      const alias = join(root, "VERIFY.md");
+      await symlink(join(tempHome, "missing/VERIFY.md"), alias);
+      expect(() => pathIsPhysicallyInsideOrEqual(alias, root)).toThrow(
+        "dangling symbolic link"
+      );
+      expect(() =>
+        pathsPhysicallyEquivalent(alias, join(root, "other.md"))
+      ).toThrow("dangling symbolic link");
+      const directoryAlias = join(root, "instructions");
+      await symlink(join(tempHome, "missing-dir"), directoryAlias);
+      expect(() =>
+        pathIsPhysicallyInsideOrEqual(join(directoryAlias, "VERIFY.md"), root)
+      ).toThrow("dangling symbolic link");
+    }
+  );
   it("checks physical containment through missing descendants and directory links", async () => {
     tempHome = await makeTempHome();
     const root = join(tempHome, "root");

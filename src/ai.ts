@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, open, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import {
   type AiSourcePaths,
   aiPathSafetyIssue,
@@ -2936,8 +2937,11 @@ export async function promoteProposal(
     args.to === "global"
       ? resolveCliContextRoot({ homeDir, scope: "global" })
       : args.rootDir;
+  const targets = current.targets.map((target) =>
+    promoteTargetRef(target, args.to)
+  );
+  assertDurableAiPaths({ ...args, homeDir, rootDir: targetRoot, targets });
   const nextIdValue = await nextProposalId(homeDir, targetRoot);
-  assertDurableAiPaths({ ...args, homeDir, rootDir: targetRoot });
   const promoted: AiProposalRecord = {
     ...current,
     id: nextIdValue,
@@ -2947,7 +2951,7 @@ export async function promoteProposal(
     projectSlug: undefined,
     projectRoot: undefined,
     kind: "promote_asset",
-    targets: current.targets.map((target) => promoteTargetRef(target, args.to)),
+    targets,
     summary: sourceWritebacks[0]?.summary ?? current.summary,
     rationale: `Promoted from project proposal ${current.id} targeting ${current.targets.join(", ")}. ${current.rationale}`,
     policyClass: "high-risk",
@@ -3075,6 +3079,54 @@ Usage:
 Temporary roots and alternate homes are excluded from assess and refused on creation.
 Use --allow-ephemeral or FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.
 `;
+}
+
+/** Consume value options before interpreting the explicit safety override. */
+function parseEphemeralOverride(argv: string[]): true | undefined {
+  const valueOptions = [
+    "root",
+    "scope",
+    "source",
+    "kind",
+    "summary",
+    "category",
+    "details",
+    "impact",
+    "attempted-workaround",
+    "desired-outcome",
+    "sensitivity",
+    "asset",
+    "confidence",
+    "suggested-destination",
+    "tag",
+    "evidence",
+    "by",
+    "issue",
+    "type",
+    "target",
+    "next-trigger",
+    "expected-outcome",
+    "append",
+    "reason",
+    "effectiveness",
+    "note",
+    "to",
+  ];
+  const { values } = parseArgs({
+    args: argv,
+    strict: false,
+    allowPositionals: true,
+    options: {
+      ...Object.fromEntries(
+        valueOptions.map((name) => [
+          name,
+          { type: "string" as const, multiple: true },
+        ])
+      ),
+      "allow-ephemeral": { type: "boolean" },
+    },
+  });
+  return values["allow-ephemeral"] === true ? true : undefined;
 }
 
 function parseStringFlag(argv: string[], flag: string): string | undefined {
@@ -3693,7 +3745,7 @@ async function writebackCommand(argv: string[]) {
         sensitivity,
         asset: parseStringFlag(commandArgs, "--asset"),
         allowEmptyEvidence: commandArgs.includes("--allow-empty-evidence"),
-        allowEphemeral: commandArgs.includes("--allow-ephemeral") || undefined,
+        allowEphemeral: parseEphemeralOverride(argv),
         confidence:
           (parseStringFlag(commandArgs, "--confidence") as
             | ConfidenceLevel
@@ -3876,7 +3928,7 @@ async function evolveCommand(argv: string[]) {
       const assessment = await assessEvolution({
         rootDir,
         asset: parseStringFlag(commandArgs, "--asset"),
-        allowEphemeral: commandArgs.includes("--allow-ephemeral") || undefined,
+        allowEphemeral: parseEphemeralOverride(argv),
       });
       if (commandArgs.includes("--json")) {
         await writeCliOutput(JSON.stringify(assessment, null, 2));
@@ -3902,7 +3954,7 @@ async function evolveCommand(argv: string[]) {
       const proposals = await proposeEvolution({
         rootDir,
         asset: parseStringFlag(commandArgs, "--asset"),
-        allowEphemeral: commandArgs.includes("--allow-ephemeral") || undefined,
+        allowEphemeral: parseEphemeralOverride(argv),
       });
       if (commandArgs.includes("--json")) {
         await writeCliOutput(JSON.stringify(proposals, null, 2));
@@ -4015,9 +4067,7 @@ async function evolveCommand(argv: string[]) {
                   : sub === "promote"
                     ? await promoteProposal(id, {
                         rootDir,
-                        allowEphemeral:
-                          commandArgs.includes("--allow-ephemeral") ||
-                          undefined,
+                        allowEphemeral: parseEphemeralOverride(argv),
                         to:
                           (parseStringFlag(commandArgs, "--to") as
                             | "global"

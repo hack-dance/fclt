@@ -119,6 +119,21 @@ function physicalPathComparisonKey(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
+      // realpath reports ENOENT for dangling links too. Do not reconstruct
+      // their lexical location as though they were ordinary missing entries.
+      let symbolicLink = false;
+      try {
+        symbolicLink = lstatSync(existingAncestor).isSymbolicLink();
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw statError;
+        }
+      }
+      if (symbolicLink) {
+        throw new Error(
+          `Cannot resolve dangling symbolic link: ${existingAncestor}`
+        );
+      }
       const parent = pathApi.dirname(existingAncestor);
       if (parent === existingAncestor) {
         return platform === "win32" ? resolved.toLowerCase() : resolved;
