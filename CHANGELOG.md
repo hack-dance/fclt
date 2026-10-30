@@ -1,3 +1,9 @@
+## [2.32.7](https://github.com/hack-dance/fclt/compare/v2.32.6...v2.32.7) (2026-10-30)
+
+### Bug Fixes
+
+* route writebacks to canonical enrolled projects ([#103](https://github.com/hack-dance/fclt/issues/103)) ([580aeda](https://github.com/hack-dance/fclt/commit/580aeda5202b2fd5e81cb22c7174185ac1c7090d))
+
 ## [2.32.6](https://github.com/hack-dance/fclt/compare/v2.32.5...v2.32.6) (2026-10-29)
 
 ### Bug Fixes
