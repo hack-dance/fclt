@@ -31,6 +31,7 @@ import {
   normalizeWritebackArrays,
   writebackWarnings,
 } from "./writeback-arrays";
+import { resolveWritebackContext } from "./writeback-context";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -291,6 +292,7 @@ interface AddWritebackArgs {
   desiredOutcome?: string;
   sensitivity?: WritebackSensitivity;
   asset?: string;
+  assetProjectRoot?: string;
   evidence?: WritebackEvidence[];
   allowEmptyEvidence?: boolean;
   confidence?: ConfidenceLevel;
@@ -922,6 +924,7 @@ async function resolveAssetSelection(args: {
   rootDir: string;
   asset: string;
   repairGraph?: boolean;
+  assetProjectRoot?: string;
 }): Promise<{
   assetRef?: string;
   assetId?: string;
@@ -938,7 +941,9 @@ async function resolveAssetSelection(args: {
   });
   const node = resolveGraphNode(graph, args.asset);
   if (!node) {
-    const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
+    const projectRoot =
+      args.assetProjectRoot ??
+      projectRootFromAiRoot(args.rootDir, args.homeDir);
     if (projectRoot) {
       const resolvedPath = resolve(projectRoot, args.asset);
       const relPath = relative(projectRoot, resolvedPath);
@@ -990,6 +995,7 @@ export async function addWriteback(
         homeDir,
         rootDir: args.rootDir,
         asset: args.asset,
+        assetProjectRoot: args.assetProjectRoot,
       })
     : {};
   const record: AiWritebackRecord = {
@@ -3486,7 +3492,10 @@ function parseEvidence(argv: string[]): WritebackEvidence[] {
   });
 }
 
-async function writebackCommand(argv: string[]) {
+async function writebackCommand(
+  argv: string[],
+  context?: Awaited<ReturnType<typeof resolveWritebackContext>>
+) {
   const parsed = parseCliContextArgs(argv);
   const [sub, ...commandArgs] = parsed.argv;
 
@@ -3500,13 +3509,27 @@ async function writebackCommand(argv: string[]) {
     return;
   }
 
-  const rootDir = resolveCliContextRoot({
-    rootArg: parsed.rootArg,
-    scope: parsed.scope,
-    cwd: process.cwd(),
-  });
-
   try {
+    const resolvedContext =
+      context ??
+      (await resolveWritebackContext({
+        rootArg: parsed.rootArg,
+        scope: parsed.scope,
+        cwd: process.cwd(),
+      }));
+    const { rootDir, projectTag, assetProjectRoot } = resolvedContext;
+    if (!context) {
+      const scope =
+        parsed.scope === "global"
+          ? "global"
+          : projectRootFromAiRoot(rootDir)
+            ? "project"
+            : "global";
+      await withFacultRootScope({ rootDir, scope }, () =>
+        writebackCommand(argv, resolvedContext)
+      );
+      return;
+    }
     if (sub === "add") {
       const kind = parseStringFlag(commandArgs, "--kind");
       const summary = parseStringFlag(commandArgs, "--summary");
@@ -3556,7 +3579,11 @@ async function writebackCommand(argv: string[]) {
           commandArgs,
           "--suggested-destination"
         ),
-        tags: parseRepeatedFlag(commandArgs, "--tag"),
+        tags: [
+          ...parseRepeatedFlag(commandArgs, "--tag"),
+          ...(projectTag ? [projectTag] : []),
+        ],
+        assetProjectRoot,
         evidence: parseEvidence(commandArgs),
       });
       if (commandArgs.includes("--json")) {
@@ -4002,6 +4029,10 @@ export async function aiCommand(
     await loopCommand(rest);
     return;
   }
+  if (sub === "writeback") {
+    await writebackCommand(rest);
+    return;
+  }
   if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
     console.log(aiHelp());
     return;
@@ -4051,11 +4082,6 @@ export async function aiCommand(
       process.exitCode = 1;
       return;
     }
-  }
-
-  if (sub === "writeback") {
-    await writebackCommand(rest);
-    return;
   }
 
   if (sub === "evolve") {

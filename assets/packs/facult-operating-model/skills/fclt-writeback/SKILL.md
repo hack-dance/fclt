@@ -26,6 +26,15 @@ reports were requested.
 
 ## Workflow
 
+Writeback commands resolve linked Git worktrees to the canonical enrolled checkout.
+Scratch clones also use that checkout when their normalized `origin` remote matches.
+Without active enrollment, a Git repo uses the global store and adds a
+`project:<remote-or-repo-name>` tag; it does not create a project store, even with
+`--project`. Project-relative `--asset` paths remain usable in this fallback.
+Keep sensitive project details out of global records. Explicit `--global`, `--root`,
+and applicable environment root selections retain precedence. If several enrolled
+checkouts match an origin, select the intended destination with `--root`.
+
 1. Choose project scope when the learning depends on a repo, architecture, test harness,
    or team workflow. Choose global scope for broadly reusable learning.
 2. Target the smallest affected instruction, snippet, skill, agent, MCP/tool config, or
