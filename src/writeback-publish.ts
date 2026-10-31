@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
+  link,
   mkdir,
   mkdtemp,
-  open,
   readdir,
   readFile,
   realpath,
@@ -118,7 +118,14 @@ interface PublishState {
   hostKey?: string;
   published: Record<
     string,
-    { sha256: string; branch: string; commit: string; publishedAt: string }
+    {
+      sha256: string;
+      /** Default-branch copy when this was published; null when absent. */
+      baseSha256?: string | null;
+      branch: string;
+      commit: string;
+      publishedAt: string;
+    }
   >;
   migrations: Record<
     string,
@@ -255,42 +262,94 @@ function processAlive(pid: number): boolean {
 
 /**
  * One publish per machine at a time, so concurrent first runs cannot mint two
- * host branches or lose ledger entries. A lock left by a dead process is
- * replaced.
+ * host branches or lose ledger entries.
+ *
+ * The lock file is created complete with `link()`, so it is never observed
+ * empty. It holds `<pid> <token>`; release removes it only while it still holds
+ * this run's token. A lock whose pid is dead is taken over by renaming it to a
+ * private name first: only one contender wins the rename, and a contender that
+ * moved a lock it did not mean to (one re-acquired meanwhile) links it back. An
+ * unreadable lock is never reclaimed automatically.
  */
-async function withPublishLock<T>(
+export async function withPublishLock<T>(
   homeDir: string,
   run: () => Promise<T>
 ): Promise<T> {
   const lockPath = `${facultAiReviewPublishStatePath(homeDir)}.lock`;
   await mkdir(dirname(lockPath), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const handle = await open(lockPath, "wx");
-      await handle.writeFile(`${process.pid}\n`);
-      await handle.close();
+  const token = `${process.pid} ${randomBytes(12).toString("hex")}`;
+  const staging = `${lockPath}.${randomBytes(6).toString("hex")}.new`;
+  await writeFile(staging, `${token}\n`);
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await link(staging, lockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw error;
+        }
+        await reclaimStaleLock(lockPath);
+        continue;
+      }
       try {
         return await run();
       } finally {
-        await rm(lockPath, { force: true });
+        const held = await readFile(lockPath, "utf8").catch(() => "");
+        if (held.trim() === token) {
+          await rm(lockPath, { force: true });
+        }
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-      const holder = Number.parseInt(
-        await readFile(lockPath, "utf8").catch(() => ""),
-        10
-      );
-      if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) {
-        throw new Error(
-          `Another writeback publish is running (pid ${holder}); retry when it finishes`
-        );
-      }
-      await rm(lockPath, { force: true });
     }
+  } finally {
+    await rm(staging, { force: true });
   }
   throw new Error("Unable to acquire the writeback publish lock");
+}
+
+function lockHolder(content: string): number | null {
+  const pid = Number.parseInt(content.split(" ")[0] ?? "", 10);
+  return Number.isInteger(pid) && pid > 0 && content.trim().includes(" ")
+    ? pid
+    : null;
+}
+
+/** Throws unless the existing lock was stale and has been removed. */
+async function reclaimStaleLock(lockPath: string): Promise<void> {
+  const content = await readFile(lockPath, "utf8").catch(() => null);
+  if (content === null) {
+    return; // Released meanwhile; try again.
+  }
+  const holder = lockHolder(content);
+  if (holder === null) {
+    throw new Error(
+      `Writeback publish lock is unreadable: ${lockPath}. Remove it if no publish is running.`
+    );
+  }
+  if (processAlive(holder)) {
+    throw new Error(
+      `Another writeback publish is running (pid ${holder}); retry when it finishes`
+    );
+  }
+  const moved = `${lockPath}.${randomBytes(6).toString("hex")}.stale`;
+  try {
+    await rename(lockPath, moved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return; // Another contender reclaimed it first.
+    }
+    throw error;
+  }
+  const movedContent = await readFile(moved, "utf8").catch(() => "");
+  if (movedContent === content) {
+    await rm(moved, { force: true });
+    return;
+  }
+  // The lock was re-acquired between the read and the rename: put it back.
+  await link(moved, lockPath).catch(() => undefined);
+  await rm(moved, { force: true });
+  throw new Error(
+    "Another writeback publish is running; retry when it finishes"
+  );
 }
 
 /**
@@ -594,6 +653,7 @@ async function publishLocked(args: {
   const pendingRoot = facultAiPendingReviewRoot(args.homeDir);
   const files: PublishFileEntry[] = [];
   const writes = new Map<string, Uint8Array>();
+  const baseShaAtPublish = new Map<string, string | null>();
   for (const artifactDir of REVIEW_ARTIFACT_DIRS) {
     for (const fullPath of await listFiles(join(pendingRoot, artifactDir))) {
       const relPath = toPosix(relative(pendingRoot, fullPath));
@@ -621,25 +681,31 @@ async function publishLocked(args: {
         entry.reason = "on-branch";
         continue;
       }
-      const published = state.published[relPath]?.sha256;
-      const landed = [baseContent, branchContent].filter(
-        (value): value is Uint8Array => value !== null
-      );
-      if (published === entry.sha256) {
+      const record = state.published[relPath];
+      const baseSha = baseContent ? sha256(baseContent) : null;
+      if (record?.sha256 === entry.sha256) {
         // Unchanged since this machine published it. A landed copy may carry
         // review edits, so never write the stale local copy over it; re-add
         // only when the earlier publish never landed anywhere.
-        if (landed.length > 0) {
+        if (baseContent || branchContent) {
           entry.reason = "published";
           continue;
         }
-      } else if (landed.some((value) => sha256(value) !== published)) {
-        // Both this machine and the shared copy changed since the last
-        // publish: leave it for a person instead of overwriting either side.
+      } else if (
+        // Another writer changed a landed copy since this machine's last
+        // publish: the host branch differs from what was pushed, or the
+        // default branch differs from both what was pushed and what it held
+        // then. Leave it for a person instead of overwriting either side.
+        (branchContent && sha256(branchContent) !== record?.sha256) ||
+        (baseSha !== null &&
+          baseSha !== record?.sha256 &&
+          baseSha !== (record?.baseSha256 ?? null))
+      ) {
         entry.reason = "conflict";
         continue;
       }
-      entry.action = landed.length > 0 ? "update" : "add";
+      entry.action = baseContent || branchContent ? "update" : "add";
+      baseShaAtPublish.set(relPath, baseSha);
       writes.set(relPath, content);
     }
   }
@@ -739,6 +805,7 @@ async function publishLocked(args: {
       if (entry.action !== "skip") {
         state.published[entry.path] = {
           sha256: entry.sha256,
+          baseSha256: baseShaAtPublish.get(entry.path) ?? null,
           branch,
           commit,
           publishedAt,

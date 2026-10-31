@@ -21,6 +21,7 @@ import {
 import {
   publishReviewArtifacts,
   rewriteLegacyWritebackId,
+  withPublishLock,
 } from "./writeback-publish";
 
 const DATED_WB_RE = /^WB-\d{8}-[0-9A-HJKMNP-TV-Z]{8}$/;
@@ -596,17 +597,104 @@ describe("writeback publish", () => {
     const homeA = homes["host-a"] as string;
     const lockPath = `${facultAiReviewPublishStatePath(homeA)}.lock`;
     await mkdir(dirname(lockPath), { recursive: true });
-    await writeFile(lockPath, `${process.pid}\n`);
+    await writeFile(lockPath, `${process.pid} live-token\n`);
     await expect(
       publishReviewArtifacts({ homeDir: homeA, dryRun: true })
     ).rejects.toThrow("Another writeback publish is running");
-    await writeFile(lockPath, "999999999\n");
+    await writeFile(lockPath, "");
+    await expect(
+      publishReviewArtifacts({ homeDir: homeA, dryRun: true })
+    ).rejects.toThrow("lock is unreadable");
+    await writeFile(lockPath, "999999999 dead-token\n");
     const result = await publishReviewArtifacts({
       homeDir: homeA,
       dryRun: true,
     });
     expect(result.dryRun).toBe(true);
     expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("lets exactly one of several concurrent publishers hold the lock", async () => {
+    fixtureRoot = join(
+      tmpdir(),
+      `fclt-publish-lock-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    );
+    const home = join(fixtureRoot, "host-a");
+    let holders = 0;
+    let maxHolders = 0;
+    const results = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        withPublishLock(home, async () => {
+          holders += 1;
+          maxHolders = Math.max(maxHolders, holders);
+          await Bun.sleep(50);
+          holders -= 1;
+        })
+      )
+    );
+    expect(maxHolders).toBe(1);
+    expect(results.filter((r) => r.status === "fulfilled").length).toBe(1);
+    expect(
+      results.every(
+        (r) =>
+          r.status === "fulfilled" ||
+          String(r.reason).includes("Another writeback publish is running")
+      )
+    ).toBe(true);
+    expect(existsSync(`${facultAiReviewPublishStatePath(home)}.lock`)).toBe(
+      false
+    );
+    // Contenders reclaiming the same stale lock still admit only one holder.
+    await writeFile(
+      `${facultAiReviewPublishStatePath(home)}.lock`,
+      "999999999 dead-token\n"
+    );
+    holders = 0;
+    maxHolders = 0;
+    const reclaimed = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        withPublishLock(home, async () => {
+          holders += 1;
+          maxHolders = Math.max(maxHolders, holders);
+          await Bun.sleep(50);
+          holders -= 1;
+        })
+      )
+    );
+    expect(maxHolders).toBe(1);
+    expect(reclaimed.some((r) => r.status === "fulfilled")).toBe(true);
+  });
+
+  it("updates an unmerged record again while the default branch still has the older copy", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "three versions");
+    const relPath = `writebacks/global/${record.id}.md`;
+    const pending = join(facultAiPendingReviewRoot(homeA), relPath);
+    // Version A lands on the default branch and the host branch is deleted.
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    // Version B goes to a new open branch, then the record changes to C.
+    await writeFile(pending, "# version B\n");
+    const second = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(second.files[0]).toMatchObject({ action: "update" });
+    await writeFile(pending, "# version C\n");
+    const third = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(third.files[0]).toMatchObject({ action: "update" });
+    expect(third.pushed).toBe(true);
+    expect(await remoteFile(remote, "review/host-a", relPath)).toBe(
+      "# version C"
+    );
   });
 
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
