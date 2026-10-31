@@ -825,6 +825,81 @@ describe("writeback publish", () => {
     expect(await remoteFile(remote, "main", target)).toContain("Reviewed.");
   });
 
+  it("drops a published update from the branch when the record is reverted to the default-branch version", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "reverted later");
+    const relPath = `writebacks/global/${record.id}.md`;
+    const pending = join(facultAiPendingReviewRoot(homeA), relPath);
+    const versionA = await readFile(pending, "utf8");
+    // Version A lands; version B goes to a new open branch.
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    await writeFile(pending, "# version B\n");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    // The record goes back to A before the PR merges.
+    await writeFile(pending, versionA);
+    const reverted = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(reverted.files[0]).toMatchObject({ reason: "on-base" });
+    expect(reverted.pushed).toBe(true);
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe("");
+  });
+
+  it("rebuilds a retained branch after a squash merge with review edits", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const first = await addRecord(homeA, "squash merged");
+    const firstPath = `writebacks/global/${first.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    // Squash merge with an edit; the review branch is kept.
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--squash", "FETCH_HEAD"], seed);
+    await writeFile(
+      join(seed, firstPath),
+      `${await readFile(join(seed, firstPath), "utf8")}\nReviewed.\n`
+    );
+    await git(seed, ["add", firstPath], seed);
+    await git(seed, ["commit", "-qm", "squash review"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+
+    const second = await addRecord(homeA, "unrelated after squash");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.pushed).toBe(true);
+    expect(result.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: firstPath, reason: "published" }),
+      ])
+    );
+    // The branch fast-forwards and differs from main only by the new record.
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe(`writebacks/global/${second.id}.md`);
+    expect(await remoteFile(remote, "review/host-a", firstPath)).toContain(
+      "Reviewed."
+    );
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;

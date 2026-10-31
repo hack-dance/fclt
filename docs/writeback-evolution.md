@@ -507,9 +507,11 @@ fclt ai writeback publish [--branch <name>] [--remote origin] [--base <branch>] 
 ```
 
 `publish` fetches the remote, creates a temporary `git worktree` from the
-machine's review branch (or from the remote default branch the first time),
-commits the pending mirrors that differ from the default branch, and pushes with
-a plain fast-forward push. It never touches your working tree, index, stash or
+remote default branch, and commits the pending mirrors that differ from it. When
+the machine's review branch already exists, the commit merges it in (keeping the
+default branch's tree), so the push stays a plain fast-forward while records that
+have since landed, including squash merges with review edits and local reverts,
+are not carried into the pull request again. It never touches your working tree, index, stash or
 current branch, and it refuses to push to the default branch itself. The default
 branch name is `fclt/review-<key>`, where `<key>` is a random per-machine value
 kept in fclt state; it is not derived from the hostname. For GitHub remotes it

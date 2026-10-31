@@ -640,6 +640,7 @@ async function publishLocked(args: {
   const files: PublishFileEntry[] = [];
   const writes = new Map<string, Uint8Array>();
   const baseShaAtPublish = new Map<string, string | null>();
+  const useBase = new Set<string>();
   for (const artifactDir of REVIEW_ARTIFACT_DIRS) {
     for (const fullPath of await listFiles(join(pendingRoot, artifactDir))) {
       const relPath = toPosix(relative(pendingRoot, fullPath));
@@ -659,22 +660,53 @@ async function publishLocked(args: {
       }
       const baseContent = await git.blob(baseRef, relPath);
       const branchContent = await branchBlob(relPath);
-      if (bytesEqual(baseContent, content)) {
-        entry.reason = "on-base";
-        continue;
-      }
-      if (bytesEqual(branchContent, content)) {
-        entry.reason = "on-branch";
-        continue;
-      }
       const record = state.published[relPath];
       const baseSha = baseContent ? sha256(baseContent) : null;
+      const branchSha = branchContent ? sha256(branchContent) : null;
+      // The default branch changed this record since this machine published
+      // it, for example through a squash merge with review edits.
+      const baseMovedOn =
+        baseSha !== null &&
+        baseSha !== record?.sha256 &&
+        baseSha !== (record?.baseSha256 ?? null);
+      // A host-branch copy that differs from the default branch and should
+      // not survive the rebuild of the branch on top of it.
+      const dropBranchCopy = () => {
+        if (branchSha !== null && branchSha !== baseSha) {
+          useBase.add(relPath);
+        }
+      };
+      if (baseSha === entry.sha256) {
+        entry.reason = "on-base";
+        if (branchSha !== null && branchSha !== entry.sha256) {
+          if (branchSha === record?.sha256) {
+            // Reverted locally to the default-branch version after publish.
+            dropBranchCopy();
+          } else {
+            entry.reason = "conflict";
+          }
+        }
+        continue;
+      }
+      if (branchSha === entry.sha256) {
+        if (baseMovedOn) {
+          // Landed with review edits; the old branch copy must not land again.
+          entry.reason = "published";
+          dropBranchCopy();
+        } else {
+          entry.reason = "on-branch";
+        }
+        continue;
+      }
       if (record?.sha256 === entry.sha256) {
         // Unchanged since this machine published it. A landed copy may carry
         // review edits, so never write the stale local copy over it; re-add
         // only when the earlier publish never landed anywhere.
         if (baseContent || branchContent) {
           entry.reason = "published";
+          if (baseMovedOn) {
+            dropBranchCopy();
+          }
           continue;
         }
         // Gone from both branches. If the default branch ever had it, it was
@@ -692,14 +724,11 @@ async function publishLocked(args: {
           continue;
         }
       } else if (
-        // Another writer changed a landed copy since this machine's last
-        // publish: the host branch differs from what was pushed, or the
-        // default branch differs from both what was pushed and what it held
-        // then. Leave it for a person instead of overwriting either side.
-        (branchContent && sha256(branchContent) !== record?.sha256) ||
-        (baseSha !== null &&
-          baseSha !== record?.sha256 &&
-          baseSha !== (record?.baseSha256 ?? null))
+        // Another writer changed a copy since this machine's last publish:
+        // the host branch differs from what was pushed, or the default branch
+        // moved on. Leave it for a person instead of overwriting either side.
+        (branchSha !== null && branchSha !== record?.sha256) ||
+        baseMovedOn
       ) {
         entry.reason = "conflict";
         continue;
@@ -799,14 +828,54 @@ async function publishLocked(args: {
 
   if (dryRun) {
     result.message =
-      writes.size > 0
+      writes.size > 0 || useBase.size > 0
         ? `Would publish ${writes.size} file(s) to ${remote}/${branch}.`
         : "Nothing to publish.";
     return result;
   }
 
-  if (writes.size > 0) {
-    await commitAndPush({ git, remote, branch, startRef, writes, result });
+  // The host branch is rebuilt on the current default branch for every
+  // publish: records it carries that have not landed are kept, and copies the
+  // default branch has superseded (squash merges, reverts) are dropped.
+  const carry = new Map<string, Uint8Array>();
+  const rebuild = writes.size > 0 || useBase.size > 0;
+  if (branchExists && rebuild) {
+    const changed = (
+      await git.ok([
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        baseRef,
+        startRef,
+        "--",
+        ...REVIEW_ARTIFACT_DIRS,
+      ])
+    )
+      .split("\0")
+      .filter(Boolean);
+    for (const path of changed) {
+      if (writes.has(path) || useBase.has(path)) {
+        continue;
+      }
+      const bytes = await git.blob(startRef, path);
+      if (bytes) {
+        carry.set(path, bytes);
+      }
+    }
+  }
+
+  if (rebuild) {
+    await commitAndPush({
+      git,
+      remote,
+      branch,
+      baseRef,
+      branchRef: branchExists ? startRef : null,
+      writes: new Map([...carry, ...writes]),
+      newRecords: writes.size,
+      result,
+    });
     const publishedAt = new Date().toISOString();
     const commit = result.commit ?? "";
     for (const entry of files) {
@@ -851,7 +920,9 @@ async function publishLocked(args: {
   }
   await reconcilePullRequest({ ...args, base, branch, result });
   result.message = result.pushed
-    ? `Published ${writes.size} file(s) to ${remote}/${branch}.`
+    ? writes.size > 0
+      ? `Published ${writes.size} file(s) to ${remote}/${branch}.`
+      : `Rebuilt ${remote}/${branch} on ${base}; no new records.`
     : `Nothing new to publish; ${remote}/${branch} still has unmerged records.`;
   return result;
 }
@@ -879,15 +950,26 @@ async function commitAndPush(args: {
   git: Git;
   remote: string;
   branch: string;
-  startRef: string;
+  baseRef: string;
+  /** Existing host branch, merged in so the push stays a fast-forward. */
+  branchRef: string | null;
   writes: Map<string, Uint8Array>;
+  newRecords: number;
   result: PublishResult;
 }): Promise<void> {
   const { git, remote, branch, writes, result } = args;
   const tempDir = await mkdtemp(join(tmpdir(), "fclt-review-publish-"));
   const worktree = join(tempDir, "worktree");
   try {
-    await git.ok(["worktree", "add", "--detach", worktree, args.startRef]);
+    await git.ok(["worktree", "add", "--detach", worktree, args.baseRef]);
+    if (args.branchRef) {
+      // Keep the default branch's tree and record the old host branch as a
+      // parent; the records it still needs are written back below.
+      await git.ok(
+        ["merge", "-s", "ours", "--no-ff", "--no-commit", args.branchRef],
+        worktree
+      );
+    }
     for (const relPath of writes.keys()) {
       // The fetched tree may track a symlink on the way to a destination;
       // refuse before writing anything rather than follow it out of the
@@ -899,12 +981,15 @@ async function commitAndPush(args: {
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, content);
     }
-    await git.ok(["add", "--", ...writes.keys()], worktree);
+    if (writes.size > 0) {
+      await git.ok(["add", "--", ...writes.keys()], worktree);
+    }
     await git.ok(
       [
         "commit",
+        "--allow-empty",
         "-m",
-        `chore(review): publish ${writes.size} review record(s)`,
+        `chore(review): publish ${args.newRecords} review record(s)`,
         "-m",
         "Published by fclt ai writeback publish.",
       ],
