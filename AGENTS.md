@@ -41,6 +41,7 @@ Root model:
 - Machine-local global runtime state: under the OS app-data path for fclt
 - Machine-local project runtime state: under the OS app-data path for fclt, keyed by project
 - Global review mirrors: `~/.ai/writebacks/...` and `~/.ai/evolution/...`
+- When `~/.ai` is a git work tree, review mirrors are written to machine-local pending state and land through `fclt ai writeback publish` (branch + PR); see `docs/writeback-evolution.md`
 - Tool homes: external rendered targets such as Codex or Claude directories
 
 Layering rules:

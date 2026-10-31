@@ -23,7 +23,8 @@ import type {
 import { normalizeWritebackArrays } from "./writeback-arrays";
 
 const ISSUE_REF_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
-const WRITEBACK_REF_RE = /\bWB-\d{5}\b/g;
+// Dated ids (WB-20261030-7K2M9QXA) and legacy sequential ids (WB-00001).
+const WRITEBACK_REF_RE = /\bWB-(?:\d{8}-[0-9A-HJKMNP-TV-Z]{8}|\d{5})\b/g;
 const ASSET_REF_RE =
   /(?:@(?:ai|project)\/[^\s)`\]}>"']+|(?:instructions|skills|agents|automations|snippets|mcp)\/[\w./-]+)/g;
 const TRAILING_REF_PUNCTUATION_RE = /[.,;:!?]+$/;

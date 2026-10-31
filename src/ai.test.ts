@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,6 +25,10 @@ import {
   supersedeProposal,
   verifyProposalEffectiveness,
 } from "./ai";
+import {
+  sequentialTestArtifactIds,
+  setArtifactIdGeneratorForTests,
+} from "./ai-ids";
 import {
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
@@ -58,7 +62,12 @@ async function writeGraph(home: string, rootDir: string, graph: unknown) {
   await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
 }
 
+beforeEach(() => {
+  setArtifactIdGeneratorForTests(sequentialTestArtifactIds());
+});
+
 afterEach(async () => {
+  setArtifactIdGeneratorForTests(null);
   if (tempHome) {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -321,7 +330,7 @@ describe("ai writeback", () => {
       tags: ["verification", "false-positive"],
     });
 
-    expect(record.id).toBe("WB-00001");
+    expect(record.id).toBe("WB-20260101-00000001");
     expect(record.assetRef).toBe("@ai/instructions/VERIFICATION.md");
     expect(record.assetId).toBe("instruction:global:global:VERIFICATION");
     expect(record.assetType).toBe("instruction");
@@ -344,10 +353,13 @@ describe("ai writeback", () => {
       facultAiJournalPath(tempHome, rootDir),
       "utf8"
     );
-    expect(queue).toContain('"id":"WB-00001"');
+    expect(queue).toContain('"id":"WB-20260101-00000001"');
     expect(journal).toContain('"kind":"writeback_recorded"');
     const review = await readFile(
-      join(facultAiWritebackReviewDir(tempHome, rootDir), "WB-00001.md"),
+      join(
+        facultAiWritebackReviewDir(tempHome, rootDir),
+        "WB-20260101-00000001.md"
+      ),
       "utf8"
     );
     expect(review).toContain('artifact: "writeback"');
@@ -469,7 +481,10 @@ describe("ai writeback", () => {
       true
     );
     expect(reviewDir.startsWith(projectRoot)).toBe(false);
-    const review = await readFile(join(reviewDir, "WB-00001.md"), "utf8");
+    const review = await readFile(
+      join(reviewDir, "WB-20260101-00000001.md"),
+      "utf8"
+    );
     expect(review).toContain('scope: "project"');
     expect(review).toContain(`projectRoot: "${projectRoot}"`);
     expect(review).toContain(`cwd: "${projectRoot}"`);
@@ -902,12 +917,15 @@ describe("ai writeback", () => {
     });
 
     expect(proposals).toHaveLength(1);
-    expect(proposals[0]?.id).toBe("EV-00001");
+    expect(proposals[0]?.id).toBe("EV-20260101-00000001");
     expect(proposals[0]?.targets).toEqual(["@ai/instructions/VERIFICATION.md"]);
-    expect(proposals[0]?.sourceWritebacks).toEqual(["WB-00001", "WB-00002"]);
+    expect(proposals[0]?.sourceWritebacks).toEqual([
+      "WB-20260101-00000001",
+      "WB-20260101-00000002",
+    ]);
 
     const listed = await listProposals({ homeDir: tempHome, rootDir });
-    expect(listed.map((entry) => entry.id)).toEqual(["EV-00001"]);
+    expect(listed.map((entry) => entry.id)).toEqual(["EV-20260101-00000001"]);
     expect(facultAiProposalDir(tempHome, rootDir)).toBe(
       join(
         facultMachineStateDir(tempHome, rootDir),
@@ -918,14 +936,19 @@ describe("ai writeback", () => {
       )
     );
     const review = await readFile(
-      join(facultAiEvolutionReviewDir(tempHome, rootDir), "EV-00001.md"),
+      join(
+        facultAiEvolutionReviewDir(tempHome, rootDir),
+        "EV-20260101-00000001.md"
+      ),
       "utf8"
     );
     expect(review).toContain('artifact: "evolution_proposal"');
     expect(review).toContain('status: "proposed"');
-    expect(review).toContain('sourceWritebacks: ["WB-00001","WB-00002"]');
     expect(review).toContain(
-      "- WB-00001 (weak_verification): Checks are too shallow."
+      'sourceWritebacks: ["WB-20260101-00000001","WB-20260101-00000002"]'
+    );
+    expect(review).toContain(
+      "- WB-20260101-00000001 (weak_verification): Checks are too shallow."
     );
 
     const nextWritebacks = await listWritebacks({ homeDir: tempHome, rootDir });
@@ -1019,7 +1042,10 @@ describe("ai writeback", () => {
     expect(byKind).toHaveLength(2);
     expect(byKind[0]?.summary).toContain("false_positive");
     expect(byKind[1]?.summary).toContain("weak_verification");
-    expect(byKind[1]?.writebackIds).toEqual(["WB-00001", "WB-00003"]);
+    expect(byKind[1]?.writebackIds).toEqual([
+      "WB-20260101-00000001",
+      "WB-20260101-00000003",
+    ]);
 
     const byDomain = await groupWritebacks({
       homeDir: tempHome,
@@ -1395,7 +1421,9 @@ describe("ai writeback", () => {
     );
     expect(patchText).toContain(`--- ${targetPath}`);
     expect(patchText).toContain(`+++ ${targetPath}`);
-    expect(patchText).toContain("Facult Evolution Applied: EV-00001");
+    expect(patchText).toContain(
+      "Facult Evolution Applied: EV-20260101-00000001"
+    );
 
     await draftProposal(proposal!.id, {
       homeDir: tempHome,
@@ -1462,12 +1490,14 @@ describe("ai writeback", () => {
     expect(applied.applyResult?.changedFiles).toEqual([targetPath]);
 
     const targetText = await readFile(targetPath, "utf8");
-    expect(targetText).toContain("Facult Evolution Applied: EV-00001");
+    expect(targetText).toContain(
+      "Facult Evolution Applied: EV-20260101-00000001"
+    );
     expect(targetText).toContain(
       "Verification guidance needs stronger proof language."
     );
 
-    const writeback = await showWriteback("WB-00001", {
+    const writeback = await showWriteback("WB-20260101-00000001", {
       homeDir: tempHome,
       rootDir,
     });
@@ -1498,7 +1528,12 @@ describe("ai writeback", () => {
     });
     expect(verified.effectiveness?.effectiveness).toBe("improved");
     expect(
-      (await showWriteback("WB-00001", { homeDir: tempHome, rootDir }))?.status
+      (
+        await showWriteback("WB-20260101-00000001", {
+          homeDir: tempHome,
+          rootDir,
+        })
+      )?.status
     ).toBe("resolved");
 
     const refreshed = await showProposal(proposal!.id, {
@@ -1575,7 +1610,10 @@ describe("ai writeback", () => {
       evidence: proposalEvidence("supersede-first"),
     });
     const [first] = await proposeEvolution({ homeDir: tempHome, rootDir });
-    await promoteWriteback("WB-00001", { homeDir: tempHome, rootDir });
+    await promoteWriteback("WB-20260101-00000001", {
+      homeDir: tempHome,
+      rootDir,
+    });
     const rejected = await rejectProposal(first!.id, {
       homeDir: tempHome,
       rootDir,
@@ -1584,7 +1622,12 @@ describe("ai writeback", () => {
     expect(rejected.status).toBe("rejected");
     expect(rejected.review?.rejectionReason).toBe("Needs a better draft.");
     expect(
-      (await showWriteback("WB-00001", { homeDir: tempHome, rootDir }))?.status
+      (
+        await showWriteback("WB-20260101-00000001", {
+          homeDir: tempHome,
+          rootDir,
+        })
+      )?.status
     ).toBe("recorded");
 
     await addWriteback({
@@ -1597,14 +1640,14 @@ describe("ai writeback", () => {
     });
     const proposals = await proposeEvolution({ homeDir: tempHome, rootDir });
     const second = proposals.at(-1);
-    expect(second?.id).toBe("EV-00002");
+    expect(second?.id).toBe("EV-20260101-00000002");
 
     const superseded = await supersedeProposal(first!.id, second!.id, {
       homeDir: tempHome,
       rootDir,
     });
     expect(superseded.status).toBe("superseded");
-    expect(superseded.review?.supersededBy).toBe("EV-00002");
+    expect(superseded.review?.supersededBy).toBe("EV-20260101-00000002");
   });
 
   it("creates a cross-scope promotion proposal from project to global", async () => {
@@ -1656,14 +1699,16 @@ describe("ai writeback", () => {
     expect(promoted.scope).toBe("global");
     expect(promoted.kind).toBe("promote_asset");
     expect(promoted.targets).toEqual(["@ai/instructions/TESTING.md"]);
-    expect(promoted.sourceProposals).toEqual(["EV-00001"]);
+    expect(promoted.sourceProposals).toEqual(["EV-20260101-00000001"]);
     expect(promoted.policyClass).toBe("high-risk");
 
     const globalProposals = await listProposals({
       homeDir: tempHome,
       rootDir: globalRoot,
     });
-    expect(globalProposals.map((entry) => entry.id)).toEqual(["EV-00001"]);
+    expect(globalProposals.map((entry) => entry.id)).toEqual([
+      "EV-20260101-00000002",
+    ]);
   });
 
   it("drafts and applies a promoted global proposal back into ~/.ai", async () => {

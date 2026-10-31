@@ -21,6 +21,8 @@ import {
 import { facultMachineStateDir } from "./paths";
 import { bootstrapFclt } from "./setup";
 
+const RECORDED_WRITEBACK_RE = /Recorded writeback (WB-\d{8}-[0-9A-Z]{8})/;
+
 const BUNDLED_PLUGIN_VERSION = (
   JSON.parse(
     await readFile(
@@ -659,7 +661,8 @@ describe("zero-config setup", () => {
       ],
     });
     expect(add.code).toBe(0);
-    expect(add.stdout).toContain("WB-00001");
+    const recordedId = RECORDED_WRITEBACK_RE.exec(add.stdout)?.[1];
+    expect(recordedId).toBeDefined();
 
     const assess = await runCli({
       home,
@@ -684,7 +687,7 @@ describe("zero-config setup", () => {
     expect(projectDirs).toHaveLength(1);
     expect(
       await Bun.file(
-        join(reviewRoot, projectDirs[0] ?? "", "WB-00001.md")
+        join(reviewRoot, projectDirs[0] ?? "", `${recordedId}.md`)
       ).exists()
     ).toBe(true);
   }, 20_000);
