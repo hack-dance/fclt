@@ -600,14 +600,15 @@ async function publishLocked(args: {
   // Loaded under the lock so concurrent runs see each other's ledger.
   const state = await loadState(args.homeDir);
   // The remote's own default branch is protected even when --base names
-  // another branch for the pull request.
+  // another branch for the pull request, so it must be known: publishing
+  // without it could push straight to that branch.
   const remoteDefault = await defaultBranch(git, remote);
-  const base = args.base ?? remoteDefault;
-  if (!base) {
+  if (!remoteDefault) {
     throw new Error(
-      `Unable to determine the default branch of ${remote}; pass --base <branch>`
+      `Unable to determine the default branch of ${remote}; refusing to publish`
     );
   }
+  const base = args.base ?? remoteDefault;
   const savedHostKey = state.hostKey;
   const branch = args.branch ?? `fclt/review-${hostKey(state)}`;
   if (state.hostKey !== savedHostKey) {

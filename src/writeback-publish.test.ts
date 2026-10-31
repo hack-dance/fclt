@@ -707,7 +707,7 @@ describe("writeback publish", () => {
   });
 
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
-    const { homes } = await setupHosts(["host-a"]);
+    const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;
     await expect(
       publishReviewArtifacts({ homeDir: homeA, removeMigrated: true })
@@ -715,6 +715,20 @@ describe("writeback publish", () => {
     await expect(
       publishReviewArtifacts({ homeDir: homeA, branch: "main" })
     ).rejects.toThrow("Refusing to publish straight to the default branch");
+    // Without a resolvable remote default branch nothing is published.
+    await git(remote, ["symbolic-ref", "HEAD", "refs/heads/missing"], remote);
+    await addRecord(homeA, "must not reach main");
+    await expect(
+      publishReviewArtifacts({
+        homeDir: homeA,
+        base: "develop",
+        branch: "main",
+      })
+    ).rejects.toThrow("Unable to determine the default branch");
+    await git(remote, ["symbolic-ref", "HEAD", "refs/heads/main"], remote);
+    expect(
+      await git(remote, ["ls-tree", "-r", "--name-only", "main"], remote)
+    ).not.toContain("writebacks/global/WB-2");
     // A different PR base does not unprotect the remote's default branch.
     await expect(
       publishReviewArtifacts({
