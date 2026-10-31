@@ -752,9 +752,17 @@ async function publishLocked(args: {
       const targetBytes = new TextEncoder().encode(rewritten);
       const onBase = await git.blob(baseRef, target);
       const onBranch = await branchBlob(target);
+      // A migration this machine already published may since carry review
+      // edits, or have been removed after landing; either way it landed.
+      const publishedBefore = Boolean(known?.publishedAt);
       if (
         bytesEqual(onBase, targetBytes) ||
-        bytesEqual(onBranch, targetBytes)
+        bytesEqual(onBranch, targetBytes) ||
+        (publishedBefore && (onBase || onBranch)) ||
+        (publishedBefore &&
+          (
+            await git.ok(["log", "-1", "--format=%H", baseRef, "--", target])
+          ).trim())
       ) {
         entry.landed = true;
       } else if (onBase || onBranch) {

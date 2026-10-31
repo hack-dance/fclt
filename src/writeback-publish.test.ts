@@ -776,6 +776,55 @@ describe("writeback publish", () => {
     expect(existsSync(join(outside, "global"))).toBe(false);
   });
 
+  it("treats a review-edited migration it already published as landed", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const reviewDir = join(homeA, ".ai", "writebacks", "global");
+    await writeFile(
+      join(reviewDir, "WB-00080.md"),
+      legacyMain16.replaceAll("WB-00016", "WB-00080")
+    );
+    const first = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+    });
+    const target = first.migrations[0]?.target as string;
+    // Review edits the migrated record, it merges, and the branch is deleted.
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await writeFile(
+      join(seed, target),
+      `${await readFile(join(seed, target), "utf8")}\nReviewed.\n`
+    );
+    await git(seed, ["commit", "-qam", "review edit"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    const unrelated = await addRecord(homeA, "unrelated new record");
+
+    const rerun = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+      removeMigrated: true,
+    });
+    expect(rerun.migrations[0]).toMatchObject({
+      target,
+      landed: true,
+      removed: true,
+    });
+    expect(rerun.pushed).toBe(true);
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe(`writebacks/global/${unrelated.id}.md`);
+    expect(await remoteFile(remote, "main", target)).toContain("Reviewed.");
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;
