@@ -522,7 +522,8 @@ legacy id can mean different records on different machines.
 Each run compares a pending mirror with the copy on the default branch and on
 the machine's review branch, and with the hash this machine last published. A
 mirror that is unchanged since it was published is never written over a landed
-copy, which may carry review edits (`published`). When both the local mirror
+copy, which may carry review edits (`published`), and a record removed from
+the default branch after it landed is not published again (`deleted`). When both the local mirror
 and the landed copy changed since the last publish, the run reports a
 `conflict` and leaves both alone. If an earlier run pushed but could not open
 the pull request, the next run retries that step even when nothing new needs

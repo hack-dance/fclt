@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
@@ -704,6 +704,76 @@ describe("writeback publish", () => {
     expect(await remoteFile(remote, "review/host-a", relPath)).toBe(
       "# version C"
     );
+  });
+
+  it("pushes through a remote configured with a relative URL", async () => {
+    const { remote, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const aiRoot = join(homeA, ".ai");
+    await git(
+      aiRoot,
+      ["remote", "set-url", "origin", "../../remote.git"],
+      aiRoot
+    );
+    const record = await addRecord(homeA, "relative remote");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.pushed).toBe(true);
+    expect(
+      await remoteFile(
+        remote,
+        "review/host-a",
+        `writebacks/global/${record.id}.md`
+      )
+    ).toContain(record.id);
+  });
+
+  it("does not bring back a published record that was deleted after landing", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "removed on purpose");
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["rm", "-q", relPath], seed);
+    await git(seed, ["commit", "-qm", "drop record"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.files).toEqual([
+      expect.objectContaining({ path: relPath, reason: "deleted" }),
+    ]);
+    expect(result.pushed).toBe(false);
+  });
+
+  it("refuses to write through a symlink tracked on the target branch", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const outside = join(fixtureRoot as string, "outside");
+    await mkdir(outside, { recursive: true });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await symlink(outside, join(seed, "evolution"));
+    await git(seed, ["add", "evolution"], seed);
+    await git(seed, ["commit", "-qm", "symlinked review dir"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    const pendingDir = join(
+      facultAiPendingReviewRoot(homeA),
+      "evolution",
+      "global"
+    );
+    await mkdir(pendingDir, { recursive: true });
+    await writeFile(join(pendingDir, "EV-20261031-AAAAAAAA.md"), "# EV\n");
+    await expect(
+      publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" })
+    ).rejects.toThrow("is a symbolic link on the target branch");
+    expect(existsSync(join(outside, "global"))).toBe(false);
   });
 
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {

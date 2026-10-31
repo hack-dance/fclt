@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
   link,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -77,7 +78,13 @@ export type PublishFileAction = "add" | "update" | "skip";
 export interface PublishFileEntry {
   path: string;
   action: PublishFileAction;
-  reason?: "on-base" | "on-branch" | "legacy-id" | "published" | "conflict";
+  reason?:
+    | "on-base"
+    | "on-branch"
+    | "legacy-id"
+    | "published"
+    | "deleted"
+    | "conflict";
   sha256: string;
 }
 
@@ -670,6 +677,20 @@ async function publishLocked(args: {
           entry.reason = "published";
           continue;
         }
+        // Gone from both branches. If the default branch ever had it, it was
+        // removed on purpose after landing; do not bring it back.
+        const history = await git.ok([
+          "log",
+          "-1",
+          "--format=%H",
+          baseRef,
+          "--",
+          relPath,
+        ]);
+        if (history.trim()) {
+          entry.reason = "deleted";
+          continue;
+        }
       } else if (
         // Another writer changed a landed copy since this machine's last
         // publish: the host branch differs from what was pushed, or the
@@ -827,6 +848,25 @@ async function publishLocked(args: {
   return result;
 }
 
+async function assertNoSymlinkOnPath(
+  root: string,
+  relPath: string
+): Promise<void> {
+  let current = root;
+  for (const segment of relPath.split("/")) {
+    current = join(current, segment);
+    const info = await lstat(current).catch(() => null);
+    if (!info) {
+      return;
+    }
+    if (info.isSymbolicLink()) {
+      throw new Error(
+        `Refusing to publish ${relPath}: ${relative(root, current)} is a symbolic link on the target branch`
+      );
+    }
+  }
+}
+
 async function commitAndPush(args: {
   git: Git;
   remote: string;
@@ -840,6 +880,12 @@ async function commitAndPush(args: {
   const worktree = join(tempDir, "worktree");
   try {
     await git.ok(["worktree", "add", "--detach", worktree, args.startRef]);
+    for (const relPath of writes.keys()) {
+      // The fetched tree may track a symlink on the way to a destination;
+      // refuse before writing anything rather than follow it out of the
+      // temporary worktree.
+      await assertNoSymlinkOnPath(worktree, relPath);
+    }
     for (const [relPath, content] of writes) {
       const target = join(worktree, ...relPath.split("/"));
       await mkdir(dirname(target), { recursive: true });
@@ -857,10 +903,13 @@ async function commitAndPush(args: {
       worktree
     );
     result.commit = (await git.ok(["rev-parse", "HEAD"], worktree)).trim();
-    const push = await git.run(
-      ["push", remote, `HEAD:refs/heads/${branch}`],
-      worktree
-    );
+    // Push the commit from the canonical checkout, where the remote's
+    // configuration (including relative URLs and push URLs) resolves as usual.
+    const push = await git.run([
+      "push",
+      remote,
+      `${result.commit}:refs/heads/${branch}`,
+    ]);
     result.pushOutput = `${push.stdout}${push.stderr}`.trim();
     if (push.exitCode !== 0) {
       throw commandFailure(`git push ${remote} ${branch} failed`, push);
