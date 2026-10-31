@@ -3,9 +3,11 @@ import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -75,7 +77,7 @@ export type PublishFileAction = "add" | "update" | "skip";
 export interface PublishFileEntry {
   path: string;
   action: PublishFileAction;
-  reason?: "on-base" | "on-branch" | "legacy-id";
+  reason?: "on-base" | "on-branch" | "legacy-id" | "published" | "conflict";
   sha256: string;
 }
 
@@ -88,7 +90,11 @@ export interface MigrationEntry {
   sha256: string;
   action: "migrate" | "skip";
   reason?: "on-base" | "unrecognized";
+  /** The migrated record is already on the default or host branch. */
+  landed?: boolean;
   removed?: boolean;
+  /** Why a local copy was kept despite --remove-migrated. */
+  kept?: "changed" | "staged";
 }
 
 export interface PublishResult {
@@ -233,7 +239,58 @@ async function loadState(homeDir: string): Promise<PublishState> {
 async function saveState(homeDir: string, state: PublishState): Promise<void> {
   const pathValue = facultAiReviewPublishStatePath(homeDir);
   await mkdir(dirname(pathValue), { recursive: true });
-  await writeFile(pathValue, `${JSON.stringify(state, null, 2)}\n`);
+  const temporary = `${pathValue}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
+  await rename(temporary, pathValue);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * One publish per machine at a time, so concurrent first runs cannot mint two
+ * host branches or lose ledger entries. A lock left by a dead process is
+ * replaced.
+ */
+async function withPublishLock<T>(
+  homeDir: string,
+  run: () => Promise<T>
+): Promise<T> {
+  const lockPath = `${facultAiReviewPublishStatePath(homeDir)}.lock`;
+  await mkdir(dirname(lockPath), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.writeFile(`${process.pid}\n`);
+      await handle.close();
+      try {
+        return await run();
+      } finally {
+        await rm(lockPath, { force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      const holder = Number.parseInt(
+        await readFile(lockPath, "utf8").catch(() => ""),
+        10
+      );
+      if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) {
+        throw new Error(
+          `Another writeback publish is running (pid ${holder}); retry when it finishes`
+        );
+      }
+      await rm(lockPath, { force: true });
+    }
+  }
+  throw new Error("Unable to acquire the writeback publish lock");
 }
 
 /**
@@ -309,29 +366,55 @@ async function fetchBranch(
   return trackingRef;
 }
 
-/** Replace the id lines of a legacy mirror and record `legacyId`. */
+const FRONTMATTER_RE = /^---(\r?\n)([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Replace the id lines of a legacy mirror and record `legacyId`. The
+ * frontmatter must carry the legacy id (plain, single- or double-quoted);
+ * everything else, including line endings, is kept byte for byte.
+ */
 export function rewriteLegacyWritebackId(
   content: string,
   legacyId: string,
   newId: string
 ): string | null {
-  const idLine = new RegExp(`^id: "?${legacyId}"?(\\r?)$`, "m");
-  const heading = new RegExp(`^# ${legacyId}:`, "m");
-  if (!(idLine.test(content) || heading.test(content))) {
+  const frontmatter = FRONTMATTER_RE.exec(content);
+  if (!frontmatter) {
     return null;
   }
-  return content
-    .replace(
-      idLine,
-      (_line, cr: string) =>
-        `id: ${JSON.stringify(newId)}${cr}\nlegacyId: ${JSON.stringify(legacyId)}${cr}`
-    )
-    .replace(heading, `# ${newId}:`);
+  const block = frontmatter[2] ?? "";
+  const blockStart = 3 + (frontmatter[1]?.length ?? 0);
+  const id = escapeRegExp(legacyId);
+  const idLine = new RegExp(`^id:[ \\t]*(["']?)${id}\\1[ \\t]*(\\r?)$`, "m");
+  if (!idLine.test(block)) {
+    return null;
+  }
+  const rewrittenBlock = block.replace(
+    idLine,
+    (_line, _quote, cr: string) =>
+      `id: ${JSON.stringify(newId)}${cr}\nlegacyId: ${JSON.stringify(legacyId)}${cr}`
+  );
+  const bodyStart = frontmatter[0].length;
+  const body = content
+    .slice(bodyStart)
+    .replace(new RegExp(`^# ${id}:`, "m"), `# ${newId}:`);
+  return (
+    content.slice(0, blockStart) +
+    rewrittenBlock +
+    content.slice(blockStart + block.length, bodyStart) +
+    body
+  );
 }
 
 interface DirtyLegacyFile {
   path: string;
   state: "untracked" | "modified";
+  /** The index differs from HEAD for this path. */
+  staged: boolean;
   legacyId: string;
 }
 
@@ -362,9 +445,19 @@ async function dirtyLegacyWritebacks(git: Git): Promise<DirtyLegacyFile[]> {
       continue;
     }
     if (status === "??") {
-      files.push({ path: pathValue, state: "untracked", legacyId: match[1] });
+      files.push({
+        path: pathValue,
+        state: "untracked",
+        staged: false,
+        legacyId: match[1],
+      });
     } else if (status.includes("M")) {
-      files.push({ path: pathValue, state: "modified", legacyId: match[1] });
+      files.push({
+        path: pathValue,
+        state: "modified",
+        staged: status[0] !== " ",
+        legacyId: match[1],
+      });
     }
   }
   return files.sort((a, b) => a.path.localeCompare(b.path));
@@ -457,6 +550,25 @@ export async function publishReviewArtifacts(args: {
 
   const remote = args.remote ?? "origin";
   await git.ok(["remote", "get-url", remote]);
+  return await withPublishLock(args.homeDir, () =>
+    publishLocked({ ...args, dryRun, root, git, remote })
+  );
+}
+
+async function publishLocked(args: {
+  homeDir: string;
+  dryRun: boolean;
+  root: string;
+  git: Git;
+  remote: string;
+  base?: string;
+  branch?: string;
+  includeLegacy?: boolean;
+  removeMigrated?: boolean;
+  pullRequest?: boolean;
+}): Promise<PublishResult> {
+  const { dryRun, git, remote, root } = args;
+  // Loaded under the lock so concurrent runs see each other's ledger.
   const state = await loadState(args.homeDir);
   const base = args.base ?? (await defaultBranch(git, remote));
   const savedHostKey = state.hostKey;
@@ -476,6 +588,8 @@ export async function publishReviewArtifacts(args: {
   const startRef = branchExists
     ? await fetchBranch(git, remote, branch)
     : baseRef;
+  const branchBlob = (path: string) =>
+    branchExists ? git.blob(startRef, path) : Promise.resolve(null);
 
   const pendingRoot = facultAiPendingReviewRoot(args.homeDir);
   const files: PublishFileEntry[] = [];
@@ -489,24 +603,44 @@ export async function publishReviewArtifacts(args: {
         action: "skip",
         sha256: sha256(content),
       };
+      files.push(entry);
       const id = posix.basename(relPath, ".md");
-      const baseContent = await git.blob(baseRef, relPath);
       if (artifactDir !== "reconciliation" && isLegacySequentialId(id)) {
         // Sequential ids collide across machines; they land only through
         // --include-legacy, which assigns new ids.
         entry.reason = "legacy-id";
-      } else if (bytesEqual(baseContent, content)) {
-        entry.reason = "on-base";
-      } else if (
-        branchExists &&
-        bytesEqual(await git.blob(startRef, relPath), content)
-      ) {
-        entry.reason = "on-branch";
-      } else {
-        entry.action = baseContent ? "update" : "add";
-        writes.set(relPath, content);
+        continue;
       }
-      files.push(entry);
+      const baseContent = await git.blob(baseRef, relPath);
+      const branchContent = await branchBlob(relPath);
+      if (bytesEqual(baseContent, content)) {
+        entry.reason = "on-base";
+        continue;
+      }
+      if (bytesEqual(branchContent, content)) {
+        entry.reason = "on-branch";
+        continue;
+      }
+      const published = state.published[relPath]?.sha256;
+      const landed = [baseContent, branchContent].filter(
+        (value): value is Uint8Array => value !== null
+      );
+      if (published === entry.sha256) {
+        // Unchanged since this machine published it. A landed copy may carry
+        // review edits, so never write the stale local copy over it; re-add
+        // only when the earlier publish never landed anywhere.
+        if (landed.length > 0) {
+          entry.reason = "published";
+          continue;
+        }
+      } else if (landed.some((value) => sha256(value) !== published)) {
+        // Both this machine and the shared copy changed since the last
+        // publish: leave it for a person instead of overwriting either side.
+        entry.reason = "conflict";
+        continue;
+      }
+      entry.action = landed.length > 0 ? "update" : "add";
+      writes.set(relPath, content);
     }
   }
 
@@ -548,22 +682,31 @@ export async function publishReviewArtifacts(args: {
         entry.reason = "unrecognized";
         continue;
       }
-      if (!known) {
-        const taken = await git.blob(baseRef, `${dir}/${newId}.md`);
-        if (taken) {
-          throw new Error(`Allocated id ${newId} already exists on ${base}`);
-        }
+      const target = `${dir}/${newId}.md`;
+      const targetBytes = new TextEncoder().encode(rewritten);
+      const onBase = await git.blob(baseRef, target);
+      const onBranch = await branchBlob(target);
+      if (
+        bytesEqual(onBase, targetBytes) ||
+        bytesEqual(onBranch, targetBytes)
+      ) {
+        entry.landed = true;
+      } else if (onBase || onBranch) {
+        throw new Error(
+          `Migrated id ${newId} already exists with different content`
+        );
+      } else {
+        writes.set(target, targetBytes);
       }
       usedIds.add(newId);
       entry.action = "migrate";
       entry.newId = newId;
-      entry.target = `${dir}/${newId}.md`;
-      writes.set(entry.target, new TextEncoder().encode(rewritten));
+      entry.target = target;
       state.migrations[ledgerKey] = {
         ...known,
         legacyId: dirty.legacyId,
         newId,
-        target: entry.target,
+        target,
       };
     }
   }
@@ -580,22 +723,77 @@ export async function publishReviewArtifacts(args: {
     message: "",
   };
 
-  if (writes.size === 0) {
-    result.message = "Nothing to publish.";
-    if (!dryRun) {
-      await saveState(args.homeDir, state);
-    }
-    return result;
-  }
   if (dryRun) {
-    result.message = `Would publish ${writes.size} file(s) to ${remote}/${branch}.`;
+    result.message =
+      writes.size > 0
+        ? `Would publish ${writes.size} file(s) to ${remote}/${branch}.`
+        : "Nothing to publish.";
     return result;
   }
 
+  if (writes.size > 0) {
+    await commitAndPush({ git, remote, branch, startRef, writes, result });
+    const publishedAt = new Date().toISOString();
+    const commit = result.commit ?? "";
+    for (const entry of files) {
+      if (entry.action !== "skip") {
+        state.published[entry.path] = {
+          sha256: entry.sha256,
+          branch,
+          commit,
+          publishedAt,
+        };
+      }
+    }
+    for (const entry of migrations) {
+      const record = state.migrations[`${entry.source}\0${entry.sha256}`];
+      if (entry.action === "migrate" && record) {
+        record.publishedAt ??= publishedAt;
+        record.commit ??= commit;
+      }
+    }
+  }
+  await saveState(args.homeDir, state);
+
+  if (args.removeMigrated) {
+    await removeMigratedCopies({ git, root, migrations });
+  }
+
+  // A branch with commits the default branch lacks needs a pull request,
+  // including one pushed by an earlier run whose PR step failed.
+  const branchHasWork =
+    result.pushed ||
+    (branchExists &&
+      Number.parseInt(
+        (
+          await git.ok(["rev-list", "--count", `${baseRef}..${startRef}`])
+        ).trim(),
+        10
+      ) > 0);
+  if (!branchHasWork) {
+    result.message = "Nothing to publish.";
+    return result;
+  }
+  await reconcilePullRequest({ ...args, base, branch, result });
+  result.message = result.pushed
+    ? `Published ${writes.size} file(s) to ${remote}/${branch}.`
+    : `Nothing new to publish; ${remote}/${branch} still has unmerged records.`;
+  return result;
+}
+
+async function commitAndPush(args: {
+  git: Git;
+  remote: string;
+  branch: string;
+  startRef: string;
+  writes: Map<string, Uint8Array>;
+  result: PublishResult;
+}): Promise<void> {
+  const { git, remote, branch, writes, result } = args;
   const tempDir = await mkdtemp(join(tmpdir(), "fclt-review-publish-"));
   const worktree = join(tempDir, "worktree");
   try {
-    await git.ok(["worktree", "add", "--detach", worktree, startRef]);
+    await git.ok(["worktree", "add", "--detach", worktree, args.startRef]);
     for (const [relPath, content] of writes) {
       const target = join(worktree, ...relPath.split("/"));
       await mkdir(dirname(target), { recursive: true });
@@ -630,75 +828,84 @@ export async function publishReviewArtifacts(args: {
     }
     await rm(tempDir, { recursive: true, force: true });
   }
+}
 
-  const publishedAt = new Date().toISOString();
-  const commit = result.commit ?? "";
-  for (const entry of files) {
-    if (entry.action !== "skip") {
-      state.published[entry.path] = {
-        sha256: entry.sha256,
-        branch,
-        commit,
-        publishedAt,
-      };
+/**
+ * Remove local legacy copies whose migrated record is on the remote. A copy
+ * is kept when it changed since capture, or when its path has staged changes:
+ * the index belongs to the user and only the captured working-tree bytes were
+ * published.
+ */
+async function removeMigratedCopies(args: {
+  git: Git;
+  root: string;
+  migrations: MigrationEntry[];
+}): Promise<void> {
+  const staged = new Set(
+    (await dirtyLegacyWritebacks(args.git))
+      .filter((file) => file.staged)
+      .map((file) => file.path)
+  );
+  for (const entry of args.migrations) {
+    if (entry.action !== "migrate") {
+      continue;
     }
-  }
-  for (const entry of migrations) {
-    const record = state.migrations[`${entry.source}\0${entry.sha256}`];
-    if (entry.action === "migrate" && record) {
-      record.publishedAt = publishedAt;
-      record.commit = commit;
+    const fullPath = join(args.root, entry.source);
+    const current = await readFile(fullPath).catch(() => null);
+    if (!current || sha256(current) !== entry.sha256) {
+      entry.kept = "changed";
+      continue;
     }
+    if (entry.sourceState === "untracked") {
+      await rm(fullPath);
+    } else if (staged.has(entry.source)) {
+      entry.kept = "staged";
+      continue;
+    } else {
+      // The index matches HEAD here; only the working tree is restored.
+      await args.git.ok([
+        "restore",
+        "--source=HEAD",
+        "--worktree",
+        "--",
+        entry.source,
+      ]);
+    }
+    entry.removed = true;
   }
-  await saveState(args.homeDir, state);
+}
 
-  if (args.removeMigrated) {
-    for (const entry of migrations) {
-      if (entry.action !== "migrate") {
-        continue;
-      }
-      const fullPath = join(root, entry.source);
-      const current = await readFile(fullPath).catch(() => null);
-      if (!current || sha256(current) !== entry.sha256) {
-        continue;
-      }
-      if (entry.sourceState === "untracked") {
-        await rm(fullPath);
-      } else {
-        await git.ok([
-          "restore",
-          "--source=HEAD",
-          "--staged",
-          "--worktree",
-          "--",
-          entry.source,
-        ]);
-      }
-      entry.removed = true;
-    }
-  }
-
+async function reconcilePullRequest(args: {
+  git: Git;
+  root: string;
+  remote: string;
+  base: string;
+  branch: string;
+  pullRequest?: boolean;
+  result: PublishResult;
+}): Promise<void> {
+  const { result } = args;
   if (args.pullRequest === false) {
     result.pullRequestMessage = "Pull request step skipped.";
-  } else {
-    const remoteUrl = (await git.ok(["remote", "get-url", remote])).trim();
-    if (remoteUrl.includes("github.com")) {
-      const pr = await findPullRequest({
-        root,
-        base,
-        branch,
-        title: "chore(review): publish review records",
-        body: "Review records published by `fclt ai writeback publish`. Each record has a collision-free id; merging adds or updates only these review mirrors.",
-        gitEnv: publishGitEnvironment(root),
-      });
-      if (pr.url) {
-        result.pullRequest = { url: pr.url, created: pr.created === true };
-      }
-      result.pullRequestMessage = pr.message;
-    } else {
-      result.pullRequestMessage = `Remote ${remote} is not on GitHub; open a pull request for ${branch} manually.`;
-    }
+    return;
   }
-  result.message = `Published ${writes.size} file(s) to ${remote}/${branch}.`;
-  return result;
+  const remoteUrl = (
+    await args.git.ok(["remote", "get-url", args.remote])
+  ).trim();
+  if (!remoteUrl.includes("github.com")) {
+    result.pullRequestMessage = `Remote ${args.remote} is not on GitHub; open a pull request for ${args.branch} manually.`;
+    return;
+  }
+  const pr = await findPullRequest({
+    root: args.root,
+    base: args.base,
+    branch: args.branch,
+    title: "chore(review): publish review records",
+    body: "Review records published by `fclt ai writeback publish`. Each record has a collision-free id; merging adds or updates only these review mirrors.",
+    gitEnv: publishGitEnvironment(args.root),
+  });
+  if (pr.url) {
+    result.pullRequest = { url: pr.url, created: pr.created === true };
+  }
+  result.pullRequestMessage = pr.message;
 }

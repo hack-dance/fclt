@@ -4765,7 +4765,7 @@ function renderPublishResult(result: PublishResult): string[] {
     for (const entry of result.migrations) {
       lines.push(
         entry.action === "migrate"
-          ? `${entry.legacyId} -> ${entry.newId}\t${entry.source} (${entry.sourceState})\tsha256:${entry.sha256}${entry.removed ? "\tremoved" : ""}`
+          ? `${entry.legacyId} -> ${entry.newId}\t${entry.source} (${entry.sourceState})\tsha256:${entry.sha256}${entry.landed ? "\talready landed" : ""}${entry.removed ? "\tremoved" : ""}${entry.kept ? `\tkept (${entry.kept})` : ""}`
           : `${entry.legacyId} skipped (${entry.reason})\t${entry.source}\tsha256:${entry.sha256}`
       );
     }

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
 import { addWriteback } from "./ai";
 import {
@@ -12,7 +13,11 @@ import {
   isLegacySequentialId,
   setArtifactIdGeneratorForTests,
 } from "./ai-ids";
-import { facultAiPendingReviewRoot, facultAiWritebackReviewDir } from "./paths";
+import {
+  facultAiPendingReviewRoot,
+  facultAiReviewPublishStatePath,
+  facultAiWritebackReviewDir,
+} from "./paths";
 import {
   publishReviewArtifacts,
   rewriteLegacyWritebackId,
@@ -174,6 +179,32 @@ describe("artifact ids", () => {
         .replace("# WB-00016:", "# WB-20261030-CCCCCCCC:")
     );
     expect(rewriteLegacyWritebackId("no ids", "WB-00016", "x")).toBeNull();
+  });
+
+  it("requires the legacy id in frontmatter and accepts YAML quoting", () => {
+    const singleQuoted = legacyMain16.replace(
+      'id: "WB-00016"',
+      "id: 'WB-00016'"
+    );
+    expect(
+      rewriteLegacyWritebackId(singleQuoted, "WB-00016", "WB-20261030-DDDDDDDD")
+    ).toBe(
+      singleQuoted
+        .replace(
+          "id: 'WB-00016'",
+          'id: "WB-20261030-DDDDDDDD"\nlegacyId: "WB-00016"'
+        )
+        .replace("# WB-00016:", "# WB-20261030-DDDDDDDD:")
+    );
+    const crlf = legacyMain16.replaceAll("\n", "\r\n");
+    expect(
+      rewriteLegacyWritebackId(crlf, "WB-00016", "WB-20261030-DDDDDDDD")
+    ).toContain('id: "WB-20261030-DDDDDDDD"\r\nlegacyId: "WB-00016"\r\n');
+    // An id line outside the frontmatter does not count.
+    const bodyOnly = "# WB-00016: no frontmatter\n\nid: WB-00016\n";
+    expect(
+      rewriteLegacyWritebackId(bodyOnly, "WB-00016", "WB-20261030-DDDDDDDD")
+    ).toBeNull();
   });
 });
 
@@ -419,6 +450,163 @@ describe("writeback publish", () => {
     });
     expect(rerun.migrations).toEqual([]);
     expect(rerun.pushed).toBe(false);
+  });
+
+  it("never writes a stale local copy over a reviewed record and reports conflicts", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "reviewed later");
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    // A reviewer edits the record, it merges, and the branch is deleted.
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await writeFile(
+      join(seed, relPath),
+      `${await readFile(join(seed, relPath), "utf8")}\nReviewed.\n`
+    );
+    await git(seed, ["commit", "-qam", "review edit"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+
+    const stale = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(stale.files).toEqual([
+      expect.objectContaining({ path: relPath, reason: "published" }),
+    ]);
+    expect(stale.pushed).toBe(false);
+
+    const pending = join(facultAiPendingReviewRoot(homeA), relPath);
+    await writeFile(pending, "# local change after publish\n");
+    const conflict = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(conflict.files).toEqual([
+      expect.objectContaining({ path: relPath, reason: "conflict" }),
+    ]);
+    expect(conflict.pushed).toBe(false);
+    expect(await remoteFile(remote, "main", relPath)).toContain("Reviewed.");
+  });
+
+  it("updates its own record when the shared copy is the one it published", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "status changes later");
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    await writeFile(
+      join(facultAiPendingReviewRoot(homeA), relPath),
+      "# status changed\n"
+    );
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.files).toEqual([
+      expect.objectContaining({ path: relPath, action: "update" }),
+    ]);
+    expect(result.pushed).toBe(true);
+    expect(await remoteFile(remote, "review/host-a", relPath)).toBe(
+      "# status changed"
+    );
+  });
+
+  it("retries the pull request step for an unmerged branch with nothing new", async () => {
+    const { homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    await addRecord(homeA, "pull request step failed");
+    const first = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      pullRequest: false,
+    });
+    expect(first.pushed).toBe(true);
+    const retry = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(retry.pushed).toBe(false);
+    expect(retry.message).toContain("still has unmerged records");
+    expect(retry.pullRequestMessage).toContain("not on GitHub");
+  });
+
+  it("reruns a landed migration for cleanup without another commit and keeps staged copies", async () => {
+    const { remote, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const aiRoot = join(homeA, ".ai");
+    const reviewDir = join(aiRoot, "writebacks", "global");
+    const staged16 = legacyMain16.replace("tracked record on main", "staged");
+    const worktree16 = legacyMain16.replace(
+      "tracked record on main",
+      "working tree"
+    );
+    await writeFile(join(reviewDir, "WB-00016.md"), staged16);
+    await git(aiRoot, ["add", "writebacks/global/WB-00016.md"], aiRoot);
+    await writeFile(join(reviewDir, "WB-00016.md"), worktree16);
+    await writeFile(
+      join(reviewDir, "WB-00077.md"),
+      legacyMain16.replaceAll("WB-00016", "WB-00077")
+    );
+
+    const first = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+    });
+    expect(first.pushed).toBe(true);
+    const head = await git(remote, ["rev-parse", "review/host-a"], remote);
+
+    const cleanup = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+      removeMigrated: true,
+    });
+    expect(cleanup.pushed).toBe(false);
+    expect(await git(remote, ["rev-parse", "review/host-a"], remote)).toBe(
+      head
+    );
+    expect(cleanup.migrations.map((entry) => entry.newId)).toEqual(
+      first.migrations.map((entry) => entry.newId)
+    );
+    const [m16, m77] = cleanup.migrations;
+    expect(m16).toMatchObject({ landed: true, kept: "staged" });
+    expect(m77).toMatchObject({ landed: true, removed: true });
+    // The staged and working-tree versions of the tracked file are untouched.
+    expect(await readFile(join(reviewDir, "WB-00016.md"), "utf8")).toBe(
+      worktree16
+    );
+    expect(
+      await git(aiRoot, ["show", ":writebacks/global/WB-00016.md"], aiRoot)
+    ).toBe(staged16.trimEnd());
+    expect(existsSync(join(reviewDir, "WB-00077.md"))).toBe(false);
+  });
+
+  it("serializes publishes and replaces a lock left by a dead process", async () => {
+    const { homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const lockPath = `${facultAiReviewPublishStatePath(homeA)}.lock`;
+    await mkdir(dirname(lockPath), { recursive: true });
+    await writeFile(lockPath, `${process.pid}\n`);
+    await expect(
+      publishReviewArtifacts({ homeDir: homeA, dryRun: true })
+    ).rejects.toThrow("Another writeback publish is running");
+    await writeFile(lockPath, "999999999\n");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      dryRun: true,
+    });
+    expect(result.dryRun).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
   });
 
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {

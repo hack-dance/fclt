@@ -519,6 +519,15 @@ push result. Records are marked published only after the push succeeds.
 Pending mirrors that still carry legacy sequential ids are skipped: the same
 legacy id can mean different records on different machines.
 
+Each run compares a pending mirror with the copy on the default branch and on
+the machine's review branch, and with the hash this machine last published. A
+mirror that is unchanged since it was published is never written over a landed
+copy, which may carry review edits (`published`). When both the local mirror
+and the landed copy changed since the last publish, the run reports a
+`conflict` and leaves both alone. If an earlier run pushed but could not open
+the pull request, the next run retries that step even when nothing new needs
+pushing. Only one publish runs per machine at a time.
+
 ### Migrating legacy dirty mirrors
 
 Older releases wrote mirrors straight into the tracked tree. To land those:
@@ -537,14 +546,18 @@ records on the default branch are never rewritten or deleted. The output lists
 `old -> new` with the sha256 of each source file so you can confirm capture.
 A dry run allocates fresh ids each time; the real run records the mapping, so
 reruns reuse it. Local copies stay in place unless you pass `--remove-migrated`,
-which runs only after a successful push and only for files whose sha256 still
-matches: untracked copies are deleted and tracked files are restored from
-`HEAD`.
+which runs only once the migrated record is on the remote and only for files
+whose sha256 still matches: untracked copies are deleted and tracked files are
+restored from `HEAD` in the working tree. A tracked file with staged changes
+is kept, and the index is never changed. Rerunning with `--remove-migrated`
+after a successful migration cleans up without another commit.
 
 Generated `~/.ai/.facult/ai/index.json` and `graph.json` are rebuilt by
-`fclt index`. If the canonical repository tracks them, ignore them there
-(`.facult/ai/index.json`, `.facult/ai/graph.json`) so a reindex does not make
-the tree dirty.
+`fclt index`. If the canonical repository tracks them, a reindex makes the tree
+dirty. Ignoring them is not enough on its own, because `.gitignore` does not
+apply to tracked files: stop tracking them in a reviewed change
+(`git rm --cached .facult/ai/index.json .facult/ai/graph.json`) and add both
+paths to `.gitignore`.
 
 ## Approval Rule
 
