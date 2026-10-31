@@ -1191,6 +1191,45 @@ describe("writeback publish", () => {
     );
   });
 
+  it("respects a reviewer deleting a migrated record from the open branch", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const source = join(homeA, ".ai", "writebacks", "global", "WB-00082.md");
+    await writeFile(source, legacyMain16.replaceAll("WB-00016", "WB-00082"));
+    const first = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+    });
+    const target = first.migrations[0]?.target as string;
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "--detach", "FETCH_HEAD"], seed);
+    await git(seed, ["rm", "-q", target], seed);
+    await git(seed, ["commit", "-qm", "reject migrated record"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "main"], seed);
+
+    const unrelated = await addRecord(homeA, "unrelated");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+      removeMigrated: true,
+    });
+    expect(result.migrations[0]).toMatchObject({
+      action: "skip",
+      reason: "deleted",
+    });
+    expect(existsSync(source)).toBe(true);
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe(`writebacks/global/${unrelated.id}.md`);
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;

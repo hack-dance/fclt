@@ -96,7 +96,7 @@ export interface MigrationEntry {
   target?: string;
   sha256: string;
   action: "migrate" | "skip";
-  reason?: "on-base" | "unrecognized";
+  reason?: "on-base" | "unrecognized" | "deleted";
   /** The migrated record is already on the default or host branch. */
   landed?: boolean;
   removed?: boolean;
@@ -816,6 +816,16 @@ async function publishLocked(args: {
         (publishedBefore && (await pathInHistory(git, baseRef, target)))
       ) {
         entry.landed = true;
+      } else if (
+        publishedBefore &&
+        branchExists &&
+        !(onBase || onBranch) &&
+        (await pathInHistory(git, startRef, target))
+      ) {
+        // A reviewer removed the migrated record from the open branch; do
+        // not add it back. The local legacy copy is kept.
+        entry.reason = "deleted";
+        continue;
       } else if (onBase || onBranch) {
         throw new Error(
           `Migrated id ${newId} already exists with different content`
