@@ -736,6 +736,11 @@ async function publishLocked(args: {
           entry.reason = "deleted";
           continue;
         }
+        // The open branch once held it and a reviewer removed it there.
+        if (branchExists && (await pathInHistory(git, startRef, relPath))) {
+          entry.reason = "deleted";
+          continue;
+        }
       } else if (
         // Another writer changed a copy since this machine's last publish:
         // the host branch differs from what was pushed, the default branch
@@ -884,8 +889,9 @@ async function publishLocked(args: {
         "--name-only",
         "-z",
         "--no-renames",
-        baseRef,
-        startRef,
+        // Changes made on the host branch since it last met the default
+        // branch; files only the default branch changed are not carried.
+        `${baseRef}...${startRef}`,
         "--",
         ...REVIEW_ARTIFACT_DIRS,
       ])

@@ -1079,6 +1079,70 @@ describe("writeback publish", () => {
     );
   });
 
+  it("does not carry stale copies of records only the default branch changed", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const first = await addRecord(homeA, "first");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    // The default branch updates an existing record this machine never had.
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await writeFile(
+      join(seed, "writebacks/global/WB-00016.md"),
+      `${legacyMain16}\nUpdated on main.\n`
+    );
+    await git(seed, ["commit", "-qam", "update on main"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+
+    const second = await addRecord(homeA, "second");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    expect(
+      (
+        await git(
+          remote,
+          ["diff", "--name-only", "main", "review/host-a"],
+          remote
+        )
+      )
+        .split("\n")
+        .sort()
+    ).toEqual(
+      [
+        `writebacks/global/${first.id}.md`,
+        `writebacks/global/${second.id}.md`,
+      ].sort()
+    );
+  });
+
+  it("respects a reviewer deleting a record from the open branch", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "rejected in review");
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "--detach", "FETCH_HEAD"], seed);
+    await git(seed, ["rm", "-q", relPath], seed);
+    await git(seed, ["commit", "-qm", "reject record"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "main"], seed);
+
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.files).toEqual([
+      expect.objectContaining({ path: relPath, reason: "deleted" }),
+    ]);
+    expect(result.pushed).toBe(false);
+    expect(
+      await git(
+        remote,
+        ["ls-tree", "-r", "--name-only", "review/host-a"],
+        remote
+      )
+    ).not.toContain(relPath);
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;
