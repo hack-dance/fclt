@@ -330,9 +330,10 @@ The ambient legacy-approval environment variable does not authorize this command
 ```bash
 fclt ai writeback add --kind <kind> --summary <text> [--category <friction|opportunity|reusable-success>] [--details <text>] [--impact <text>] [--attempted-workaround <text>] [--desired-outcome <text>] [--sensitivity <public|internal|private>] --evidence <type:ref> --asset <selector>
 fclt ai writeback list
-fclt ai writeback show WB-00001
+fclt ai writeback show WB-20261030-7K2M9QXA
 fclt ai writeback group --by asset
 fclt ai writeback summarize --by kind
+fclt ai writeback publish [--dry-run] [--branch <name>] [--remote <name>] [--base <branch>] [--include-legacy [--remove-migrated]] [--no-pr] [--json]
 
 fclt ai evolve assess --asset <selector> --json
 fclt ai evolve propose
@@ -363,6 +364,12 @@ Use these to turn repeated work friction into reviewed capability changes.
 Plain list output shows the active root and scope so an empty project queue is
 not confused with the global queue. Use `--global`, `--project`, or `--root`
 when reviewing a specific scope, and use `--json` for automation.
+
+New ids are dated and random (`WB-20261030-7K2M9QXA`), so machines that share
+one canonical repository never collide; legacy `WB-00001` ids keep working.
+When `~/.ai` is a git work tree, review mirrors go to machine-local pending
+state and `writeback publish` lands them through a branch and pull request.
+See [Writeback and evolution](./writeback-evolution.md#pending-mirrors-and-publish).
 
 `review reconcile` is read-only with respect to configured sources and
 canonical capability. It persists only machine-local cursors/window state and a

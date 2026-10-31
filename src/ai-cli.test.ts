@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AiWritebackRecord, addWriteback, aiCommand } from "./ai";
+import {
+  sequentialTestArtifactIds,
+  setArtifactIdGeneratorForTests,
+} from "./ai-ids";
 import { facultAiWritebackQueuePath } from "./paths";
 
 let tempHome: string | null = null;
@@ -59,7 +63,12 @@ async function captureConsole(fn: () => Promise<void>) {
   return { logs, errors };
 }
 
+beforeEach(() => {
+  setArtifactIdGeneratorForTests(sequentialTestArtifactIds());
+});
+
 afterEach(async () => {
+  setArtifactIdGeneratorForTests(null);
   process.chdir(originalCwd);
   for (const [key, value] of Object.entries({
     HOME: originalHome,
@@ -579,13 +588,19 @@ describe("ai CLI", () => {
       ]);
     });
     expect(addOut.errors).toEqual([]);
-    expect(addOut.logs.join("\n")).toContain("WB-00001");
+    expect(addOut.logs.join("\n")).toContain("WB-20260101-00000001");
 
-    await aiCommand(["writeback", "link", "WB-00001", "--issue", "TICKET-791"]);
+    await aiCommand([
+      "writeback",
+      "link",
+      "WB-20260101-00000001",
+      "--issue",
+      "TICKET-791",
+    ]);
     await aiCommand([
       "writeback",
       "disposition",
-      "WB-00001",
+      "WB-20260101-00000001",
       "--type",
       "task",
       "--target",
@@ -598,11 +613,11 @@ describe("ai CLI", () => {
       await aiCommand(["writeback", "list"]);
     });
     expect(listOut.errors).toEqual([]);
-    expect(listOut.logs.join("\n")).toContain("WB-00001");
+    expect(listOut.logs.join("\n")).toContain("WB-20260101-00000001");
     expect(listOut.logs.join("\n")).toContain("capability_gap");
 
     const showOut = await captureConsole(async () => {
-      await aiCommand(["writeback", "show", "WB-00001"]);
+      await aiCommand(["writeback", "show", "WB-20260101-00000001"]);
     });
     expect(showOut.logs.join("\n")).toContain('"issueLinks": [');
     expect(showOut.logs.join("\n")).toContain('"disposition": "task"');
@@ -679,7 +694,7 @@ describe("ai CLI", () => {
     const output = addOut.logs.join("\n");
     expect(addOut.errors).toEqual([]);
     expect(JSON.parse(output)).toMatchObject({
-      id: "WB-00001",
+      id: "WB-20260101-00000001",
       capture: { category: "friction", sensitivity: "internal" },
     });
     expect(output).not.toContain(basicCredential);
@@ -816,19 +831,19 @@ describe("ai CLI", () => {
       ]);
     });
     expect(addOut.errors).toEqual([]);
-    expect(addOut.logs.join("\n")).toContain("WB-00001");
+    expect(addOut.logs.join("\n")).toContain("WB-20260101-00000001");
 
     const proposeOut = await captureConsole(async () => {
       await aiCommand(["evolve", "--global", "propose"]);
     });
     expect(proposeOut.errors).toEqual([]);
-    expect(proposeOut.logs.join("\n")).toContain("EV-00001");
+    expect(proposeOut.logs.join("\n")).toContain("EV-20260101-00000001");
 
     const draftOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "--global", "draft", "EV-00001"]);
+      await aiCommand(["evolve", "--global", "draft", "EV-20260101-00000001"]);
     });
     expect(draftOut.errors).toEqual([]);
-    expect(draftOut.logs.join("\n")).toContain("Drafted EV-00001");
+    expect(draftOut.logs.join("\n")).toContain("Drafted EV-20260101-00000001");
   });
 
   it("generates and shows proposals through the ai namespace", async () => {
@@ -878,10 +893,10 @@ describe("ai CLI", () => {
       await aiCommand(["evolve", "propose"]);
     });
     expect(proposeOut.errors).toEqual([]);
-    expect(proposeOut.logs.join("\n")).toContain("EV-00001");
+    expect(proposeOut.logs.join("\n")).toContain("EV-20260101-00000001");
 
     const showOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "show", "EV-00001"]);
+      await aiCommand(["evolve", "show", "EV-20260101-00000001"]);
     });
     expect(showOut.errors).toEqual([]);
     expect(showOut.logs.join("\n")).toContain(
@@ -955,7 +970,7 @@ describe("ai CLI", () => {
     expect(singleton.recommendation).toBe("record_more_writeback");
     expect(singleton.writebackCount).toBe(1);
     expect(singleton.approvalRequired).toBe(false);
-    expect(singleton.sourceWritebacks).toEqual(["WB-00001"]);
+    expect(singleton.sourceWritebacks).toEqual(["WB-20260101-00000001"]);
     expect(singleton.suggestedCommands.mutating.join("\n")).toContain(
       "writeback add"
     );
@@ -1016,7 +1031,7 @@ describe("ai CLI", () => {
       activeProposalIds: string[];
     };
     expect(existing.recommendation).toBe("review_existing_proposal");
-    expect(existing.activeProposalIds).toEqual(["EV-00001"]);
+    expect(existing.activeProposalIds).toEqual(["EV-20260101-00000001"]);
   });
 
   it("drafts existing skill evolution against SKILL.md", async () => {
@@ -1088,11 +1103,11 @@ describe("ai CLI", () => {
     expect(proposals[0]?.targets).toEqual(["@ai/skills/capability-evolution"]);
 
     const draftOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "draft", "EV-00001"]);
+      await aiCommand(["evolve", "draft", "EV-20260101-00000001"]);
     });
     expect(draftOut.errors).toEqual([]);
     const showOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "show", "EV-00001", "--json"]);
+      await aiCommand(["evolve", "show", "EV-20260101-00000001", "--json"]);
     });
     expect(showOut.errors).toEqual([]);
     const drafted = JSON.parse(showOut.logs.join("\n")) as {
@@ -1154,34 +1169,38 @@ describe("ai CLI", () => {
     await aiCommand(["evolve", "propose"]);
 
     const draftOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "draft", "EV-00001"]);
+      await aiCommand(["evolve", "draft", "EV-20260101-00000001"]);
     });
     expect(draftOut.errors).toEqual([]);
-    expect(draftOut.logs.join("\n")).toContain("Drafted EV-00001");
+    expect(draftOut.logs.join("\n")).toContain("Drafted EV-20260101-00000001");
 
     const reviewOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "review", "EV-00001", "--json"]);
+      await aiCommand(["evolve", "review", "EV-20260101-00000001", "--json"]);
     });
     expect(reviewOut.errors).toEqual([]);
     expect(JSON.parse(reviewOut.logs.join(""))).toMatchObject({
-      id: "EV-00001",
+      id: "EV-20260101-00000001",
       status: "in_review",
     });
 
     const acceptOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "accept", "EV-00001"]);
+      await aiCommand(["evolve", "accept", "EV-20260101-00000001"]);
     });
     expect(acceptOut.errors).toEqual([]);
-    expect(acceptOut.logs.join("\n")).toContain("Accepted EV-00001");
+    expect(acceptOut.logs.join("\n")).toContain(
+      "Accepted EV-20260101-00000001"
+    );
 
     const applyOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "apply", "EV-00001"]);
+      await aiCommand(["evolve", "apply", "EV-20260101-00000001"]);
     });
     expect(applyOut.errors).toEqual([]);
-    expect(applyOut.logs.join("\n")).toContain("Applied EV-00001");
+    expect(applyOut.logs.join("\n")).toContain("Applied EV-20260101-00000001");
 
     const targetText = await Bun.file(targetPath).text();
-    expect(targetText).toContain("Facult Evolution Applied: EV-00001");
+    expect(targetText).toContain(
+      "Facult Evolution Applied: EV-20260101-00000001"
+    );
 
     await aiCommand([
       "writeback",
@@ -1200,13 +1219,15 @@ describe("ai CLI", () => {
       await aiCommand([
         "evolve",
         "reject",
-        "EV-00002",
+        "EV-20260101-00000002",
         "--reason",
         "Not ready yet.",
       ]);
     });
     expect(rejectOut.errors).toEqual([]);
-    expect(rejectOut.logs.join("\n")).toContain("Rejected EV-00002");
+    expect(rejectOut.logs.join("\n")).toContain(
+      "Rejected EV-20260101-00000002"
+    );
 
     await aiCommand([
       "writeback",
@@ -1222,10 +1243,18 @@ describe("ai CLI", () => {
     await aiCommand(["evolve", "propose"]);
 
     const supersedeOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "supersede", "EV-00002", "--by", "EV-00003"]);
+      await aiCommand([
+        "evolve",
+        "supersede",
+        "EV-20260101-00000002",
+        "--by",
+        "EV-20260101-00000003",
+      ]);
     });
     expect(supersedeOut.errors).toEqual([]);
-    expect(supersedeOut.logs.join("\n")).toContain("Superseded EV-00002");
+    expect(supersedeOut.logs.join("\n")).toContain(
+      "Superseded EV-20260101-00000002"
+    );
   });
 
   it("supports project-to-global promotion through the ai namespace", async () => {
@@ -1282,14 +1311,16 @@ describe("ai CLI", () => {
       await aiCommand([
         "evolve",
         "promote",
-        "EV-00001",
+        "EV-20260101-00000001",
         "--to",
         "global",
         "--project",
       ]);
     });
     expect(promoteOut.errors).toEqual([]);
-    expect(promoteOut.logs.join("\n")).toContain("Promoted EV-00001");
+    expect(promoteOut.logs.join("\n")).toContain(
+      "Promoted EV-20260101-00000002"
+    );
     expect(promoteOut.logs.join("\n")).toContain("@ai/instructions/TESTING.md");
   });
 
@@ -1319,26 +1350,26 @@ describe("ai CLI", () => {
     ]);
     await aiCommand(["evolve", "propose"]);
 
-    await aiCommand(["evolve", "draft", "EV-00001"]);
+    await aiCommand(["evolve", "draft", "EV-20260101-00000001"]);
     const reviseOut = await captureConsole(async () => {
       await aiCommand([
         "evolve",
         "draft",
-        "EV-00001",
+        "EV-20260101-00000001",
         "--append",
         "Add a rule about explicit verification plans.",
       ]);
     });
     expect(reviseOut.errors).toEqual([]);
-    expect(reviseOut.logs.join("\n")).toContain("Drafted EV-00001");
+    expect(reviseOut.logs.join("\n")).toContain("Drafted EV-20260101-00000001");
 
-    await aiCommand(["evolve", "accept", "EV-00001"]);
-    await aiCommand(["evolve", "apply", "EV-00001"]);
+    await aiCommand(["evolve", "accept", "EV-20260101-00000001"]);
+    await aiCommand(["evolve", "apply", "EV-20260101-00000001"]);
     const verifyOut = await captureConsole(async () => {
       await aiCommand([
         "evolve",
         "verify",
-        "EV-00001",
+        "EV-20260101-00000001",
         "--effectiveness",
         "improved",
         "--evidence",
@@ -1348,7 +1379,7 @@ describe("ai CLI", () => {
     });
     expect(verifyOut.errors).toEqual([]);
     expect(verifyOut.logs.join("\n")).toContain(
-      "Verified EV-00001 as improved"
+      "Verified EV-20260101-00000001 as improved"
     );
 
     const targetText = await Bun.file(
@@ -1399,13 +1430,18 @@ describe("ai CLI", () => {
     expect(writebackOut.logs.join("\n")).toContain('"scope": "global"');
 
     await aiCommand(["evolve", "propose", ...scopeArgs]);
-    await aiCommand(["evolve", "draft", "EV-00001", ...scopeArgs]);
-    await aiCommand(["evolve", "accept", "EV-00001", ...scopeArgs]);
+    await aiCommand(["evolve", "draft", "EV-20260101-00000001", ...scopeArgs]);
+    await aiCommand(["evolve", "accept", "EV-20260101-00000001", ...scopeArgs]);
     const applyOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "apply", "EV-00001", ...scopeArgs]);
+      await aiCommand([
+        "evolve",
+        "apply",
+        "EV-20260101-00000001",
+        ...scopeArgs,
+      ]);
     });
     expect(applyOut.errors).toEqual([]);
-    expect(applyOut.logs.join("\n")).toContain("Applied EV-00001");
+    expect(applyOut.logs.join("\n")).toContain("Applied EV-20260101-00000001");
     expect(
       await Bun.file(join(rootDir, "instructions", "CUSTOM_GLOBAL.md")).exists()
     ).toBe(true);
@@ -1451,13 +1487,25 @@ describe("ai CLI", () => {
       ...proposalEvidenceArgs("project-create-cli"),
     ]);
     await aiCommand(["evolve", "propose", "--root", rootDir]);
-    await aiCommand(["evolve", "draft", "EV-00001", "--root", rootDir]);
+    await aiCommand([
+      "evolve",
+      "draft",
+      "EV-20260101-00000001",
+      "--root",
+      rootDir,
+    ]);
 
     const applyOut = await captureConsole(async () => {
-      await aiCommand(["evolve", "apply", "EV-00001", "--root", rootDir]);
+      await aiCommand([
+        "evolve",
+        "apply",
+        "EV-20260101-00000001",
+        "--root",
+        rootDir,
+      ]);
     });
     expect(applyOut.errors).toEqual([]);
-    expect(applyOut.logs.join("\n")).toContain("Applied EV-00001");
+    expect(applyOut.logs.join("\n")).toContain("Applied EV-20260101-00000001");
 
     const targetText = await Bun.file(
       join(rootDir, "instructions", "WORK_UNITS.md")

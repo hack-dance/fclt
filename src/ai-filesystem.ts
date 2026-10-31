@@ -42,8 +42,9 @@ interface MutationScope {
   anchors: string[];
   rootDir?: string;
 }
-const WRITEBACK_ID_RE = /^WB-[0-9]+$/;
-const PROPOSAL_ID_RE = /^EV-[0-9]+$/;
+// Legacy sequential ids (WB-00001) and dated ids (WB-20261030-7K2M9QXA).
+const WRITEBACK_ID_RE = /^WB-(?:[0-9]+|[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8})$/;
+const PROPOSAL_ID_RE = /^EV-(?:[0-9]+|[0-9]{8}-[0-9A-HJKMNP-TV-Z]{8})$/;
 const mutationScope = new AsyncLocalStorage<MutationScope>();
 
 export function needsAiMutationScope(args: {
@@ -611,7 +612,7 @@ export function assertAiRecordId(
   const pattern = kind === "WB" ? WRITEBACK_ID_RE : PROPOSAL_ID_RE;
   if (typeof id !== "string" || !pattern.test(id)) {
     throw new Error(
-      `Invalid ${kind} record identity: expected a numeric record ID`
+      `Invalid ${kind} record identity: expected a ${kind}-NNNNN or dated ${kind} record ID`
     );
   }
 }

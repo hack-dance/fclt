@@ -654,6 +654,7 @@ Writeback and evolution:
 ```bash
 fclt ai writeback add --kind <kind> --summary <text> --asset <selector>
 fclt ai writeback list|show|group|summarize
+fclt ai writeback publish --dry-run
 fclt ai evolve assess|propose|list|show|draft|review|accept|reject|apply|promote
 fclt ai review init|status|reconcile
 ```
@@ -714,6 +715,10 @@ No. You can use `status`, `scan`, `inventory`, `list`, `show`, `graph`, `writeba
 ### Where do project writebacks go?
 
 Runtime JSON state stays machine-local. Human-readable review artifacts are mirrored under global `~/.ai/writebacks/projects/<slug-hash>/` and `~/.ai/evolution/projects/<slug-hash>/`, not inside repo-local `<repo>/.ai`.
+
+### Can several machines share one `~/.ai` repository?
+
+Yes. Writeback and proposal ids are dated and random (`WB-20261030-7K2M9QXA`), so machines never allocate the same id; legacy `WB-00001` ids keep working. When `~/.ai` is a git work tree, review mirrors go to machine-local pending state so agent work does not dirty the shared tree, and `fclt ai writeback publish` lands them through a per-machine branch and pull request. `--include-legacy` migrates mirrors that older releases left in the tracked tree. See [Writeback and evolution](./docs/writeback-evolution.md#pending-mirrors-and-publish).
 
 ### What should be committed?
 

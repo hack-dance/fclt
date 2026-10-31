@@ -30,6 +30,7 @@ import {
   withAiReadCache,
   writeAiText,
 } from "./ai-filesystem";
+import { allocateArtifactId } from "./ai-ids";
 import {
   type AiSourcePaths,
   aiPathSafetyIssue,
@@ -53,6 +54,7 @@ import { buildIndexSnapshot } from "./index-builder";
 import {
   absoluteFilesystemPath,
   canonicalProjectAiRoot,
+  facultAiCanonicalReviewScopeDir,
   facultAiDraftDir,
   facultAiEvolutionReviewDir,
   facultAiGraphPath,
@@ -79,6 +81,10 @@ import {
   writebackWarnings,
 } from "./writeback-arrays";
 import { resolveWritebackContext } from "./writeback-context";
+import {
+  type PublishResult,
+  publishReviewArtifacts,
+} from "./writeback-publish";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -1117,6 +1123,32 @@ function nextId(prefix: string, ids: string[]): string {
   return `${prefix}-${String(next).padStart(5, "0")}`;
 }
 
+function reviewMirrorIdTaken(args: {
+  homeDir: string;
+  rootDir: string;
+  artifactDir: "writebacks" | "evolution";
+  id: string;
+}): boolean {
+  const fileName = `${args.id}.md`;
+  const pendingOrCanonicalDir =
+    args.artifactDir === "writebacks"
+      ? facultAiWritebackReviewDir(args.homeDir, args.rootDir)
+      : facultAiEvolutionReviewDir(args.homeDir, args.rootDir);
+  return (
+    existsSync(join(pendingOrCanonicalDir, fileName)) ||
+    existsSync(
+      join(
+        facultAiCanonicalReviewScopeDir(
+          args.artifactDir,
+          args.homeDir,
+          args.rootDir
+        ),
+        fileName
+      )
+    )
+  );
+}
+
 function resolveScopeContext(rootDir: string, homeDir: string): ScopeContext {
   const projectRoot = projectRootFromAiRoot(rootDir, homeDir);
   const projectSlug = projectSlugFromAiRoot(rootDir, homeDir);
@@ -1487,7 +1519,17 @@ export async function addWriteback(
     homeDir,
     rootDir: args.rootDir,
   });
-  const recordId = nextId("WB", [...latest.keys()]);
+  const recordId = allocateArtifactId(
+    "WB",
+    (id) =>
+      latest.has(id) ||
+      reviewMirrorIdTaken({
+        homeDir,
+        rootDir: args.rootDir,
+        artifactDir: "writebacks",
+        id,
+      })
+  );
   assertAiOutputPaths(
     [
       facultAiWritebackQueuePath(homeDir, args.rootDir),
@@ -1924,7 +1966,13 @@ async function nextProposalId(
         .map((entry) => basename(entry, ".json"))
     );
   }
-  return nextId("EV", ids);
+  const known = new Set(ids);
+  return allocateArtifactId(
+    "EV",
+    (id) =>
+      known.has(id) ||
+      reviewMirrorIdTaken({ homeDir, rootDir, artifactDir: "evolution", id })
+  );
 }
 
 function policyProfileForProposal(
@@ -2032,6 +2080,7 @@ export async function proposeEvolution(args: {
   }
   assertDurableAiPaths({ ...args, homeDir, targets: [args.asset] });
   const proposedId = await nextProposalId(homeDir, args.rootDir);
+  let unusedProposedId: string | undefined = proposedId;
   assertAiOutputPaths(
     [
       join(facultAiProposalDir(homeDir, args.rootDir), `${proposedId}.json`),
@@ -2123,7 +2172,10 @@ export async function proposeEvolution(args: {
     if (entries.length === 0) {
       continue;
     }
-    const id = await nextProposalId(homeDir, args.rootDir);
+    // The first proposal takes the id whose paths were checked above.
+    const id =
+      unusedProposedId ?? (await nextProposalId(homeDir, args.rootDir));
+    unusedProposedId = undefined;
     const targetPath = canonicalRefToPath({
       ref: target,
       homeDir,
@@ -4052,6 +4104,19 @@ Usage:
   fclt ai writeback summarize [--by <asset|kind|domain>] [--json]
   fclt ai writeback dismiss <id>
   fclt ai writeback promote <id>
+  fclt ai writeback publish [--dry-run] [--branch <name>] [--remote <name>] [--base <branch>] [--include-legacy [--remove-migrated]] [--no-pr] [--json]
+
+New writeback and proposal ids look like WB-20261030-7K2M9QXA: a UTC date plus
+40 random bits, so machines that share one canonical repository never allocate
+the same id. Legacy ids such as WB-00001 keep working.
+
+When the global canonical root is a git work tree, review mirrors are written
+to machine-local pending state instead of the tracked tree. "publish" commits
+them to a per-machine branch through a temporary git worktree, pushes it, and
+opens or updates one pull request (with gh, for GitHub remotes).
+"--include-legacy" also migrates dirty legacy WB-NNNNN mirrors in the canonical
+tree to new ids; "--remove-migrated" then removes the local copies after the
+push succeeds.
 
 Temporary roots and alternate homes are refused on add. Use --allow-ephemeral or
 FCLT_ALLOW_EPHEMERAL_AI_PATHS=1 for intentional temporary work.
@@ -4682,6 +4747,68 @@ function parseEvidence(argv: string[]): WritebackEvidence[] {
   });
 }
 
+function renderPublishResult(result: PublishResult): string[] {
+  const lines = [
+    `${result.dryRun ? "[dry-run] " : ""}${result.message}`,
+    `root: ${result.root}`,
+    `target: ${result.remote}/${result.branch} (base ${result.base})`,
+  ];
+  for (const file of result.files) {
+    lines.push(
+      file.action === "skip"
+        ? `skip\t${file.path}\t${file.reason}`
+        : `${file.action}\t${file.path}`
+    );
+  }
+  if (result.migrations.length > 0) {
+    lines.push("legacy migration (old -> new, source sha256):");
+    for (const entry of result.migrations) {
+      lines.push(
+        entry.action === "migrate"
+          ? `${entry.legacyId} -> ${entry.newId}\t${entry.source} (${entry.sourceState})\tsha256:${entry.sha256}${entry.removed ? "\tremoved" : ""}`
+          : `${entry.legacyId} skipped (${entry.reason})\t${entry.source}\tsha256:${entry.sha256}`
+      );
+    }
+  }
+  if (result.commit) {
+    lines.push(`commit: ${result.commit}`);
+  }
+  if (result.pushOutput) {
+    lines.push(result.pushOutput);
+  }
+  if (result.pullRequest) {
+    lines.push(
+      `pull request ${result.pullRequest.created ? "opened" : "updated"}: ${result.pullRequest.url}`
+    );
+  } else if (result.pullRequestMessage) {
+    lines.push(result.pullRequestMessage);
+  }
+  return lines;
+}
+
+async function writebackPublishCommand(argv: string[]): Promise<void> {
+  try {
+    const result = await publishReviewArtifacts({
+      homeDir: process.env.HOME ?? homedir(),
+      dryRun: argv.includes("--dry-run"),
+      remote: parseStringFlag(argv, "--remote"),
+      base: parseStringFlag(argv, "--base"),
+      branch: parseStringFlag(argv, "--branch"),
+      includeLegacy: argv.includes("--include-legacy"),
+      removeMigrated: argv.includes("--remove-migrated"),
+      pullRequest: !argv.includes("--no-pr"),
+    });
+    if (argv.includes("--json")) {
+      await writeCliOutput(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(renderPublishResult(result).join("\n"));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
+}
+
 async function writebackCommand(
   argv: string[],
   context?: Awaited<ReturnType<typeof resolveWritebackContext>>
@@ -4696,6 +4823,11 @@ async function writebackCommand(
 
   if (commandArgs.includes("--help") || commandArgs.includes("-h")) {
     console.log(writebackHelp());
+    return;
+  }
+
+  if (sub === "publish") {
+    await writebackPublishCommand(commandArgs);
     return;
   }
 

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -974,21 +975,80 @@ export function facultAiReconciliationConfigPath(
   return join(rootDir ?? facultRootDir(home), "reconciliation.json");
 }
 
-export function facultAiReviewScopeDir(
-  artifactDir: "writebacks" | "evolution" | "reconciliation",
+export type AiReviewArtifactDir = "writebacks" | "evolution" | "reconciliation";
+export type AiReviewMirrorMode = "canonical" | "pending";
+
+/**
+ * Where review mirrors are written.
+ *
+ * When the global canonical root is a git work tree, mirrors written by this
+ * machine go to a machine-local pending tree instead of the tracked canonical
+ * tree, so agent work never dirties the shared repository. `fclt ai writeback
+ * publish` lands pending mirrors through a branch and pull request. Roots that
+ * are not git work trees keep writing mirrors in place.
+ * `FACULT_REVIEW_MIRRORS=canonical|pending` overrides the detection.
+ */
+export function facultAiReviewMirrorMode(
+  home: string = defaultHomeDir()
+): AiReviewMirrorMode {
+  const override = process.env.FACULT_REVIEW_MIRRORS?.trim().toLowerCase();
+  if (override === "canonical" || override === "pending") {
+    return override;
+  }
+  return existsSync(join(preferredGlobalAiRoot(home), ".git"))
+    ? "pending"
+    : "canonical";
+}
+
+/** Machine-local tree that mirrors review paths relative to the global root. */
+export function facultAiPendingReviewRoot(
+  home: string = defaultHomeDir()
+): string {
+  return join(facultLocalStateRoot(home), "review", "pending");
+}
+
+export function facultAiReviewPublishStatePath(
+  home: string = defaultHomeDir()
+): string {
+  return join(facultLocalStateRoot(home), "review", "publish.json");
+}
+
+/** Review-scope path relative to the global canonical root. */
+export function facultAiReviewScopeRelativeDir(
+  artifactDir: AiReviewArtifactDir,
   home: string = defaultHomeDir(),
   rootDir?: string
 ): string {
   const resolvedRoot = rootDir ?? facultRootDir(home);
   const projectRoot = projectRootFromAiRoot(resolvedRoot, home);
   return projectRoot
+    ? join(artifactDir, "projects", machineStateProjectKey(resolvedRoot, home))
+    : join(artifactDir, "global");
+}
+
+/** Review-scope directory inside the tracked global canonical root. */
+export function facultAiCanonicalReviewScopeDir(
+  artifactDir: AiReviewArtifactDir,
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return join(
+    preferredGlobalAiRoot(home),
+    facultAiReviewScopeRelativeDir(artifactDir, home, rootDir)
+  );
+}
+
+export function facultAiReviewScopeDir(
+  artifactDir: AiReviewArtifactDir,
+  home: string = defaultHomeDir(),
+  rootDir?: string
+): string {
+  return facultAiReviewMirrorMode(home) === "pending"
     ? join(
-        preferredGlobalAiRoot(home),
-        artifactDir,
-        "projects",
-        machineStateProjectKey(resolvedRoot, home)
+        facultAiPendingReviewRoot(home),
+        facultAiReviewScopeRelativeDir(artifactDir, home, rootDir)
       )
-    : join(preferredGlobalAiRoot(home), artifactDir, "global");
+    : facultAiCanonicalReviewScopeDir(artifactDir, home, rootDir);
 }
 
 export function facultAiReconciliationReviewDir(

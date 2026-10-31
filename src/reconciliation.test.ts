@@ -20,6 +20,12 @@ import {
   parseReconciliationConfig,
 } from "./reconciliation-config";
 
+// Git's strict ISO date (%cI) renders a zero UTC offset as "Z" or "+00:00"
+// depending on the git build; both name the same instant.
+function gitIsoTimestamp(utcWithoutZone: string) {
+  return expect.stringMatching(new RegExp(`^${utcWithoutZone}(?:Z|\\+00:00)$`));
+}
+
 let tempRoot: string | null = null;
 const originalRootDir = process.env.FACULT_ROOT_DIR;
 const originalRootScope = process.env.FACULT_ROOT_SCOPE;
@@ -2371,8 +2377,8 @@ describe("source reconciliation", () => {
     expect(advanced.coverage[0]?.recordsScanned).toBe(1);
     expect(advanced.coverage[0]?.freshness).toMatchObject({
       state: "current",
-      cursorAt: "2026-07-25T12:00:00Z",
-      latestSourceAt: "2026-07-25T12:00:00Z",
+      cursorAt: gitIsoTimestamp("2026-07-25T12:00:00"),
+      latestSourceAt: gitIsoTimestamp("2026-07-25T12:00:00"),
     });
   });
 
@@ -2537,8 +2543,8 @@ describe("source reconciliation", () => {
       freshness: {
         state: "current",
         reason: "source_caught_up",
-        cursorAt: "2026-01-02T12:00:00Z",
-        latestSourceAt: "2026-01-02T12:00:00Z",
+        cursorAt: gitIsoTimestamp("2026-01-02T12:00:00"),
+        latestSourceAt: gitIsoTimestamp("2026-01-02T12:00:00"),
       },
     });
   });

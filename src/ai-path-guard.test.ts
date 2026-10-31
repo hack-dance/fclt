@@ -35,6 +35,7 @@ import {
   withAiMutationScope,
   writeAiText,
 } from "./ai-filesystem";
+import { setArtifactIdGeneratorForTests } from "./ai-ids";
 import { aiPathSafetyIssue, realUserHome } from "./ai-path-guard";
 import {
   facultAiDraftDir,
@@ -59,6 +60,16 @@ let tempHome: string;
 let durableFixture: string | undefined;
 let restorePathGuard: (() => void) | undefined;
 
+// Ids are random; these cases need the same id in two scopes on purpose.
+async function withAllocatedId<T>(id: string, run: () => Promise<T>) {
+  setArtifactIdGeneratorForTests(() => id);
+  try {
+    return await run();
+  } finally {
+    setArtifactIdGeneratorForTests(null);
+  }
+}
+
 beforeEach(async () => {
   tempHome = await mkdtemp(join(tmpdir(), "fclt-ai-path-guard-"));
   process.env.HOME = tempHome;
@@ -67,6 +78,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setArtifactIdGeneratorForTests(null);
   restorePathGuard?.();
   restorePathGuard = undefined;
   for (const name of [
@@ -1065,11 +1077,13 @@ describe("AI state path guard", () => {
       to: "global",
     });
     const globalArgs = { ...writebackArgs(globalRoot), homeDir };
-    const badGlobalWriteback = await addWriteback({
-      ...globalArgs,
-      suggestedDestination: "/tmp/unrelated-global-target.md",
-      allowEphemeral: true,
-    });
+    const badGlobalWriteback = await withAllocatedId(projectWriteback.id, () =>
+      addWriteback({
+        ...globalArgs,
+        suggestedDestination: "/tmp/unrelated-global-target.md",
+        allowEphemeral: true,
+      })
+    );
     const safeGlobalWriteback = await addWriteback(globalArgs);
     expect(badGlobalWriteback.id).toBe(projectWriteback.id);
     expect(promoted.sourceRoot).toBe(projectRoot);
@@ -1300,6 +1314,17 @@ describe("AI filesystem mutation boundaries", () => {
       "runtime directory",
       "review directory",
     ].includes(layout);
+    if (layout === "writeback review") {
+      // Allocation skips ids whose review mirror already exists, so a planted
+      // mirror path is never selected or written through.
+      const planted = await Bun.file(temporary).text();
+      const ids = ["WB-00002", "WB-00003"];
+      setArtifactIdGeneratorForTests(() => ids.shift() ?? "WB-00004");
+      const record = await addWriteback(args);
+      expect(record.id).toBe("WB-00003");
+      expect(await Bun.file(temporary).text()).toBe(planted);
+      return;
+    }
     const operation = (allowEphemeral = false) =>
       capture
         ? addWriteback({ ...args, allowEphemeral })
@@ -1326,7 +1351,9 @@ describe("AI filesystem mutation boundaries", () => {
       scope: "global",
     });
     const globalArgs = { ...args, rootDir: globalRoot };
-    const unrelated = await addWriteback(globalArgs);
+    const unrelated = await withAllocatedId(writeback.id, () =>
+      addWriteback(globalArgs)
+    );
     expect(unrelated.id).toBe(writeback.id);
     const promoted = await promoteProposal(proposal.id, {
       homeDir,
@@ -1666,10 +1693,14 @@ describe("security review r4 regressions", () => {
     await seedIndexedSkill({ homeDir, rootDir: globalRoot, scope: "global" });
     const globalArgs = { ...args, rootDir: globalRoot };
     await addWriteback(globalArgs);
-    const globalWriteback = await addWriteback({
-      ...globalArgs,
-      summary: "Global evidence WB-00002",
-    });
+    const globalWriteback = await withAllocatedId(
+      otherProjectWriteback.id,
+      () =>
+        addWriteback({
+          ...globalArgs,
+          summary: "Global evidence WB-00002",
+        })
+    );
     expect(globalWriteback.id).toBe(otherProjectWriteback.id);
     const promoted = await promoteProposal(proposal.id, {
       homeDir,

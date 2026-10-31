@@ -477,6 +477,75 @@ Human-readable Markdown mirrors live under global `~/.ai`:
 
 Project-scoped artifacts include project metadata in frontmatter. They do not get written into repo-local `<repo>/.ai/writebacks` or `<repo>/.ai/evolution`.
 
+### Ids
+
+New writeback and proposal ids look like `WB-20261030-7K2M9QXA` and
+`EV-20261030-3HX0PZ4N`: the UTC date, then 40 random bits in Crockford base32
+(no `I`, `L`, `O` or `U`). Several machines can share one canonical `~/.ai`
+repository without coordinating, because no machine-local counter is involved.
+Allocation also skips ids already in the local queue, the pending mirrors, or
+the tracked review directories.
+
+Legacy sequential ids such as `WB-00001` and `EV-00001` keep working for list,
+show, group, evolve and references. Both forms sort correctly as plain strings:
+legacy ids sort first, then dated ids by day.
+
+### Pending mirrors and publish
+
+When `~/.ai` is a git work tree, fclt writes review mirrors to a machine-local
+pending tree (`<fclt state>/review/pending/`, same relative layout) instead of
+the tracked directories above, so agent work never leaves the shared repository
+dirty. `fclt paths --json` reports the pending directories as the review
+directories in this mode. Set `FACULT_REVIEW_MIRRORS=canonical` to keep writing
+in place, or `pending` to force the pending tree.
+
+Land pending mirrors with a branch and a pull request:
+
+```bash
+fclt ai writeback publish --dry-run
+fclt ai writeback publish [--branch <name>] [--remote origin] [--base <branch>] [--json]
+```
+
+`publish` fetches the remote, creates a temporary `git worktree` from the
+machine's review branch (or from the remote default branch the first time),
+commits the pending mirrors that differ from the default branch, and pushes with
+a plain fast-forward push. It never touches your working tree, index, stash or
+current branch, and it refuses to push to the default branch itself. The default
+branch name is `fclt/review-<key>`, where `<key>` is a random per-machine value
+kept in fclt state; it is not derived from the hostname. For GitHub remotes it
+opens or updates one pull request per branch with `gh`; otherwise it prints the
+push result. Records are marked published only after the push succeeds.
+
+Pending mirrors that still carry legacy sequential ids are skipped: the same
+legacy id can mean different records on different machines.
+
+### Migrating legacy dirty mirrors
+
+Older releases wrote mirrors straight into the tracked tree. To land those:
+
+```bash
+fclt ai writeback publish --include-legacy --dry-run
+fclt ai writeback publish --include-legacy
+fclt ai writeback publish --include-legacy --remove-migrated
+```
+
+`--include-legacy` picks up untracked `writebacks/**/WB-NNNNN.md` files and
+tracked ones modified in place. Each gets a new dated id; the file keeps its
+body byte for byte except the `id:` and heading lines, and gains
+`legacyId: "WB-NNNNN"` in frontmatter. It always lands as a new file, so tracked
+records on the default branch are never rewritten or deleted. The output lists
+`old -> new` with the sha256 of each source file so you can confirm capture.
+A dry run allocates fresh ids each time; the real run records the mapping, so
+reruns reuse it. Local copies stay in place unless you pass `--remove-migrated`,
+which runs only after a successful push and only for files whose sha256 still
+matches: untracked copies are deleted and tracked files are restored from
+`HEAD`.
+
+Generated `~/.ai/.facult/ai/index.json` and `graph.json` are rebuilt by
+`fclt index`. If the canonical repository tracks them, ignore them there
+(`.facult/ai/index.json`, `.facult/ai/graph.json`) so a reindex does not make
+the tree dirty.
+
 ## Approval Rule
 
 Global instructions, skills, plugins, and other high-risk shared surfaces require explicit review before apply. Project-scoped additive markdown changes can be lower risk, but still need evidence and a clear target.

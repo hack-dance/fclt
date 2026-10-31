@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  setDefaultTimeout,
+} from "bun:test";
 import {
   chmod,
   lstat,
@@ -19,6 +26,10 @@ import { saveManagedState } from "../manage";
 import { runAuditFix } from "./fix";
 import { persistAuditReport } from "./report-persistence";
 import { evaluateStaticAudit } from "./static";
+
+// Each case spawns the CLI with a cold transpiler cache, which can take longer
+// than the 5s default on a loaded machine.
+setDefaultTimeout(30_000);
 
 const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
@@ -963,6 +974,10 @@ describe("audit fix", () => {
   it("fails closed without blocking when a FIFO replaces the bound source", async () => {
     const fixture = await makeAuthorizedFixture();
     const movedPath = `${fixture.trackedPath}.moved`;
+    let fifoReady: () => void = () => undefined;
+    const fifoCreated = new Promise<void>((resolveFifo) => {
+      fifoReady = resolveFifo;
+    });
     try {
       const attempt = runAuditFix({
         afterReportValidation: async () => {
@@ -972,6 +987,7 @@ describe("audit fix", () => {
             stdout: "pipe",
           });
           expect(await proc.exited).toBe(0);
+          fifoReady();
         },
         argv: ["mcp:github", "--report", fixture.exactReportPath, "--yes"],
         cwd: fixture.home,
@@ -980,9 +996,12 @@ describe("audit fix", () => {
       await expect(
         Promise.race([
           attempt,
-          Bun.sleep(1000).then(() => {
-            throw new Error("audit fix blocked on FIFO replacement");
-          }),
+          // Time only the FIFO step, so a slow machine is not read as blocking.
+          fifoCreated
+            .then(() => Bun.sleep(1000))
+            .then(() => {
+              throw new Error("audit fix blocked on FIFO replacement");
+            }),
         ])
       ).rejects.toThrow();
       expect((await lstat(fixture.trackedPath)).isFIFO()).toBe(true);
