@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { constants } from "node:fs";
 import {
-  appendFile,
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -17,10 +17,35 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
+  type AuditFileChunkReader,
   AuditSourceTracker,
   auditReadOnlyNoFollowFlags,
   validateAuditSourceSnapshot,
 } from "./source-provenance";
+
+/**
+ * Simulates a writer appending to `target` after its declared size without
+ * touching the file: real reads pass through, and the trailing EOF sentinel
+ * read reports one extra byte. Only the growth check can reject this.
+ */
+function reportGrowthAtEof(target: string) {
+  const sentinelReads: number[] = [];
+  const reader: AuditFileChunkReader = async (args) => {
+    const { bytesRead } = await args.handle.read(
+      args.buffer,
+      0,
+      args.length,
+      null
+    );
+    if (bytesRead === 0 && args.path === target) {
+      sentinelReads.push(args.bytesRead);
+      args.buffer[0] = 0x67;
+      return 1;
+    }
+    return bytesRead;
+  };
+  return { reader, sentinelReads };
+}
 
 async function captureStrictTree(
   root: string,
@@ -402,18 +427,13 @@ test("bounded provenance rejects large, sparse, growing, symlink, and special in
   await expect(bounded.read(alias)).rejects.toThrow("non-symlink file");
   await expect(bounded.read(directory)).rejects.toThrow("non-symlink file");
 
-  let mutated = false;
-  const racing = new AuditSourceTracker({
-    beforeReadChunk: async ({ bytesRead }) => {
-      if (bytesRead > 0 && !mutated) {
-        mutated = true;
-        await appendFile(growing, "growth");
-      }
-    },
-  });
+  const growth = reportGrowthAtEof(await realpath(growing));
+  const racing = new AuditSourceTracker({ readFileChunk: growth.reader });
   await expect(racing.read(growing, { maxBytes: 200_000 })).rejects.toThrow(
-    "changed while it was read"
+    `Audit context grew while it was read: ${await realpath(growing)}`
   );
+  expect(growth.sentinelReads).toEqual([140_000]);
+  expect((await lstat(growing)).size).toBe(140_000);
 });
 
 test("absence proofs reject newly created symlink ancestors", async () => {
@@ -1113,20 +1133,19 @@ test("strict tree capture rejects sparse and growing files", async () => {
   );
   const growing = join(growthRoot, "growing.bin");
   await writeFile(growing, Buffer.alloc(140_000, 1));
-  let mutated = false;
+  const growth = reportGrowthAtEof(await realpath(growing));
   const growthTracker = new AuditSourceTracker({
-    beforeReadChunk: async ({ bytesRead }) => {
-      if (bytesRead > 0 && !mutated) {
-        mutated = true;
-        await appendFile(growing, "growth");
-      }
-    },
+    readFileChunk: growth.reader,
   });
   await expect(
     growthTracker.captureTree(growthRoot, {
       rejectUnsupportedEntries: true,
     })
-  ).rejects.toThrow("changed while it was read");
+  ).rejects.toThrow(
+    `Audit context grew while it was read: ${await realpath(growing)}`
+  );
+  expect(growth.sentinelReads).toEqual([140_000]);
+  expect((await lstat(growing)).size).toBe(140_000);
 });
 
 test("strict tree capture rejects a missing declared root", async () => {

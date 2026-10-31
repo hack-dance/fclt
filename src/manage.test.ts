@@ -22,6 +22,7 @@ import {
   managedStatePath,
   managedStatePathForRoot,
   manageTool,
+  type SetupCodexPluginOptions,
   type SetupCodexPluginResult,
   saveManagedState,
   setupCodexPlugin,
@@ -80,8 +81,7 @@ async function writeCodexPluginStub(args: {
     args.codexBin,
     [
       `#!${process.execPath}`,
-      `import { spawn } from "node:child_process";`,
-      `import { appendFileSync, chmodSync, closeSync, cpSync, existsSync, ftruncateSync, linkSync, mkdirSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
+      `import { appendFileSync, chmodSync, closeSync, cpSync, ftruncateSync, linkSync, mkdirSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";`,
       `import { dirname, join } from "node:path";`,
       `const home = ${JSON.stringify(args.home)};`,
       `const selectedVersion = ${JSON.stringify(args.selectedVersion)};`,
@@ -130,17 +130,6 @@ async function writeCodexPluginStub(args: {
       "  }",
       `  console.log(JSON.stringify({ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: selectedVersion, installedPath, authPolicy: "ON_INSTALL" }));`,
       `} else if (argv[0] === "plugin" && argv[1] === "list") {`,
-      `  if (installedMutation === "growing-file") {`,
-      `    const target = join(installedPath, "unexpected-growing");`,
-      `    const ready = join(home, "growth-ready");`,
-      `    const stop = join(home, "growth-stop");`,
-      `    const script = 'const { appendFileSync, existsSync, writeFileSync } = require("node:fs"); const [target, ready, stop] = process.argv.slice(1); writeFileSync(ready, ""); const deadline = Date.now() + 2000; while (Date.now() < deadline && !existsSync(stop)) appendFileSync(target, Buffer.from([1]));';`,
-      `    const mutator = spawn(process.execPath, ["-e", script, target, ready, stop], { detached: true, stdio: "ignore" });`,
-      "    mutator.unref();",
-      "    const readyDeadline = Date.now() + 1000;",
-      "    while (!existsSync(ready) && Date.now() < readyDeadline) {}",
-      "    if (!existsSync(ready)) process.exit(70);",
-      "  }",
       `  console.log(JSON.stringify({ installed: [{ pluginId: "fclt@local", name: "fclt", marketplaceName: "local", version: listedVersion, installed: true, enabled: ${args.enabled !== false} }], available: [] }));`,
       "} else {",
       "  process.exitCode = 64;",
@@ -155,7 +144,10 @@ type InstalledPluginMutation = NonNullable<
   Parameters<typeof writeCodexPluginStub>[0]["installedMutation"]
 >;
 
-async function setupMutatedCodexPlugin(mutation: InstalledPluginMutation) {
+async function setupMutatedCodexPlugin(
+  mutation: InstalledPluginMutation,
+  options?: Pick<SetupCodexPluginOptions, "readPluginPayloadChunk">
+) {
   const home = await createTempDir();
   await writeJson(join(home, ".agents", "plugins", "marketplace.json"), {
     name: "local",
@@ -171,7 +163,7 @@ async function setupMutatedCodexPlugin(mutation: InstalledPluginMutation) {
   });
   return {
     home,
-    result: await setupCodexPlugin({ homeDir: home, codexBin }),
+    result: await setupCodexPlugin({ ...options, homeDir: home, codexBin }),
   };
 }
 
@@ -3396,22 +3388,43 @@ describe("syncManagedTools", () => {
   });
 
   it("rejects an installed plugin file that grows around bounded reads", async () => {
-    const { home, result } = await setupMutatedCodexPlugin("growing-file");
-    await Bun.write(join(home, "growth-stop"), "stop\n");
+    // Simulate a writer appending after the declared size without racing a
+    // real process: reads pass through, and the trailing EOF sentinel read of
+    // the injected file reports one extra byte while the file is unchanged.
+    const sentinelPositions: number[] = [];
+    const { home, result } = await setupMutatedCodexPlugin("growing-file", {
+      readPluginPayloadChunk: async (args) => {
+        const { bytesRead } = await args.handle.read(
+          args.buffer,
+          0,
+          args.length,
+          args.position
+        );
+        if (bytesRead === 0 && args.relativePath === "unexpected-growing") {
+          sentinelPositions.push(args.position);
+          args.buffer[0] = 1;
+          return 1;
+        }
+        return bytesRead;
+      },
+    });
 
     expect(result.codexInstall.status).toBe("failed");
-    // The mutator races the bounded reader. On a busy or single-core runner
-    // (seen on CI with Bun 1.4.4) the reader can finish between appends and
-    // then fails closed on the tree hash instead of the per-file change
-    // check. Both outcomes reject the payload; require one of them.
-    const stderr = result.codexInstall.stderr ?? "";
-    const caughtDuringRead =
-      stderr.includes("unexpected-growing") &&
-      (stderr.includes("file changed") || stderr.includes("file grew"));
-    const caughtByTreeHash = stderr.includes(
-      "installed tree hash differs from bundled payload"
+    expect(result.codexInstall.stderr).toContain(
+      "plugin payload file grew during read at unexpected-growing"
     );
-    expect(caughtDuringRead || caughtByTreeHash).toBe(true);
+    expect(sentinelPositions).toEqual([131_072]);
+    const installedGrowing = join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "local",
+      "fclt",
+      BUNDLED_PLUGIN_VERSION,
+      "unexpected-growing"
+    );
+    expect((await lstat(installedGrowing)).size).toBe(131_072);
   });
 
   it("dry-runs bundled codex plugin setup without writing files", async () => {

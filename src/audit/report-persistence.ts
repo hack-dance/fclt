@@ -128,8 +128,31 @@ export interface LoadVerifiedAuditReportArgs {
   beforeSourceValidation?: () => Promise<void>;
   expectedMode?: AuditReportMode;
   now?: number;
+  /** @internal Adversarial test seam; production callers must not set this. */
+  readEnvelopeChunk?: AuditEnvelopeChunkReader;
   reportPath: string;
 }
+
+/**
+ * Reads up to `length` envelope bytes at `position` into `buffer` at
+ * `offset` and returns the count, like `readSync`. Tests substitute it to
+ * simulate concurrent growth without racing a real writer.
+ */
+export type AuditEnvelopeChunkReader = (args: {
+  buffer: Buffer;
+  fd: number;
+  length: number;
+  offset: number;
+  position: number;
+}) => number;
+
+const readEnvelopeChunkSync: AuditEnvelopeChunkReader = ({
+  buffer,
+  fd,
+  length,
+  offset,
+  position,
+}) => readSync(fd, buffer, offset, length, position);
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -1158,6 +1181,7 @@ export async function loadVerifiedAuditReportEnvelope<
         "Exact audit report envelope must be a private, singly linked regular file"
       );
     }
+    const readEnvelopeChunk = args.readEnvelopeChunk ?? readEnvelopeChunkSync;
     const bytes = Buffer.alloc(metadata.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -1174,13 +1198,13 @@ export async function loadVerifiedAuditReportEnvelope<
         fileName,
         metadata,
       });
-      const bytesRead = readSync(
-        reportFd,
-        bytes,
+      const bytesRead = readEnvelopeChunk({
+        buffer: bytes,
+        fd: reportFd,
+        length: Math.min(64 * 1024, bytes.length - offset),
         offset,
-        Math.min(64 * 1024, bytes.length - offset),
-        offset
-      );
+        position: offset,
+      });
       if (bytesRead <= 0) {
         throw new Error("Exact audit report envelope ended while reading");
       }
@@ -1193,7 +1217,13 @@ export async function loadVerifiedAuditReportEnvelope<
       });
     }
     const trailing = Buffer.alloc(1);
-    const trailingBytes = readSync(reportFd, trailing, 0, 1, offset);
+    const trailingBytes = readEnvelopeChunk({
+      buffer: trailing,
+      fd: reportFd,
+      length: 1,
+      offset: 0,
+      position: offset,
+    });
     if (trailingBytes !== 0) {
       throw new Error("Exact audit report envelope grew while reading");
     }
