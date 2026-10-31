@@ -1037,6 +1037,48 @@ describe("writeback publish", () => {
     );
   });
 
+  it("republishes an update reapplied after a revert, and one whose branch was deleted unmerged", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "revert and reapply");
+    const relPath = `writebacks/global/${record.id}.md`;
+    const pending = join(facultAiPendingReviewRoot(homeA), relPath);
+    const versionA = await readFile(pending, "utf8");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+
+    // B published, reverted to A, then B again.
+    await writeFile(pending, "# version B\n");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await writeFile(pending, versionA);
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await writeFile(pending, "# version B\n");
+    const reapplied = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(reapplied.files[0]).toMatchObject({ action: "update" });
+    expect(await remoteFile(remote, "review/host-a", relPath)).toBe(
+      "# version B"
+    );
+
+    // The branch is deleted without merging; B is published again.
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    const retried = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(retried.files[0]).toMatchObject({ action: "update" });
+    expect(retried.pushed).toBe(true);
+    expect(await remoteFile(remote, "review/host-a", relPath)).toBe(
+      "# version B"
+    );
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;

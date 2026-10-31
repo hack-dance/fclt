@@ -645,6 +645,9 @@ async function publishLocked(args: {
   const writes = new Map<string, Uint8Array>();
   const baseShaAtPublish = new Map<string, string | null>();
   const useBase = new Set<string>();
+  // Pending mirrors reverted to the default-branch version; their ledger
+  // entry follows once the rebuilt branch is pushed.
+  const revertedToBase = new Map<string, string>();
   for (const artifactDir of REVIEW_ARTIFACT_DIRS) {
     for (const fullPath of await listFiles(join(pendingRoot, artifactDir))) {
       const relPath = toPosix(relative(pendingRoot, fullPath));
@@ -690,12 +693,12 @@ async function publishLocked(args: {
       if (baseSha === entry.sha256) {
         entry.reason = "on-base";
         // Reverted locally to the default-branch version after publish.
-        if (
-          branchSha !== null &&
-          branchSha !== entry.sha256 &&
-          !dropOwnBranchCopy()
-        ) {
-          entry.reason = "conflict";
+        if (branchSha !== null && branchSha !== entry.sha256) {
+          if (dropOwnBranchCopy()) {
+            revertedToBase.set(relPath, entry.sha256);
+          } else {
+            entry.reason = "conflict";
+          }
         }
         continue;
       }
@@ -722,7 +725,10 @@ async function publishLocked(args: {
           entry.reason = baseMovedOn ? "conflict" : "published";
           continue;
         }
-        if (baseContent) {
+        // A default-branch copy that is still the one recorded at publish
+        // time means the update never landed (its branch was deleted
+        // unmerged, or another branch is targeted): publish it again.
+        if (baseContent && baseSha !== (record.baseSha256 ?? null)) {
           entry.reason = "published";
           continue;
         }
@@ -920,6 +926,18 @@ async function publishLocked(args: {
           publishedAt,
         };
       }
+    }
+    // The branch no longer proposes a change for reverted records: what is
+    // published is the default-branch version, so reapplying the reverted
+    // update later counts as a new change.
+    for (const [path, baseSha] of revertedToBase) {
+      state.published[path] = {
+        sha256: baseSha,
+        baseSha256: baseSha,
+        branch,
+        commit,
+        publishedAt,
+      };
     }
     for (const entry of migrations) {
       const record = state.migrations[`${entry.source}\0${entry.sha256}`];
