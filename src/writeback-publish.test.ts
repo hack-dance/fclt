@@ -592,7 +592,7 @@ describe("writeback publish", () => {
     expect(existsSync(join(reviewDir, "WB-00077.md"))).toBe(false);
   });
 
-  it("serializes publishes and replaces a lock left by a dead process", async () => {
+  it("fails closed on a lock held by a live or dead process", async () => {
     const { homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;
     const lockPath = `${facultAiReviewPublishStatePath(homeA)}.lock`;
@@ -601,11 +601,14 @@ describe("writeback publish", () => {
     await expect(
       publishReviewArtifacts({ homeDir: homeA, dryRun: true })
     ).rejects.toThrow("Another writeback publish is running");
-    await writeFile(lockPath, "");
-    await expect(
-      publishReviewArtifacts({ homeDir: homeA, dryRun: true })
-    ).rejects.toThrow("lock is unreadable");
-    await writeFile(lockPath, "999999999 dead-token\n");
+    for (const stale of ["999999999 dead-token\n", ""]) {
+      await writeFile(lockPath, stale);
+      await expect(
+        publishReviewArtifacts({ homeDir: homeA, dryRun: true })
+      ).rejects.toThrow("no longer running: remove");
+      expect(await readFile(lockPath, "utf8")).toBe(stale);
+    }
+    await rm(lockPath);
     const result = await publishReviewArtifacts({
       homeDir: homeA,
       dryRun: true,
@@ -644,25 +647,14 @@ describe("writeback publish", () => {
     expect(existsSync(`${facultAiReviewPublishStatePath(home)}.lock`)).toBe(
       false
     );
-    // Contenders reclaiming the same stale lock still admit only one holder.
-    await writeFile(
-      `${facultAiReviewPublishStatePath(home)}.lock`,
-      "999999999 dead-token\n"
+    // A stale lock is never taken over, so no contender gets in.
+    const lockPath = `${facultAiReviewPublishStatePath(home)}.lock`;
+    await writeFile(lockPath, "999999999 dead-token\n");
+    const blocked = await Promise.allSettled(
+      Array.from({ length: 6 }, () => withPublishLock(home, async () => 1))
     );
-    holders = 0;
-    maxHolders = 0;
-    const reclaimed = await Promise.allSettled(
-      Array.from({ length: 6 }, () =>
-        withPublishLock(home, async () => {
-          holders += 1;
-          maxHolders = Math.max(maxHolders, holders);
-          await Bun.sleep(50);
-          holders -= 1;
-        })
-      )
-    );
-    expect(maxHolders).toBe(1);
-    expect(reclaimed.some((r) => r.status === "fulfilled")).toBe(true);
+    expect(blocked.every((r) => r.status === "rejected")).toBe(true);
+    expect(await readFile(lockPath, "utf8")).toBe("999999999 dead-token\n");
   });
 
   it("updates an unmerged record again while the default branch still has the older copy", async () => {

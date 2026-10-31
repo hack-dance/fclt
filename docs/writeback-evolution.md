@@ -526,7 +526,9 @@ copy, which may carry review edits (`published`). When both the local mirror
 and the landed copy changed since the last publish, the run reports a
 `conflict` and leaves both alone. If an earlier run pushed but could not open
 the pull request, the next run retries that step even when nothing new needs
-pushing. Only one publish runs per machine at a time.
+pushing. Only one publish runs per machine at a time. If a publish is killed,
+its lock stays behind and later runs stop with the lock path; remove that file
+once no publish is running.
 
 ### Migrating legacy dirty mirrors
 

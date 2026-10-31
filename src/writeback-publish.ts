@@ -266,10 +266,10 @@ function processAlive(pid: number): boolean {
  *
  * The lock file is created complete with `link()`, so it is never observed
  * empty. It holds `<pid> <token>`; release removes it only while it still holds
- * this run's token. A lock whose pid is dead is taken over by renaming it to a
- * private name first: only one contender wins the rename, and a contender that
- * moved a lock it did not mean to (one re-acquired meanwhile) links it back. An
- * unreadable lock is never reclaimed automatically.
+ * this run's token. A lock left by a process that died is not taken over
+ * automatically: without an atomic compare-and-replace, a takeover could remove
+ * a lock another publisher has just acquired. It is reported with its path so
+ * a person can remove it.
  */
 export async function withPublishLock<T>(
   homeDir: string,
@@ -281,74 +281,35 @@ export async function withPublishLock<T>(
   const staging = `${lockPath}.${randomBytes(6).toString("hex")}.new`;
   await writeFile(staging, `${token}\n`);
   try {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        await link(staging, lockPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw error;
-        }
-        await reclaimStaleLock(lockPath);
-        continue;
-      }
-      try {
-        return await run();
-      } finally {
-        const held = await readFile(lockPath, "utf8").catch(() => "");
-        if (held.trim() === token) {
-          await rm(lockPath, { force: true });
-        }
-      }
+    await link(staging, lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw await lockBusyError(lockPath);
     }
+    throw error;
   } finally {
     await rm(staging, { force: true });
   }
-  throw new Error("Unable to acquire the writeback publish lock");
+  try {
+    return await run();
+  } finally {
+    const held = await readFile(lockPath, "utf8").catch(() => "");
+    if (held.trim() === token) {
+      await rm(lockPath, { force: true });
+    }
+  }
 }
 
-function lockHolder(content: string): number | null {
-  const pid = Number.parseInt(content.split(" ")[0] ?? "", 10);
-  return Number.isInteger(pid) && pid > 0 && content.trim().includes(" ")
-    ? pid
-    : null;
-}
-
-/** Throws unless the existing lock was stale and has been removed. */
-async function reclaimStaleLock(lockPath: string): Promise<void> {
-  const content = await readFile(lockPath, "utf8").catch(() => null);
-  if (content === null) {
-    return; // Released meanwhile; try again.
-  }
-  const holder = lockHolder(content);
-  if (holder === null) {
-    throw new Error(
-      `Writeback publish lock is unreadable: ${lockPath}. Remove it if no publish is running.`
-    );
-  }
-  if (processAlive(holder)) {
-    throw new Error(
+async function lockBusyError(lockPath: string): Promise<Error> {
+  const content = await readFile(lockPath, "utf8").catch(() => "");
+  const holder = Number.parseInt(content.split(" ")[0] ?? "", 10);
+  if (Number.isInteger(holder) && holder > 0 && processAlive(holder)) {
+    return new Error(
       `Another writeback publish is running (pid ${holder}); retry when it finishes`
     );
   }
-  const moved = `${lockPath}.${randomBytes(6).toString("hex")}.stale`;
-  try {
-    await rename(lockPath, moved);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return; // Another contender reclaimed it first.
-    }
-    throw error;
-  }
-  const movedContent = await readFile(moved, "utf8").catch(() => "");
-  if (movedContent === content) {
-    await rm(moved, { force: true });
-    return;
-  }
-  // The lock was re-acquired between the read and the rename: put it back.
-  await link(moved, lockPath).catch(() => undefined);
-  await rm(moved, { force: true });
-  throw new Error(
-    "Another writeback publish is running; retry when it finishes"
+  return new Error(
+    `Writeback publish lock is held by a process that is no longer running: remove ${lockPath} if no publish is running, then retry`
   );
 }
 
