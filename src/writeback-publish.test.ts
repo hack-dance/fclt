@@ -1143,6 +1143,54 @@ describe("writeback publish", () => {
     ).not.toContain(relPath);
   });
 
+  it("keeps a reviewer's branch deletion of a record the default branch has", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "deleted in review");
+    const relPath = `writebacks/global/${record.id}.md`;
+    const pending = join(facultAiPendingReviewRoot(homeA), relPath);
+    // Version A lands; update B goes to a new branch; a reviewer deletes it.
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(remote, ["branch", "-D", "review/host-a"], remote);
+    await writeFile(pending, "# version B\n");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "--detach", "FETCH_HEAD"], seed);
+    await git(seed, ["rm", "-q", relPath], seed);
+    await git(seed, ["commit", "-qm", "delete record"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "main"], seed);
+
+    const unrelated = await addRecord(homeA, "unrelated");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.pushed).toBe(true);
+    expect(result.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: relPath, reason: "deleted" }),
+      ])
+    );
+    expect(
+      (
+        await git(
+          remote,
+          ["diff", "--no-renames", "--name-status", "main", "review/host-a"],
+          remote
+        )
+      )
+        .split("\n")
+        .sort()
+    ).toEqual(
+      [`A\twritebacks/global/${unrelated.id}.md`, `D\t${relPath}`].sort()
+    );
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;

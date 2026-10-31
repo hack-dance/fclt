@@ -748,7 +748,12 @@ async function publishLocked(args: {
         // person instead of overwriting either side.
         (branchSha !== null && !ours) ||
         baseMovedOn ||
-        (record !== undefined && (await deletedAfterLanding()))
+        (record !== undefined &&
+          ((await deletedAfterLanding()) ||
+            // A reviewer removed it from the open branch.
+            (branchExists &&
+              branchSha === null &&
+              (await pathInHistory(git, startRef, relPath)))))
       ) {
         entry.reason = "conflict";
         continue;
@@ -881,6 +886,7 @@ async function publishLocked(args: {
   // publish: records it carries that have not landed are kept, and copies the
   // default branch has superseded (squash merges, reverts) are dropped.
   const carry = new Map<string, Uint8Array>();
+  const carryDeletes: string[] = [];
   const rebuild = writes.size > 0 || useBase.size > 0;
   if (branchExists && rebuild) {
     const changed = (
@@ -905,6 +911,9 @@ async function publishLocked(args: {
       const bytes = await git.blob(startRef, path);
       if (bytes) {
         carry.set(path, bytes);
+      } else {
+        // Deleted on the host branch; the rebuild keeps the deletion.
+        carryDeletes.push(path);
       }
     }
   }
@@ -917,6 +926,7 @@ async function publishLocked(args: {
       baseRef,
       branchRef: branchExists ? startRef : null,
       writes: new Map([...carry, ...writes]),
+      deletes: carryDeletes,
       newRecords: writes.size,
       result,
     });
@@ -1019,6 +1029,8 @@ async function commitAndPush(args: {
   /** Existing host branch, merged in so the push stays a fast-forward. */
   branchRef: string | null;
   writes: Map<string, Uint8Array>;
+  /** Paths removed on the host branch, removed again after the rebuild. */
+  deletes: string[];
   newRecords: number;
   result: PublishResult;
 }): Promise<void> {
@@ -1032,6 +1044,12 @@ async function commitAndPush(args: {
       // parent; the records it still needs are written back below.
       await git.ok(
         ["merge", "-s", "ours", "--no-ff", "--no-commit", args.branchRef],
+        worktree
+      );
+    }
+    if (args.deletes.length > 0) {
+      await git.ok(
+        ["rm", "-q", "--ignore-unmatch", "--", ...args.deletes],
         worktree
       );
     }
