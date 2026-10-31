@@ -19,6 +19,7 @@ import {
   facultAiWritebackReviewDir,
 } from "./paths";
 import {
+  githubRepository,
   publishReviewArtifacts,
   rewriteLegacyWritebackId,
   withPublishLock,
@@ -205,6 +206,22 @@ describe("artifact ids", () => {
     const bodyOnly = "# WB-00016: no frontmatter\n\nid: WB-00016\n";
     expect(
       rewriteLegacyWritebackId(bodyOnly, "WB-00016", "WB-20261030-DDDDDDDD")
+    ).toBeNull();
+  });
+
+  it("derives the GitHub repository of the selected remote", () => {
+    for (const url of [
+      "git@github.com:acme/notes.git",
+      "https://github.com/acme/notes.git",
+      "https://github.com/acme/notes",
+      "ssh://git@github.com/acme/notes.git",
+    ]) {
+      expect(githubRepository(url)).toBe("acme/notes");
+    }
+    expect(githubRepository("/srv/git/notes.git")).toBeNull();
+    expect(githubRepository("https://gitlab.com/acme/notes.git")).toBeNull();
+    expect(
+      githubRepository("https://github.com.example.net/acme/notes.git")
     ).toBeNull();
   });
 });
@@ -697,6 +714,14 @@ describe("writeback publish", () => {
     ).rejects.toThrow("--remove-migrated requires --include-legacy");
     await expect(
       publishReviewArtifacts({ homeDir: homeA, branch: "main" })
+    ).rejects.toThrow("Refusing to publish straight to the default branch");
+    // A different PR base does not unprotect the remote's default branch.
+    await expect(
+      publishReviewArtifacts({
+        homeDir: homeA,
+        base: "develop",
+        branch: "main",
+      })
     ).rejects.toThrow("Refusing to publish straight to the default branch");
   });
 });

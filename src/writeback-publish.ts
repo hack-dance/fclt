@@ -339,15 +339,19 @@ async function listFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-async function defaultBranch(git: Git, remote: string): Promise<string> {
+async function defaultBranch(git: Git, remote: string): Promise<string | null> {
   const result = await git.run(["ls-remote", "--symref", remote, "HEAD"]);
   const match = SYMREF_HEAD_RE.exec(result.stdout);
-  if (result.exitCode !== 0 || !match?.[1]) {
-    throw new Error(
-      `Unable to determine the default branch of ${remote}; pass --base <branch>`
-    );
-  }
-  return match[1];
+  return result.exitCode === 0 && match?.[1] ? match[1] : null;
+}
+
+const GITHUB_REMOTE_RE =
+  /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/;
+
+/** `owner/name` for a GitHub remote URL, or null for any other remote. */
+export function githubRepository(remoteUrl: string): string | null {
+  const match = GITHUB_REMOTE_RE.exec(remoteUrl.trim());
+  return match ? `${match[1]}/${match[2]}` : null;
 }
 
 async function remoteBranchExists(
@@ -485,6 +489,7 @@ async function dirtyLegacyWritebacks(git: Git): Promise<DirtyLegacyFile[]> {
 
 async function findPullRequest(args: {
   root: string;
+  repository: string;
   base: string;
   branch: string;
   title: string;
@@ -500,6 +505,8 @@ async function findPullRequest(args: {
       gh,
       "pr",
       "list",
+      "--repo",
+      args.repository,
       "--head",
       args.branch,
       "--state",
@@ -521,6 +528,8 @@ async function findPullRequest(args: {
       gh,
       "pr",
       "create",
+      "--repo",
+      args.repository,
       "--base",
       args.base,
       "--head",
@@ -590,16 +599,24 @@ async function publishLocked(args: {
   const { dryRun, git, remote, root } = args;
   // Loaded under the lock so concurrent runs see each other's ledger.
   const state = await loadState(args.homeDir);
-  const base = args.base ?? (await defaultBranch(git, remote));
+  // The remote's own default branch is protected even when --base names
+  // another branch for the pull request.
+  const remoteDefault = await defaultBranch(git, remote);
+  const base = args.base ?? remoteDefault;
+  if (!base) {
+    throw new Error(
+      `Unable to determine the default branch of ${remote}; pass --base <branch>`
+    );
+  }
   const savedHostKey = state.hostKey;
   const branch = args.branch ?? `fclt/review-${hostKey(state)}`;
   if (state.hostKey !== savedHostKey) {
     // Persist a new key even on a dry run so it previews the real branch name.
     await saveState(args.homeDir, state);
   }
-  if (branch === base) {
+  if (branch === base || branch === remoteDefault) {
     throw new Error(
-      `Refusing to publish straight to the default branch ${base}`
+      `Refusing to publish straight to the default branch ${branch}`
     );
   }
 
@@ -920,12 +937,16 @@ async function reconcilePullRequest(args: {
   const remoteUrl = (
     await args.git.ok(["remote", "get-url", args.remote])
   ).trim();
-  if (!remoteUrl.includes("github.com")) {
+  // gh runs against the selected remote's repository, not whichever
+  // repository it would infer from the checkout.
+  const repository = githubRepository(remoteUrl);
+  if (!repository) {
     result.pullRequestMessage = `Remote ${args.remote} is not on GitHub; open a pull request for ${args.branch} manually.`;
     return;
   }
   const pr = await findPullRequest({
     root: args.root,
+    repository,
     base: args.base,
     branch: args.branch,
     title: "chore(review): publish review records",
