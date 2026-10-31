@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { readSync } from "node:fs";
 import {
-  appendFile,
   chmod,
   link,
   lstat,
@@ -28,7 +28,6 @@ import { AuditSourceTracker } from "./source-provenance";
 
 const PERSISTENCE_COLLISION_RE =
   /collision|commit failed closed|symlink|unsafe/i;
-const READ_DRIFT_RE = /grew|changed while reading/;
 const TIMESTAMP_SCHEMA_RE = /timestamp|provenance|schema/i;
 const DIRECTORY_CHANGED_RE = /directory changed/i;
 const ENVELOPE_OR_DIRECTORY_CHANGED_RE =
@@ -543,18 +542,30 @@ describe("adversarial audit report persistence", () => {
       mode: "static",
       reportRoot: growingRoot,
     });
-    let appended = false;
+    // Simulate a writer appending after the declared size: the injected
+    // reader reports a byte past EOF while the file itself stays unchanged,
+    // so only the trailing-sentinel growth check can reject it.
+    const growingSize = (await lstat(growingPath)).size;
+    const sentinelPositions: number[] = [];
     await expect(
       loadVerifiedAuditReport({
-        beforeEnvelopeReadChunk: async () => {
-          if (!appended) {
-            appended = true;
-            await appendFile(growingPath, " ");
+        readEnvelopeChunk: ({ buffer, fd, length, offset, position }) => {
+          const bytesRead = readSync(fd, buffer, offset, length, position);
+          if (bytesRead === 0 && position === growingSize) {
+            sentinelPositions.push(position);
+            buffer[offset] = 0x20;
+            return 1;
           }
+          return bytesRead;
         },
         reportPath: growingPath,
       })
-    ).rejects.toThrow(READ_DRIFT_RE);
+    ).rejects.toThrow("Exact audit report envelope grew while reading");
+    expect(sentinelPositions).toEqual([growingSize]);
+    expect((await lstat(growingPath)).size).toBe(growingSize);
+    await expect(
+      loadVerifiedAuditReport({ reportPath: growingPath })
+    ).resolves.toBeDefined();
   });
 
   test("persistence and loading share the exact envelope byte boundary", async () => {

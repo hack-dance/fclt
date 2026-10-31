@@ -4,6 +4,7 @@ import { constants, type Dirent, type Stats } from "node:fs";
 import {
   appendFile,
   cp,
+  type FileHandle,
   lstat,
   mkdir,
   open,
@@ -190,7 +191,22 @@ export interface SetupCodexPluginOptions {
   dryRun?: boolean;
   installInCodex?: boolean;
   codexBin?: string | null;
+  /** @internal Adversarial test seam; production callers must not set this. */
+  readPluginPayloadChunk?: CodexPluginPayloadChunkReader;
 }
+
+/**
+ * Reads up to `length` bytes of a plugin payload file at `position` into the
+ * start of `buffer` and returns the count. Tests substitute it to simulate
+ * concurrent growth without racing a real writer.
+ */
+export type CodexPluginPayloadChunkReader = (args: {
+  buffer: Buffer;
+  handle: FileHandle;
+  length: number;
+  position: number;
+  relativePath: string;
+}) => Promise<number>;
 
 export interface SetupCodexPluginResult {
   pluginDir: string;
@@ -1458,6 +1474,13 @@ interface StrictDirectoryTreeHash {
   hash: string;
 }
 
+const readCodexPluginPayloadChunk: CodexPluginPayloadChunkReader = async ({
+  buffer,
+  handle,
+  length,
+  position,
+}) => (await handle.read(buffer, 0, length, position)).bytesRead;
+
 const CODEX_PLUGIN_TREE_LIMITS = Object.freeze({
   maxAggregateBytes: 4 * 1024 * 1024,
   maxDepth: 12,
@@ -1495,8 +1518,10 @@ function updateTreeHashField(
  * or non-regular entry makes its identity unverifiable.
  */
 async function hashStrictDirectoryTree(
-  root: string
+  root: string,
+  options?: { readChunk?: CodexPluginPayloadChunkReader }
 ): Promise<StrictDirectoryTreeHash> {
+  const readChunk = options?.readChunk ?? readCodexPluginPayloadChunk;
   const rootPath = resolve(root);
   const initialRoot = await lstat(rootPath);
   if (!initialRoot.isDirectory() || initialRoot.isSymbolicLink()) {
@@ -1692,12 +1717,13 @@ async function hashStrictDirectoryTree(
               beforeRead.size - offset
             )
           );
-          const { bytesRead } = await handle.read(
-            chunk,
-            0,
-            chunk.byteLength,
-            offset
-          );
+          const bytesRead = await readChunk({
+            buffer: chunk,
+            handle,
+            length: chunk.byteLength,
+            position: offset,
+            relativePath: childRelativePath,
+          });
           if (bytesRead !== chunk.byteLength) {
             throw new Error(
               `plugin payload file changed during read at ${childRelativePath}`
@@ -1712,7 +1738,15 @@ async function hashStrictDirectoryTree(
           }
         }
         const sentinel = Buffer.allocUnsafe(1);
-        if ((await handle.read(sentinel, 0, 1, beforeRead.size)).bytesRead) {
+        if (
+          await readChunk({
+            buffer: sentinel,
+            handle,
+            length: 1,
+            position: beforeRead.size,
+            relativePath: childRelativePath,
+          })
+        ) {
           throw new Error(
             `plugin payload file grew during read at ${childRelativePath}`
           );
@@ -5420,6 +5454,7 @@ async function runCodexPluginAdd(args: {
   expectedVersion: string;
   homeDir: string;
   marketplaceName: string;
+  readPluginPayloadChunk?: CodexPluginPayloadChunkReader;
 }): Promise<SetupCodexPluginResult["codexInstall"]> {
   const command = [
     args.codexBin,
@@ -5559,7 +5594,9 @@ async function runCodexPluginAdd(args: {
   }
 
   try {
-    const installed = await hashStrictDirectoryTree(expectedInstalledPath);
+    const installed = await hashStrictDirectoryTree(expectedInstalledPath, {
+      readChunk: args.readPluginPayloadChunk,
+    });
     if (installed.hash !== args.expectedHash) {
       throw new Error("installed tree hash differs from bundled payload");
     }
@@ -5657,7 +5694,11 @@ export async function setupCodexPlugin(
           throw new Error("Bundled Codex plugin manifest has no version.");
         }
         try {
-          expectedHash = (await hashStrictDirectoryTree(pluginTargetDir)).hash;
+          expectedHash = (
+            await hashStrictDirectoryTree(pluginTargetDir, {
+              readChunk: opts.readPluginPayloadChunk,
+            })
+          ).hash;
         } catch (error) {
           throw new Error(
             `Bundled Codex plugin payload could not be verified: ${
@@ -5672,6 +5713,7 @@ export async function setupCodexPlugin(
           expectedVersion,
           homeDir: home,
           marketplaceName,
+          readPluginPayloadChunk: opts.readPluginPayloadChunk,
         });
       } else {
         codexInstall = {

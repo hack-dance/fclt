@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants, type Dirent } from "node:fs";
-import { lstat, open, opendir, readlink, realpath } from "node:fs/promises";
+import {
+  type FileHandle,
+  lstat,
+  open,
+  opendir,
+  readlink,
+  realpath,
+} from "node:fs/promises";
 import {
   basename,
   dirname,
@@ -810,6 +817,25 @@ async function captureStablePhysicalPathIdentity(
   }
 }
 
+/**
+ * Reads up to `length` bytes from the handle's current position into the
+ * start of `buffer` and returns the count. Tests substitute it to simulate
+ * concurrent growth without racing a real writer.
+ */
+export type AuditFileChunkReader = (args: {
+  buffer: Buffer;
+  bytesRead: number;
+  handle: FileHandle;
+  length: number;
+  path: string;
+}) => Promise<number>;
+
+const readAuditFileChunk: AuditFileChunkReader = async ({
+  buffer,
+  handle,
+  length,
+}) => (await handle.read(buffer, 0, length, null)).bytesRead;
+
 async function readStableRegularFile(
   pathValue: string,
   options?: {
@@ -820,6 +846,7 @@ async function readStableRegularFile(
     }) => Promise<void>;
     maxBytes?: number;
     platform?: NodeJS.Platform;
+    readFileChunk?: AuditFileChunkReader;
   }
 ): Promise<{ bytes: Buffer; identity: AuditEvaluatedFileIdentity }> {
   const requested = normalize(resolve(pathValue));
@@ -854,6 +881,7 @@ async function readStableRegularFile(
     ) {
       throw new Error(`Audit context is sparse: ${canonical}`);
     }
+    const readFileChunk = options?.readFileChunk ?? readAuditFileChunk;
     const chunks: Buffer[] = [];
     let bytesRead = 0;
     while (bytesRead < before.size) {
@@ -870,19 +898,31 @@ async function readStableRegularFile(
           before.size - bytesRead
         )
       );
-      const result = await handle.read(chunk, 0, chunk.length, null);
-      if (result.bytesRead <= 0) {
+      const chunkBytes = await readFileChunk({
+        buffer: chunk,
+        bytesRead,
+        handle,
+        length: chunk.length,
+        path: canonical,
+      });
+      if (chunkBytes <= 0) {
         throw new Error(
           `Audit context ended before its declared size: ${canonical}`
         );
       }
-      bytesRead += result.bytesRead;
-      chunks.push(chunk.subarray(0, result.bytesRead));
+      bytesRead += chunkBytes;
+      chunks.push(chunk.subarray(0, chunkBytes));
     }
     await options?.beforeReadChunk?.({ bytesRead, path: canonical });
     const sentinel = Buffer.allocUnsafe(1);
-    const trailing = await handle.read(sentinel, 0, 1, null);
-    if (trailing.bytesRead !== 0) {
+    const trailingBytes = await readFileChunk({
+      buffer: sentinel,
+      bytesRead,
+      handle,
+      length: 1,
+      path: canonical,
+    });
+    if (trailingBytes !== 0) {
       throw new Error(`Audit context grew while it was read: ${canonical}`);
     }
     const bytes = Buffer.concat(chunks, bytesRead);
@@ -953,6 +993,8 @@ export class AuditSourceTracker {
     path: string;
   }) => Promise<void>;
 
+  readonly #readFileChunk?: AuditFileChunkReader;
+
   constructor(options?: {
     beforeAbsentProof?: (args: { path: string }) => Promise<void>;
     beforeDerivedContextEvaluation?: (args: { path: string }) => Promise<void>;
@@ -965,6 +1007,8 @@ export class AuditSourceTracker {
       path: string;
     }) => Promise<void>;
     platform?: NodeJS.Platform;
+    /** @internal Adversarial test seam; production callers must not set this. */
+    readFileChunk?: AuditFileChunkReader;
   }) {
     this.#beforeAbsentProof = options?.beforeAbsentProof;
     this.#beforeDerivedContextEvaluation =
@@ -974,6 +1018,7 @@ export class AuditSourceTracker {
     this.#afterDirectoryEnumeration = options?.afterDirectoryEnumeration;
     this.#beforeFileOpen = options?.beforeFileOpen;
     this.#beforeReadChunk = options?.beforeReadChunk;
+    this.#readFileChunk = options?.readFileChunk;
     this.#platform = options?.platform ?? process.platform;
   }
 
@@ -1152,6 +1197,7 @@ export class AuditSourceTracker {
       beforeReadChunk: this.#beforeReadChunk,
       maxBytes: options?.maxBytes,
       platform: this.#platform,
+      readFileChunk: this.#readFileChunk,
     });
     const lexicalAfter = await captureLexicalPathChainOnce(requested, false);
     assertLexicalChainUnchanged(requested, lexicalChain, lexicalAfter);
