@@ -900,6 +900,119 @@ describe("writeback publish", () => {
     );
   });
 
+  it("keeps another reviewer's branch edit when the default branch also moved on", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "three writers");
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    // The default branch gets reviewed version B; the retained branch gets C.
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await writeFile(join(seed, relPath), "# version B\n");
+    await git(seed, ["commit", "-qam", "review B"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(seed, ["checkout", "-q", "--detach", "FETCH_HEAD"], seed);
+    await writeFile(join(seed, relPath), "# version C\n");
+    await git(seed, ["commit", "-qam", "review C"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:review/host-a"], seed);
+    await git(seed, ["checkout", "-q", "main"], seed);
+
+    await addRecord(homeA, "unrelated");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.pushed).toBe(true);
+    expect(result.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: relPath, reason: "conflict" }),
+      ])
+    );
+    expect(await remoteFile(remote, "review/host-a", relPath)).toBe(
+      "# version C"
+    );
+  });
+
+  it("does not resurrect a landed record deleted on the default branch while the branch is retained", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "deleted after landing");
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/host-a" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["rm", "-q", relPath], seed);
+    await git(seed, ["commit", "-qm", "drop record"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+
+    const unrelated = await addRecord(homeA, "unrelated");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+    });
+    expect(result.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: relPath, reason: "deleted" }),
+      ])
+    );
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe(`writebacks/global/${unrelated.id}.md`);
+  });
+
+  it("does not carry a migrated record over its squash-merged review once the source is gone", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const reviewDir = join(homeA, ".ai", "writebacks", "global");
+    await writeFile(
+      join(reviewDir, "WB-00081.md"),
+      legacyMain16.replaceAll("WB-00016", "WB-00081")
+    );
+    const first = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+      removeMigrated: true,
+    });
+    const target = first.migrations[0]?.target as string;
+    expect(first.migrations[0]?.removed).toBe(true);
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/host-a"], seed);
+    await git(seed, ["merge", "-q", "--squash", "FETCH_HEAD"], seed);
+    await writeFile(
+      join(seed, target),
+      `${await readFile(join(seed, target), "utf8")}\nReviewed.\n`
+    );
+    await git(seed, ["add", target], seed);
+    await git(seed, ["commit", "-qm", "squash review"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+
+    const unrelated = await addRecord(homeA, "unrelated");
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+    });
+    expect(result.pushed).toBe(true);
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe(`writebacks/global/${unrelated.id}.md`);
+    expect(await remoteFile(remote, "review/host-a", target)).toContain(
+      "Reviewed."
+    );
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;

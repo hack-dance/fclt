@@ -140,6 +140,8 @@ interface PublishState {
       legacyId: string;
       newId: string;
       target: string;
+      /** The migrated record as this machine first published it. */
+      targetSha256?: string;
       publishedAt?: string;
       commit?: string;
     }
@@ -669,66 +671,71 @@ async function publishLocked(args: {
         baseSha !== null &&
         baseSha !== record?.sha256 &&
         baseSha !== (record?.baseSha256 ?? null);
-      // A host-branch copy that differs from the default branch and should
-      // not survive the rebuild of the branch on top of it.
-      const dropBranchCopy = () => {
-        if (branchSha !== null && branchSha !== baseSha) {
+      const ours = branchSha !== null && branchSha === record?.sha256;
+      // Removed from the default branch after it landed there.
+      const deletedAfterLanding = async () =>
+        baseSha === null && (await pathInHistory(git, baseRef, relPath));
+      // Only this machine's own published copy may be dropped from the host
+      // branch when the default branch supersedes it; anything else on the
+      // branch is someone's edit and is carried for a person to resolve.
+      const dropOwnBranchCopy = () => {
+        if (ours && branchSha !== baseSha) {
           useBase.add(relPath);
+          return true;
         }
+        return false;
       };
       if (baseSha === entry.sha256) {
         entry.reason = "on-base";
-        if (branchSha !== null && branchSha !== entry.sha256) {
-          if (branchSha === record?.sha256) {
-            // Reverted locally to the default-branch version after publish.
-            dropBranchCopy();
-          } else {
-            entry.reason = "conflict";
-          }
+        // Reverted locally to the default-branch version after publish.
+        if (
+          branchSha !== null &&
+          branchSha !== entry.sha256 &&
+          !dropOwnBranchCopy()
+        ) {
+          entry.reason = "conflict";
         }
         continue;
       }
       if (branchSha === entry.sha256) {
-        if (baseMovedOn) {
-          // Landed with review edits; the old branch copy must not land again.
-          entry.reason = "published";
-          dropBranchCopy();
+        if (baseMovedOn || (await deletedAfterLanding())) {
+          // Landed (with review edits) or removed after landing: the old
+          // branch copy must not be proposed again.
+          entry.reason = baseSha === null ? "deleted" : "published";
+          if (!dropOwnBranchCopy()) {
+            entry.reason = "conflict";
+          }
         } else {
           entry.reason = "on-branch";
         }
         continue;
       }
       if (record?.sha256 === entry.sha256) {
-        // Unchanged since this machine published it. A landed copy may carry
-        // review edits, so never write the stale local copy over it; re-add
-        // only when the earlier publish never landed anywhere.
-        if (baseContent || branchContent) {
-          entry.reason = "published";
-          if (baseMovedOn) {
-            dropBranchCopy();
-          }
+        // Unchanged since this machine published it, and neither branch holds
+        // that version. Never write the stale local copy over a landed or
+        // edited copy; re-add only when the earlier publish never landed.
+        if (branchContent) {
+          // Someone edited the open branch; keep it. If the default branch
+          // also moved on, both changed and a person has to decide.
+          entry.reason = baseMovedOn ? "conflict" : "published";
           continue;
         }
-        // Gone from both branches. If the default branch ever had it, it was
-        // removed on purpose after landing; do not bring it back.
-        const history = await git.ok([
-          "log",
-          "-1",
-          "--format=%H",
-          baseRef,
-          "--",
-          relPath,
-        ]);
-        if (history.trim()) {
+        if (baseContent) {
+          entry.reason = "published";
+          continue;
+        }
+        if (await deletedAfterLanding()) {
           entry.reason = "deleted";
           continue;
         }
       } else if (
         // Another writer changed a copy since this machine's last publish:
-        // the host branch differs from what was pushed, or the default branch
-        // moved on. Leave it for a person instead of overwriting either side.
-        (branchSha !== null && branchSha !== record?.sha256) ||
-        baseMovedOn
+        // the host branch differs from what was pushed, the default branch
+        // moved on, or it removed the record after landing. Leave it for a
+        // person instead of overwriting either side.
+        (branchSha !== null && !ours) ||
+        baseMovedOn ||
+        (record !== undefined && (await deletedAfterLanding()))
       ) {
         entry.reason = "conflict";
         continue;
@@ -788,10 +795,7 @@ async function publishLocked(args: {
         bytesEqual(onBase, targetBytes) ||
         bytesEqual(onBranch, targetBytes) ||
         (publishedBefore && (onBase || onBranch)) ||
-        (publishedBefore &&
-          (
-            await git.ok(["log", "-1", "--format=%H", baseRef, "--", target])
-          ).trim())
+        (publishedBefore && (await pathInHistory(git, baseRef, target)))
       ) {
         entry.landed = true;
       } else if (onBase || onBranch) {
@@ -806,6 +810,7 @@ async function publishLocked(args: {
       entry.newId = newId;
       entry.target = target;
       state.migrations[ledgerKey] = {
+        targetSha256: sha256(targetBytes),
         ...known,
         legacyId: dirty.legacyId,
         newId,
@@ -832,6 +837,28 @@ async function publishLocked(args: {
         ? `Would publish ${writes.size} file(s) to ${remote}/${branch}.`
         : "Nothing to publish.";
     return result;
+  }
+
+  // Migrated records this machine published, including ones whose legacy
+  // source is gone: once the default branch has them (or removed them after
+  // landing), this machine's own branch copy must not be proposed again.
+  if (branchExists) {
+    for (const migration of Object.values(state.migrations)) {
+      if (!(migration.publishedAt && migration.targetSha256)) {
+        continue;
+      }
+      const onBranch = await git.blob(startRef, migration.target);
+      if (!onBranch || sha256(onBranch) !== migration.targetSha256) {
+        continue;
+      }
+      const onBase = await git.blob(baseRef, migration.target);
+      if (bytesEqual(onBase, onBranch)) {
+        continue;
+      }
+      if (onBase || (await pathInHistory(git, baseRef, migration.target))) {
+        useBase.add(migration.target);
+      }
+    }
   }
 
   // The host branch is rebuilt on the current default branch for every
@@ -925,6 +952,15 @@ async function publishLocked(args: {
       : `Rebuilt ${remote}/${branch} on ${base}; no new records.`
     : `Nothing new to publish; ${remote}/${branch} still has unmerged records.`;
   return result;
+}
+
+async function pathInHistory(
+  git: Git,
+  ref: string,
+  relPath: string
+): Promise<boolean> {
+  const commit = await git.ok(["log", "-1", "--format=%H", ref, "--", relPath]);
+  return commit.trim().length > 0;
 }
 
 async function assertNoSymlinkOnPath(
