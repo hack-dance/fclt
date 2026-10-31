@@ -719,7 +719,12 @@ async function publishLocked(args: {
         // Unchanged since this machine published it, and neither branch holds
         // that version. Never write the stale local copy over a landed or
         // edited copy; re-add only when the earlier publish never landed.
-        if (branchContent) {
+        // A branch other than the one this was published to may still hold
+        // the pre-publication version; that is not an edit, and the update
+        // still has to reach it.
+        const stalePrePublishCopy =
+          branchSha === (record.baseSha256 ?? null) && record.branch !== branch;
+        if (branchContent && !stalePrePublishCopy) {
           // Someone edited the open branch; keep it. If the default branch
           // also moved on, both changed and a person has to decide.
           entry.reason = baseMovedOn ? "conflict" : "published";
@@ -737,7 +742,11 @@ async function publishLocked(args: {
           continue;
         }
         // The open branch once held it and a reviewer removed it there.
-        if (branchExists && (await pathInHistory(git, startRef, relPath))) {
+        if (
+          branchExists &&
+          !branchContent &&
+          (await pathInHistory(git, startRef, relPath))
+        ) {
           entry.reason = "deleted";
           continue;
         }

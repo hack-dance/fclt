@@ -1230,6 +1230,30 @@ describe("writeback publish", () => {
     ).toBe(`writebacks/global/${unrelated.id}.md`);
   });
 
+  it("publishes an update to a second branch that still holds the original version", async () => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const homeA = homes["host-a"] as string;
+    const record = await addRecord(homeA, "two branches");
+    const relPath = `writebacks/global/${record.id}.md`;
+    const pending = join(facultAiPendingReviewRoot(homeA), relPath);
+    // Version A lands; another review branch is cut from that state.
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/one" });
+    await git(seed, ["pull", "-q", remote, "main"], seed);
+    await git(seed, ["fetch", "-q", remote, "review/one"], seed);
+    await git(seed, ["merge", "-q", "--no-edit", "FETCH_HEAD"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
+    await git(seed, ["push", "-q", remote, "HEAD:review/two"], seed);
+    // Update B goes to the first branch, then publication targets the second.
+    await writeFile(pending, "# version B\n");
+    await publishReviewArtifacts({ homeDir: homeA, branch: "review/one" });
+    const result = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/two",
+    });
+    expect(result.files[0]).toMatchObject({ action: "update" });
+    expect(await remoteFile(remote, "review/two", relPath)).toBe("# version B");
+  });
+
   it("refuses to remove migrated files without migrating and to publish to the base branch", async () => {
     const { remote, homes } = await setupHosts(["host-a"]);
     const homeA = homes["host-a"] as string;
