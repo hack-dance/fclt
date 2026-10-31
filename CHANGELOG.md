@@ -1,3 +1,9 @@
+## [2.33.0](https://github.com/hack-dance/fclt/compare/v2.32.8...v2.33.0) (2026-10-31)
+
+### Features
+
+* **ai:** collision-free writeback ids and a publish flow for review mirrors ([#107](https://github.com/hack-dance/fclt/issues/107)) ([6a071c3](https://github.com/hack-dance/fclt/commit/6a071c344c0d1cc89a8aa7762213b26d4cec6c57))
+
 ## [2.32.8](https://github.com/hack-dance/fclt/compare/v2.32.7...v2.32.8) (2026-10-30)
 
 ### Bug Fixes
