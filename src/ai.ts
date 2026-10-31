@@ -4770,6 +4770,9 @@ function renderPublishResult(result: PublishResult): string[] {
       );
     }
   }
+  for (const path of result.superseded) {
+    lines.push(`drop from branch\t${path}\tsuperseded on ${result.base}`);
+  }
   if (result.commit) {
     lines.push(`commit: ${result.commit}`);
   }

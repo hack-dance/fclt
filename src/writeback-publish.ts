@@ -112,6 +112,8 @@ export interface PublishResult {
   dryRun: boolean;
   files: PublishFileEntry[];
   migrations: MigrationEntry[];
+  /** Host-branch copies the default branch superseded; dropped on rebuild. */
+  superseded: string[];
   commit?: string;
   pushed: boolean;
   pushOutput?: string;
@@ -819,26 +821,6 @@ async function publishLocked(args: {
     }
   }
 
-  const result: PublishResult = {
-    root,
-    remote,
-    base,
-    branch,
-    dryRun,
-    files,
-    migrations,
-    pushed: false,
-    message: "",
-  };
-
-  if (dryRun) {
-    result.message =
-      writes.size > 0 || useBase.size > 0
-        ? `Would publish ${writes.size} file(s) to ${remote}/${branch}.`
-        : "Nothing to publish.";
-    return result;
-  }
-
   // Migrated records this machine published, including ones whose legacy
   // source is gone: once the default branch has them (or removed them after
   // landing), this machine's own branch copy must not be proposed again.
@@ -859,6 +841,29 @@ async function publishLocked(args: {
         useBase.add(migration.target);
       }
     }
+  }
+
+  const result: PublishResult = {
+    root,
+    remote,
+    base,
+    branch,
+    dryRun,
+    files,
+    migrations,
+    superseded: [...useBase].sort(),
+    pushed: false,
+    message: "",
+  };
+
+  if (dryRun) {
+    result.message =
+      writes.size > 0 || useBase.size > 0
+        ? writes.size > 0
+          ? `Would publish ${writes.size} file(s) to ${remote}/${branch}.`
+          : `Would rebuild ${remote}/${branch} on ${base}; no new records.`
+        : "Nothing to publish.";
+    return result;
   }
 
   // The host branch is rebuilt on the current default branch for every

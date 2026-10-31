@@ -994,6 +994,30 @@ describe("writeback publish", () => {
     await git(seed, ["commit", "-qm", "squash review"], seed);
     await git(seed, ["push", "-q", remote, "HEAD:main"], seed);
 
+    // With nothing new, the dry run still reports the rebuild it would do.
+    const preview = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+      dryRun: true,
+    });
+    expect(preview.superseded).toEqual([target]);
+    expect(preview.message).toContain("Would rebuild");
+    const rebuilt = await publishReviewArtifacts({
+      homeDir: homeA,
+      branch: "review/host-a",
+      includeLegacy: true,
+    });
+    expect(rebuilt.superseded).toEqual([target]);
+    expect(rebuilt.pushed).toBe(true);
+    expect(
+      await git(
+        remote,
+        ["diff", "--name-only", "main", "review/host-a"],
+        remote
+      )
+    ).toBe("");
+
     const unrelated = await addRecord(homeA, "unrelated");
     const result = await publishReviewArtifacts({
       homeDir: homeA,
