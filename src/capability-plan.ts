@@ -16,12 +16,14 @@ import {
   parseCapabilityRegistry,
   selectCapability,
 } from "./capability-registry";
+import { snapshotLibraryCapability } from "./library-editor";
 
 const RECEIPT_HASH = /^sha256:[a-f0-9]{64}$/;
 
 export interface CapabilityContext {
   manifest: string;
   overlays?: string[];
+  libraryStateRoot?: string;
   sourceRoot: string;
   targetRoot: string;
   stateRoot: string;
@@ -55,6 +57,7 @@ export interface CapabilityPlan {
     source: string | null;
     current: string | null;
     state: string | null;
+    library?: string;
   };
   status:
     | "disabled"
@@ -310,7 +313,7 @@ export async function buildCapabilityPlan(
   if ("reason" in sourceRead) {
     return finish("blocked", `Source: ${sourceRead.reason}`);
   }
-  const snapshot = sourceRead.value;
+  let snapshot = sourceRead.value;
   body.hashes.source = snapshot?.hash ?? null;
   if (!snapshot) {
     return finish("blocked", "Canonical source is missing");
@@ -320,6 +323,35 @@ export async function buildCapabilityPlan(
       "conflict",
       "Canonical content differs from its pinned source digest"
     );
+  }
+  if (options.libraryStateRoot) {
+    if (
+      pathsOverlap(options.libraryStateRoot, context.sourceRoot) ||
+      (targetPath && pathsOverlap(options.libraryStateRoot, targetPath))
+    ) {
+      return finish(
+        "blocked",
+        "Library runtime state overlaps canonical source or target"
+      );
+    }
+    const effective = await inspectCapability(() =>
+      snapshotLibraryCapability(
+        {
+          sourceRoot: context.sourceRoot,
+          localRoot: options.libraryStateRoot!,
+          machine: options.host,
+        },
+        sourcePath!,
+        snapshot!,
+        entry.kind
+      )
+    );
+    if ("reason" in effective) {
+      return finish("blocked", "Library overlays could not be read");
+    }
+    snapshot = effective.value.snapshot;
+    body.hashes.source = snapshot.hash;
+    body.hashes.library = effective.value.revision;
   }
   if (
     entry.kind === "skill" &&

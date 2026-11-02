@@ -23,6 +23,7 @@ import {
   type CapabilityReceipt,
 } from "./capability-plan";
 import { hashCapability } from "./capability-registry";
+import { snapshotLibraryCapability } from "./library-editor";
 
 const APPLY_STATUSES = new Set([
   "create",
@@ -56,7 +57,26 @@ export async function applyCapability(
   try {
     const plan = await buildCapabilityPlan(options, id);
     assertApplicable(plan, expectedPlan);
-    const snapshot = await snapshotCapability(plan.sourcePath!);
+    let snapshot = await snapshotCapability(plan.sourcePath!);
+    if (options.libraryStateRoot && snapshot) {
+      if (snapshot.hash !== plan.source.sha256) {
+        throw new Error("Canonical source changed after planning");
+      }
+      const effective = await snapshotLibraryCapability(
+        {
+          sourceRoot: options.sourceRoot,
+          localRoot: options.libraryStateRoot,
+          machine: options.host,
+        },
+        plan.sourcePath!,
+        snapshot,
+        plan.kind
+      );
+      if (effective.revision !== plan.hashes.library) {
+        throw new Error("Library overlays changed after planning");
+      }
+      snapshot = effective.snapshot;
+    }
     if (snapshot?.hash !== plan.hashes.source) {
       throw new Error("Capability source changed after planning");
     }

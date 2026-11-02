@@ -32,5 +32,7 @@ describe("CLI/plugin protocol report", () => {
     expect(report.capabilities).toContain("activity-action-decide-v1");
     expect(report.capabilities).toContain("activity-action-resolve-v1");
     expect(report.capabilities).toContain("audit-read-only-v1");
+    expect(report.capabilities).toContain("library-editor-v1");
+    expect(report.capabilities).toContain("library-capability-overlays-v1");
   });
 });
