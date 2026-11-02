@@ -1,0 +1,19 @@
+# Library distribution and preferences
+
+Check `library-distribution-v1`, `library-owned-deployment-v1`, `library-settings-v1`, and `library-project-inheritance-v1` in `fclt protocol --json` before using these operations. The existing `read`, `save`, and `reset` operations remain available; plain `save` does not publish.
+
+`library rpc --global` accepts `operation:"edit"` with an asset, last-read revision and values. An omitted layer uses an existing local or machine override first, then shared source while Auto-sync is on, or a machine override while it is off. Auto-sync defaults to on. Select `layer:"machine"` or `layer:"local"` explicitly for a per-save choice. `operation:"publish"` explicitly selects shared source.
+
+Shared publication requires a configured upstream with one matching fetch and push destination. The source checkout must match its fetched upstream, and the selected file and any affected capability manifest must have clean worktree and index versions. Pre-existing unpublished commits and unrelated edits to the selected MCP file are refused before the save. Unrelated staged and unstaged files are retained.
+
+Publication updates only affected owned source pins in `capabilities.json`, recording a `library:<publication-id>` revision. It commits only the selected file and those pin changes, with normal hooks, verifies the resulting commit's parent, paths and blobs, and pushes that exact commit. It never stashes, rebases, resets, force-pushes or commits unrelated work. Source pins that already drifted require attention before publication.
+
+An interrupted save or failed push returns a pending publication with an ID. `sourceSaved` distinguishes a persisted edit from a failure before source replacement; callers retain their draft when it is false. Send `{"schemaVersion":1,"operation":"retry","id":"<publication-id>"}` to resume that transaction. The local receipt contains paths and hashes, not asset or environment values. Retry verifies the owned commit and never publishes later user commits.
+
+Send a successful publication as `{"schemaVersion":1,"operation":"pull","publication":...}` to another configured source checkout. Repository identity and published ancestry must match. Pull fast-forwards only to the requested commit; overlapping drafts and divergent commits remain pending.
+
+Publication and pull do not prove runtime deployment. Pass `--target-root PATH --capability-state-root PATH` to explicitly select owned targets for `edit`, `publish`, `reset`, or `deploy`. `deploy` accepts the publication; `apply` accepts an asset and its last-read revision for a machine/local edit. Only matching skill or MCP entries declared as fclt-owned in `capabilities.json` are eligible. The operation plans, applies the exact plan ID, then verifies the resulting target. Changed or unowned divergent outputs are preserved. Missing target configuration or an unsupported asset remains pending. Callers must collect each relevant machine's pull and applied result before reporting synchronization; an offline peer remains pending.
+
+Read preferences with `{"schemaVersion":1,"operation":"settings.read","scope":"global"}`. Save the returned revision and `enabled` with `settings.save`. Global Auto-sync preferences live in machine-local runtime state, outside canonical source.
+
+Use `library rpc --project` for the same settings operations with `scope:"project"`. Project inheritance defaults to on. Its override lives in the project's canonical `library-settings.json`, as uncommitted project work; it is never automatically published. Without that override, `[projects.defaults] inherit_global` in `config.toml` is respected. Disabling inheritance removes user-global sources from both generated and read-only project indexes, while retaining built-in starter capability and project sources. The separate settings file preserves unrelated TOML content and formatting.

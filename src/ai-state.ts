@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { buildIndex } from "./index-builder";
+import { readLibrarySettings } from "./library-settings";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
@@ -66,6 +67,33 @@ async function canonicalAssetsNewerThanIndex(args: {
   rootDir: string;
   indexPath: string;
 }): Promise<boolean> {
+  if (projectRootFromAiRoot(args.rootDir, args.homeDir)) {
+    const inheritance = await readLibrarySettings(
+      { sourceRoot: args.rootDir, localRoot: "", machine: "" },
+      "project"
+    );
+    const index = Bun.file(facultAiIndexPath(args.homeDir, args.rootDir));
+    if (await index.exists()) {
+      const cached = JSON.parse(await index.text()) as {
+        projectInheritance?: { revision: string };
+      };
+      if (
+        cached.projectInheritance?.revision !== inheritance.revision &&
+        (cached.projectInheritance !== undefined ||
+          !inheritance.enabled ||
+          (await Bun.file(
+            join(args.rootDir, "library-settings.json")
+          ).exists()))
+      ) {
+        return true;
+      }
+    } else if (
+      !inheritance.enabled ||
+      (await Bun.file(join(args.rootDir, "library-settings.json")).exists())
+    ) {
+      return true;
+    }
+  }
   let indexMtimeMs = 0;
   try {
     indexMtimeMs = (await stat(args.indexPath)).mtimeMs;
