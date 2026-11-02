@@ -19,6 +19,8 @@ import {
 import { hashCapability } from "./capability-registry";
 import {
   type LibraryPublication,
+  LibraryPublicationPreflightError,
+  type LibraryPublicationPreflightReason,
   publishLibraryChange,
 } from "./library-distribution";
 import { LibraryMutationBusy, withLibraryMutationLock } from "./library-lock";
@@ -54,7 +56,12 @@ interface Overlay {
   values: Values;
   base: Partial<Record<Field, string>>;
 }
-type LibraryErrorReason = "unsupported" | "conflict" | "busy" | "unavailable";
+type LibraryErrorReason =
+  | "unsupported"
+  | "conflict"
+  | "busy"
+  | "unavailable"
+  | LibraryPublicationPreflightReason;
 export class LibraryEditorError extends Error {
   readonly reason: LibraryErrorReason;
   constructor(reason: LibraryErrorReason) {
@@ -418,7 +425,11 @@ async function withLock<A>(
       throw error;
     }
     throw new LibraryEditorError(
-      error instanceof LibraryMutationBusy ? "busy" : "unavailable"
+      error instanceof LibraryPublicationPreflightError
+        ? error.reason
+        : error instanceof LibraryMutationBusy
+          ? "busy"
+          : "unavailable"
     );
   }
 }

@@ -30,6 +30,17 @@ const ID = /^[a-f0-9-]{36}$/u;
 const REMOTE = /^[a-z0-9][a-z0-9._-]*$/iu;
 const MARKDOWN = /\.md$/iu;
 const DIGEST = /^sha256:[a-f0-9]{64}$/u;
+export type LibraryPublicationPreflightReason =
+  | "publication-not-configured"
+  | "publication-conflict"
+  | "publication-unavailable";
+export class LibraryPublicationPreflightError extends Error {
+  readonly reason: LibraryPublicationPreflightReason;
+  constructor(reason: LibraryPublicationPreflightReason) {
+    super(`Library publication: ${reason}`);
+    this.reason = reason;
+  }
+}
 export interface LibraryPublication {
   id: string;
   path: string;
@@ -48,6 +59,7 @@ interface Receipt {
   branch: string;
   base: string;
   files: Record<string, string>;
+  asset: { path: string; blob: string; sha256: string };
   commit: string | null;
   unchanged?: boolean;
   pins?: { baseBlob: string; updates: PinUpdate[] };
@@ -118,42 +130,61 @@ async function hashContent(root: string, path: string, content: string) {
     )
   ).output;
 }
+async function repositoryOutput(root: string, args: string[]) {
+  const result = await git(root, args, true);
+  if (result.code !== 0) {
+    throw new LibraryPublicationPreflightError("publication-not-configured");
+  }
+  return result.output;
+}
 async function repository(ctx: LibraryContext) {
   const root = await capabilityRoot(ctx.sourceRoot);
   if (
     (await capabilityRoot(
-      await output(root, ["rev-parse", "--show-toplevel"])
+      await repositoryOutput(root, ["rev-parse", "--show-toplevel"])
     )) !== root
   ) {
-    throw new Error("Library source must be its Git repository root");
+    throw new LibraryPublicationPreflightError("publication-not-configured");
   }
-  const branch = await output(root, ["symbolic-ref", "--short", "HEAD"]);
-  const remote = await output(root, [
+  const branch = await repositoryOutput(root, [
+    "symbolic-ref",
+    "--short",
+    "HEAD",
+  ]);
+  const remote = await repositoryOutput(root, [
     "config",
     "--get",
     `branch.${branch}.remote`,
   ]);
-  const ref = await output(root, ["config", "--get", `branch.${branch}.merge`]);
+  const ref = await repositoryOutput(root, [
+    "config",
+    "--get",
+    `branch.${branch}.merge`,
+  ]);
   if (
     !(REMOTE.test(remote) && ref.startsWith("refs/heads/")) ||
     (await git(root, ["check-ref-format", ref], true)).code !== 0
   ) {
-    throw new Error("Library upstream is unsupported");
+    throw new LibraryPublicationPreflightError("publication-not-configured");
   }
   const fetchUrls = (
-    await output(root, ["remote", "get-url", "--all", remote])
+    await repositoryOutput(root, ["remote", "get-url", "--all", remote])
   ).split("\n");
   const pushUrls = (
-    await output(root, ["remote", "get-url", "--push", "--all", remote])
+    await repositoryOutput(root, [
+      "remote",
+      "get-url",
+      "--push",
+      "--all",
+      remote,
+    ])
   ).split("\n");
   if (
     fetchUrls.length !== 1 ||
     pushUrls.length !== 1 ||
     fetchUrls[0] !== pushUrls[0]
   ) {
-    throw new Error(
-      "Library upstream must have one matching fetch and push destination"
-    );
+    throw new LibraryPublicationPreflightError("publication-not-configured");
   }
   const identity =
     normalizeRepositoryRemote(fetchUrls[0]!) ??
@@ -167,19 +198,26 @@ async function repository(ctx: LibraryContext) {
   };
 }
 async function fetchUpstream(repo: Awaited<ReturnType<typeof repository>>) {
-  await git(repo.root, [
-    "fetch",
-    "--no-tags",
-    "--recurse-submodules=no",
-    "--",
-    repo.remote,
-    repo.ref,
-  ]);
-  const commit = await output(repo.root, ["rev-parse", "FETCH_HEAD^{commit}"]);
-  if (!OID.test(commit)) {
-    throw new Error("Library upstream is unavailable");
+  try {
+    await git(repo.root, [
+      "fetch",
+      "--no-tags",
+      "--recurse-submodules=no",
+      "--",
+      repo.remote,
+      repo.ref,
+    ]);
+    const commit = await output(repo.root, [
+      "rev-parse",
+      "FETCH_HEAD^{commit}",
+    ]);
+    if (!OID.test(commit)) {
+      throw new Error("Library upstream is unavailable");
+    }
+    return commit;
+  } catch {
+    throw new LibraryPublicationPreflightError("publication-unavailable");
   }
-  return commit;
 }
 async function cleanSelected(root: string, paths: string[]) {
   for (const path of paths) {
@@ -197,7 +235,7 @@ async function cleanSelected(root: string, paths: string[]) {
         )
       ).code !== 0
     ) {
-      throw new Error("Selected library source has unrelated changes");
+      throw new LibraryPublicationPreflightError("publication-conflict");
     }
   }
 }
@@ -412,7 +450,7 @@ function publication(
 ): LibraryPublication {
   return {
     id: receipt.id,
-    path: Object.keys(receipt.files).find(libraryPath)!,
+    path: receipt.asset.path,
     sourceSaved,
     repository: receipt.repository,
     commit: receipt.commit,
@@ -420,16 +458,25 @@ function publication(
     ...(state === "pending" ? { reason: "publication-failed" as const } : {}),
   };
 }
-async function pendingPublication(ctx: LibraryContext, receipt: Receipt) {
-  if (receipt.commit) {
-    return publication(receipt, "pending", true);
+async function savedAsset(ctx: LibraryContext, receipt: Receipt) {
+  try {
+    const snapshot = await snapshotCapability(
+      join(ctx.sourceRoot, receipt.asset.path)
+    );
+    const content = snapshot?.nodes[0]?.content;
+    return (
+      content !== undefined && hashCapability(content) === receipt.asset.sha256
+    );
+  } catch {
+    return false;
   }
-  const path = Object.keys(receipt.files).find(libraryPath)!;
-  const saved = await git(ctx.sourceRoot, ["hash-object", "--", path], true);
+}
+async function pendingPublication(ctx: LibraryContext, receipt: Receipt) {
   return publication(
     receipt,
     "pending",
-    saved.code === 0 && saved.output === receipt.files[path]
+    (receipt.commit !== null && !receipt.unchanged) ||
+      (await savedAsset(ctx, receipt))
   );
 }
 async function verifyCommit(root: string, receipt: Receipt, commit: string) {
@@ -440,9 +487,12 @@ async function verifyCommit(root: string, receipt: Receipt, commit: string) {
     if (
       (await output(root, ["show", "-s", "--format=%P", commit])) !==
         receipt.base ||
-      !(await output(root, ["show", "-s", "--format=%B", commit])).endsWith(
-        `Fclt-Library-Publication: ${receipt.id}`
-      )
+      (await output(root, [
+        "show",
+        "-s",
+        "--format=%(trailers:key=Fclt-Library-Publication,valueonly)",
+        commit,
+      ])) !== receipt.id
     ) {
       throw new Error("Commit is not the owned library edit");
     }
@@ -471,6 +521,12 @@ async function verifyCommit(root: string, receipt: Receipt, commit: string) {
       throw new Error("Library committed content changed");
     }
   }
+  if (
+    (await output(root, ["rev-parse", `${commit}:${receipt.asset.path}`])) !==
+    receipt.asset.blob
+  ) {
+    throw new Error("Library committed asset identity changed");
+  }
 }
 async function commitAndPush(ctx: LibraryContext, receipt: Receipt) {
   const repo = await repository(ctx);
@@ -482,9 +538,15 @@ async function commitAndPush(ctx: LibraryContext, receipt: Receipt) {
   ) {
     throw new Error("Library upstream changed");
   }
+  if (receipt.unchanged && !(await savedAsset(ctx, receipt))) {
+    throw new Error("Unchanged library asset was not saved");
+  }
   if (!receipt.commit) {
     const head = await output(repo.root, ["rev-parse", "HEAD"]);
     if (head === receipt.base) {
+      if (!(await savedAsset(ctx, receipt))) {
+        throw new Error("Saved library asset changed");
+      }
       await completePins(ctx, receipt);
       for (const [path, blob] of Object.entries(receipt.files)) {
         if ((await output(repo.root, ["hash-object", "--", path])) !== blob) {
@@ -589,7 +651,7 @@ export async function publishLibraryChange(
   await cleanSelected(repo.root, paths);
   const base = await output(repo.root, ["rev-parse", "HEAD"]);
   if (base !== (await fetchUpstream(repo))) {
-    throw new Error("Library source must match its upstream before publishing");
+    throw new LibraryPublicationPreflightError("publication-conflict");
   }
   const id = randomUUID();
   const desired: Record<string, string> = {
@@ -620,6 +682,7 @@ export async function publishLibraryChange(
     branch: repo.branch,
     base,
     files,
+    asset: { path, blob: desired[path]!, sha256: hashCapability(args.content) },
     commit: null,
     ...(pins
       ? {
@@ -642,6 +705,9 @@ export async function publishLibraryChange(
   await writeReceipt(ctx, receipt);
   try {
     await args.mutate();
+    if (!(await savedAsset(ctx, receipt))) {
+      throw new Error("Library source was not saved");
+    }
     await completePins(ctx, receipt);
     if (
       base !== (await output(repo.root, ["rev-parse", "HEAD"])) ||
@@ -686,6 +752,13 @@ export async function retryLibraryPublication(
       !DIGEST.test(receipt.repository) ||
       !OID.test(receipt.base) ||
       !(receipt.commit === null || typeof receipt.commit === "string") ||
+      !receipt.asset ||
+      typeof receipt.asset.path !== "string" ||
+      !libraryPath(receipt.asset.path) ||
+      typeof receipt.asset.blob !== "string" ||
+      !OID.test(receipt.asset.blob) ||
+      typeof receipt.asset.sha256 !== "string" ||
+      !DIGEST.test(receipt.asset.sha256) ||
       !receipt.files ||
       typeof receipt.files !== "object" ||
       Object.keys(receipt.files).length === 0 ||
@@ -700,10 +773,10 @@ export async function retryLibraryPublication(
     }
     if (
       Object.keys(receipt.files).length > 2 ||
-      Object.keys(receipt.files).filter((path) => libraryPath(path)).length !==
-        1 ||
+      (receipt.files[receipt.asset.path] !== undefined &&
+        receipt.files[receipt.asset.path] !== receipt.asset.blob) ||
       Object.keys(receipt.files).some(
-        (path) => !libraryPath(path) && path !== "capabilities.json"
+        (path) => path !== receipt.asset.path && path !== "capabilities.json"
       ) ||
       typeof receipt.branch !== "string" ||
       typeof receipt.remote !== "string" ||
@@ -968,33 +1041,52 @@ async function deployAsset(
     };
   }
   const applied: string[] = [];
-  for (const id of ids) {
-    const plan = await buildCapabilityPlan(resolved, id);
-    if (plan.status === "disabled") {
-      continue;
+  const changedEntries: string[] = [];
+  let failedEntry: string | undefined;
+  try {
+    for (const id of ids) {
+      failedEntry = id;
+      const plan = await buildCapabilityPlan(resolved, id);
+      if (plan.status === "disabled") {
+        continue;
+      }
+      if (
+        !["create", "restore", "adopt", "update", "current"].includes(
+          plan.status
+        )
+      ) {
+        throw new Error("Library target requires attention");
+      }
+      await beforeApply?.();
+      const result = await applyCapability(resolved, id, plan.planId);
+      if (result.applied) {
+        changedEntries.push(id);
+      }
+      const after = await buildCapabilityPlan(resolved, id);
+      if (
+        after.status !== "current" ||
+        after.hashes.manifest !== plan.hashes.manifest ||
+        after.hashes.source !== plan.hashes.source ||
+        after.hashes.library !== plan.hashes.library
+      ) {
+        throw new Error("Library target output was not verified");
+      }
+      applied.push(id);
     }
-    if (
-      !["create", "restore", "adopt", "update", "current"].includes(plan.status)
-    ) {
-      throw new Error("Library target requires attention");
-    }
-    await beforeApply?.();
-    await applyCapability(resolved, id, plan.planId);
-    const after = await buildCapabilityPlan(resolved, id);
-    if (
-      after.status !== "current" ||
-      after.hashes.manifest !== plan.hashes.manifest ||
-      after.hashes.source !== plan.hashes.source ||
-      after.hashes.library !== plan.hashes.library
-    ) {
-      throw new Error("Library target output was not verified");
-    }
-    applied.push(id);
+  } catch {
+    return {
+      state: "pending" as const,
+      reason: "deployment-failed" as const,
+      entries: applied,
+      changedEntries,
+      ...(failedEntry ? { failedEntry } : {}),
+    };
   }
   return applied.length
     ? {
         state: "applied" as const,
         entries: applied,
+        changedEntries,
       }
     : {
         state: "pending" as const,

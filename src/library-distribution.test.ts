@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -474,6 +475,22 @@ it("resumes a source save interrupted before its pin update and does not create 
   });
   expect(repeated.publication?.state).toBe("published");
   expect(await f.git(f.sourceRoot, ["rev-parse", "HEAD"])).toBe(before);
+  await f.git(f.sourceRoot, ["config", "core.autocrlf", "true"]);
+  const failedNoop = await withLibraryMutationLock(f.sourceRoot, () =>
+    publishLibraryChange(f.context, {
+      path: f.asset.path,
+      content: "# Interrupted\r\n",
+      updatePins: false,
+      mutate: () =>
+        Promise.reject(
+          new Error("fixture failure before equivalent source replacement")
+        ),
+    })
+  );
+  expect(failedNoop.sourceSaved).toBe(false);
+  expect(await retryLibraryPublication(f.context, failedNoop.id)).toMatchObject(
+    { state: "pending", sourceSaved: false }
+  );
 });
 
 it("publishes exact Unicode and literal-pathspec filenames without selecting sibling files", async () => {
@@ -659,4 +676,255 @@ it.each([
   expect(await readFile(join(f.sourceRoot, "capabilities.json"), "utf8")).toBe(
     manifest
   );
+});
+
+it("accepts a publication trailer followed by a normal commit-msg hook trailer", async () => {
+  const f = await fixture();
+  await writeFile(
+    join(f.sourceRoot, ".git/hooks/commit-msg"),
+    "#!/bin/sh\nprintf 'Signed-off-by: Fixture <fixture@example.invalid>\\n' >> \"$1\"\n",
+    { mode: 0o755 }
+  );
+  const view = await readLibraryAsset(f.context, f.asset);
+  const saved = await saveLibraryAsset(f.context, {
+    ...f.asset,
+    revision: view.revision,
+    layer: "shared",
+    values: { content: "# Hook trailer\n" },
+    publish: true,
+    updatePins: true,
+  });
+  expect(saved.publication?.state).toBe("published");
+  expect(
+    await f.git(f.sourceRoot, [
+      "show",
+      "-s",
+      "--format=%B",
+      saved.publication!.commit!,
+    ])
+  ).toEndWith("Signed-off-by: Fixture <fixture@example.invalid>");
+  expect(
+    (await retryLibraryPublication(f.context, saved.publication!.id)).state
+  ).toBe("published");
+});
+it("saves unsupported override kinds as unpublished shared edits when Auto-sync is off", async () => {
+  const f = await fixture();
+  const settings = await readLibrarySettings(f.context, "global");
+  await saveLibrarySettings(f.context, "global", settings.revision, false);
+  const before = await f.git(f.sourceRoot, ["rev-parse", "HEAD"]);
+  for (const path of [
+    "instructions/X.md",
+    "snippets/X.md",
+    "agents/X.md",
+    "ROOT.md",
+  ]) {
+    await mkdir(join(f.sourceRoot, path, ".."), { recursive: true });
+    await writeFile(join(f.sourceRoot, path), "# Original\n");
+    const asset = { path };
+    const view = await readLibraryAsset(f.context, asset);
+    const result = await libraryRpc(f.context, {
+      schemaVersion: 1,
+      operation: "edit",
+      asset,
+      revision: view.revision,
+      values: { content: "# Unpublished edit\n" },
+    });
+    expect(result).not.toHaveProperty("publication");
+    expect(await readFile(join(f.sourceRoot, path), "utf8")).toBe(
+      "# Unpublished edit\n"
+    );
+    expect(await f.git(f.sourceRoot, ["rev-parse", "HEAD"])).toBe(before);
+    expect(await f.git(f.remote, ["rev-parse", "refs/heads/main"])).toBe(
+      before
+    );
+  }
+});
+it.each([
+  "no repository",
+  "no upstream",
+  "multiple push URLs",
+  "behind upstream",
+  "unavailable upstream",
+])("reports publication setup or conflict for %s without losing the draft", async (kind) => {
+  const f = await fixture();
+  if (kind === "no repository") {
+    await rm(join(f.sourceRoot, ".git"), { recursive: true, force: true });
+  }
+  if (kind === "no upstream") {
+    await f.git(f.sourceRoot, ["config", "--unset", "branch.main.remote"]);
+  }
+  if (kind === "multiple push URLs") {
+    await f.git(f.sourceRoot, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      f.remote,
+    ]);
+    await f.git(f.sourceRoot, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      `${f.remote}-other`,
+    ]);
+  }
+  if (kind === "unavailable upstream") {
+    await rename(f.remote, `${f.remote}-offline`);
+  }
+  if (kind === "behind upstream") {
+    await f.git(f.peerRoot, ["config", "user.name", "Fixture"]);
+    await f.git(f.peerRoot, [
+      "config",
+      "user.email",
+      "fixture@example.invalid",
+    ]);
+    await writeFile(join(f.peerRoot, "dirty.md"), "upstream work\n");
+    await f.git(f.peerRoot, [
+      "commit",
+      "--only",
+      "-m",
+      "fixture remote advance",
+      "--",
+      "dirty.md",
+    ]);
+    await f.git(f.peerRoot, ["push", "origin", "main"]);
+  }
+  const view = await readLibraryAsset(f.context, f.asset);
+  await expect(
+    libraryRpc(f.context, {
+      schemaVersion: 1,
+      operation: "edit",
+      asset: f.asset,
+      revision: view.revision,
+      values: { content: "# Draft retained\n" },
+    })
+  ).rejects.toMatchObject({
+    reason:
+      kind === "behind upstream"
+        ? "publication-conflict"
+        : kind === "unavailable upstream"
+          ? "publication-unavailable"
+          : "publication-not-configured",
+  });
+  expect(await readFile(join(f.sourceRoot, f.asset.path), "utf8")).toBe(
+    "# Initial\n"
+  );
+});
+it("reports verified outputs when a later owned target cannot deploy", async () => {
+  const f = await fixture();
+  const file = join(f.sourceRoot, "capabilities.json");
+  const manifest = JSON.parse(await readFile(file, "utf8")) as {
+    schemaVersion: 1;
+    entries: { id: string; target: string }[];
+  };
+  manifest.entries.push({
+    ...manifest.entries[0]!,
+    id: "second",
+    target: "second",
+  });
+  await writeFile(file, JSON.stringify(manifest));
+  await f.git(f.sourceRoot, [
+    "commit",
+    "--only",
+    "-m",
+    "fixture second target",
+    "--",
+    "capabilities.json",
+  ]);
+  await f.git(f.sourceRoot, ["push", "origin", "main"]);
+  const view = await readLibraryAsset(f.context, f.asset);
+  const saved = await saveLibraryAsset(f.context, {
+    ...f.asset,
+    revision: view.revision,
+    layer: "shared",
+    values: { content: "# Partial deployment\n" },
+    publish: true,
+    updatePins: true,
+  });
+  const options = {
+    manifest: file,
+    sourceRoot: f.sourceRoot,
+    targetRoot: join(f.root, "provider"),
+    stateRoot: join(f.root, "ownership"),
+    host: f.context.machine,
+    platform: "linux",
+    libraryStateRoot: f.context.localRoot,
+  };
+  await mkdir(join(options.targetRoot, "second"), { recursive: true });
+  await writeFile(
+    join(options.targetRoot, "second/SKILL.md"),
+    "# Preserve divergent target\n"
+  );
+  const result = await deployLibraryPublication(
+    f.context,
+    saved.publication!,
+    options
+  );
+  expect(result).toMatchObject({
+    state: "pending",
+    entries: ["example"],
+    changedEntries: ["example"],
+    failedEntry: "second",
+  });
+  expect(
+    await readFile(join(options.targetRoot, "example/SKILL.md"), "utf8")
+  ).toBe("# Partial deployment\n");
+  expect(
+    await readFile(join(options.targetRoot, "second/SKILL.md"), "utf8")
+  ).toBe("# Preserve divergent target\n");
+});
+it("retains the asset identity when only its pin changes in Git", async () => {
+  const f = await fixture();
+  await f.git(f.sourceRoot, ["config", "core.autocrlf", "true"]);
+  await writeFile(join(f.remote, "hooks/pre-receive"), "#!/bin/sh\nexit 1\n", {
+    mode: 0o755,
+  });
+  const view = await readLibraryAsset(f.context, f.asset);
+  const saved = await saveLibraryAsset(f.context, {
+    ...f.asset,
+    revision: view.revision,
+    layer: "shared",
+    values: { content: "# Initial\r\n" },
+    publish: true,
+    updatePins: true,
+  });
+  expect(saved.publication?.state).toBe("pending");
+  expect(saved.publication?.path).toBe(f.asset.path);
+  expect(saved.publication?.sourceSaved).toBe(true);
+  await writeFile(join(f.remote, "hooks/pre-receive"), "#!/bin/sh\nexit 0\n", {
+    mode: 0o755,
+  });
+  const retried = await retryLibraryPublication(
+    f.context,
+    saved.publication!.id
+  );
+  expect(retried.state).toBe("published");
+  expect(retried.path).toBe(f.asset.path);
+  expect(
+    await f.git(f.sourceRoot, [
+      "diff-tree",
+      "--no-commit-id",
+      "--name-only",
+      "-r",
+      retried.commit!,
+    ])
+  ).toBe("capabilities.json");
+  const options = {
+    manifest: join(f.sourceRoot, "capabilities.json"),
+    sourceRoot: f.sourceRoot,
+    targetRoot: join(f.root, "provider"),
+    stateRoot: join(f.root, "ownership"),
+    host: f.context.machine,
+    platform: "linux",
+    libraryStateRoot: f.context.localRoot,
+  };
+  expect(
+    (await deployLibraryPublication(f.context, retried, options)).state
+  ).toBe("applied");
+  expect(
+    await readFile(join(options.targetRoot, "example/SKILL.md"), "utf8")
+  ).toBe("# Initial\r\n");
 });

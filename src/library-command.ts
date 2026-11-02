@@ -186,13 +186,15 @@ export async function libraryRpc(
         ? await readLibraryAsset(context, target)
         : null;
     const provenance = current ? Object.values(current.provenance) : [];
+    const automatic =
+      request.operation === "edit" && request.layer === undefined;
+    const autoSync =
+      !automatic || (await readLibrarySettings(context, "global")).enabled;
     const defaultLayer = provenance.includes("local")
       ? "local"
       : provenance.includes("machine")
         ? "machine"
-        : request.operation === "edit" &&
-            request.layer === undefined &&
-            !(await readLibrarySettings(context, "global")).enabled
+        : !autoSync && current?.supportsOverrides
           ? "machine"
           : "shared";
     if (
@@ -229,7 +231,9 @@ export async function libraryRpc(
       ...target,
       revision: request.revision,
       layer: layer as LibraryLayer,
-      ...(request.operation !== "save" && layer === "shared"
+      ...(request.operation !== "save" &&
+      layer === "shared" &&
+      (!automatic || autoSync)
         ? { publish: true, updatePins: true }
         : {}),
       values: request.values,
