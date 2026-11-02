@@ -220,35 +220,33 @@ describe("autosync invocation", () => {
 
   it("builds a launchd plist for a named service", () => {
     const spec = buildLaunchAgentSpec({
-      homeDir: "/Users/test",
+      homeDir: "/fixture/home",
       serviceName: "codex",
-      rootDir: "/Users/test/.ai",
-      invocation: ["/Users/test/.ai/.facult/bin/fclt"],
+      rootDir: "/fixture/source",
+      invocation: ["/fixture/bin/fclt"],
     });
     const plist = buildLaunchAgentPlist(spec);
 
     expect(spec.label).toBe("com.fclt.autosync.codex");
-    expect(plist).toContain(
-      "<string>/Users/test/.ai/.facult/bin/fclt</string>"
-    );
+    expect(plist).toContain("<string>/fixture/bin/fclt</string>");
     expect(plist).toContain("<string>autosync</string>");
     expect(plist).toContain("<string>run</string>");
     expect(plist).toContain("<string>codex</string>");
     expect(plist).toContain("<string>--service</string>");
-    expect(plist).toContain("<string>/Users/test/.ai</string>");
+    expect(plist).toContain("<string>/fixture/source</string>");
   });
 
   it("names project-scoped services distinctly and points launchd at the project root", () => {
     const spec = buildLaunchAgentSpec({
-      homeDir: "/Users/test",
+      homeDir: "/fixture/home",
       serviceName: "codex-facult",
-      rootDir: "/Users/test/dev/facult/.ai",
-      invocation: ["/Users/test/.ai/.facult/bin/fclt"],
+      rootDir: "/fixture/workspace/canonical",
+      invocation: ["/fixture/bin/fclt"],
     });
     const plist = buildLaunchAgentPlist(spec);
 
     expect(spec.label).toBe("com.fclt.autosync.codex-facult");
-    expect(plist).toContain("<string>/Users/test/dev/facult/.ai</string>");
+    expect(plist).toContain("<string>/fixture/workspace/canonical</string>");
   });
 
   it("uses collision-resistant service identities for same-basename projects", async () => {
@@ -2496,6 +2494,8 @@ describe("git autosync", () => {
 
     await writeFile(join(localDir, "README.md"), "hello\nworld\n", "utf8");
 
+    const staging = ".fclt-library-00000000-0000-4000-8000-000000000000.tmp";
+    await writeFile(join(localDir, staging), "owned staging fixture");
     const outcome = await runGitAutosyncOnce({
       config: testConfig(localDir),
     });
@@ -2503,7 +2503,10 @@ describe("git autosync", () => {
     expect(outcome.blocked).toBe(false);
     expect(outcome.changed).toBe(true);
 
-    const status = await run(["git", "status", "--short"], localDir);
+    const status = await run(
+      ["git", "status", "--short", "--", "README.md"],
+      localDir
+    );
     expect(status).toBe("");
 
     const message = await run([
@@ -2518,6 +2521,14 @@ describe("git autosync", () => {
     expect(message).toContain("chore(facult-autosync)");
     expect(message).toContain("test-machine");
     expect(message).toContain("service:codex");
+    expect(await run(["git", "ls-files", "--", staging], localDir)).toBe("");
+    expect(await readFile(join(localDir, staging), "utf8")).toBe(
+      "owned staging fixture"
+    );
+    expect(await runGitAutosyncOnce({ config: testConfig(localDir) })).toEqual({
+      changed: false,
+      blocked: false,
+    });
   });
 
   it("blocks remote autosync when the repo is on the wrong branch", async () => {

@@ -21,6 +21,7 @@ import {
   saveLibraryAsset,
   snapshotLibraryCapability,
 } from "./library-editor";
+import { withLibraryMutationLock } from "./library-lock";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -76,7 +77,13 @@ it("keeps machine and local layers separate and deploys their effective content 
     })
   ).rejects.toMatchObject({ reason: "conflict" });
   const sourcePath = join(context.sourceRoot, "skills/example");
+  const beforeStaging = (await snapshotCapability(sourcePath))!;
+  await writeFile(
+    join(sourcePath, ".fclt-library-00000000-0000-4000-8000-000000000000.tmp"),
+    "owned staging fixture"
+  );
   const base = (await snapshotCapability(sourcePath))!;
+  expect(base.hash).toBe(beforeStaging.hash);
   const effective = await snapshotLibraryCapability(
     context,
     sourcePath,
@@ -115,6 +122,18 @@ it("keeps machine and local layers separate and deploys their effective content 
     platform: "linux",
     libraryStateRoot: context.localRoot,
   };
+  const alias = join(root, "library-target-alias");
+  await mkdir(target, { recursive: true });
+  await symlink(target, alias, "dir");
+  expect(
+    (
+      await buildCapabilityPlan(
+        { ...options, libraryStateRoot: alias },
+        "example"
+      )
+    ).status
+  ).toBe("blocked");
+  await rm(target, { recursive: true });
   const plan = await buildCapabilityPlan(options, "example");
   expect(plan.hashes.source).toBe(effective.snapshot.hash);
   view = await saveLibraryAsset(context, {
@@ -355,17 +374,16 @@ it("serializes competing saves with one revision and preserves externally held l
   );
   const current = await readLibraryAsset(context, asset);
   expect(["A", "B"]).toContain(String(current.effective.content));
-  const lock = join(context.sourceRoot, ".library-editor.lock");
-  await writeFile(lock, "external owner", { flag: "wx" });
-  await expect(
-    saveLibraryAsset(context, {
-      ...asset,
-      revision: current.revision,
-      layer: "shared",
-      values: { content: "# Rejected\n" },
-    })
-  ).rejects.toMatchObject({ reason: "busy" });
-  expect(await readFile(lock, "utf8")).toBe("external owner");
+  await withLibraryMutationLock(context.sourceRoot, async () => {
+    await expect(
+      saveLibraryAsset(context, {
+        ...asset,
+        revision: current.revision,
+        layer: "shared",
+        values: { content: "# Rejected\n" },
+      })
+    ).rejects.toMatchObject({ reason: "busy" });
+  });
   expect(await readFile(join(context.sourceRoot, asset.path), "utf8")).toBe(
     "# Shared\n"
   );
@@ -428,4 +446,141 @@ it.each([
   if (variant !== "decomposed") {
     expect(effective.snapshot.hash).toBe(base.hash);
   }
+});
+
+it("rejects a merged overlay above its read limit without losing the previous revision", async () => {
+  const { context } = await fixture();
+  const asset = { path: "mcp/servers.json", name: "docs" };
+  await mkdir(join(context.sourceRoot, "mcp"));
+  await writeFile(
+    join(context.sourceRoot, asset.path),
+    JSON.stringify({ servers: { docs: { command: "docs-search" } } })
+  );
+  let view = await readLibraryAsset(context, asset);
+  view = await saveLibraryAsset(context, {
+    ...asset,
+    revision: view.revision,
+    layer: "local",
+    values: { args: Array.from({ length: 256 }, () => "é".repeat(4090)) },
+  });
+  await expect(
+    saveLibraryAsset(context, {
+      ...asset,
+      revision: view.revision,
+      layer: "local",
+      values: { command: "x".repeat(4096) },
+    })
+  ).rejects.toMatchObject({ reason: "unsupported" });
+  expect((await readLibraryAsset(context, asset)).revision).toBe(view.revision);
+});
+it("rejects non-exact source aliases and unsupported override kinds", async () => {
+  const { context } = await fixture();
+  const path = "skills/example/cafe\u0301.md";
+  await writeFile(join(context.sourceRoot, path), "# Exact\n");
+  for (const alias of [path.normalize("NFC"), "skills/Example/SKILL.md"]) {
+    await expect(
+      readLibraryAsset(context, { path: alias })
+    ).rejects.toMatchObject({ reason: "unsupported" });
+  }
+  const asset = { path: "GUIDE.md" };
+  await writeFile(join(context.sourceRoot, asset.path), "# Shared\n");
+  const view = await readLibraryAsset(context, asset);
+  for (const layer of ["machine", "local"] as const) {
+    await expect(
+      saveLibraryAsset(context, {
+        ...asset,
+        revision: view.revision,
+        layer,
+        values: { content: "# Not deployed\n" },
+      })
+    ).rejects.toMatchObject({ reason: "unsupported" });
+  }
+  expect(
+    (
+      await saveLibraryAsset(context, {
+        ...asset,
+        revision: view.revision,
+        layer: "shared",
+        values: { content: "# Saved\n" },
+      })
+    ).effective.content
+  ).toBe("# Saved\n");
+});
+it.each([
+  '// JSONC\n{ "servers": { "docs": { "command": "docs-search" } } }',
+  '{"docs":{"command":"docs-search"}}',
+])("preserves unedited alternative MCP bytes: %s", async (content) => {
+  const { context } = await fixture();
+  const path = join(context.sourceRoot, "mcp/servers.json");
+  await mkdir(join(context.sourceRoot, "mcp"));
+  await writeFile(path, content);
+  const snapshot = (await snapshotCapability(path))!;
+  expect(
+    (await snapshotLibraryCapability(context, path, snapshot, "mcp")).snapshot
+      .hash
+  ).toBe(snapshot.hash);
+});
+it("preserves unrelated MCP bytes and avoids creating a missing empty argument list", async () => {
+  const { context } = await fixture();
+  const asset = { path: "mcp/servers.json", name: "docs" };
+  await mkdir(join(context.sourceRoot, "mcp"));
+  const original =
+    '{ "number": 9007199254740993, "meta": 1, "meta": 2, "servers": { "docs": { "command": "docs-search", "env": { "ACCESS": "fixture-only" } }, "other": { "command": "other-tool" } } }\n';
+  await writeFile(join(context.sourceRoot, asset.path), original);
+  let view = await readLibraryAsset(context, asset);
+  view = await saveLibraryAsset(context, {
+    ...asset,
+    revision: view.revision,
+    layer: "shared",
+    values: { command: "new-docs-search" },
+  });
+  const changed = original.replace(
+    '"command": "docs-search"',
+    '"command": "new-docs-search"'
+  );
+  expect(await readFile(join(context.sourceRoot, asset.path), "utf8")).toBe(
+    changed
+  );
+  const noOp = await saveLibraryAsset(context, {
+    ...asset,
+    revision: view.revision,
+    layer: "shared",
+    values: { args: [] },
+  });
+  expect(noOp.revision).toBe(view.revision);
+  for (const name of await readdir(
+    join(context.localRoot, "library/recovery")
+  )) {
+    expect(
+      await readFile(join(context.localRoot, "library/recovery", name), "utf8")
+    ).not.toContain("fixture-only");
+  }
+});
+it("does not strand writes behind a legacy source lock or report missing roots as busy", async () => {
+  const { context, asset } = await fixture();
+  const lock = join(context.sourceRoot, ".library-editor.lock");
+  await writeFile(lock, "stale fixture owner");
+  const view = await readLibraryAsset(context, asset);
+  expect(
+    (
+      await saveLibraryAsset(context, {
+        ...asset,
+        revision: view.revision,
+        layer: "local",
+        values: { content: "# Saved\n" },
+      })
+    ).effective.content
+  ).toBe("# Saved\n");
+  expect(await readFile(lock, "utf8")).toBe("stale fixture owner");
+  await expect(
+    saveLibraryAsset(
+      { ...context, sourceRoot: join(context.sourceRoot, "missing") },
+      {
+        ...asset,
+        revision: view.revision,
+        layer: "shared",
+        values: { content: "# Missing\n" },
+      }
+    )
+  ).rejects.toMatchObject({ reason: "unavailable" });
 });

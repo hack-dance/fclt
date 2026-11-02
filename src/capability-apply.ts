@@ -11,6 +11,7 @@ import {
 import { dirname, join } from "node:path";
 import {
   capabilityCollisionPath,
+  capabilityRoot,
   optionalStat,
   safeCapabilityPath,
   snapshotCapability,
@@ -37,7 +38,13 @@ export async function applyCapability(
   id: string,
   expectedPlan: string
 ) {
-  const initial = await buildCapabilityPlan(options, id);
+  const resolvedOptions = options.libraryStateRoot
+    ? {
+        ...options,
+        libraryStateRoot: await capabilityRoot(options.libraryStateRoot),
+      }
+    : options;
+  const initial = await buildCapabilityPlan(resolvedOptions, id);
   assertApplicable(initial, expectedPlan);
   if (initial.status === "current") {
     return { ...initial, applied: false, recoveryPath: null };
@@ -55,17 +62,17 @@ export async function applyCapability(
   let recoveryPath: string | null = null;
   let installed = false;
   try {
-    const plan = await buildCapabilityPlan(options, id);
+    const plan = await buildCapabilityPlan(resolvedOptions, id);
     assertApplicable(plan, expectedPlan);
     let snapshot = await snapshotCapability(plan.sourcePath!);
-    if (options.libraryStateRoot && snapshot) {
+    if (resolvedOptions.libraryStateRoot && snapshot) {
       if (snapshot.hash !== plan.source.sha256) {
         throw new Error("Canonical source changed after planning");
       }
       const effective = await snapshotLibraryCapability(
         {
           sourceRoot: options.sourceRoot,
-          localRoot: options.libraryStateRoot,
+          localRoot: resolvedOptions.libraryStateRoot,
           machine: options.host,
         },
         plan.sourcePath!,
@@ -102,7 +109,10 @@ export async function applyCapability(
     if ((await snapshotCapability(staged))?.hash !== plan.hashes.source) {
       throw new Error("Staged capability verification failed");
     }
-    assertApplicable(await buildCapabilityPlan(options, id), expectedPlan);
+    assertApplicable(
+      await buildCapabilityPlan(resolvedOptions, id),
+      expectedPlan
+    );
     if (plan.hashes.current !== plan.hashes.source) {
       if (plan.hashes.current !== null) {
         recoveryPath = join(transaction, "previous");
@@ -133,7 +143,7 @@ export async function applyCapability(
     });
     await safeCapabilityPath(plan.statePath);
     await rename(temporaryReceipt, plan.statePath);
-    const verified = await buildCapabilityPlan(options, id);
+    const verified = await buildCapabilityPlan(resolvedOptions, id);
     if (verified.status !== "current") {
       throw new Error(
         "Capability changed during verification; recovery content retained"

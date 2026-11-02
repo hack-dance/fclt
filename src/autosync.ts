@@ -14,6 +14,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { LIBRARY_STAGING_PATHSPEC } from "./capability-files";
 import {
   parseCliContextArgs,
   resolveCliContextRoot,
@@ -914,9 +915,12 @@ function gitCommitMessage(config: AutosyncServiceConfig): string {
 }
 
 async function gitHasWorktreeChanges(repoDir: string): Promise<boolean> {
-  const result = await runCommand(["git", "status", "--porcelain"], {
-    cwd: repoDir,
-  });
+  const result = await runCommand(
+    ["git", "status", "--porcelain", "--", ".", LIBRARY_STAGING_PATHSPEC],
+    {
+      cwd: repoDir,
+    }
+  );
   return result.exitCode === 0 && result.stdout.trim().length > 0;
 }
 
@@ -1565,9 +1569,20 @@ export async function runGitAutosyncOnce(args: {
   const hadChanges = await gitHasWorktreeChanges(repoDir);
 
   if (hadChanges && config.git.autoCommit) {
-    await runCommand(["git", "add", "-A"], { cwd: repoDir });
+    await runCommand(
+      ["git", "add", "-A", "--", ".", LIBRARY_STAGING_PATHSPEC],
+      { cwd: repoDir }
+    );
     const commit = await runCommand(
-      ["git", "commit", "-m", gitCommitMessage(config)],
+      [
+        "git",
+        "commit",
+        "-m",
+        gitCommitMessage(config),
+        "--",
+        ".",
+        LIBRARY_STAGING_PATHSPEC,
+      ],
       { cwd: repoDir }
     );
     if (
@@ -1849,9 +1864,9 @@ Usage:
   fclt autosync run [tool] [--service <name>] --once ${LEGACY_MANAGED_MUTATION_FLAG}
 
 Options:
-  --root <path>                 Select a canonical .ai root explicitly
+  --root <path>                 Select the canonical source directory
   --global                      Force the global canonical root
-  --project                     Force the nearest repo-local .ai root
+  --project                     Select the current project source
   --once                        Run one local+remote sync cycle and exit
   --service <name>              Select the exact diagnosed autosync service
   --expected-plan <id>          Refuse cleanup if owned recovery state changed

@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  open,
-  readdir,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
+import {
+  applyEdits,
+  getNodeValue,
+  modify,
+  type Node,
+  parseTree,
+} from "jsonc-parser";
 import {
   type CapabilitySnapshot,
   capabilityRoot,
@@ -18,6 +17,8 @@ import {
   snapshotCapability,
 } from "./capability-files";
 import { hashCapability } from "./capability-registry";
+import { LibraryMutationBusy, withLibraryMutationLock } from "./library-lock";
+import { parseJsonLenient } from "./util/json";
 
 const PATH_PART_RE = /[\\:]/u;
 const MARKDOWN_RE = /\.md$/iu;
@@ -25,6 +26,7 @@ const SENSITIVE_MCP_RE =
   /\b(?:token|secret|password|authorization|api[-_]?key|bearer)\b|(?:sk-|ghp_|github_pat_)[a-z0-9_]{10,}|https?:\/\/[^\s/]*@/iu;
 const MACHINE_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/iu;
 const REFERENCE_RE = /^(?:op:\/\/[^\s]+|\$\{[A-Za-z_][A-Za-z0-9_]*\})$/u;
+const MAX_OVERLAY_BYTES = 2 * 1024 * 1024;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/u;
 
 export type LibraryLayer = "shared" | "machine" | "local";
@@ -185,9 +187,57 @@ function parse(content: string): Record<string, unknown> {
     throw new LibraryEditorError("unsupported");
   }
 }
+async function exactSourceFile(root: string, path: string) {
+  let current = root;
+  for (const part of path.split("/")) {
+    await safeCapabilityPath(current);
+    if (!(await readdir(current)).includes(part)) {
+      throw new LibraryEditorError("unsupported");
+    }
+    current = join(current, part);
+  }
+  return current;
+}
+function supportsOverrides(asset: LibraryAsset) {
+  return asset.name !== undefined || asset.path.startsWith("skills/");
+}
+function uniqueChild(node: Node | undefined, key: string): Node | undefined {
+  const matches =
+    node?.children?.filter(
+      (property) => property.children?.[0]?.value === key
+    ) ?? [];
+  if (matches.length > 1) {
+    throw new LibraryEditorError("unsupported");
+  }
+  return matches[0]?.children?.[1];
+}
+function editMcpFields(
+  content: string,
+  key: string,
+  name: string,
+  patch: Values
+) {
+  let result = content;
+  const server = uniqueChild(uniqueChild(parseTree(content), key), name);
+  for (const [field, value] of Object.entries(patch)) {
+    const node = uniqueChild(server, field);
+    const previous = node
+      ? (getNodeValue(node) as Value)
+      : field === "args"
+        ? []
+        : undefined;
+    if (fingerprint(previous) !== fingerprint(value)) {
+      result = applyEdits(
+        result,
+        modify(result, [key, name, field], value, {})
+      );
+    }
+  }
+  return result;
+}
 async function source(ctx: LibraryContext, asset: LibraryAsset) {
   const allowed = fields(asset);
-  const file = join(ctx.sourceRoot, ...asset.path.split("/"));
+  const file = await exactSourceFile(ctx.sourceRoot, asset.path);
   const document = await readRegular(file);
   if (!document) {
     throw new LibraryEditorError("unavailable");
@@ -246,7 +296,7 @@ function overlayPaths(ctx: LibraryContext, asset: LibraryAsset) {
   };
 }
 async function overlay(path: string, asset: LibraryAsset) {
-  const file = await readRegular(path, 2 * 1024 * 1024);
+  const file = await readRegular(path, MAX_OVERLAY_BYTES);
   if (!file) {
     return { content: null, record: null };
   }
@@ -310,10 +360,13 @@ async function load(ctx: LibraryContext, asset: LibraryAsset) {
   );
   const view = {
     schemaVersion: 1 as const,
+    supportsOverrides: supportsOverrides(asset),
     path: asset.path,
     ...(asset.name ? { name: asset.name } : {}),
     revision: hashCapability(
       JSON.stringify([
+        ctx.sourceRoot,
+        ctx.localRoot,
         ctx.machine,
         asset.path,
         asset.name ?? null,
@@ -352,7 +405,7 @@ async function atomicWrite(path: string, content: string, mode = 0o600) {
   await safeCapabilityPath(path);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await safeCapabilityPath(path);
-  const temporary = `${path}.${randomUUID()}.tmp`;
+  const temporary = join(dirname(path), `.fclt-library-${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, content, { flag: "wx", mode });
     await chmod(temporary, mode);
@@ -367,26 +420,25 @@ async function withLock<A>(
   operation: (ctx: LibraryContext) => Promise<A>
 ): Promise<A> {
   const ctx = await context(input);
-  const path = join(ctx.sourceRoot, ".library-editor.lock");
-  await safeCapabilityPath(path);
-  let lock: Awaited<ReturnType<typeof open>>;
   try {
-    lock = await open(path, "wx", 0o600);
-  } catch {
-    throw new LibraryEditorError("busy");
-  }
-  try {
-    return await operation(ctx);
+    return await withLibraryMutationLock(ctx.sourceRoot, () => operation(ctx));
   } catch (error) {
     if (error instanceof LibraryEditorError) {
       throw error;
     }
-    throw new LibraryEditorError("unavailable");
-  } finally {
-    await lock.close();
-    await rm(path);
+    throw new LibraryEditorError(
+      error instanceof LibraryMutationBusy ? "busy" : "unavailable"
+    );
   }
 }
+function serializeOverlay(record: Overlay) {
+  const content = `${JSON.stringify(record, null, 2)}\n`;
+  if (Buffer.byteLength(content) > MAX_OVERLAY_BYTES) {
+    throw new LibraryEditorError("unsupported");
+  }
+  return content;
+}
+
 async function backup(ctx: LibraryContext, content: string) {
   const path = join(
     ctx.localRoot,
@@ -409,6 +461,9 @@ export async function saveLibraryAsset(
     if (!["shared", "machine", "local"].includes(request.layer)) {
       throw new LibraryEditorError("unsupported");
     }
+    if (request.layer !== "shared" && !supportsOverrides(request)) {
+      throw new LibraryEditorError("unsupported");
+    }
     const current = await load(ctx, request);
     if (current.view.revision !== request.revision) {
       throw new LibraryEditorError("conflict");
@@ -421,10 +476,18 @@ export async function saveLibraryAsset(
         current.shared.json &&
         current.shared.servers &&
         current.shared.key
-          ? `${JSON.stringify({ ...current.shared.json, [current.shared.key]: { ...current.shared.servers, [request.name]: { ...object(current.shared.servers[request.name]), ...value } } }, null, 2)}\n`
+          ? editMcpFields(
+              current.shared.content,
+              current.shared.key,
+              request.name,
+              patch
+            )
           : String(value.content);
       if (Buffer.byteLength(content) > 262_144) {
         throw new LibraryEditorError("unsupported");
+      }
+      if (content === current.shared.content) {
+        return current.view;
       }
       await backup(
         ctx,
@@ -433,6 +496,10 @@ export async function saveLibraryAsset(
               path: request.path,
               name: request.name,
               values: current.shared.value,
+              argsPresent: Object.hasOwn(
+                object(current.shared.servers?.[request.name]),
+                "args"
+              ),
             })
           : current.shared.content
       );
@@ -457,16 +524,14 @@ export async function saveLibraryAsset(
         values: { ...previous?.values, ...patch },
         base,
       };
+      const content = serializeOverlay(record);
       if (current[request.layer].content !== null) {
         await backup(ctx, current[request.layer].content!);
       }
       if ((await load(ctx, request)).view.revision !== request.revision) {
         throw new LibraryEditorError("conflict");
       }
-      await atomicWrite(
-        current.paths[request.layer],
-        `${JSON.stringify(record, null, 2)}\n`
-      );
+      await atomicWrite(current.paths[request.layer], content);
     }
     return (await load(ctx, request)).view;
   });
@@ -507,14 +572,12 @@ export async function resetLibraryAsset(
       delete record.values[field];
       delete record.base[field];
     }
+    const content = serializeOverlay(record);
     await backup(ctx, previous.content!);
     if ((await load(ctx, request)).view.revision !== request.revision) {
       throw new LibraryEditorError("conflict");
     }
-    await atomicWrite(
-      current.paths[request.layer],
-      `${JSON.stringify(record, null, 2)}\n`
-    );
+    await atomicWrite(current.paths[request.layer], content);
     return (await load(ctx, request)).view;
   });
 }
@@ -594,10 +657,18 @@ export async function snapshotLibraryCapability(
       if (!(current && Buffer.from(current.content).equals(node.content!))) {
         throw new LibraryEditorError("conflict");
       }
-      const json = parse(current.content);
-      const key = Object.hasOwn(json, "servers") ? "servers" : "mcpServers";
-      const servers = object(json[key]);
-      const next = { ...servers };
+      let json: Record<string, unknown>;
+      let key: string;
+      let servers: Record<string, unknown>;
+      try {
+        json = object(parseJsonLenient(current.content));
+        key = Object.hasOwn(json, "servers") ? "servers" : "mcpServers";
+        servers = object(json[key]);
+      } catch {
+        nodes.push(node);
+        continue;
+      }
+      let content = current.content;
       let applied = false;
       for (const name of Object.keys(servers)) {
         const paths = overlayPaths(ctx, { path, name });
@@ -621,7 +692,7 @@ export async function snapshotLibraryCapability(
         if (!Buffer.from(loaded.shared.content).equals(node.content!)) {
           throw new LibraryEditorError("conflict");
         }
-        next[name] = { ...object(servers[name]), ...loaded.view.effective };
+        content = editMcpFields(content, key, name, loaded.view.effective);
         applied = true;
       }
       if (!applied) {
@@ -630,9 +701,7 @@ export async function snapshotLibraryCapability(
       }
       nodes.push({
         ...node,
-        content: Buffer.from(
-          `${JSON.stringify({ ...json, [key]: next }, null, 2)}\n`
-        ),
+        content: Buffer.from(content),
       });
     }
   }
@@ -648,6 +717,8 @@ export async function snapshotLibraryCapability(
   );
   return {
     snapshot: { nodes, hash },
-    revision: hashCapability(JSON.stringify(revisions)),
+    revision: hashCapability(
+      JSON.stringify([ctx.sourceRoot, ctx.localRoot, ctx.machine, revisions])
+    ),
   };
 }

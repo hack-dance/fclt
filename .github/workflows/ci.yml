@@ -53,6 +53,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Verify native library mutation locking
+        run: bun test src/library-lock.test.ts
+
       - name: Build compiled binary
         run: bun run build
 
@@ -74,6 +77,9 @@ jobs:
         run: bun test src/audit/source-provenance.test.ts -t "Windows provenance"
       - name: Verify native Windows AI file boundaries
         run: bun test src/ai-boundary.test.ts
+      - name: Verify native library mutation locking
+        run: bun test src/library-lock.test.ts
+
       - name: Build compiled binary
         run: bun run build
       - name: Verify compiled binary

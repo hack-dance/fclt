@@ -325,9 +325,15 @@ export async function buildCapabilityPlan(
     );
   }
   if (options.libraryStateRoot) {
+    const libraryRoot = await inspectCapability(() =>
+      capabilityRoot(options.libraryStateRoot!)
+    );
+    if ("reason" in libraryRoot) {
+      return finish("blocked", "Library runtime root could not be resolved");
+    }
     if (
-      pathsOverlap(options.libraryStateRoot, context.sourceRoot) ||
-      (targetPath && pathsOverlap(options.libraryStateRoot, targetPath))
+      pathsOverlap(libraryRoot.value, context.sourceRoot) ||
+      (targetPath && pathsOverlap(libraryRoot.value, targetPath))
     ) {
       return finish(
         "blocked",
@@ -338,7 +344,7 @@ export async function buildCapabilityPlan(
       snapshotLibraryCapability(
         {
           sourceRoot: context.sourceRoot,
-          localRoot: options.libraryStateRoot!,
+          localRoot: libraryRoot.value,
           machine: options.host,
         },
         sourcePath!,
