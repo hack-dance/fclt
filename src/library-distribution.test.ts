@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runFixtureGit } from "../test/git-fixture";
 import { snapshotCapability } from "./capability-files";
+import { buildCapabilityPlan } from "./capability-plan";
 import { libraryRpc } from "./library-command";
 import {
   deployLibraryPublication,
@@ -75,6 +76,7 @@ async function fixture(extraPath?: string) {
   );
   await git(sourceRoot, ["init", "--bare", remote]);
   await git(sourceRoot, ["init", "-b", "main"]);
+  await git(sourceRoot, ["config", "core.autocrlf", "false"]);
   await git(sourceRoot, ["config", "user.name", "Fixture"]);
   await git(sourceRoot, ["config", "user.email", "fixture@example.invalid"]);
   await git(sourceRoot, ["add", "."]);
@@ -82,7 +84,15 @@ async function fixture(extraPath?: string) {
   await git(sourceRoot, ["remote", "add", "origin", remote]);
   await git(sourceRoot, ["push", "-u", "origin", "main"]);
   const peerRoot = join(root, "peer");
-  await git(sourceRoot, ["clone", "--branch", "main", remote, peerRoot]);
+  await git(sourceRoot, [
+    "clone",
+    "-c",
+    "core.autocrlf=false",
+    "--branch",
+    "main",
+    remote,
+    peerRoot,
+  ]);
   return {
     root,
     sourceRoot,
@@ -100,9 +110,13 @@ async function fixture(extraPath?: string) {
 it.each([
   "path",
   "file-url",
-] as const)("publishes only the selected edit and its source pin, pulls the exact commit, and verifies owned runtime output (%s)", async (remoteKind) => {
+  "checkout-drift",
+] as const)("publishes only the selected edit and its source pin, pulls the exact commit, and verifies owned runtime output (%s)", async (scenario) => {
   const f = await fixture();
-  if (remoteKind === "file-url") {
+  if (scenario === "checkout-drift") {
+    await f.git(f.peerRoot, ["config", "core.autocrlf", "true"]);
+  }
+  if (scenario === "file-url") {
     const remotePath = join(f.root, "remote library é.git");
     await rename(f.remote, remotePath);
     const remote = pathToFileURL(remotePath).href;
@@ -250,6 +264,19 @@ it.each([
       manifest: join(alias, "capabilities.json"),
     }
   );
+  if (scenario === "checkout-drift") {
+    expect(await readFile(join(f.peerRoot, f.asset.path), "utf8")).toBe(
+      "# Published\r\n"
+    );
+    expect(applied.state).toBe("pending");
+    expect((await buildCapabilityPlan(options, "example")).reason).toContain(
+      "pinned source digest"
+    );
+    await expect(
+      readFile(join(options.targetRoot, "example/SKILL.md"))
+    ).rejects.toThrow();
+    return;
+  }
   expect(applied.state).toBe("applied");
   expect(
     await readFile(join(options.targetRoot, "example/SKILL.md"), "utf8")
