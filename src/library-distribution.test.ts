@@ -495,3 +495,168 @@ it("publishes exact Unicode and literal-pathspec filenames without selecting sib
     "# Exact file\n"
   );
 });
+
+it("publishes and retries CRLF MCP edits using the path's Git clean filters", async () => {
+  const f = await fixture();
+  await f.git(f.sourceRoot, ["config", "core.autocrlf", "true"]);
+  await mkdir(join(f.sourceRoot, "mcp"), { recursive: true });
+  const asset = { path: "mcp/servers.json", name: "docs" };
+  await writeFile(
+    join(f.sourceRoot, asset.path),
+    '{\r\n  "servers": { "docs": { "command": "before" } }\r\n}\r\n'
+  );
+  await f.git(f.sourceRoot, ["add", "--", asset.path]);
+  await f.git(f.sourceRoot, ["commit", "-m", "fixture CRLF source"]);
+  await f.git(f.sourceRoot, ["push", "origin", "main"]);
+  await writeFile(join(f.remote, "hooks/pre-receive"), "#!/bin/sh\nexit 1\n", {
+    mode: 0o755,
+  });
+  const view = await readLibraryAsset(f.context, asset);
+  const saved = await saveLibraryAsset(f.context, {
+    ...asset,
+    revision: view.revision,
+    layer: "shared",
+    values: { command: "after" },
+    publish: true,
+    updatePins: true,
+  });
+  expect(saved.publication?.state).toBe("pending");
+  expect(saved.publication?.sourceSaved).toBe(true);
+  expect(saved.publication?.commit).toBeString();
+  expect(await readFile(join(f.sourceRoot, asset.path), "utf8")).toContain(
+    "\r\n"
+  );
+  await writeFile(join(f.remote, "hooks/pre-receive"), "#!/bin/sh\nexit 0\n", {
+    mode: 0o755,
+  });
+  const retried = await retryLibraryPublication(
+    f.context,
+    saved.publication!.id
+  );
+  expect(retried.state).toBe("published");
+  expect(retried.commit).toBe(saved.publication!.commit);
+});
+it("does not deploy unpublished canonical content under a published commit identity", async () => {
+  const f = await fixture();
+  const before = await readLibraryAsset(f.context, f.asset);
+  const saved = await saveLibraryAsset(f.context, {
+    ...f.asset,
+    revision: before.revision,
+    layer: "shared",
+    values: { content: "# Published\n" },
+    publish: true,
+    updatePins: true,
+  });
+  expect(saved.publication?.state).toBe("published");
+  const options = {
+    manifest: join(f.sourceRoot, "capabilities.json"),
+    sourceRoot: f.sourceRoot,
+    targetRoot: join(f.root, "provider"),
+    stateRoot: join(f.root, "ownership"),
+    host: f.context.machine,
+    platform: "linux",
+    libraryStateRoot: f.context.localRoot,
+  };
+  expect(
+    (await deployLibraryPublication(f.context, saved.publication!, options))
+      .state
+  ).toBe("applied");
+  let overlayView = await readLibraryAsset(f.context, f.asset);
+  overlayView = await saveLibraryAsset(f.context, {
+    ...f.asset,
+    revision: overlayView.revision,
+    layer: "local",
+    values: { content: "# Local override\n" },
+  });
+  expect(
+    (await deployLibraryPublication(f.context, saved.publication!, options))
+      .state
+  ).toBe("applied");
+  expect(
+    await readFile(join(options.targetRoot, "example/SKILL.md"), "utf8")
+  ).toBe("# Local override\n");
+  await libraryRpc(f.context, {
+    schemaVersion: 1,
+    operation: "reset",
+    asset: f.asset,
+    revision: overlayView.revision,
+    layer: "local",
+    fields: ["content"],
+  });
+  expect(
+    (await deployLibraryPublication(f.context, saved.publication!, options))
+      .state
+  ).toBe("applied");
+  await writeFile(join(f.sourceRoot, f.asset.path), "# Unpublished draft\n");
+  const manifest = JSON.parse(await readFile(options.manifest, "utf8")) as {
+    entries: { source: { sha256: string } }[];
+  };
+  manifest.entries[0]!.source.sha256 = (await snapshotCapability(
+    join(f.sourceRoot, "skills/example")
+  ))!.hash;
+  await writeFile(options.manifest, JSON.stringify(manifest));
+  expect(
+    (await deployLibraryPublication(f.context, saved.publication!, options))
+      .state
+  ).toBe("pending");
+  expect(
+    await readFile(join(options.targetRoot, "example/SKILL.md"), "utf8")
+  ).toBe("# Published\n");
+});
+it.each([
+  { kind: "receipt bytes", count: 128, depth: 22 },
+  { kind: "pin count", count: 4097, depth: 0 },
+])("rejects oversized $kind before canonical mutation", async ({
+  count,
+  depth,
+}) => {
+  const f = await fixture();
+  await f.git(f.sourceRoot, ["config", "core.longpaths", "true"]);
+  const sourcePath = [
+    "skills",
+    ...Array.from({ length: depth }, () => "s".repeat(100)),
+    "bounded",
+  ].join("/");
+  await mkdir(join(f.sourceRoot, sourcePath), { recursive: true });
+  const asset = { path: `${sourcePath}/SKILL.md` };
+  await writeFile(join(f.sourceRoot, asset.path), "# Initial\n");
+  const hash = (await snapshotCapability(join(f.sourceRoot, sourcePath)))!.hash;
+  const manifest = JSON.stringify({
+    schemaVersion: 1,
+    entries: Array.from({ length: count }, (_, index) => ({
+      id: `e${index}`,
+      kind: "skill",
+      owner: "fclt",
+      enabled: true,
+      source: {
+        path: sourcePath,
+        origin: "fixture",
+        revision: "a",
+        sha256: hash,
+      },
+      target: `t${index}`,
+    })),
+  });
+  expect(Buffer.byteLength(manifest)).toBeLessThan(1024 * 1024);
+  await writeFile(join(f.sourceRoot, "capabilities.json"), manifest);
+  await f.git(f.sourceRoot, ["add", "--", asset.path, "capabilities.json"]);
+  await f.git(f.sourceRoot, ["commit", "-m", "fixture bounded recovery"]);
+  await f.git(f.sourceRoot, ["push", "origin", "main"]);
+  const view = await readLibraryAsset(f.context, asset);
+  await expect(
+    saveLibraryAsset(f.context, {
+      ...asset,
+      revision: view.revision,
+      layer: "shared",
+      values: { content: "# Must not persist\n" },
+      publish: true,
+      updatePins: true,
+    })
+  ).rejects.toThrow();
+  expect(await readFile(join(f.sourceRoot, asset.path), "utf8")).toBe(
+    "# Initial\n"
+  );
+  expect(await readFile(join(f.sourceRoot, "capabilities.json"), "utf8")).toBe(
+    manifest
+  );
+});

@@ -23,6 +23,8 @@ import { atomicLibraryWrite } from "./library-storage";
 import { normalizeRepositoryRemote } from "./repository-identity";
 import { gitEnvironmentForRepository } from "./util/git-environment";
 
+const MAX_RECEIPT_BYTES = 262_144;
+const MAX_PIN_UPDATES = 4096;
 const OID = /^[a-f0-9]{40,64}$/u;
 const ID = /^[a-f0-9-]{36}$/u;
 const REMOTE = /^[a-z0-9][a-z0-9._-]*$/iu;
@@ -106,6 +108,16 @@ async function git(
 }
 const output = async (root: string, args: string[]) =>
   (await git(root, args)).output;
+async function hashContent(root: string, path: string, content: string) {
+  return (
+    await git(
+      root,
+      ["hash-object", "--stdin", `--path=${path}`],
+      false,
+      content
+    )
+  ).output;
+}
 async function repository(ctx: LibraryContext) {
   const root = await capabilityRoot(ctx.sourceRoot);
   if (
@@ -217,6 +229,7 @@ async function preparePins(
   const content = await readFile(file, "utf8");
   const registry = parseCapabilityRegistry(JSON.parse(content));
   const updates: PinUpdate[] = [];
+  const digests = new Map<string, string | undefined>();
   for (const [index, entry] of registry.entries.entries()) {
     if (entry.owner !== "fclt") {
       continue;
@@ -241,13 +254,26 @@ async function preparePins(
       ) {
         continue;
       }
-      const snapshot = await snapshotCapability(
-        join(ctx.sourceRoot, sourcePath)
-      );
-      if (!snapshot || snapshot.hash !== candidate.source?.sha256) {
-        throw new Error("Library source pin has drifted");
+      if (
+        digests.has(sourcePath) &&
+        digests.get(sourcePath) !== candidate.source?.sha256
+      ) {
+        throw new Error("Library source pins disagree");
       }
+      digests.set(sourcePath, candidate.source?.sha256);
       updates.push({ path: candidate.path, sourcePath });
+      if (updates.length > MAX_PIN_UPDATES) {
+        throw new Error("Library pin recovery exceeds its limit");
+      }
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(updates)) > MAX_RECEIPT_BYTES) {
+    throw new Error("Library pin recovery exceeds its limit");
+  }
+  for (const [sourcePath, digest] of digests) {
+    const snapshot = await snapshotCapability(join(ctx.sourceRoot, sourcePath));
+    if (!snapshot || snapshot.hash !== digest) {
+      throw new Error("Library source pin has drifted");
     }
   }
   return updates.length
@@ -339,7 +365,7 @@ async function completePins(ctx: LibraryContext, receipt: Receipt) {
     receipt.id
   );
   if (
-    (await git(root, ["hash-object", "--stdin"], false, content)).output !==
+    (await hashContent(root, "capabilities.json", content)) !==
     receipt.files["capabilities.json"]
   ) {
     throw new Error("Library source changed before pin update");
@@ -366,6 +392,14 @@ function receiptPath(ctx: LibraryContext, id: string) {
   return join(ctx.localRoot, "library", "publications", `${id}.json`);
 }
 async function writeReceipt(ctx: LibraryContext, receipt: Receipt) {
+  if (receipt.pins && receipt.pins.updates.length > MAX_PIN_UPDATES) {
+    throw new Error("Library pin recovery exceeds its limit");
+  }
+  // Reserve a full object ID before source mutation; the commit is initially unknown.
+  const maximum = `${JSON.stringify({ ...receipt, commit: "0".repeat(64) })}\n`;
+  if (Buffer.byteLength(maximum) > MAX_RECEIPT_BYTES) {
+    throw new Error("Library publication receipt exceeds its limit");
+  }
   await atomicLibraryWrite(
     receiptPath(ctx, receipt.id),
     `${JSON.stringify(receipt)}\n`
@@ -559,22 +593,17 @@ export async function publishLibraryChange(
   }
   const id = randomUUID();
   const desired: Record<string, string> = {
-    [path]: (
-      await git(repo.root, ["hash-object", "--stdin"], false, args.content)
-    ).output,
+    [path]: await hashContent(repo.root, path, args.content),
   };
   if (pins) {
-    desired["capabilities.json"] = (
-      await git(
-        repo.root,
-        ["hash-object", "--stdin"],
-        false,
-        await changedManifest(ctx, pins.content, pins.updates, id, {
-          path,
-          content: args.content,
-        })
-      )
-    ).output;
+    desired["capabilities.json"] = await hashContent(
+      repo.root,
+      "capabilities.json",
+      await changedManifest(ctx, pins.content, pins.updates, id, {
+        path,
+        content: args.content,
+      })
+    );
   }
   const files: Record<string, string> = {};
   for (const [path, blob] of Object.entries(desired)) {
@@ -643,7 +672,11 @@ export async function retryLibraryPublication(
     const path = receiptPath(ctx, id);
     await safeCapabilityPath(path);
     const metadata = await stat(path);
-    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 262_144) {
+    if (
+      !metadata.isFile() ||
+      metadata.nlink !== 1 ||
+      metadata.size > MAX_RECEIPT_BYTES
+    ) {
       throw new Error("Invalid library publication receipt");
     }
     const receipt = JSON.parse(await readFile(path, "utf8")) as Receipt;
@@ -684,7 +717,7 @@ export async function retryLibraryPublication(
       (!(
         OID.test(receipt.pins.baseBlob) && Array.isArray(receipt.pins.updates)
       ) ||
-        receipt.pins.updates.length > 4096 ||
+        receipt.pins.updates.length > MAX_PIN_UPDATES ||
         receipt.pins.updates.some(
           (update) =>
             typeof update.sourcePath !== "string" ||
@@ -806,7 +839,9 @@ export async function deployLibraryPublication(
       ) {
         throw new Error("Library deployment source is not published");
       }
-      const result = await deployAsset(ctx, expected.path, options);
+      const verify = () => verifyPublishedSources(root, expected, options);
+      await verify();
+      const result = await deployAsset(ctx, expected.path, options, verify);
       return {
         ...result,
         ...(result.state === "applied" ? { commit: expected.commit } : {}),
@@ -817,10 +852,88 @@ export async function deployLibraryPublication(
   }
 }
 
+async function readRegistry(manifest: string) {
+  await safeCapabilityPath(manifest);
+  const metadata = await stat(manifest);
+  if (
+    !metadata.isFile() ||
+    metadata.nlink !== 1 ||
+    metadata.size > 1024 * 1024
+  ) {
+    throw new Error("Invalid library manifest");
+  }
+  return parseCapabilityRegistry(JSON.parse(await readFile(manifest, "utf8")));
+}
+function matchingEntries(
+  registry: ReturnType<typeof parseCapabilityRegistry>,
+  path: string,
+  machine: string,
+  platform: string
+) {
+  return registry.entries
+    .map((entry) => selectCapability(entry, machine, platform))
+    .filter(
+      (entry) =>
+        entry.owner === "fclt" &&
+        entry.enabled &&
+        entry.source.path &&
+        (path === entry.source.path ||
+          path.startsWith(`${entry.source.path}/`)) &&
+        ["skill", "mcp"].includes(entry.kind)
+    );
+}
+async function verifyPublishedSources(
+  root: string,
+  expected: LibraryPublication,
+  options: CapabilityContext
+) {
+  await cleanSelected(root, ["capabilities.json", expected.path]);
+  const committed = parseCapabilityRegistry(
+    JSON.parse(
+      await output(root, ["show", `${expected.commit}:capabilities.json`])
+    )
+  );
+  if (
+    JSON.stringify(committed) !==
+    JSON.stringify(await readRegistry(join(root, "capabilities.json")))
+  ) {
+    throw new Error("Library manifest does not match the publication");
+  }
+  const paths = [
+    ...new Set(
+      matchingEntries(
+        committed,
+        expected.path,
+        options.host,
+        options.platform
+      ).map((entry) => entry.source.path!)
+    ),
+  ];
+  if (
+    paths.length &&
+    ((
+      await git(
+        root,
+        ["diff", "--quiet", expected.commit!, "--", ...paths],
+        true
+      )
+    ).code !== 0 ||
+      (
+        await git(
+          root,
+          ["diff", "--cached", "--quiet", expected.commit!, "--", ...paths],
+          true
+        )
+      ).code !== 0)
+  ) {
+    throw new Error("Canonical source does not match the publication");
+  }
+}
 async function deployAsset(
   ctx: LibraryContext,
   path: string,
-  options: CapabilityContext
+  options: CapabilityContext,
+  beforeApply?: () => Promise<void>
 ) {
   const root = await capabilityRoot(ctx.sourceRoot);
   if (
@@ -842,30 +955,12 @@ async function deployAsset(
     stateRoot: await capabilityRoot(options.stateRoot),
     libraryStateRoot: await capabilityRoot(ctx.localRoot),
   };
-  await safeCapabilityPath(resolved.manifest);
-  const metadata = await stat(resolved.manifest);
-  if (
-    !metadata.isFile() ||
-    metadata.nlink !== 1 ||
-    metadata.size > 1024 * 1024
-  ) {
-    throw new Error("Invalid library manifest");
-  }
-  const registry = parseCapabilityRegistry(
-    JSON.parse(await readFile(resolved.manifest, "utf8"))
-  );
-  const ids = registry.entries
-    .map((entry) => selectCapability(entry, ctx.machine, resolved.platform))
-    .filter(
-      (entry) =>
-        entry.owner === "fclt" &&
-        entry.enabled &&
-        entry.source.path &&
-        (path === entry.source.path ||
-          path.startsWith(`${entry.source.path}/`)) &&
-        ["skill", "mcp"].includes(entry.kind)
-    )
-    .map((entry) => entry.id);
+  const ids = matchingEntries(
+    await readRegistry(resolved.manifest),
+    path,
+    ctx.machine,
+    resolved.platform
+  ).map((entry) => entry.id);
   if (ids.length === 0) {
     return {
       state: "pending" as const,
@@ -883,9 +978,15 @@ async function deployAsset(
     ) {
       throw new Error("Library target requires attention");
     }
+    await beforeApply?.();
     await applyCapability(resolved, id, plan.planId);
     const after = await buildCapabilityPlan(resolved, id);
-    if (after.status !== "current") {
+    if (
+      after.status !== "current" ||
+      after.hashes.manifest !== plan.hashes.manifest ||
+      after.hashes.source !== plan.hashes.source ||
+      after.hashes.library !== plan.hashes.library
+    ) {
       throw new Error("Library target output was not verified");
     }
     applied.push(id);
