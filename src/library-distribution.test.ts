@@ -98,6 +98,10 @@ async function fixture(extraPath?: string) {
 }
 it("publishes only the selected edit and its source pin, pulls the exact commit, and verifies owned runtime output", async () => {
   const f = await fixture();
+  const fetchHead = "unrelated fetch evidence\n";
+  for (const root of [f.sourceRoot, f.peerRoot]) {
+    await writeFile(join(root, ".git/FETCH_HEAD"), fetchHead);
+  }
   const peer = {
     ...f.context,
     sourceRoot: f.peerRoot,
@@ -170,6 +174,16 @@ it("publishes only the selected edit and its source pin, pulls the exact commit,
   expect(await readFile(join(writerTarget, "example/SKILL.md"), "utf8")).toBe(
     "# Published\n"
   );
+  expect(await readFile(join(f.sourceRoot, ".git/FETCH_HEAD"), "utf8")).toBe(
+    fetchHead
+  );
+  expect(
+    await f.git(f.sourceRoot, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/fclt/library-fetch/",
+    ])
+  ).toBe("");
   const saved = response.value;
   expect(saved.publication?.state).toBe("published");
   const publication = saved.publication!;
@@ -191,6 +205,16 @@ it("publishes only the selected edit and its source pin, pulls the exact commit,
     publication,
   });
   expect(pulled).toMatchObject({ state: "pulled" });
+  expect(await readFile(join(f.peerRoot, ".git/FETCH_HEAD"), "utf8")).toBe(
+    fetchHead
+  );
+  expect(
+    await f.git(f.peerRoot, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/fclt/library-fetch/",
+    ])
+  ).toBe("");
   expect(await f.git(f.peerRoot, ["diff", "--cached", "--binary"])).toBe(
     peerIndexBefore
   );

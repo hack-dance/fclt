@@ -198,23 +198,33 @@ async function repository(ctx: LibraryContext) {
   };
 }
 async function fetchUpstream(repo: Awaited<ReturnType<typeof repository>>) {
+  const ref = `refs/fclt/library-fetch/${randomUUID()}`;
   try {
-    await git(repo.root, [
-      "fetch",
-      "--no-tags",
-      "--recurse-submodules=no",
-      "--",
-      repo.remote,
-      repo.ref,
-    ]);
-    const commit = await output(repo.root, [
-      "rev-parse",
-      "FETCH_HEAD^{commit}",
-    ]);
-    if (!OID.test(commit)) {
-      throw new Error("Library upstream is unavailable");
+    try {
+      await git(repo.root, [
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--recurse-submodules=no",
+        "--",
+        repo.remote,
+        `${repo.ref}:${ref}`,
+      ]);
+      const commit = await output(repo.root, ["rev-parse", `${ref}^{commit}`]);
+      if (!OID.test(commit)) {
+        throw new Error("Library upstream is unavailable");
+      }
+      return commit;
+    } finally {
+      const current = await git(
+        repo.root,
+        ["rev-parse", "--verify", ref],
+        true
+      );
+      if (current.code === 0 && OID.test(current.output)) {
+        await git(repo.root, ["update-ref", "-d", ref, current.output]);
+      }
     }
-    return commit;
   } catch {
     throw new LibraryPublicationPreflightError("publication-unavailable");
   }
