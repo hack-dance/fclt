@@ -43,6 +43,10 @@ export async function protocolReport(): Promise<FcltProtocolReport> {
       "scoped-capability-roots-v1",
       "library-editor-v1",
       "library-capability-overlays-v1",
+      "library-distribution-v1",
+      "library-settings-v1",
+      "library-project-inheritance-v1",
+      "library-owned-deployment-v1",
     ],
   };
 }

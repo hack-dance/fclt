@@ -23,6 +23,7 @@ import {
   indexFiles,
   withGuardedIndexReads,
 } from "./index-filesystem";
+import { readLibrarySettings } from "./library-settings";
 import {
   canonicalProjectAiRoot,
   facultAiGraphPath,
@@ -127,6 +128,7 @@ export interface InstructionEntry extends AssetEntryBase {}
 export interface FacultIndex {
   version: number;
   updatedAt: string;
+  projectInheritance?: { revision: string; enabled: boolean };
   skills: Record<string, SkillEntry>;
   mcp: { servers: Record<string, McpEntry> };
   agents: Record<string, AgentEntry>;
@@ -467,15 +469,15 @@ function parseFrontmatter(md: string): {
   tags: string[];
   body: string;
 } {
-  const block = extractFrontmatterBlock(md);
-  if (!block) {
+  const frontmatterBlock = extractFrontmatterBlock(md);
+  if (!frontmatterBlock) {
     return { tags: [], body: md };
   }
 
   const tags: string[] = [];
   let description: string | undefined;
 
-  const fmLines = block.fmLines;
+  const fmLines = frontmatterBlock.fmLines;
   for (let j = 0; j < fmLines.length; j++) {
     const line = fmLines[j];
     if (line === undefined) {
@@ -504,7 +506,7 @@ function parseFrontmatter(md: string): {
     }
   }
 
-  return { description, tags, body: block.body };
+  return { description, tags, body: frontmatterBlock.body };
 }
 
 function parseMarkdownAsset(md: string): {
@@ -1656,6 +1658,12 @@ async function buildIndexInternal(
   const globalRoot = projectRoot
     ? resolveCliContextRoot({ homeDir, scope: "global" })
     : rootDir;
+  const inheritance = projectRoot
+    ? await readLibrarySettings(
+        { sourceRoot: rootDir, localRoot: "", machine: "" },
+        "project"
+      )
+    : null;
   const sources: IndexedSource[] = [];
   const builtinRoot = facultBuiltinPackRoot();
   try {
@@ -1670,11 +1678,13 @@ async function buildIndexInternal(
   } catch {
     // Ignore missing builtin asset packs in development.
   }
-  sources.push({
-    sourceKind: "global",
-    scope: "global",
-    rootDir: globalRoot,
-  });
+  if (!inheritance || inheritance.enabled) {
+    sources.push({
+      sourceKind: "global",
+      scope: "global",
+      rootDir: globalRoot,
+    });
+  }
   if (projectRoot) {
     sources.push({
       ...currentScope,
@@ -1715,6 +1725,7 @@ async function buildIndexInternal(
   const index: FacultIndex = {
     version: 1,
     updatedAt: new Date().toISOString(),
+    ...(inheritance ? { projectInheritance: inheritance } : {}),
     skills,
     mcp: { servers },
     agents,

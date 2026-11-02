@@ -93,7 +93,7 @@ export async function applyCapability(
     await safeCapabilityPath(stateParent);
     const stateDirectory = await lstat(stateParent);
     // biome-ignore lint/suspicious/noBitwiseOperators: ownership state must not be writable by other users
-    if ((stateDirectory.mode & 0o022) !== 0) {
+    if (process.platform !== "win32" && (stateDirectory.mode & 0o022) !== 0) {
       throw new Error(
         "Capability runtime state must not be writable by other users"
       );

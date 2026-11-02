@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { readdir } from "node:fs/promises";
+import { join, relative } from "node:path";
 import {
   applyEdits,
   getNodeValue,
@@ -17,7 +17,14 @@ import {
   snapshotCapability,
 } from "./capability-files";
 import { hashCapability } from "./capability-registry";
+import {
+  type LibraryPublication,
+  LibraryPublicationPreflightError,
+  type LibraryPublicationPreflightReason,
+  publishLibraryChange,
+} from "./library-distribution";
 import { LibraryMutationBusy, withLibraryMutationLock } from "./library-lock";
+import { atomicLibraryWrite as atomicWrite } from "./library-storage";
 import { parseJsonLenient } from "./util/json";
 
 const PATH_PART_RE = /[\\:]/u;
@@ -49,7 +56,12 @@ interface Overlay {
   values: Values;
   base: Partial<Record<Field, string>>;
 }
-type LibraryErrorReason = "unsupported" | "conflict" | "busy" | "unavailable";
+type LibraryErrorReason =
+  | "unsupported"
+  | "conflict"
+  | "busy"
+  | "unavailable"
+  | LibraryPublicationPreflightReason;
 export class LibraryEditorError extends Error {
   readonly reason: LibraryErrorReason;
   constructor(reason: LibraryErrorReason) {
@@ -401,20 +413,6 @@ export async function readLibraryAsset(
     throw new LibraryEditorError("unavailable");
   }
 }
-async function atomicWrite(path: string, content: string, mode = 0o600) {
-  await safeCapabilityPath(path);
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await safeCapabilityPath(path);
-  const temporary = join(dirname(path), `.fclt-library-${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, content, { flag: "wx", mode });
-    await chmod(temporary, mode);
-    await safeCapabilityPath(path);
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
 async function withLock<A>(
   input: LibraryContext,
   operation: (ctx: LibraryContext) => Promise<A>
@@ -427,7 +425,11 @@ async function withLock<A>(
       throw error;
     }
     throw new LibraryEditorError(
-      error instanceof LibraryMutationBusy ? "busy" : "unavailable"
+      error instanceof LibraryPublicationPreflightError
+        ? error.reason
+        : error instanceof LibraryMutationBusy
+          ? "busy"
+          : "unavailable"
     );
   }
 }
@@ -455,9 +457,15 @@ export async function saveLibraryAsset(
     revision: string;
     layer: LibraryLayer;
     values: unknown;
+    publish?: boolean;
+    updatePins?: boolean;
   }
 ) {
   return await withLock(input, async (ctx) => {
+    let publication: LibraryPublication | undefined;
+    if (request.publish && request.layer !== "shared") {
+      throw new LibraryEditorError("unsupported");
+    }
     if (!["shared", "machine", "local"].includes(request.layer)) {
       throw new LibraryEditorError("unsupported");
     }
@@ -486,27 +494,44 @@ export async function saveLibraryAsset(
       if (Buffer.byteLength(content) > 262_144) {
         throw new LibraryEditorError("unsupported");
       }
-      if (content === current.shared.content) {
-        return current.view;
+      if (content === current.shared.content && !request.publish) {
+        return {
+          ...current.view,
+          publication: undefined as LibraryPublication | undefined,
+        };
       }
-      await backup(
-        ctx,
-        request.name
-          ? JSON.stringify({
-              path: request.path,
-              name: request.name,
-              values: current.shared.value,
-              argsPresent: Object.hasOwn(
-                object(current.shared.servers?.[request.name]),
-                "args"
-              ),
-            })
-          : current.shared.content
-      );
-      if ((await load(ctx, request)).view.revision !== request.revision) {
-        throw new LibraryEditorError("conflict");
+      const mutate = async () => {
+        await backup(
+          ctx,
+          request.name
+            ? JSON.stringify({
+                path: request.path,
+                name: request.name,
+                values: current.shared.value,
+                argsPresent: Object.hasOwn(
+                  object(current.shared.servers?.[request.name]),
+                  "args"
+                ),
+              })
+            : current.shared.content
+        );
+        if ((await load(ctx, request)).view.revision !== request.revision) {
+          throw new LibraryEditorError("conflict");
+        }
+        if (content !== current.shared.content) {
+          await atomicWrite(current.shared.file, content, current.shared.mode);
+        }
+      };
+      if (request.publish) {
+        publication = await publishLibraryChange(ctx, {
+          path: request.path,
+          content,
+          updatePins: request.updatePins === true,
+          mutate,
+        });
+      } else {
+        await mutate();
       }
-      await atomicWrite(current.shared.file, content, current.shared.mode);
     } else {
       const previous = current[request.layer].record;
       const lower =
@@ -533,7 +558,10 @@ export async function saveLibraryAsset(
       }
       await atomicWrite(current.paths[request.layer], content);
     }
-    return (await load(ctx, request)).view;
+    return {
+      ...(await load(ctx, request)).view,
+      ...(publication ? { publication } : {}),
+    };
   });
 }
 export async function resetLibraryAsset(

@@ -8,6 +8,7 @@ import {
   buildIndexSnapshot,
   parseSkillMarkdown,
 } from "./index-builder";
+import { readLibrarySettings, saveLibrarySettings } from "./library-settings";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
@@ -15,6 +16,7 @@ import {
   facultMachineStateDir,
   facultRootDir,
 } from "./paths";
+import { loadIndex } from "./query";
 
 const ORIGINAL_HOME = process.env.HOME;
 let tempHome: string | null = null;
@@ -625,5 +627,49 @@ describe("buildIndex", () => {
           edge.to === renderedRuleNode?.id
       )
     ).toBe(true);
+    await Bun.write(
+      join(globalRoot, "instructions", "GLOBAL-ONLY.md"),
+      "# Global only\n"
+    );
+    expect(
+      (await buildIndexSnapshot({ rootDir, homeDir: tempHome })).index
+        .instructions["GLOBAL-ONLY"]
+    ).toBeTruthy();
+    await buildIndex({ rootDir, homeDir: tempHome });
+    const settingsContext = {
+      sourceRoot: rootDir,
+      localRoot: facultMachineStateDir(tempHome, rootDir),
+      machine: "fixture",
+    };
+    let inheritance = await readLibrarySettings(settingsContext, "project");
+    expect(inheritance.enabled).toBe(true);
+    inheritance = await saveLibrarySettings(
+      settingsContext,
+      "project",
+      inheritance.revision,
+      false
+    );
+    const isolated = await buildIndexSnapshot({ rootDir, homeDir: tempHome });
+    expect(isolated.index.instructions["GLOBAL-ONLY"]).toBeUndefined();
+    expect(
+      (await loadIndex({ rootDir, homeDir: tempHome })).instructions[
+        "GLOBAL-ONLY"
+      ]
+    ).toBeUndefined();
+    expect(isolated.index.instructions.SHARED?.sourceKind).toBe("project");
+    expect(isolated.index.instructions.INTEGRATION?.sourceKind).toBe("builtin");
+    await expect(
+      saveLibrarySettings(settingsContext, "project", "stale", true)
+    ).rejects.toThrow();
+    await saveLibrarySettings(
+      settingsContext,
+      "project",
+      inheritance.revision,
+      true
+    );
+    expect(
+      (await buildIndexSnapshot({ rootDir, homeDir: tempHome })).index
+        .instructions["GLOBAL-ONLY"]
+    ).toBeTruthy();
   });
 });

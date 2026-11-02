@@ -173,7 +173,7 @@ export async function readCapabilityReceipt(
     stat.nlink !== 1 ||
     stat.size > 256 * 1024 ||
     // biome-ignore lint/suspicious/noBitwiseOperators: reject writable ownership evidence
-    (stat.mode & 0o022) !== 0
+    (process.platform !== "win32" && (stat.mode & 0o022) !== 0)
   ) {
     throw new Error("Capability ownership receipt is unsafe");
   }
