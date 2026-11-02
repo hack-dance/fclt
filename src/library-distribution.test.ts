@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { runFixtureGit } from "../test/git-fixture";
 import { snapshotCapability } from "./capability-files";
 import { libraryRpc } from "./library-command";
@@ -96,8 +97,19 @@ async function fixture(extraPath?: string) {
     asset: { path: extraPath ?? "skills/example/SKILL.md" },
   };
 }
-it("publishes only the selected edit and its source pin, pulls the exact commit, and verifies owned runtime output", async () => {
+it.each([
+  "path",
+  "file-url",
+] as const)("publishes only the selected edit and its source pin, pulls the exact commit, and verifies owned runtime output (%s)", async (remoteKind) => {
   const f = await fixture();
+  if (remoteKind === "file-url") {
+    const remotePath = join(f.root, "remote library é.git");
+    await rename(f.remote, remotePath);
+    const remote = pathToFileURL(remotePath).href;
+    for (const root of [f.sourceRoot, f.peerRoot]) {
+      await f.git(root, ["remote", "set-url", "origin", remote]);
+    }
+  }
   const fetchHead = "unrelated fetch evidence\n";
   for (const root of [f.sourceRoot, f.peerRoot]) {
     await writeFile(join(root, ".git/FETCH_HEAD"), fetchHead);

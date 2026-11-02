@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { applyEdits, modify } from "jsonc-parser";
 import { applyCapability } from "./capability-apply";
 import {
@@ -186,9 +187,14 @@ async function repository(ctx: LibraryContext) {
   ) {
     throw new LibraryPublicationPreflightError("publication-not-configured");
   }
+  const fetchUrl = fetchUrls[0]!;
   const identity =
-    normalizeRepositoryRemote(fetchUrls[0]!) ??
-    (await capabilityRoot(resolve(root, fetchUrls[0]!)));
+    normalizeRepositoryRemote(fetchUrl) ??
+    (await capabilityRoot(
+      fetchUrl.startsWith("file:")
+        ? fileURLToPath(fetchUrl)
+        : resolve(root, fetchUrl)
+    ));
   return {
     root,
     branch,
