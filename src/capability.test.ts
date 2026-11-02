@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { captureNativePipe } from "../test/native-pipe";
 import { applyCapability } from "./capability-apply";
 import { snapshotCapability } from "./capability-files";
@@ -103,7 +103,16 @@ async function fixture() {
 describe("versioned capability ownership", () => {
   it("creates a copy, verifies provenance, and repeats without mutation", async () => {
     const f = await fixture();
-    expect((await f.plan()).status).toBe("create");
+    const plan = await f.plan();
+    expect(plan.status).toBe("create");
+    if (process.platform !== "win32") {
+      const stateParent = dirname(plan.statePath);
+      await mkdir(stateParent, { recursive: true, mode: 0o700 });
+      await chmod(stateParent, 0o777);
+      await expect(f.apply()).rejects.toThrow("must not be writable");
+      await expect(lstat(f.target)).rejects.toThrow();
+      await chmod(stateParent, 0o700);
+    }
     const applied = await f.apply();
     expect(applied.status).toBe("current");
     expect(applied.applied).toBe(true);
@@ -389,6 +398,12 @@ describe("versioned capability ownership", () => {
   it("refuses tampered ownership receipt hashes", async () => {
     const f = await fixture();
     const result = await f.apply();
+    if (process.platform !== "win32") {
+      await chmod(result.statePath, 0o666);
+      expect((await f.plan()).reason).toContain("ownership receipt is unsafe");
+      await expect(f.apply()).rejects.toThrow("refused");
+      await chmod(result.statePath, 0o600);
+    }
     const receipt = JSON.parse(await readFile(result.statePath, "utf8"));
     receipt.sourceHash = "invalid";
     await writeFile(result.statePath, JSON.stringify(receipt));
