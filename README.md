@@ -731,3 +731,13 @@ Contributor and release workflow details live in [CONTRIBUTING.md](./CONTRIBUTIN
 ## Background
 
 The operating model behind `fclt` is related to the argument in [Governing the Machine](https://www.hack.dance/writing/governing-the-machine): as machine execution gets cheaper, the hard problem becomes governing work, evidence, memory, integration, and improvement.
+
+### Layered harness inventory
+
+`fclt inventory --harness codex --harness claude` prints a read-only table of
+skills, MCP servers, plugins, and offline app declarations for each discovered
+account home. Add `--json` for structured output, or use
+`--harness codex --home /path/to/account` to inspect a specific home. Repeat
+`--home` for multiple accounts of one harness. The existing `inventory --json`
+contract is unchanged. See [the layered inventory guide](docs/harness-inventory.md)
+for discovery, precedence, token estimates, and offline limitations.

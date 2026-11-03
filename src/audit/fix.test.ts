@@ -213,6 +213,7 @@ beforeAll(async () => {
     argv: [],
     from: [rootDir!],
     homeDir: tempHome!,
+    cwd: tempHome!,
     includeConfigFrom: false,
     minSeverity: "high",
   });
@@ -246,6 +247,7 @@ beforeAll(async () => {
     argv: [],
     from: [managedRoot],
     homeDir: managedHome,
+    cwd: managedHome,
     includeConfigFrom: false,
     minSeverity: "high",
   });
