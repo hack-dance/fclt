@@ -81,14 +81,17 @@ export function repositoryCommonDirectoryFingerprint(
   return `v2:${metadata.dev}:${metadata.ino}:birth:${metadata.birthtimeNs}`;
 }
 
-function readCommonDirectoryMetadata(
-  commonPath: string
+/** @internal Shared validation for persistent and legacy common-directory identities. */
+export function readCommonDirectoryMetadata(
+  commonPath: string,
+  options?: { legacyDeviceIdentity?: boolean }
 ): RepositoryCommonDirectoryMetadata {
   const metadata = lstatSync(commonPath, { bigint: true });
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new Error("The Git common directory is unsafe");
   }
   if (
+    options?.legacyDeviceIdentity ||
     process.platform !== "linux" ||
     statfsSync(commonPath).type !== 0x91_23_68_3e
   ) {
@@ -632,7 +635,7 @@ export function repositoryCommonIdentitySync(
     projectRoot,
     commonDir,
     commonDirMetadata: options?.legacyDeviceIdentity
-      ? lstatSync(resolve(projectRoot, commonDir), { bigint: true })
+      ? readCommonDirectoryMetadata(resolve(projectRoot, commonDir), options)
       : undefined,
   });
 }

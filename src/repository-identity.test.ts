@@ -1,8 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   normalizeRepositoryRemote,
   type RepositoryCommonDirectoryMetadata,
+  readCommonDirectoryMetadata,
   repositoryCommonDirectoryFingerprint,
   repositoryIdentityFromGitFacts,
 } from "./repository-identity";
@@ -24,6 +28,30 @@ function identityFor(metadata: RepositoryCommonDirectoryMetadata) {
 }
 
 describe("machine-local repository identity", () => {
+  it("validates directories in both stable and legacy identity modes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "fclt-identity-metadata-"));
+    try {
+      const directory = join(root, "directory");
+      const file = join(root, "file");
+      const link = join(root, "link");
+      await mkdir(directory);
+      await writeFile(file, "fixture");
+      await symlink(directory, link, "junction");
+      for (const legacyDeviceIdentity of [false, true]) {
+        expect(
+          readCommonDirectoryMetadata(directory, { legacyDeviceIdentity }).ino
+        ).toBeGreaterThan(0n);
+        for (const path of [file, link]) {
+          expect(() =>
+            readCommonDirectoryMetadata(path, { legacyDeviceIdentity })
+          ).toThrow("unsafe");
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps Btrfs identity across device renumbering without conflating filesystems or recreated directories", () => {
     const metadata = { ...BASE_METADATA, filesystemId: "0123456789abcdef" };
     const original = identityFor(metadata);
