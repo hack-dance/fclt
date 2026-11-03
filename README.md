@@ -738,6 +738,7 @@ The operating model behind `fclt` is related to the argument in [Governing the M
 skills, MCP servers, plugins, and offline app declarations for each discovered
 account home. Add `--json` for structured output, or use
 `--harness codex --home /path/to/account` to inspect a specific home. Repeat
-`--home` for multiple accounts of one harness. The existing `inventory --json`
+`--home` for multiple accounts of one harness. Homes or profiles ending in `-ln`
+are skipped by default; `--include-ln` explicitly reads those homes. The existing `inventory --json`
 contract is unchanged. See [the layered inventory guide](docs/harness-inventory.md)
 for discovery, precedence, token estimates, and offline limitations.

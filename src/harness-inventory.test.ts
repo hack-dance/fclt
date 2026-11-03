@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -45,8 +45,8 @@ test("layered inventory is read-only and counts canonical symlink content only o
   const f = await fixture();
   const canonical = join(f.home, ".ai", "skills", "sample");
   await f.skill(canonical);
-  await mkdir(join(f.home, ".codex", "skills"), { recursive: true });
-  await symlink(canonical, join(f.home, ".codex", "skills", "sample"));
+  await mkdir(join(f.home, ".agents", "skills"), { recursive: true });
+  await symlink(canonical, join(f.home, ".agents", "skills", "sample"));
   await f.skill(join(f.cwd, ".agents", "skills", "sample"));
   await f.write(
     join(f.home, ".codex", "config.toml"),
@@ -71,7 +71,7 @@ test("layered inventory is read-only and counts canonical symlink content only o
     )
   ).toHaveLength(2);
   expect(
-    session?.resources.find((r) => r.kind === "skill" && r.layer === "global")
+    session?.resources.find((r) => r.definedAt === join(canonical, "SKILL.md"))
       ?.use
   ).toBe("canonical-only");
   expect(
@@ -117,7 +117,7 @@ test("discovers multiple account homes and never mixes their MCP definitions", a
 test("models budgets, truncation and separately deferred skill bodies", async () => {
   const f = await fixture();
   await f.skill(join(f.home, ".claude", "skills", "sample"), "x".repeat(2000));
-  await f.skill(join(f.home, ".codex", "skills", "sample"), "x".repeat(2000));
+  await f.skill(join(f.home, ".agents", "skills", "sample"), "x".repeat(2000));
   const report = await buildHarnessInventory({
     homeDir: f.home,
     cwd: f.cwd,
@@ -336,4 +336,389 @@ test("Codex plugins resolve a single offline cache version and namespace its ski
   });
   expect(ambiguous.sessions[0]?.resources[0]?.use).toBe("unknown");
   expect(ambiguous.sessions[0]?.tokens.alwaysMeasured).toBe(0);
+});
+
+test("Claude personal skills override project skills while MCP retains its own order", async () => {
+  const f = await fixture();
+  await f.skill(join(f.home, ".claude", "skills", "sample"));
+  await f.skill(join(f.cwd, ".claude", "skills", "sample"));
+  const report = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(report.sessions[0]?.resources.map((r) => [r.layer, r.use])).toEqual([
+    ["account", "effective"],
+    ["project", "shadowed"],
+  ]);
+});
+
+test("outside Git, ancestors and account configs are not project sources", async () => {
+  const f = await fixture();
+  const cwd = join(f.home, "scratch");
+  await mkdir(cwd);
+  await f.skill(join(f.home, ".claude", "skills", "sample"));
+  await f.write(
+    join(f.home, ".codex", "config.toml"),
+    '[mcp_servers.example]\ncommand="unused"'
+  );
+  const report = await buildHarnessInventory({ homeDir: f.home, cwd });
+  expect(
+    report.sessions
+      .flatMap((s) => s.resources)
+      .some((r) => r.layer === "project")
+  ).toBe(false);
+});
+
+test("Claude description falls back to the first body line, while Codex requires metadata", async () => {
+  const f = await fixture();
+  await f.write(
+    join(f.home, ".claude", "skills", "sample", "SKILL.md"),
+    "---\nname: sample\n---\n\nFixture summary\n"
+  );
+  await f.write(
+    join(f.home, ".agents", "skills", "sample", "SKILL.md"),
+    "---\nname: sample\n---\n\nFixture summary\n"
+  );
+  const report = await buildHarnessInventory({ homeDir: f.home, cwd: f.cwd });
+  expect(report.sessions[0]?.resources).toHaveLength(0);
+  expect(report.sessions[1]?.resources[0]?.alwaysTokens).toBe(
+    Math.ceil("sample: Fixture summary\n".length / 4)
+  );
+});
+
+test("Claude MCP approval and local toggles exclude unavailable offline catalogs", async () => {
+  const f = await fixture();
+  await mkdir(join(f.home, ".claude"));
+  await f.write(
+    join(f.cwd, ".mcp.json"),
+    '{"mcpServers":{"example":{"tools":[{"name":"lookup"}]}}}'
+  );
+  const pending = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(pending.sessions[0]?.resources[0]?.reason).toContain(
+    "pending approval"
+  );
+  expect(pending.sessions[0]?.tokens.alwaysMeasured).toBe(0);
+  await f.write(
+    join(f.home, ".claude.json"),
+    JSON.stringify({
+      mcpServers: { user: { tools: [{ name: "lookup" }] } },
+      projects: {
+        [f.cwd]: {
+          enabledMcpjsonServers: ["example"],
+          disabledMcpServers: ["user"],
+        },
+      },
+    })
+  );
+  const approved = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(
+    approved.sessions[0]?.resources.find((r) => r.name === "example")?.use
+  ).toBe("effective");
+  expect(
+    approved.sessions[0]?.resources.find((r) => r.name === "user")?.use
+  ).toBe("disabled");
+  expect(approved.sessions[0]?.tokens.alwaysMeasured).toBeGreaterThan(0);
+  await f.write(
+    join(f.cwd, ".claude", "settings.json"),
+    '{"disabledMcpjsonServers":["example"]}'
+  );
+  const disabled = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(disabled.sessions[0]?.tokens.alwaysMeasured).toBe(0);
+});
+
+test("Codex selectors match by name or expanded home path and last match wins", async () => {
+  const f = await fixture();
+  const path = join(f.home, ".agents", "skills", "sample");
+  await f.skill(path);
+  await f.write(
+    join(f.home, ".codex", "config.toml"),
+    '[[skills.config]]\nname="sample"\nenabled=false\n[[skills.config]]\npath="~/.agents/skills/sample/SKILL.md"\nenabled=true\n'
+  );
+  const on = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+  });
+  expect(on.sessions[0]?.resources[0]?.use).toBe("effective");
+  expect(on.sessions[0]?.resources[0]?.alwaysTokens).toBe(
+    Math.ceil(
+      `sample: A fixture skill (${join(path, "SKILL.md")})\n`.length / 4
+    )
+  );
+  await f.write(
+    join(f.cwd, ".codex", "config.toml"),
+    '[[skills.config]]\nname="sample"\nenabled=false\n[skills]\nmax_context_tokens=20000\n'
+  );
+  const off = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+  });
+  expect(off.sessions[0]?.resources[0]?.use).toBe("disabled");
+  expect(off.sessions[0]?.tokens.alwaysMeasured).toBe(0);
+  expect(off.sessions[0]?.tokens.skillBudgetTokens).toBe(10_000);
+});
+
+test("Claude final skillOverrides settings win without listing manual-only skills", async () => {
+  const f = await fixture();
+  await f.skill(join(f.home, ".claude", "skills", "sample"));
+  await f.write(
+    join(f.home, ".claude", "settings.json"),
+    '{"skillOverrides":{"sample":"off"}}'
+  );
+  await f.write(
+    join(f.cwd, ".claude", "settings.json"),
+    '{"skillOverrides":{"sample":"on"}}'
+  );
+  const on = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(on.sessions[0]?.tokens.alwaysMeasured).toBeGreaterThan(0);
+  await f.skill(
+    join(f.home, ".claude", "skills", "sample"),
+    "A fixture skill",
+    "disable-model-invocation: true\n"
+  );
+  await f.write(
+    join(f.cwd, ".claude", "settings.local.json"),
+    '{"skillOverrides":{"sample":"name-only"}}'
+  );
+  const manual = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(manual.sessions[0]?.tokens.alwaysMeasured).toBe(0);
+});
+
+test("legacy Codex skill directories remain visible as uncertain candidates", async () => {
+  const f = await fixture();
+  await f.skill(join(f.home, ".codex", "skills", "sample"));
+  await f.skill(join(f.cwd, ".codex", "skills", "sample"));
+  const report = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+  });
+  expect(report.sessions[0]?.resources.map((r) => r.use)).toEqual([
+    "unknown",
+    "unknown",
+  ]);
+  expect(report.sessions[0]?.tokens.alwaysMeasured).toBe(0);
+});
+
+test("Claude scoped plugin installs resolve this project and retain all declarations", async () => {
+  const f = await fixture();
+  const account = join(f.home, ".claude");
+  const userInstall = join(account, "plugins", "cache", "fixture", "1");
+  const projectInstall = join(account, "plugins", "cache", "fixture", "2");
+  await f.skill(join(userInstall, "skills", "sample"));
+  await f.skill(join(projectInstall, "skills", "sample"), "Project fixture");
+  await f.write(
+    join(account, "settings.json"),
+    '{"enabledPlugins":{"fixture@market":true}}'
+  );
+  await f.write(
+    join(f.cwd, ".claude", "settings.json"),
+    '{"enabledPlugins":{"fixture@market":true}}'
+  );
+  await f.write(
+    join(account, "plugins", "installed_plugins.json"),
+    JSON.stringify({
+      plugins: {
+        "fixture@market": [
+          { scope: "user", installPath: userInstall },
+          { scope: "project", projectPath: f.cwd, installPath: projectInstall },
+          {
+            scope: "project",
+            projectPath: join(f.root, "other"),
+            installPath: userInstall,
+          },
+        ],
+      },
+    })
+  );
+  const report = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["claude"],
+  });
+  expect(
+    report.sessions[0]?.resources
+      .filter((r) => r.kind === "plugin")
+      .map((r) => r.use)
+  ).toEqual(["effective", "shadowed"]);
+  expect(
+    report.sessions[0]?.resources.find((r) => r.kind === "skill")?.definedAt
+  ).toContain(join("fixture", "2"));
+});
+
+test("missing instruction skill links never fall back to recursive scanning", async () => {
+  const f = await fixture();
+  await f.skill(join(f.root, "sample"));
+  await f.write(join(f.cwd, "AGENTS.md"), "Read [missing](../SKILL.md).\n");
+  const report = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+  });
+  expect(report.sessions[0]?.resources).toHaveLength(0);
+  expect(
+    report.sessions[0]?.warnings.some((w) =>
+      w.startsWith("Missing referenced skill:")
+    )
+  ).toBe(true);
+});
+
+test("isolated account homes are unread by default, including aliases, and require explicit opt-in", async () => {
+  const f = await fixture();
+  const isolated = join(
+    f.home,
+    ".local",
+    "share",
+    "agent-accounts",
+    "fixture-ln",
+    "codex"
+  );
+  await f.write(
+    join(isolated, "config.toml"),
+    '[mcp_servers.isolated_fixture]\ncommand="unused"'
+  );
+  await f.write(
+    join(f.home, ".claude-fixture-ln", "settings.json"),
+    '{"mcpServers":{"isolated_fixture":{"command":"unused"}}}'
+  );
+  await symlink(isolated, join(f.home, ".codex-alias"));
+  const before = await snapshot(f.root);
+  const report = await buildHarnessInventory({ homeDir: f.home, cwd: f.cwd });
+  expect(report.warnings).toEqual(["skipped: ln-isolated"]);
+  expect(JSON.stringify(report)).not.toContain("isolated_fixture");
+  expect(JSON.stringify(report)).not.toContain("fixture-ln");
+  const explicit = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+    homes: [isolated],
+  });
+  expect(explicit.sessions).toHaveLength(0);
+  expect(explicit.warnings).toEqual(["skipped: ln-isolated"]);
+  const included = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+    homes: [isolated],
+    includeLn: true,
+  });
+  expect(included.warnings).toEqual([]);
+  expect(included.sessions[0]?.resources[0]?.name).toBe("isolated_fixture");
+  expect(await snapshot(f.root)).toEqual(before);
+});
+
+test("default isolation never opens a file in an isolated account", async () => {
+  const f = await fixture();
+  const account = join(f.home, ".codex-fixture-ln");
+  await f.write(
+    join(account, "config.toml"),
+    '[mcp_servers.isolated_fixture]\ncommand="unused"'
+  );
+  await symlink(account, join(f.home, ".codex-alias"));
+  const original = Bun.file.bind(Bun);
+  const paths: string[] = [];
+  const open = spyOn(Bun, "file").mockImplementation(
+    (
+      path: string | URL | number | ArrayBufferLike | Uint8Array<ArrayBuffer>,
+      options?: BlobPropertyBag
+    ) => {
+      paths.push(String(path));
+      if (typeof path === "number") {
+        return original(path, options);
+      }
+      if (typeof path === "string" || path instanceof URL) {
+        return original(path, options);
+      }
+      return original(path, options);
+    }
+  );
+  try {
+    const report = await buildHarnessInventory({
+      homeDir: f.home,
+      cwd: f.cwd,
+      harnesses: ["codex"],
+    });
+    expect(report.warnings).toEqual(["skipped: ln-isolated"]);
+    expect(
+      paths.some(
+        (path) => path.includes("fixture-ln") || path.includes(".codex-alias")
+      )
+    ).toBe(false);
+  } finally {
+    open.mockRestore();
+  }
+});
+
+test("CLI reads isolated homes only with include-ln", async () => {
+  const f = await fixture();
+  const account = join(f.home, "fixture-ln");
+  await f.write(
+    join(account, "config.toml"),
+    '[mcp_servers.isolated_fixture]\ncommand="unused"'
+  );
+  for (const include of [false, true]) {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "index.ts"),
+        "inventory",
+        "--harness",
+        "codex",
+        "--home",
+        account,
+        "--json",
+        ...(include ? ["--include-ln"] : []),
+      ],
+      {
+        cwd: f.cwd,
+        env: { ...process.env, HOME: f.home },
+        stdout: "pipe",
+        stderr: "pipe",
+      }
+    );
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    const report = JSON.parse(stdout);
+    expect(report.sessions.length).toBe(include ? 1 : 0);
+    expect(report.warnings).toEqual(include ? [] : ["skipped: ln-isolated"]);
+  }
+});
+
+test("ordinary skill names ending in the isolation suffix are still inventoried", async () => {
+  const f = await fixture();
+  await f.skill(join(f.home, ".agents", "skills", "fixture-ln"));
+  const report = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+  });
+  expect(report.sessions[0]?.resources[0]?.use).toBe("effective");
+  expect(report.warnings).toEqual([]);
 });

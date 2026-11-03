@@ -749,6 +749,7 @@ Usage:
   fclt inventory --from <path> --json
   fclt inventory --harness <codex|claude> [--home <path>] [--json]
   Add --context-tokens <count> to override the 200000-token budget assumption.
+  --include-ln        Explicitly read otherwise isolated account homes ending in -ln.
 
 Options:
   --json              Print JSON. This command is JSON-first.
