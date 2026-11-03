@@ -1536,11 +1536,13 @@ export async function addWriteback(
   // Reserve raw identities too: scope filtering must never make a persisted id reusable.
   const persistedIds = new Set(
     (
-      await readJsonLinesFromPaths<AiWritebackRecord>(
+      await readJsonLinesFromPaths<unknown>(
         aiWritebackQueueReadPaths(homeDir, args.rootDir),
         { homeDir, rootDir: args.rootDir }
       )
-    ).map((entry) => entry.id)
+    ).flatMap((entry) =>
+      isPlainObject(entry) && typeof entry.id === "string" ? [entry.id] : []
+    )
   );
   const recordId = allocateArtifactId(
     "WB",

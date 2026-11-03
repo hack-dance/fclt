@@ -134,6 +134,25 @@ describe("ai writeback", () => {
     expect(await readFile(queue, "utf8")).toStartWith(content);
   });
 
+  it("ignores non-record JSON rows when reserving persisted identities", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    await mkdir(dirname(queue), { recursive: true });
+    const content = `${[null, 42, true, [], "invalid record", {}].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    await Bun.write(queue, content);
+    const record = await addWriteback({
+      ...args,
+      kind: "weak-verification",
+      summary: "Valid new identity",
+      evidence: proposalEvidence("malformed-id-rows"),
+    });
+    expect(record.kind).toBe("weak_verification");
+    expect(await listWritebacks(args)).toHaveLength(1);
+    expect(await readFile(queue, "utf8")).toStartWith(content);
+  });
+
   it("refuses reused ids even when the existing record is excluded by scope", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
