@@ -24,6 +24,22 @@ function identityFor(metadata: RepositoryCommonDirectoryMetadata) {
 }
 
 describe("machine-local repository identity", () => {
+  it("keeps Btrfs identity across device renumbering without conflating filesystems or recreated directories", () => {
+    const metadata = { ...BASE_METADATA, filesystemId: "0123456789abcdef" };
+    const original = identityFor(metadata);
+    expect(identityFor({ ...metadata, dev: 58n }).id).toBe(original.id);
+    expect(
+      identityFor({ ...metadata, filesystemId: "fedcba9876543210" }).id
+    ).not.toBe(original.id);
+    expect(identityFor({ ...metadata, birthtimeNs: 101n }).id).not.toBe(
+      original.id
+    );
+    expect(identityFor({ ...metadata, ino: 21n }).id).not.toBe(original.id);
+    expect(() => identityFor({ ...metadata, filesystemId: "" })).toThrow(
+      "filesystem identity"
+    );
+  });
+
   it("uses birth time to distinguish inode reuse while surviving a root rename", () => {
     const original = identityFor(BASE_METADATA);
     const recreated = identityFor({

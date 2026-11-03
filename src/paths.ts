@@ -557,6 +557,21 @@ function repositoryKeyForCanonicalRoot(
       (alias) => alias.kind === "git-common-dir"
     );
     if (common && projectRoot) {
+      const legacyCommon = repositoryCommonIdentitySync(projectRoot, {
+        legacyDeviceIdentity: true,
+      });
+      if (legacyCommon && legacyCommon.id !== common.id) {
+        const legacyStore = join(
+          facultLocalStateRoot(home),
+          "projects",
+          legacyCommon.id
+        );
+        if (safeMachineStateDirExists(legacyStore)) {
+          throw new Error(
+            `Existing device-based repository state requires reconciliation before selecting stable filesystem state: ${legacyStore}. Preserve this store and reconcile its queues and history before retrying.`
+          );
+        }
+      }
       const executionKey = repositoryExecutionIdentity(projectRoot).id;
       const executionStore = join(
         facultLocalStateRoot(home),
