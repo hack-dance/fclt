@@ -76,6 +76,56 @@ afterEach(async () => {
 });
 
 describe("ai writeback", () => {
+  it("normalizes kind aliases on write and legacy read without rewriting the queue", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: " Weak-Verification ",
+      summary: "Check outcome",
+      evidence: proposalEvidence("kind-test"),
+    });
+    expect(first.kind).toBe("weak_verification");
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const legacy = { ...first, kind: "weak-verification" };
+    const content = `${JSON.stringify(legacy)}\n`.repeat(3);
+    await Bun.write(queue, content);
+    const rows = await listWritebacks(args);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe("weak_verification");
+    expect(await readFile(queue, "utf8")).toBe(content);
+    const groups = await groupWritebacks({ ...args, by: "kind" });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.key).toBe("weak_verification");
+  });
+
+  it("refuses reused ids even when the existing record is excluded by scope", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: "capability_gap",
+      summary: "Existing identity",
+      evidence: proposalEvidence("collision-test"),
+    });
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const reusedId = "WB-00099";
+    const content = `${JSON.stringify({ ...first, id: reusedId, scope: "project" })}\n`;
+    await Bun.write(queue, content);
+    setArtifactIdGeneratorForTests(() => reusedId);
+    await expect(
+      addWriteback({
+        ...args,
+        kind: "capability_gap",
+        summary: "Must not reuse",
+        evidence: proposalEvidence("collision-test"),
+      })
+    ).rejects.toThrow("Unable to allocate a unique WB id");
+    expect(await readFile(queue, "utf8")).toBe(content);
+  });
+
   it.each([
     "add",
     "status",

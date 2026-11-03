@@ -389,6 +389,13 @@ function normalizedCaptureText(
   return normalized;
 }
 
+function normalizedWritebackKind(kind: string): string {
+  return redactReconciliationText(kind)
+    .trim()
+    .toLowerCase()
+    .replaceAll("-", "_");
+}
+
 function inferredWritebackCategory(kind: string): WritebackCategory {
   const normalized = kind.toLowerCase().replaceAll("_", "-");
   if (
@@ -1212,7 +1219,10 @@ async function latestWritebackMap(args: {
     latest.set(entry.id, entry);
   }
   for (const [id, entry] of latest) {
-    latest.set(id, normalizeWritebackArrays(entry, args.warnings));
+    latest.set(id, {
+      ...normalizeWritebackArrays(entry, args.warnings),
+      kind: normalizedWritebackKind(entry.kind),
+    });
   }
   return latest;
 }
@@ -1519,10 +1529,20 @@ export async function addWriteback(
     homeDir,
     rootDir: args.rootDir,
   });
+  // Reserve raw identities too: scope filtering must never make a persisted id reusable.
+  const persistedIds = new Set(
+    (
+      await readJsonLinesFromPaths<AiWritebackRecord>(
+        aiWritebackQueueReadPaths(homeDir, args.rootDir),
+        { homeDir, rootDir: args.rootDir }
+      )
+    ).map((entry) => entry.id)
+  );
   const recordId = allocateArtifactId(
     "WB",
     (id) =>
       latest.has(id) ||
+      persistedIds.has(id) ||
       reviewMirrorIdTaken({
         homeDir,
         rootDir: args.rootDir,
@@ -1556,7 +1576,7 @@ export async function addWriteback(
     scope: scopeContext.scope,
     projectSlug: scopeContext.projectSlug,
     projectRoot: scopeContext.projectRoot,
-    kind: redactReconciliationText(args.kind).trim(),
+    kind: normalizedWritebackKind(args.kind),
     summary: redactReconciliationText(args.summary).trim(),
     capture: {
       category: args.category ?? inferredWritebackCategory(args.kind),
