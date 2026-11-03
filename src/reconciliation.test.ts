@@ -561,6 +561,42 @@ describe("source reconciliation", () => {
     expect(review.emptyReason).toContain("not a proven empty review");
   });
 
+  it("normalizes legacy writeback kind spelling in reconciliation evidence", async () => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    await mkdir(dirname(queuePath), { recursive: true });
+    await Bun.write(
+      queuePath,
+      `${JSON.stringify({
+        id: "WB-00020",
+        ts: "2026-07-05T12:00:00Z",
+        kind: "weak-verification",
+        summary: "Verification needs outcome evidence",
+        evidence: [],
+        tags: [],
+      })}\n`
+    );
+    const before = await readFile(queuePath, "utf8");
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+    const review = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(review.evidence).toHaveLength(1);
+    expect(review.evidence[0]?.body).toContain("weak_verification");
+    expect(await readFile(queuePath, "utf8")).toBe(before);
+  });
+
   it("rescans explicit historical windows and selects the latest writeback state within the window", async () => {
     const fixture = await makeFixture();
     const queuePath = facultAiWritebackQueuePath(

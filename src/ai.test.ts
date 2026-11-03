@@ -100,6 +100,40 @@ describe("ai writeback", () => {
     expect(groups[0]?.key).toBe("weak_verification");
   });
 
+  it.each([
+    undefined,
+    42,
+  ])("tolerates a legacy non-string kind: %s", async (kind) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: "capability_gap",
+      summary: "Legacy record",
+      evidence: proposalEvidence("legacy-kind"),
+    });
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const content = `${JSON.stringify({ ...first, kind })}\n`;
+    await Bun.write(queue, content);
+    const warnings: string[] = [];
+    const rows = await listWritebacks({ ...args, warnings });
+    expect(rows).toHaveLength(1);
+    const actualKind: unknown = rows[0]?.kind;
+    expect(actualKind).toBe(kind);
+    expect(
+      warnings.some((warning) => warning.includes("non-string kind"))
+    ).toBe(true);
+    expect((await groupWritebacks({ ...args, by: "kind" })).length).toBe(1);
+    await addWriteback({
+      ...args,
+      kind: "weak-verification",
+      summary: "New record",
+      evidence: proposalEvidence("legacy-kind"),
+    });
+    expect(await readFile(queue, "utf8")).toStartWith(content);
+  });
+
   it("refuses reused ids even when the existing record is excluded by scope", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

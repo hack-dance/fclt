@@ -74,7 +74,10 @@ import {
   resolvePhysicalPath,
   withFacultRootScope,
 } from "./paths";
-import { redactReconciliationText } from "./reconciliation-adapters";
+import {
+  normalizeWritebackKind,
+  redactReconciliationText,
+} from "./reconciliation-adapters";
 import { writeCliOutput } from "./util/cli-output";
 import {
   normalizeWritebackArrays,
@@ -387,13 +390,6 @@ function normalizedCaptureText(
     throw new Error(`${field} must be ${limit} characters or fewer`);
   }
   return normalized;
-}
-
-function normalizedWritebackKind(kind: string): string {
-  return redactReconciliationText(kind)
-    .trim()
-    .toLowerCase()
-    .replaceAll("-", "_");
 }
 
 function inferredWritebackCategory(kind: string): WritebackCategory {
@@ -1219,9 +1215,17 @@ async function latestWritebackMap(args: {
     latest.set(entry.id, entry);
   }
   for (const [id, entry] of latest) {
+    if (typeof entry.kind !== "string") {
+      args.warnings?.push(
+        `Writeback ${id}: missing or non-string kind; preserving legacy value.`
+      );
+    }
     latest.set(id, {
       ...normalizeWritebackArrays(entry, args.warnings),
-      kind: normalizedWritebackKind(entry.kind),
+      kind:
+        typeof entry.kind === "string"
+          ? normalizeWritebackKind(entry.kind)
+          : entry.kind,
     });
   }
   return latest;
@@ -1576,7 +1580,7 @@ export async function addWriteback(
     scope: scopeContext.scope,
     projectSlug: scopeContext.projectSlug,
     projectRoot: scopeContext.projectRoot,
-    kind: normalizedWritebackKind(args.kind),
+    kind: normalizeWritebackKind(args.kind),
     summary: redactReconciliationText(args.summary).trim(),
     capture: {
       category: args.category ?? inferredWritebackCategory(args.kind),
