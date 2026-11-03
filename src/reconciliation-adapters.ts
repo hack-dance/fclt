@@ -126,6 +126,14 @@ function redactPrivateKeyMaterial(value: string): string {
   return output + value.slice(cursor);
 }
 
+/** Canonical kind spelling shared by capture and persisted writeback readers. */
+export function normalizeWritebackKind(kind: string): string {
+  return redactReconciliationText(kind)
+    .trim()
+    .toLowerCase()
+    .replaceAll("-", "_");
+}
+
 export function redactReconciliationText(value: string): string {
   return redactPrivateKeyMaterial(value)
     .replace(PEM_PRIVATE_KEY_MARKER_RE, "<redacted-private-key>")
@@ -377,7 +385,10 @@ const writebackAdapter: ReconciliationAdapter = {
           observedAt,
           title: entry.summary ?? entry.id,
           body: JSON.stringify({
-            kind: entry.kind,
+            kind:
+              typeof entry.kind === "string"
+                ? normalizeWritebackKind(entry.kind)
+                : entry.kind,
             status: entry.status,
             disposition: entry.disposition,
             dispositionTarget: entry.dispositionTarget,

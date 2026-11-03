@@ -76,6 +76,109 @@ afterEach(async () => {
 });
 
 describe("ai writeback", () => {
+  it("normalizes kind aliases on write and legacy read without rewriting the queue", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: " Weak-Verification ",
+      summary: "Check outcome",
+      evidence: proposalEvidence("kind-test"),
+    });
+    expect(first.kind).toBe("weak_verification");
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const legacy = { ...first, kind: "weak-verification" };
+    const content = `${JSON.stringify(legacy)}\n`.repeat(3);
+    await Bun.write(queue, content);
+    const rows = await listWritebacks(args);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind).toBe("weak_verification");
+    expect(await readFile(queue, "utf8")).toBe(content);
+    const groups = await groupWritebacks({ ...args, by: "kind" });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.key).toBe("weak_verification");
+  });
+
+  it.each([
+    undefined,
+    42,
+  ])("tolerates a legacy non-string kind: %s", async (kind) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: "capability_gap",
+      summary: "Legacy record",
+      evidence: proposalEvidence("legacy-kind"),
+    });
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const content = `${JSON.stringify({ ...first, kind })}\n`;
+    await Bun.write(queue, content);
+    const warnings: string[] = [];
+    const rows = await listWritebacks({ ...args, warnings });
+    expect(rows).toHaveLength(1);
+    const actualKind: unknown = rows[0]?.kind;
+    expect(actualKind).toBe(kind);
+    expect(
+      warnings.some((warning) => warning.includes("non-string kind"))
+    ).toBe(true);
+    expect((await groupWritebacks({ ...args, by: "kind" })).length).toBe(1);
+    await addWriteback({
+      ...args,
+      kind: "weak-verification",
+      summary: "New record",
+      evidence: proposalEvidence("legacy-kind"),
+    });
+    expect(await readFile(queue, "utf8")).toStartWith(content);
+  });
+
+  it("ignores non-record JSON rows when reserving persisted identities", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    await mkdir(dirname(queue), { recursive: true });
+    const content = `${[null, 42, true, [], "invalid record", {}].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    await Bun.write(queue, content);
+    const record = await addWriteback({
+      ...args,
+      kind: "weak-verification",
+      summary: "Valid new identity",
+      evidence: proposalEvidence("malformed-id-rows"),
+    });
+    expect(record.kind).toBe("weak_verification");
+    expect(await listWritebacks(args)).toHaveLength(1);
+    expect(await readFile(queue, "utf8")).toStartWith(content);
+  });
+
+  it("refuses reused ids even when the existing record is excluded by scope", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: "capability_gap",
+      summary: "Existing identity",
+      evidence: proposalEvidence("collision-test"),
+    });
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const reusedId = "WB-00099";
+    const content = `${JSON.stringify({ ...first, id: reusedId, scope: "project" })}\n`;
+    await Bun.write(queue, content);
+    setArtifactIdGeneratorForTests(() => reusedId);
+    await expect(
+      addWriteback({
+        ...args,
+        kind: "capability_gap",
+        summary: "Must not reuse",
+        evidence: proposalEvidence("collision-test"),
+      })
+    ).rejects.toThrow("Unable to allocate a unique WB id");
+    expect(await readFile(queue, "utf8")).toBe(content);
+  });
+
   it.each([
     "add",
     "status",
