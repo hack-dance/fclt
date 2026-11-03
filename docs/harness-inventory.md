@@ -29,8 +29,11 @@ Profiles or home names ending in `-ln` are isolated by default, including explic
 `--home` paths and aliases that point into an isolated home. The report does not
 read beneath them and emits one `skipped: ln-isolated` warning, with no account
 contents. **`--include-ln` explicitly reads LN homes** and includes their contents
-in the report. Use it only when that inspection is intended; report files can
-contain private account and capability metadata.
+in the report. Account boundaries for both harnesses, including explicit and
+environment homes, are established before session resource inspection. Ordinary
+project names are not treated as account boundaries. Use the opt-in only when
+that inspection is intended; report files can contain private account and
+capability metadata.
 
 Sources include canonical `~/.ai/skills` and `~/.ai/mcp/servers*.json`, native
 account skills/configuration, Codex global `~/.agents/skills`, and project native

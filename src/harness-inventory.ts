@@ -1,4 +1,4 @@
-import { readdir, readlink, realpath } from "node:fs/promises";
+import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -69,11 +69,8 @@ async function readable(
   if (policy.includeLn) {
     return true;
   }
-  if (
-    accountHome &&
-    (basename(path).endsWith("-ln") || basename(dirname(path)).endsWith("-ln"))
-  ) {
-    policy.isolatedRoots.add(resolve(path));
+  if (accountHome) {
+    registerIsolatedHome(path, policy);
   }
   if (isLnHome(path, policy)) {
     policy.skippedLn = true;
@@ -95,7 +92,7 @@ async function readable(
       return false;
     }
     try {
-      const target = await readlink(prefix);
+      const target = await fs.readlink(prefix);
       return readable(
         resolve(dirname(prefix), target, ...parts.slice(index + 1)),
         policy,
@@ -126,7 +123,9 @@ function estimate(text: string): number {
 }
 async function entries(path: string, policy: ReadPolicy): Promise<string[]> {
   try {
-    return (await readable(path, policy)) ? (await readdir(path)).sort() : [];
+    return (await readable(path, policy))
+      ? (await fs.readdir(path)).sort()
+      : [];
   } catch {
     return [];
   }
@@ -247,7 +246,7 @@ async function skills(args: {
       if (!(await readable(root, args.policy))) {
         return;
       }
-      identity = await realpath(root);
+      identity = await fs.realpath(root);
     } catch {
       return;
     }
@@ -360,6 +359,14 @@ function servers(args: {
     return item;
   });
 }
+function registerIsolatedHome(path: string, policy: ReadPolicy): void {
+  if (
+    !policy.includeLn &&
+    (basename(path).endsWith("-ln") || basename(dirname(path)).endsWith("-ln"))
+  ) {
+    policy.isolatedRoots.add(resolve(path));
+  }
+}
 function isLnHome(path: string, policy: ReadPolicy): boolean {
   const absolute = resolve(path);
   const parts = absolute.split(PATH_COMPONENTS);
@@ -372,9 +379,7 @@ function isLnHome(path: string, policy: ReadPolicy): boolean {
         part.endsWith("-ln") &&
         (part.startsWith(".codex") ||
           part.startsWith(".claude") ||
-          parts[index - 1] === "agent-accounts" ||
-          parts[index + 1] === "codex" ||
-          parts[index + 1] === "claude")
+          parts[index - 1] === "agent-accounts")
     )
   );
 }
@@ -1017,14 +1022,14 @@ async function plugins(args: {
       item.use = "unknown";
       continue;
     }
-    const cache = `${await realpath(join(args.account, "plugins", "cache")).catch(() => resolve(args.account, "plugins", "cache"))}${sep}`;
+    const cache = `${await fs.realpath(join(args.account, "plugins", "cache")).catch(() => resolve(args.account, "plugins", "cache"))}${sep}`;
     let actual: string;
     try {
       if (!(await readable(path, args.policy))) {
         item.use = "unknown";
         continue;
       }
-      actual = await realpath(path);
+      actual = await fs.realpath(path);
     } catch {
       item.use = "unknown";
       continue;
@@ -1059,18 +1064,45 @@ export async function buildHarnessInventory(options: Options = {}) {
   };
   const sessions: HarnessSessionInventory[] = [];
   const warnings: string[] = [];
-  for (const harness of options.harnesses ??
-    (["codex", "claude"] as Harness[])) {
-    for (const account of options.homes?.length
-      ? options.homes.map((path) => resolve(path))
-      : await accountHomes(home, harness, policy)) {
-      if (!(await readable(account, policy, 0, true))) {
-        continue;
+  const harnesses = options.harnesses ?? (["codex", "claude"] as Harness[]);
+  const explicitHomes = options.homes?.map((path) => resolve(path)) ?? [];
+  const environmentHomes =
+    home === homedir()
+      ? [process.env.CODEX_HOME, process.env.CLAUDE_CONFIG_DIR]
+          .filter((path): path is string => !!path)
+          .map((path) => resolve(path))
+      : [];
+  // Every boundary must exist before resource inspection begins, including homes
+  // for the other harness and homes that appear later in an explicit list.
+  const boundaries = new Set([...explicitHomes, ...environmentHomes]);
+  for (const account of boundaries) {
+    registerIsolatedHome(account, policy);
+  }
+  const accounts: { harness: Harness; account: string }[] = [];
+  for (const harness of ["codex", "claude"] as Harness[]) {
+    const discovered = explicitHomes.length
+      ? explicitHomes
+      : await accountHomes(home, harness, policy);
+    for (const account of discovered) {
+      boundaries.add(account);
+      registerIsolatedHome(account, policy);
+      if (harnesses.includes(harness)) {
+        accounts.push({ harness, account });
       }
-      sessions.push(
-        await session({ harness, account, home, cwd, contextTokens, policy })
-      );
     }
+  }
+  // Preflight aliases as well as literal names; no session may run until this
+  // pass has registered the targets of every candidate account alias.
+  for (const account of boundaries) {
+    await readable(account, policy, 0, true);
+  }
+  for (const { harness, account } of accounts) {
+    if (!(await readable(account, policy, 0, true))) {
+      continue;
+    }
+    sessions.push(
+      await session({ harness, account, home, cwd, contextTokens, policy })
+    );
   }
   if (policy.skippedLn) {
     warnings.push("skipped: ln-isolated");

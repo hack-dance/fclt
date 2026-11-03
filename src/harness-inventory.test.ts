@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { buildHarnessInventory } from "./harness-inventory";
 
 async function fixture() {
@@ -39,6 +39,67 @@ async function snapshot(root: string): Promise<Record<string, string>> {
   }
   await walk(root);
   return result;
+}
+
+async function captureInventoryReads<T>(run: () => Promise<T>) {
+  const reads: { operation: string; path: string }[] = [];
+  function traced<F extends object>(operation: string, fn: F): F {
+    return new Proxy(fn, {
+      apply(target, thisArg, args) {
+        reads.push({ operation, path: String(args[0]) });
+        return Reflect.apply(
+          target as (...values: unknown[]) => unknown,
+          thisArg,
+          args
+        );
+      },
+    });
+  }
+  const originals = {
+    file: Bun.file.bind(Bun),
+    readdir: fs.readdir.bind(fs),
+    realpath: fs.realpath.bind(fs),
+    readlink: fs.readlink.bind(fs),
+  };
+  const spies = [
+    spyOn(Bun, "file").mockImplementation(traced("file", originals.file)),
+    spyOn(fs, "readdir").mockImplementation(
+      traced("readdir", originals.readdir)
+    ),
+    spyOn(fs, "realpath").mockImplementation(
+      traced("realpath", originals.realpath)
+    ),
+    spyOn(fs, "readlink").mockImplementation(
+      traced("readlink", originals.readlink)
+    ),
+  ];
+  try {
+    return { result: await run(), reads };
+  } finally {
+    for (const spy of spies) {
+      spy.mockRestore();
+    }
+  }
+}
+async function isolatedReads(
+  reads: { operation: string; path: string }[],
+  isolated: string
+) {
+  const root = await fs.realpath(isolated);
+  const violations: { operation: string; path: string }[] = [];
+  for (const read of reads) {
+    // readlink reads the link entry itself; the other operations follow it.
+    const actual = await (read.operation === "readlink"
+      ? fs
+          .realpath(dirname(read.path))
+          .then((parent) => join(parent, basename(read.path)))
+      : fs.realpath(read.path)
+    ).catch(() => null);
+    if (actual && (actual === root || actual.startsWith(`${root}${sep}`))) {
+      violations.push(read);
+    }
+  }
+  return violations;
 }
 
 test("layered inventory is read-only and counts canonical symlink content only once", async () => {
@@ -629,48 +690,6 @@ test("isolated account homes are unread by default, including aliases, and requi
   expect(await snapshot(f.root)).toEqual(before);
 });
 
-test("default isolation never opens a file in an isolated account", async () => {
-  const f = await fixture();
-  const account = join(f.home, ".codex-fixture-ln");
-  await f.write(
-    join(account, "config.toml"),
-    '[mcp_servers.isolated_fixture]\ncommand="unused"'
-  );
-  await symlink(account, join(f.home, ".codex-alias"));
-  const original = Bun.file.bind(Bun);
-  const paths: string[] = [];
-  const open = spyOn(Bun, "file").mockImplementation(
-    (
-      path: string | URL | number | ArrayBufferLike | Uint8Array<ArrayBuffer>,
-      options?: BlobPropertyBag
-    ) => {
-      paths.push(String(path));
-      if (typeof path === "number") {
-        return original(path, options);
-      }
-      if (typeof path === "string" || path instanceof URL) {
-        return original(path, options);
-      }
-      return original(path, options);
-    }
-  );
-  try {
-    const report = await buildHarnessInventory({
-      homeDir: f.home,
-      cwd: f.cwd,
-      harnesses: ["codex"],
-    });
-    expect(report.warnings).toEqual(["skipped: ln-isolated"]);
-    expect(
-      paths.some(
-        (path) => path.includes("fixture-ln") || path.includes(".codex-alias")
-      )
-    ).toBe(false);
-  } finally {
-    open.mockRestore();
-  }
-});
-
 test("CLI reads isolated homes only with include-ln", async () => {
   const f = await fixture();
   const account = join(f.home, "fixture-ln");
@@ -721,4 +740,100 @@ test("ordinary skill names ending in the isolation suffix are still inventoried"
   });
   expect(report.sessions[0]?.resources[0]?.use).toBe("effective");
   expect(report.warnings).toEqual([]);
+});
+
+test("all explicit account boundaries precede reads through earlier-session skill aliases", async () => {
+  const f = await fixture();
+  const normal = join(f.home, ".codex");
+  const isolated = join(f.root, "fixture-ln");
+  await f.write(join(normal, "config.toml"), "# Fixture account\n");
+  await f.skill(join(isolated, "skills", "private"));
+  await f.skill(join(f.cwd, ".agents", "skills", "sample"));
+  await mkdir(join(normal, "skills"), { recursive: true });
+  await symlink(
+    join(isolated, "skills", "private"),
+    join(normal, "skills", "alias")
+  );
+  for (const homes of [
+    [normal, isolated],
+    [isolated, normal],
+  ]) {
+    const { result, reads } = await captureInventoryReads(() =>
+      buildHarnessInventory({
+        homeDir: f.home,
+        cwd: f.cwd,
+        harnesses: ["codex"],
+        homes,
+      })
+    );
+    expect(result.warnings).toEqual(["skipped: ln-isolated"]);
+    expect(result.sessions).toHaveLength(1);
+    expect(
+      result.sessions[0]?.resources.some((resource) =>
+        resource.definedAt.includes("alias")
+      )
+    ).toBe(false);
+    for (const operation of ["file", "readdir", "realpath", "readlink"]) {
+      expect(reads.some((read) => read.operation === operation)).toBe(true);
+    }
+    expect(await isolatedReads(reads, isolated)).toEqual([]);
+  }
+});
+
+test("other-harness environment homes are registered before resource discovery", async () => {
+  const f = await fixture();
+  const isolated = join(f.root, "fixture-ln");
+  await f.skill(join(isolated, "skills", "private"));
+  await f.skill(join(f.cwd, ".agents", "skills", "sample"));
+  await mkdir(join(f.home, ".codex", "skills"), { recursive: true });
+  await symlink(
+    join(isolated, "skills", "private"),
+    join(f.home, ".codex", "skills", "alias")
+  );
+  const previous = {
+    HOME: process.env.HOME,
+    CODEX_HOME: process.env.CODEX_HOME,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  };
+  try {
+    process.env.HOME = f.home;
+    process.env.CODEX_HOME = join(f.home, ".codex");
+    process.env.CLAUDE_CONFIG_DIR = isolated;
+    const { result, reads } = await captureInventoryReads(() =>
+      buildHarnessInventory({
+        homeDir: f.home,
+        cwd: f.cwd,
+        harnesses: ["codex"],
+      })
+    );
+    expect(result.warnings).toEqual(["skipped: ln-isolated"]);
+    expect(
+      result.sessions[0]?.resources.some((resource) =>
+        resource.definedAt.includes("alias")
+      )
+    ).toBe(false);
+    expect(await isolatedReads(reads, isolated)).toEqual([]);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, key);
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("project names ending in the isolation suffix are not account boundaries", async () => {
+  const f = await fixture();
+  const cwd = join(f.root, "fixture-ln", "claude");
+  await mkdir(join(cwd, ".git"), { recursive: true });
+  await f.skill(join(cwd, ".claude", "skills", "sample"));
+  const report = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd,
+    harnesses: ["claude"],
+  });
+  expect(report.warnings).toEqual([]);
+  expect(report.sessions[0]?.resources[0]?.use).toBe("effective");
 });
