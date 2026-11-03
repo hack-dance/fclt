@@ -9,6 +9,7 @@ import {
   openSync,
   readSync,
   realpathSync,
+  statfsSync,
 } from "node:fs";
 import {
   basename,
@@ -28,6 +29,7 @@ const WHITESPACE_RE = /\s+/;
 const WINDOWS_DRIVE_LOCAL_RE = /^[A-Za-z]:/;
 const WINDOWS_UNC_LOCAL_RE = /^\\\\/;
 const GIT_POINTER_MAX_BYTES = 4096;
+const FILESYSTEM_ID_RE = /^[a-f0-9]{1,32}$/;
 
 export interface RepositoryIdentity {
   id: string;
@@ -54,6 +56,8 @@ export interface RepositoryCommonDirectoryMetadata {
   ctimeNs: bigint;
   dev: bigint;
   ino: bigint;
+  /** Btrfs filesystem/subvolume ID; unlike st_dev, this survives remounts. */
+  filesystemId?: string;
 }
 
 function sha256(value: string): string {
@@ -68,7 +72,51 @@ export function repositoryCommonDirectoryFingerprint(
       "Unable to derive a safe Git common-directory creation identity because birth time is unavailable"
     );
   }
+  if (metadata.filesystemId !== undefined) {
+    if (!FILESYSTEM_ID_RE.test(metadata.filesystemId)) {
+      throw new Error("Invalid Git common-directory filesystem identity");
+    }
+    return `v3:btrfs:${metadata.filesystemId}:${metadata.ino}:birth:${metadata.birthtimeNs}`;
+  }
   return `v2:${metadata.dev}:${metadata.ino}:birth:${metadata.birthtimeNs}`;
+}
+
+/** @internal Shared validation for persistent and legacy common-directory identities. */
+export function readCommonDirectoryMetadata(
+  commonPath: string,
+  options?: { legacyDeviceIdentity?: boolean }
+): RepositoryCommonDirectoryMetadata {
+  const metadata = lstatSync(commonPath, { bigint: true });
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new Error("The Git common directory is unsafe");
+  }
+  if (
+    options?.legacyDeviceIdentity ||
+    process.platform !== "linux" ||
+    statfsSync(commonPath).type !== 0x91_23_68_3e
+  ) {
+    return metadata;
+  }
+  // Linux assigns Btrfs st_dev at mount time. GNU stat exposes the persistent
+  // filesystem/subvolume ID that Node's statfs API does not currently return.
+  const result = spawnSync("stat", ["-f", "--format=%i", "--", commonPath], {
+    encoding: "utf8",
+    timeout: 5000,
+    maxBuffer: 4096,
+  });
+  const filesystemId = result.stdout?.trim();
+  const after = lstatSync(commonPath, { bigint: true });
+  if (
+    result.status !== 0 ||
+    !filesystemId ||
+    metadata.dev !== after.dev ||
+    metadata.ino !== after.ino ||
+    metadata.birthtimeNs !== after.birthtimeNs ||
+    after.isSymbolicLink()
+  ) {
+    throw new Error("Unable to inspect stable Btrfs repository identity");
+  }
+  return { ...metadata, filesystemId };
 }
 
 export function normalizeRepositoryRemote(raw: string): string | null {
@@ -161,16 +209,13 @@ export function repositoryIdentityFromGitFacts(args: {
   const commonPath = resolve(args.projectRoot, args.commonDir || ".git");
   let commonDirectoryMetadata = args.commonDirMetadata;
   if (!commonDirectoryMetadata) {
-    let metadata: BigIntStats;
+    let metadata: RepositoryCommonDirectoryMetadata;
     try {
-      metadata = lstatSync(commonPath, { bigint: true });
+      metadata = readCommonDirectoryMetadata(commonPath);
     } catch {
       throw new Error(
         "Unable to inspect the Git common directory for repository identity"
       );
-    }
-    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-      throw new Error("The Git common directory is unsafe");
     }
     commonDirectoryMetadata = metadata;
   }
@@ -565,7 +610,8 @@ export function resolveRepositoryIdentitySync(
 }
 
 export function repositoryCommonIdentitySync(
-  projectRoot: string
+  projectRoot: string,
+  options?: { legacyDeviceIdentity?: boolean }
 ): RepositoryIdentity | null {
   if (!hasGitMetadataAbove(projectRoot)) {
     return null;
@@ -582,9 +628,16 @@ export function repositoryCommonIdentitySync(
   ) {
     return null;
   }
-  return commonDir
-    ? repositoryIdentityFromGitFacts({ projectRoot, commonDir })
-    : null;
+  if (!commonDir) {
+    return null;
+  }
+  return repositoryIdentityFromGitFacts({
+    projectRoot,
+    commonDir,
+    commonDirMetadata: options?.legacyDeviceIdentity
+      ? readCommonDirectoryMetadata(resolve(projectRoot, commonDir), options)
+      : undefined,
+  });
 }
 
 export function resolveRepositoryExecutionIdentitySync(

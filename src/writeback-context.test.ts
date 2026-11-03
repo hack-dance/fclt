@@ -1084,3 +1084,51 @@ it("distinguishes originless repositories that share a directory name", async ()
   expect(secondRecord.tags[1]).toMatch(ORIGINLESS_TAG_RE);
   expect(secondRecord.tags[1]).not.toBe(firstRecord.tags[1]);
 });
+
+it.each([
+  "missing",
+  "empty",
+] as const)("does not mint a worktree store with a %s registry", async (state) => {
+  const args = await fixture();
+  const projects = join(facultLocalStateRoot(args.homeDir), "projects");
+  const registry = join(projects, "registry.json");
+  const before = (await readdir(projects)).filter((name) =>
+    name.startsWith("repo_")
+  );
+  if (state === "missing") {
+    await rm(registry);
+  } else {
+    await Bun.write(registry, "");
+  }
+  const result = await cliResult({
+    ...args,
+    cwd: args.linked,
+    argv: [...addArgs, "--project"],
+  });
+  if (state === "missing") {
+    expect(result.code).toBe(0);
+    const record = JSON.parse(result.stdout) as AiWritebackRecord;
+    expect(record.scope).toBe("global");
+    expect(record.tags).toContain("project:example.invalid/team/repo");
+    const plan = await planProjectEnrollment({
+      projectRoot: args.primary,
+      homeDir: args.homeDir,
+    });
+    await applyProjectEnrollment({
+      plan,
+      expectedPlanSha256: plan.planSha256,
+      homeDir: args.homeDir,
+    });
+    const enrolled = JSON.parse(
+      await cli({ ...args, cwd: args.linked, argv: [...addArgs, "--project"] })
+    ) as AiWritebackRecord;
+    expect(enrolled.projectRoot).toBe(args.primary);
+    expect(enrolled.scope).toBe("project");
+  } else {
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Project registry is invalid");
+  }
+  expect(
+    (await readdir(projects)).filter((name) => name.startsWith("repo_"))
+  ).toEqual(before);
+});
