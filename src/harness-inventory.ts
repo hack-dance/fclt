@@ -683,14 +683,44 @@ async function session(args: {
       resources.push(...referenced);
     }
   }
-  if (cwd !== home) {
-    await addSkills(join(cwd, ".ai", "skills"), "project", 0, true);
+  // Match fclt's nearest recognized canonical source within the project;
+  // an empty child .ai directory must not hide its parent's capabilities.
+  for (const dir of [...ancestors].reverse()) {
+    if (dir === home) {
+      break;
+    }
+    const root = join(dir, ".ai");
+    if (!(await exists(root, args.policy))) {
+      continue;
+    }
+    const directories = [
+      "rules",
+      "instructions",
+      "agents",
+      "skills",
+      "mcp",
+      "snippets",
+      join(".facult", "ai"),
+    ];
+    const recognized =
+      (
+        await Promise.all(
+          directories.map((name) => exists(join(root, name), args.policy))
+        )
+      ).some(Boolean) ||
+      (await fileExists(join(root, "config.toml"), args.policy));
+    if (!recognized) {
+      continue;
+    }
+    await addSkills(join(root, "skills"), "project", 0, true);
+    await addConfig(join(root, "mcp", "servers.json"), "project", 0, true);
     await addConfig(
-      join(cwd, ".ai", "mcp", "servers.json"),
+      join(root, "mcp", "servers.local.json"),
       "project",
-      0,
+      1,
       true
     );
+    break;
   }
   await plugins({
     harness,

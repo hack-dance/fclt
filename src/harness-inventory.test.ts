@@ -940,3 +940,64 @@ test("project plugin installations stay effective beneath the repository root", 
     ).toContain(join("fixture", "2"));
   }
 });
+
+test("project canonical sources and duplicate locations survive nested invocation", async () => {
+  const f = await fixture();
+  const canonical = join(f.cwd, ".ai");
+  const nested = join(f.cwd, "src", "nested");
+  await mkdir(join(nested, ".ai"), { recursive: true });
+  await f.skill(join(canonical, "skills", "sample"));
+  await f.write(
+    join(canonical, "mcp", "servers.json"),
+    '{"servers":{"example":{"command":"unused"}}}'
+  );
+  await f.write(
+    join(canonical, "mcp", "servers.local.json"),
+    '{"servers":{"overlay":{"command":"unused"}}}'
+  );
+  for (const directory of [".agents", ".claude"]) {
+    await mkdir(join(f.cwd, directory, "skills"), { recursive: true });
+    await symlink(
+      join(canonical, "skills", "sample"),
+      join(f.cwd, directory, "skills", "sample")
+    );
+  }
+  const before = await snapshot(f.root);
+  const rootReport = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+  });
+  const nestedReport = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: nested,
+  });
+  expect(await snapshot(f.root)).toEqual(before);
+  for (const [index, session] of nestedReport.sessions.entries()) {
+    expect(rootReport.sessions[index]?.resources).toEqual(session.resources);
+    expect(rootReport.sessions[index]?.tokens).toEqual(session.tokens);
+    const sources = session.resources.filter((r) => r.use === "canonical-only");
+    expect(sources.map((r) => r.name).sort()).toEqual([
+      "example",
+      "overlay",
+      "sample",
+    ]);
+    expect(sources.every((r) => r.layer === "project")).toBe(true);
+    expect(sources.find((r) => r.kind === "skill")?.duplicates).toHaveLength(1);
+  }
+  const nearer = join(f.cwd, "src", ".ai");
+  await f.write(
+    join(nearer, "mcp", "servers.json"),
+    '{"servers":{"nearer":{"command":"unused"}}}'
+  );
+  const nearestReport = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: nested,
+  });
+  for (const session of nearestReport.sessions) {
+    expect(
+      session.resources
+        .filter((r) => r.use === "canonical-only")
+        .map((r) => r.name)
+    ).toEqual(["nearer"]);
+  }
+});

@@ -44,7 +44,9 @@ Sources include canonical `~/.ai/skills` and `~/.ai/mcp/servers*.json`, native
 account skills/configuration, Codex global `~/.agents/skills`, and project native
 configuration and skills. Project discovery walks ancestors to the nearest Git
 root (or only the current directory when outside Git). Project `.ai` sources are
-shown as canonical-only.
+shown as canonical-only. The nearest recognized project `.ai` ancestor is used
+when running from a subdirectory; empty child `.ai` directories do not shadow it.
+Tracked and local MCP definitions are both reported.
 Markdown links to `SKILL.md` in project `AGENTS.md` files are also reported as
 unknown instruction references, rather than assumed native catalog entries.
 Canonical resources are not assumed to load without a native reference. Symlinked
