@@ -110,6 +110,37 @@ async function readable(
   }
   return true;
 }
+/** Resolve only account boundary entries, without enumerating or reading their contents. */
+async function physicalAccountRoot(
+  path: string,
+  depth = 0
+): Promise<string | null> {
+  if (depth > 16) {
+    return null;
+  }
+  const absolute = resolve(path);
+  const root = parse(absolute).root;
+  const parts = absolute.slice(root.length).split(sep);
+  let prefix = root;
+  for (const [index, part] of parts.entries()) {
+    prefix = join(prefix, part);
+    try {
+      const target = await fs.readlink(prefix);
+      return physicalAccountRoot(
+        resolve(dirname(prefix), target, ...parts.slice(index + 1)),
+        depth + 1
+      );
+    } catch (error) {
+      if (object(error).code === "ENOENT" || object(error).code === "ENOTDIR") {
+        return absolute;
+      }
+      if (object(error).code !== "EINVAL") {
+        return null;
+      }
+    }
+  }
+  return absolute;
+}
 async function fileExists(path: string, policy: ReadPolicy): Promise<boolean> {
   return (await readable(path, policy)) && (await Bun.file(path).exists());
 }
@@ -669,7 +700,7 @@ async function session(args: {
     warnings,
     addSkills,
     addConfig,
-    cwd,
+    projectRoots: ancestors,
     policy: args.policy,
   });
   if (harness === "codex") {
@@ -882,7 +913,7 @@ function resolveCandidates(resources: Candidate[]): void {
 }
 async function plugins(args: {
   harness: Harness;
-  cwd: string;
+  projectRoots: string[];
   policy: ReadPolicy;
   account: string;
   settingSources: {
@@ -975,15 +1006,20 @@ async function plugins(args: {
           value.scope === undefined ||
           value.scope === "user" ||
           ((value.scope === "project" || value.scope === "local") &&
-            value.projectPath === args.cwd)
+            typeof value.projectPath === "string" &&
+            args.projectRoots.includes(resolve(value.projectPath)))
         );
       });
-      const priority = (entry: unknown) =>
-        object(entry).scope === "local"
-          ? 3
-          : object(entry).scope === "project"
-            ? 2
-            : 1;
+      const priority = (entry: unknown) => {
+        const value = object(entry);
+        const scope =
+          value.scope === "local" ? 3 : value.scope === "project" ? 2 : 1;
+        const project =
+          typeof value.projectPath === "string"
+            ? args.projectRoots.indexOf(resolve(value.projectPath)) + 1
+            : 0;
+        return scope * (args.projectRoots.length + 1) + project;
+      };
       const highest = Math.max(...installations.map(priority));
       installations = installations.filter(
         (entry) => priority(entry) === highest
@@ -1010,7 +1046,8 @@ async function plugins(args: {
       item.reason = "Plugin installation cannot be uniquely resolved offline";
       continue;
     }
-    const path = object(installations[0]).installPath;
+    const installation = object(installations[0]);
+    const path = installation.installPath;
     if (typeof path !== "string") {
       item.use = "unknown";
       continue;
@@ -1040,8 +1077,12 @@ async function plugins(args: {
       continue;
     }
     const start = args.resources.length;
-    await args.addSkills(join(actual, "skills"), item.layer, -10);
-    await args.addConfig(join(actual, ".mcp.json"), item.layer, -10);
+    const layer =
+      installation.scope === "project" || installation.scope === "local"
+        ? "project"
+        : item.layer;
+    await args.addSkills(join(actual, "skills"), layer, -10);
+    await args.addConfig(join(actual, ".mcp.json"), layer, -10);
     for (const child of args.resources.slice(start)) {
       child.pluginName = name;
       child.name = `${args.harness === "claude" && child.kind === "mcp" ? "plugin:" : ""}${name.split("@")[0]}:${child.name}`;
@@ -1095,6 +1136,14 @@ export async function buildHarnessInventory(options: Options = {}) {
   // pass has registered the targets of every candidate account alias.
   for (const account of boundaries) {
     await readable(account, policy, 0, true);
+  }
+  // Isolated names may themselves be aliases to ordinarily named directories.
+  // Register their physical roots before another account can enter via an alias.
+  for (const root of [...policy.isolatedRoots]) {
+    const physical = await physicalAccountRoot(root);
+    if (physical) {
+      policy.isolatedRoots.add(physical);
+    }
   }
   for (const { harness, account } of accounts) {
     if (!(await readable(account, policy, 0, true))) {

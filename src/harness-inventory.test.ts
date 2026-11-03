@@ -95,7 +95,13 @@ async function isolatedReads(
           .then((parent) => join(parent, basename(read.path)))
       : fs.realpath(read.path)
     ).catch(() => null);
-    if (actual && (actual === root || actual.startsWith(`${root}${sep}`))) {
+    // Resolving the boundary entry itself is metadata-only. Listing that root
+    // or accessing anything beneath it would inspect isolated contents.
+    if (
+      actual &&
+      (actual.startsWith(`${root}${sep}`) ||
+        (actual === root && read.operation === "readdir"))
+    ) {
       violations.push(read);
     }
   }
@@ -836,4 +842,101 @@ test("project names ending in the isolation suffix are not account boundaries", 
   });
   expect(report.warnings).toEqual([]);
   expect(report.sessions[0]?.resources[0]?.use).toBe("effective");
+});
+
+test("isolated account aliases register their physical roots before other aliases run", async () => {
+  const f = await fixture();
+  const physical = join(f.root, "physical-account");
+  await f.write(
+    join(physical, "config.toml"),
+    '[mcp_servers.isolated_fixture]\ncommand="unused"'
+  );
+  await f.skill(join(physical, "skills", "private"));
+  const isolated = join(f.home, ".codex-fixture-ln");
+  const normal = join(f.home, ".codex-normal");
+  await symlink(physical, isolated);
+  await symlink(physical, normal);
+  for (const homes of [undefined, [normal, isolated], [isolated, normal]]) {
+    const { result, reads } = await captureInventoryReads(() =>
+      buildHarnessInventory({
+        homeDir: f.home,
+        cwd: f.cwd,
+        harnesses: ["codex"],
+        homes,
+      })
+    );
+    expect(result.sessions).toHaveLength(0);
+    expect(result.warnings).toEqual(["skipped: ln-isolated"]);
+    expect(JSON.stringify(result)).not.toContain("isolated_fixture");
+    await expect(isolatedReads(reads, physical)).resolves.toEqual([]);
+  }
+  const included = await buildHarnessInventory({
+    homeDir: f.home,
+    cwd: f.cwd,
+    harnesses: ["codex"],
+    includeLn: true,
+  });
+  expect(included.sessions).toHaveLength(2);
+  expect(
+    included.sessions[0]?.resources.some((r) => r.name === "isolated_fixture")
+  ).toBe(true);
+});
+
+test("project plugin installations stay effective beneath the repository root", async () => {
+  const f = await fixture();
+  const account = join(f.home, ".claude");
+  const userInstall = join(account, "plugins", "cache", "fixture", "1");
+  const projectInstall = join(account, "plugins", "cache", "fixture", "2");
+  const nested = join(f.cwd, "src", "nested");
+  await mkdir(nested, { recursive: true });
+  await f.skill(join(userInstall, "skills", "sample"), "User fixture");
+  await f.skill(join(projectInstall, "skills", "sample"), "Project fixture");
+  await f.write(
+    join(f.cwd, ".claude", "settings.json"),
+    '{"enabledPlugins":{"fixture@market":true}}'
+  );
+  for (const includeUser of [false, true]) {
+    await f.write(
+      join(account, "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        plugins: {
+          "fixture@market": [
+            {
+              scope: "project",
+              projectPath: f.cwd,
+              installPath: projectInstall,
+            },
+            ...(includeUser
+              ? [{ scope: "user", installPath: userInstall }]
+              : []),
+            {
+              scope: "project",
+              projectPath: join(f.root, "other"),
+              installPath: userInstall,
+            },
+          ],
+        },
+      })
+    );
+    const rootReport = await buildHarnessInventory({
+      homeDir: f.home,
+      cwd: f.cwd,
+      harnesses: ["claude"],
+    });
+    const nestedReport = await buildHarnessInventory({
+      homeDir: f.home,
+      cwd: nested,
+      harnesses: ["claude"],
+    });
+    expect(nestedReport.sessions[0]?.resources).toEqual(
+      rootReport.sessions[0]?.resources
+    );
+    expect(nestedReport.sessions[0]?.tokens).toEqual(
+      rootReport.sessions[0]?.tokens
+    );
+    expect(
+      nestedReport.sessions[0]?.resources.find((r) => r.kind === "skill")
+        ?.definedAt
+    ).toContain(join("fixture", "2"));
+  }
 });

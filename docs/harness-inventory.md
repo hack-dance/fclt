@@ -25,14 +25,19 @@ subdirectories under `~/.local/share/agent-accounts/*/`, and the current
 harness. Account sessions are reported separately; their configurations are not
 merged with one another.
 
-Profiles or home names ending in `-ln` are isolated by default, including explicit
-`--home` paths and aliases that point into an isolated home. The report does not
-read beneath them and emits one `skipped: ln-isolated` warning, with no account
-contents. **`--include-ln` explicitly reads LN homes** and includes their contents
-in the report. Account boundaries for both harnesses, including explicit and
-environment homes, are established before session resource inspection. Ordinary
-project names are not treated as account boundaries. Use the opt-in only when
-that inspection is intended; report files can contain private account and
+Isolation applies to account homes recognized by discovery, `--home`, or
+`CODEX_HOME`/`CLAUDE_CONFIG_DIR`. Profiles or home names ending in `-ln` are
+isolated by default, including aliases and their physical targets. Preflight
+resolves filesystem link metadata at account boundaries without listing or
+reading their contents. The report emits one `skipped: ln-isolated` warning with
+no account contents. The warning covers both harnesses, even when only one is
+selected. Arbitrary external directories cannot be identified as account homes
+without one of these inputs.
+
+**`--include-ln` explicitly reads LN homes** and includes their contents in the
+report. All account boundaries are established before session resource inspection.
+Ordinary project names are not treated as account boundaries. Use the opt-in only
+when that inspection is intended; reports can contain private account and
 capability metadata.
 
 Sources include canonical `~/.ai/skills` and `~/.ai/mcp/servers*.json`, native
@@ -64,8 +69,9 @@ successful connection or a verified session prompt.
 Enabled installed plugins are inspected only inside the selected account's
 plugin cache. Codex cache resolution requires a single version when no install
 registry is available. Plugin skill and MCP names include their plugin namespace.
-Claude install entries are resolved for the current project and scope, excluding
-other projects. All plugin enablement declarations remain visible across layers.
+Claude install entries are resolved for applicable project ancestors and scope,
+so repository-scoped installs also apply from subdirectories; other projects are
+excluded. All plugin enablement declarations remain visible across layers.
 Ambiguous or unavailable installations are marked unknown. Plugin/connector MCP
 endpoint deduplication is not resolved offline: two declarations reaching the same
 endpoint can appear and be counted twice. Remote apps/connectors, dynamically discovered tools, managed policy, command-line
