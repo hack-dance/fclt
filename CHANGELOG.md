@@ -1,3 +1,9 @@
+## [2.33.1](https://github.com/hack-dance/fclt/compare/v2.33.0...v2.33.1) (2026-11-03)
+
+### Bug Fixes
+
+* stabilize Btrfs repository stores across remounts (HACK-1825) ([#112](https://github.com/hack-dance/fclt/issues/112)) ([9b3299b](https://github.com/hack-dance/fclt/commit/9b3299ba4cb60b74e35e5d6d811e346017bc6b3e))
+
 ## [2.33.0](https://github.com/hack-dance/fclt/compare/v2.32.8...v2.33.0) (2026-10-31)
 
 ### Features
