@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   semantic-release:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       released: ${{ steps.release.outputs.released }}
       version: ${{ steps.release.outputs.version }}
@@ -104,7 +104,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: blacksmith-4vcpu-ubuntu-2404
+          - os: ubuntu-24.04
             target_os: linux
             target_arch: x64
             ext: ""
@@ -247,7 +247,7 @@ jobs:
             dist/release-assets/*
 
   publish-homebrew:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: [semantic-release, publish-assets]
     if: needs.semantic-release.outputs.released == 'true'
     steps:
