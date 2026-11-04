@@ -1,3 +1,9 @@
+## [2.34.0](https://github.com/hack-dance/fclt/compare/v2.33.1...v2.34.0) (2026-11-04)
+
+### Features
+
+* report layered harness inventory and token estimates ([#113](https://github.com/hack-dance/fclt/issues/113)) ([3d36990](https://github.com/hack-dance/fclt/commit/3d36990f7af7efcb835f3b7ba811f3c0f49da22a))
+
 ## [2.33.1](https://github.com/hack-dance/fclt/compare/v2.33.0...v2.33.1) (2026-11-03)
 
 ### Bug Fixes
