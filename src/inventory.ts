@@ -747,6 +747,9 @@ function printHelp() {
 Usage:
   fclt inventory --json
   fclt inventory --from <path> --json
+  fclt inventory --harness <codex|claude> [--home <path>] [--json]
+  Add --context-tokens <count> to override the 200000-token budget assumption.
+  --include-ln        Explicitly read otherwise isolated account homes ending in -ln.
 
 Options:
   --json              Print JSON. This command is JSON-first.
@@ -861,6 +864,19 @@ export function parseInventoryArgs(argv: string[]): {
 export async function inventoryCommand(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h") || argv[0] === "help") {
     printHelp();
+    return;
+  }
+
+  if (argv.includes("--harness")) {
+    try {
+      const { harnessInventoryCommand } = await import("./harness-inventory");
+      await harnessInventoryCommand(argv);
+    } catch (error) {
+      console.error(
+        error instanceof Error ? error.message : "Inventory failed"
+      );
+      process.exitCode = 2;
+    }
     return;
   }
 

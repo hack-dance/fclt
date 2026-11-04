@@ -49,6 +49,7 @@ test("static audit flags obvious credential access in a SKILL.md", async () => {
   const report = await runStaticAudit({
     argv: [],
     homeDir: home,
+    cwd: home,
     minSeverity: "high",
   });
 
@@ -85,6 +86,7 @@ test("static audit detects inline env secrets in MCP servers", async () => {
   const report = await runStaticAudit({
     argv: [],
     homeDir: home,
+    cwd: home,
     minSeverity: "high",
   });
 
@@ -125,6 +127,7 @@ test("static audit ignores MCP placeholders and env indirection", async () => {
   const report = await runStaticAudit({
     argv: [],
     homeDir: home,
+    cwd: home,
     minSeverity: "high",
   });
 
