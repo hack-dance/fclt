@@ -1,3 +1,9 @@
+## [2.34.2](https://github.com/hack-dance/fclt/compare/v2.34.1...v2.34.2) (2026-11-05)
+
+### Bug Fixes
+
+* HACK-1893 alias fallback when only the legacy device store exists ([#116](https://github.com/hack-dance/fclt/issues/116)) ([e433242](https://github.com/hack-dance/fclt/commit/e433242d0f8bfa83e6832254014a4a4bbcf05cc5))
+
 ## [2.34.1](https://github.com/hack-dance/fclt/compare/v2.34.0...v2.34.1) (2026-11-05)
 
 ### Bug Fixes
