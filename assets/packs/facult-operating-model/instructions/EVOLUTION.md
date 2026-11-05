@@ -128,9 +128,23 @@ fclt ai evolve review EV-00001
 ```
 
 Acceptance and application are separate mutations. Only use the direct CLI flow below when the
-request authorizes the exact target and scope and the supported execution surface permits it:
+request authorizes the exact target and scope and the supported execution surface permits it.
 
 Verify fclt writeback with FACULT_ROOT_DIR=$(mktemp -d) or a throwaway repo; never write test entries into a real project store.
+
+`FACULT_ROOT_DIR` or a throwaway repo alone does not isolate queues or review mirrors.
+For test entries, also isolate home and machine-local state for every command:
+
+```bash
+scratch=$(mktemp -d)
+(
+  cd "$scratch" || exit
+  export HOME="$scratch" FACULT_LOCAL_STATE_DIR="$scratch/state" FACULT_ROOT_DIR="$scratch/.ai"
+  export FACULT_CACHE_DIR="$scratch/cache"
+  fclt paths --json
+  # Run verification commands here; check that all paths stay inside "$scratch".
+)
+```
 
 ```bash
 fclt ai evolve accept EV-00001

@@ -517,7 +517,15 @@ export async function removeAiFile(
   homeDir: string
 ): Promise<void> {
   await Promise.resolve();
-  const binding = bindPath(path, { homeDir, create: true, output: true });
+  let binding: ReturnType<typeof bindPath>;
+  try {
+    binding = bindPath(path, { homeDir, output: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
   try {
     let fd: number;
     try {

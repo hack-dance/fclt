@@ -63,6 +63,8 @@ import {
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiReviewMirrorMode,
+  facultAiReviewPublishStatePath,
+  facultAiReviewScopeRelativeDir,
   facultAiRuntimeScopeDir,
   facultAiStateDir,
   facultAiWritebackQueuePath,
@@ -737,7 +739,8 @@ async function writeWritebackReviewArtifact(args: {
   );
   if (
     args.record.status === "dismissed" &&
-    facultAiReviewMirrorMode(args.homeDir) === "pending"
+    facultAiReviewMirrorMode(args.homeDir) === "pending" &&
+    !(await writebackWasPublished(args))
   ) {
     await removeAiFile(pathValue, args.homeDir);
     return;
@@ -800,6 +803,32 @@ async function writeWritebackReviewArtifact(args: {
     "",
   ].join("\n");
   await writeAiText(pathValue, `${body.trimEnd()}\n`, args.homeDir);
+}
+
+/** Published mirrors still need a status update delivered to the shared review tree. */
+async function writebackWasPublished(args: {
+  homeDir: string;
+  rootDir: string;
+  record: AiWritebackRecord;
+}): Promise<boolean> {
+  const ledgerPath = facultAiReviewPublishStatePath(args.homeDir);
+  let contents: string;
+  try {
+    contents = await readAiText(ledgerPath, "utf8", dirname(ledgerPath));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+  const ledger = JSON.parse(contents) as {
+    published?: Record<string, unknown>;
+  };
+  const reviewPath = join(
+    facultAiReviewScopeRelativeDir("writebacks", args.homeDir, args.rootDir),
+    `${args.record.id}.md`
+  ).replaceAll("\\", "/");
+  return Object.hasOwn(ledger.published ?? {}, reviewPath);
 }
 
 async function writeProposalReviewArtifact(args: {

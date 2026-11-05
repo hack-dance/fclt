@@ -900,7 +900,11 @@ describe("ai writeback", () => {
         );
       }
     } finally {
-      process.env.FACULT_REVIEW_MIRRORS = originalMode;
+      if (originalMode === undefined) {
+        Reflect.deleteProperty(process.env, "FACULT_REVIEW_MIRRORS");
+      } else {
+        process.env.FACULT_REVIEW_MIRRORS = originalMode;
+      }
     }
   });
 
