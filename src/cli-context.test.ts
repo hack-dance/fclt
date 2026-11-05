@@ -116,7 +116,7 @@ describe("resolveCliContextRoot", () => {
     expect(rootDir).toBe("/tmp/home/.ai");
   });
 
-  it("honors FACULT_ROOT_DIR before cwd project discovery in merged scope", async () => {
+  it("prefers project discovery over FACULT_ROOT_DIR in merged scope", async () => {
     tempRoot = await makeTempDir();
     const homeDir = join(tempRoot, "home");
     const envRoot = join(tempRoot, "external-root");
@@ -125,6 +125,22 @@ describe("resolveCliContextRoot", () => {
     await mkdir(join(homeDir, "work", "repo", ".ai", "instructions"), {
       recursive: true,
     });
+    process.env.FACULT_ROOT_DIR = envRoot;
+
+    const rootDir = resolveCliContextRoot({ homeDir, cwd, scope: "merged" });
+    expect(rootDir).toBe(join(homeDir, "work", "repo", ".ai"));
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "global" })).toBe(
+      envRoot
+    );
+  });
+
+  it("uses FACULT_ROOT_DIR in merged scope when no project .ai exists", async () => {
+    tempRoot = await makeTempDir();
+    const homeDir = join(tempRoot, "home");
+    const envRoot = join(tempRoot, "external-root");
+    const cwd = join(homeDir, "work", "repo", "src");
+    await mkdir(join(envRoot, "instructions"), { recursive: true });
+    await mkdir(cwd, { recursive: true });
     process.env.FACULT_ROOT_DIR = envRoot;
 
     const rootDir = resolveCliContextRoot({ homeDir, cwd, scope: "merged" });
@@ -189,6 +205,9 @@ describe("resolveCliContextRoot", () => {
     process.env.FACULT_ROOT_DIR = rootDir;
     process.env.FACULT_ROOT_SCOPE = "project";
 
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      rootDir
+    );
     expect(resolveCliContextRoot({ homeDir, cwd, scope: "project" })).toBe(
       rootDir
     );
