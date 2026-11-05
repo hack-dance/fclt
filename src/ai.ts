@@ -25,6 +25,7 @@ import {
   readAiDirectory,
   readAiTarget,
   readAiText,
+  removeAiFile,
   replaceAiTarget,
   withAiMutationScope,
   withAiReadCache,
@@ -61,6 +62,7 @@ import {
   facultAiIndexPath,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiReviewMirrorMode,
   facultAiRuntimeScopeDir,
   facultAiStateDir,
   facultAiWritebackQueuePath,
@@ -733,6 +735,13 @@ async function writeWritebackReviewArtifact(args: {
     args.rootDir,
     args.record.id
   );
+  if (
+    args.record.status === "dismissed" &&
+    facultAiReviewMirrorMode(args.homeDir) === "pending"
+  ) {
+    await removeAiFile(pathValue, args.homeDir);
+    return;
+  }
   const body = [
     renderFrontmatter({
       id: args.record.id,

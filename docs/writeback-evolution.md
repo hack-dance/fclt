@@ -381,6 +381,8 @@ For a single weak or medium-confidence writeback, the right answer is usually mo
 
 Draft and review:
 
+Verify fclt writeback with FACULT_ROOT_DIR=$(mktemp -d) or a throwaway repo; never write test entries into a real project store.
+
 ```bash
 fclt ai evolve draft EV-00001
 fclt ai evolve review EV-00001

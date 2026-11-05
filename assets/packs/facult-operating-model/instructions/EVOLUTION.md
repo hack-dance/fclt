@@ -130,6 +130,8 @@ fclt ai evolve review EV-00001
 Acceptance and application are separate mutations. Only use the direct CLI flow below when the
 request authorizes the exact target and scope and the supported execution surface permits it:
 
+Verify fclt writeback with FACULT_ROOT_DIR=$(mktemp -d) or a throwaway repo; never write test entries into a real project store.
+
 ```bash
 fclt ai evolve accept EV-00001
 fclt ai evolve apply EV-00001

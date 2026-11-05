@@ -863,6 +863,47 @@ describe("ai writeback", () => {
     expect(snapshots).toHaveLength(3);
   });
 
+  it("removes only dismissed pending mirrors and keeps them absent on refresh", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const originalMode = process.env.FACULT_REVIEW_MIRRORS;
+    process.env.FACULT_REVIEW_MIRRORS = "pending";
+    try {
+      for (const rootDir of [
+        join(tempHome, ".ai"),
+        join(tempHome, "throwaway-project", ".ai"),
+      ]) {
+        const args = { homeDir: tempHome, rootDir };
+        const first = await addWriteback({
+          ...args,
+          kind: "bad_default",
+          summary: "Scratch verification",
+          evidence: proposalEvidence("pending-dismiss"),
+        });
+        const other = await addWriteback({
+          ...args,
+          kind: "bad_default",
+          summary: "Unrelated pending item",
+          evidence: proposalEvidence("pending-preserve"),
+        });
+        const reviewDir = facultAiWritebackReviewDir(tempHome, rootDir);
+        const pendingPath = join(reviewDir, `${first.id}.md`);
+        expect(await Bun.file(pendingPath).exists()).toBe(true);
+        await dismissWriteback(first.id, args);
+        expect(await Bun.file(pendingPath).exists()).toBe(false);
+        expect((await showWriteback(first.id, args))?.status).toBe("dismissed");
+        await dismissWriteback(first.id, args);
+        await refreshAiReviewArtifacts(args);
+        expect(await Bun.file(pendingPath).exists()).toBe(false);
+        expect(await Bun.file(join(reviewDir, `${other.id}.md`)).exists()).toBe(
+          true
+        );
+      }
+    } finally {
+      process.env.FACULT_REVIEW_MIRRORS = originalMode;
+    }
+  });
+
   it("requires evidence unless explicitly allowed", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
