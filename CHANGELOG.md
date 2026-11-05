@@ -1,3 +1,10 @@
+## [2.34.1](https://github.com/hack-dance/fclt/compare/v2.34.0...v2.34.1) (2026-11-05)
+
+### Bug Fixes
+
+* preserve project writeback context with configured global root ([3f6027e](https://github.com/hack-dance/fclt/commit/3f6027efeb52a7e2be4c7d6d81813328f89cc1cf))
+* retain explicit project environment root precedence ([a7a8724](https://github.com/hack-dance/fclt/commit/a7a87246c209e2481e25897c393cb7b344a158f0))
+
 ## [2.34.0](https://github.com/hack-dance/fclt/compare/v2.33.1...v2.34.0) (2026-11-04)
 
 ### Features
