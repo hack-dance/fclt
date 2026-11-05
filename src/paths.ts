@@ -557,6 +557,7 @@ function repositoryKeyForCanonicalRoot(
       (alias) => alias.kind === "git-common-dir"
     );
     if (common && projectRoot) {
+      let selectedKey = common.id;
       const legacyCommon = repositoryCommonIdentitySync(projectRoot, {
         legacyDeviceIdentity: true,
       });
@@ -567,9 +568,18 @@ function repositoryKeyForCanonicalRoot(
           legacyCommon.id
         );
         if (safeMachineStateDirExists(legacyStore)) {
-          throw new Error(
-            `Existing device-based repository state requires reconciliation before selecting stable filesystem state: ${legacyStore}. Preserve this store and reconcile its queues and history before retrying.`
+          const stableStore = join(
+            facultLocalStateRoot(home),
+            "projects",
+            common.id
           );
+          if (safeMachineStateDirExists(stableStore)) {
+            throw new Error(
+              `Conflicting device-based and stable repository state requires reconciliation: ${legacyStore} and ${stableStore}. Preserve both stores and reconcile their queues and history before retrying.`
+            );
+          }
+          // Keep using the populated alias without moving or copying runtime state.
+          selectedKey = legacyCommon.id;
         }
       }
       const executionKey = repositoryExecutionIdentity(projectRoot).id;
@@ -586,7 +596,7 @@ function repositoryKeyForCanonicalRoot(
           `Existing primary-checkout execution state requires reconciliation before selecting repository state: ${executionStore}. Preserve this store and reconcile its queues, loop configuration, automation, and history before retrying.`
         );
       }
-      return common.id;
+      return selectedKey;
     }
   }
   if (projectRoot && safePathEntryExists(join(projectRoot, ".git"))) {
