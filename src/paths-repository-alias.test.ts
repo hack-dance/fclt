@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -24,7 +25,9 @@ afterEach(async () => {
 });
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "fclt-state-alias-"));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "fclt-state-alias-"))
+  );
   const home = join(root, "home");
   const repo = join(root, "repo");
   const linked = join(root, "linked");
