@@ -1266,6 +1266,12 @@ export function facultContextRootDir(args?: {
   config?: FacultConfig | null;
 }): string {
   const home = args?.home ?? defaultHomeDir();
+  if (
+    process.env.FACULT_ROOT_DIR?.trim() &&
+    process.env.FACULT_ROOT_SCOPE?.trim() === "project"
+  ) {
+    return facultRootDir(home, args?.config);
+  }
   const cwd = args?.cwd?.trim() || process.cwd();
   const config = args && "config" in args ? args.config : undefined;
   const projectRoot = findNearestProjectAiRoot(cwd, home, config);

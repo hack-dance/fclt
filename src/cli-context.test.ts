@@ -205,6 +205,9 @@ describe("resolveCliContextRoot", () => {
     process.env.FACULT_ROOT_DIR = rootDir;
     process.env.FACULT_ROOT_SCOPE = "project";
 
+    expect(resolveCliContextRoot({ homeDir, cwd, scope: "merged" })).toBe(
+      rootDir
+    );
     expect(resolveCliContextRoot({ homeDir, cwd, scope: "project" })).toBe(
       rootDir
     );
