@@ -1436,7 +1436,10 @@ async function resolveAssetSelection(args: {
   if (!node) {
     const projectRoot = projectRootFromAiRoot(args.rootDir, args.homeDir);
     if (projectRoot) {
-      const resolvedPath = resolve(projectRoot, args.asset);
+      const filePath = args.asset.startsWith("@project/")
+        ? args.asset.slice("@project/".length)
+        : args.asset;
+      const resolvedPath = resolve(projectRoot, filePath);
       const relPath = relative(projectRoot, resolvedPath);
       if (
         relPath &&

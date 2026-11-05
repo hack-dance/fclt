@@ -266,6 +266,24 @@ describe("paths", () => {
     ).toBe(rootDir);
   });
 
+  it("discovers project context with an environment-configured global root", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const globalRoot = join(tempHome, "global-ai");
+    process.env.FACULT_ROOT_DIR = globalRoot;
+    const projectRoot = join(tempHome, "work", "repo");
+    const rootDir = join(projectRoot, ".ai");
+    await mkdir(join(rootDir, "instructions"), { recursive: true });
+
+    expect(facultRootDir(tempHome)).toBe(globalRoot);
+    expect(
+      facultContextRootDir({ home: tempHome, cwd: join(projectRoot, "src") })
+    ).toBe(rootDir);
+    expect(facultContextRootDir({ home: tempHome, cwd: tempHome })).toBe(
+      globalRoot
+    );
+  });
+
   it("uses the supplied config for every project-root decision when disk config differs", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

@@ -517,7 +517,11 @@ describe("ai writeback", () => {
     expect(record.assetType).toBe("automation");
   });
 
-  it("records writebacks against existing project files outside the graph", async () => {
+  it.each([
+    "@project/docs/target.md",
+    "docs/target.md",
+    "absolute",
+  ])("records writebacks against existing project files outside the graph: %s", async (selector) => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
@@ -538,7 +542,10 @@ describe("ai writeback", () => {
       rootDir,
       kind: "missing_context",
       summary: "The target-state doc needs a follow-up note.",
-      asset: "docs/target.md",
+      asset:
+        selector === "absolute"
+          ? join(projectRoot, "docs", "target.md")
+          : selector,
       evidence: proposalEvidence("project-doc-writeback"),
     });
 

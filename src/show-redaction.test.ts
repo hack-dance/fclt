@@ -51,25 +51,29 @@ test("show redacts MCP secrets by default (use --show-secrets to bypass)", async
   });
 
   const baseEnv = { ...process.env, HOME: dir, FACULT_ROOT_DIR: rootDir };
+  const entrypoint = join(import.meta.dir, "index.ts");
 
   {
-    const proc = Bun.spawn(
-      ["bun", "run", "./src/index.ts", "show", "mcp:alpha"],
-      { cwd: process.cwd(), env: baseEnv, stdout: "pipe", stderr: "pipe" }
-    );
-    const [code, out] = await Promise.all([
+    const proc = Bun.spawn(["bun", "run", entrypoint, "show", "mcp:alpha"], {
+      cwd: dir,
+      env: baseEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, out, err] = await Promise.all([
       proc.exited,
       new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
     ]);
-    expect(code).toBe(0);
+    expect({ code, err }).toEqual({ code: 0, err: "" });
     expect(out).not.toContain(secret);
     expect(out).toContain("<redacted>");
   }
 
   {
     const proc = Bun.spawn(
-      ["bun", "run", "./src/index.ts", "show", "mcp:alpha", "--show-secrets"],
-      { cwd: process.cwd(), env: baseEnv, stdout: "pipe", stderr: "pipe" }
+      ["bun", "run", entrypoint, "show", "mcp:alpha", "--show-secrets"],
+      { cwd: dir, env: baseEnv, stdout: "pipe", stderr: "pipe" }
     );
     const [code, out] = await Promise.all([
       proc.exited,
