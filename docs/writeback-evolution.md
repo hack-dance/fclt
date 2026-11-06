@@ -379,7 +379,22 @@ the next agent instruction.
 
 For a single weak or medium-confidence writeback, the right answer is usually more evidence, not a proposal. A useful no-op still explains what recurrence would change the decision and where the next writeback should land.
 
-Draft and review:
+Scratch verification: never write test entries into a real project store.
+`FACULT_ROOT_DIR` or a throwaway repo alone does not isolate queues or review mirrors.
+Also isolate home and machine-local state for every verification command:
+
+```bash
+scratch=$(mktemp -d)
+(
+  cd "$scratch" || exit
+  export HOME="$scratch" FACULT_LOCAL_STATE_DIR="$scratch/state" FACULT_ROOT_DIR="$scratch/.ai"
+  export FACULT_CACHE_DIR="$scratch/cache" FCLT_ALLOW_EPHEMERAL_AI_PATHS=1
+  fclt paths --json
+  # Run verification commands here; check that all paths stay inside "$scratch".
+)
+```
+
+Draft, review, and apply:
 
 ```bash
 fclt ai evolve draft EV-00001
@@ -491,6 +506,10 @@ show, group, evolve and references. Both forms sort correctly as plain strings:
 legacy ids sort first, then dated ids by day.
 
 ### Pending mirrors and publish
+
+Dismiss removes never-published pending writeback mirrors. Previously published
+mirrors retain a dismissed-status update in pending state so the next publish can
+update the shared copy. The append-only queue retains the record in either case.
 
 When `~/.ai` is a git work tree, fclt writes review mirrors to a machine-local
 pending tree (`<fclt state>/review/pending/`, same relative layout) instead of

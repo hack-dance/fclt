@@ -511,6 +511,47 @@ export async function replaceAiTarget(args: {
   }
 }
 
+/** Remove a review mirror through its owned directory, tolerating an absent file. */
+export async function removeAiFile(
+  path: string,
+  homeDir: string
+): Promise<void> {
+  await Promise.resolve();
+  let binding: ReturnType<typeof bindPath>;
+  try {
+    binding = bindPath(path, { homeDir, output: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  try {
+    let fd: number;
+    try {
+      fd = binding.parent.open(
+        basename(binding.physical),
+        constants.O_RDONLY +
+          (constants.O_NOFOLLOW ?? 0) +
+          (constants.O_NONBLOCK ?? 0)
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+    try {
+      validateFile(binding, fd);
+      binding.parent.unlink(basename(binding.physical));
+    } finally {
+      closeSync(fd);
+    }
+  } finally {
+    binding.close();
+  }
+}
+
 export async function writeAiText(
   path: string,
   contents: string,

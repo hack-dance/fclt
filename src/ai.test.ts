@@ -36,6 +36,7 @@ import {
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiReconciliationStatePath,
+  facultAiReviewPublishStatePath,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
   facultMachineStateDir,
@@ -861,6 +862,60 @@ describe("ai writeback", () => {
       .trim()
       .split("\n");
     expect(snapshots).toHaveLength(3);
+  });
+
+  it.each([
+    '{"published":',
+    "null",
+    "[]",
+    '{"published":[]}',
+    '{"published":null}',
+  ])("removes dismissed pending mirrors with invalid publish state %s", async (publishState) => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const originalMode = process.env.FACULT_REVIEW_MIRRORS;
+    process.env.FACULT_REVIEW_MIRRORS = "pending";
+    try {
+      for (const rootDir of [
+        join(tempHome, ".ai"),
+        join(tempHome, "throwaway-project", ".ai"),
+      ]) {
+        const args = { homeDir: tempHome, rootDir };
+        const first = await addWriteback({
+          ...args,
+          kind: "bad_default",
+          summary: "Scratch verification",
+          evidence: proposalEvidence("pending-dismiss"),
+        });
+        const other = await addWriteback({
+          ...args,
+          kind: "bad_default",
+          summary: "Unrelated pending item",
+          evidence: proposalEvidence("pending-preserve"),
+        });
+        const reviewDir = facultAiWritebackReviewDir(tempHome, rootDir);
+        const pendingPath = join(reviewDir, `${first.id}.md`);
+        expect(await Bun.file(pendingPath).exists()).toBe(true);
+        const ledgerPath = facultAiReviewPublishStatePath(tempHome);
+        await mkdir(dirname(ledgerPath), { recursive: true });
+        await Bun.write(ledgerPath, publishState);
+        await dismissWriteback(first.id, args);
+        expect(await Bun.file(pendingPath).exists()).toBe(false);
+        expect((await showWriteback(first.id, args))?.status).toBe("dismissed");
+        await dismissWriteback(first.id, args);
+        await refreshAiReviewArtifacts(args);
+        expect(await Bun.file(pendingPath).exists()).toBe(false);
+        expect(await Bun.file(join(reviewDir, `${other.id}.md`)).exists()).toBe(
+          true
+        );
+      }
+    } finally {
+      if (originalMode === undefined) {
+        Reflect.deleteProperty(process.env, "FACULT_REVIEW_MIRRORS");
+      } else {
+        process.env.FACULT_REVIEW_MIRRORS = originalMode;
+      }
+    }
   });
 
   it("requires evidence unless explicitly allowed", async () => {

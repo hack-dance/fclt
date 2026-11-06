@@ -25,6 +25,7 @@ import {
   readAiDirectory,
   readAiTarget,
   readAiText,
+  removeAiFile,
   replaceAiTarget,
   withAiMutationScope,
   withAiReadCache,
@@ -61,6 +62,9 @@ import {
   facultAiIndexPath,
   facultAiJournalPath,
   facultAiProposalDir,
+  facultAiReviewMirrorMode,
+  facultAiReviewPublishStatePath,
+  facultAiReviewScopeRelativeDir,
   facultAiRuntimeScopeDir,
   facultAiStateDir,
   facultAiWritebackQueuePath,
@@ -733,6 +737,14 @@ async function writeWritebackReviewArtifact(args: {
     args.rootDir,
     args.record.id
   );
+  if (
+    args.record.status === "dismissed" &&
+    facultAiReviewMirrorMode(args.homeDir) === "pending" &&
+    !(await writebackWasPublished(args))
+  ) {
+    await removeAiFile(pathValue, args.homeDir);
+    return;
+  }
   const body = [
     renderFrontmatter({
       id: args.record.id,
@@ -791,6 +803,46 @@ async function writeWritebackReviewArtifact(args: {
     "",
   ].join("\n");
   await writeAiText(pathValue, `${body.trimEnd()}\n`, args.homeDir);
+}
+
+/** Published mirrors still need a status update delivered to the shared review tree. */
+async function writebackWasPublished(args: {
+  homeDir: string;
+  rootDir: string;
+  record: AiWritebackRecord;
+}): Promise<boolean> {
+  const ledgerPath = facultAiReviewPublishStatePath(args.homeDir);
+  let contents: string;
+  try {
+    contents = await readAiText(ledgerPath, "utf8", dirname(ledgerPath));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+  let ledger: unknown;
+  try {
+    ledger = JSON.parse(contents);
+  } catch {
+    return false;
+  }
+  if (typeof ledger !== "object" || ledger === null || Array.isArray(ledger)) {
+    return false;
+  }
+  const published = "published" in ledger ? ledger.published : undefined;
+  if (
+    typeof published !== "object" ||
+    published === null ||
+    Array.isArray(published)
+  ) {
+    return false;
+  }
+  const reviewPath = join(
+    facultAiReviewScopeRelativeDir("writebacks", args.homeDir, args.rootDir),
+    `${args.record.id}.md`
+  ).replaceAll("\\", "/");
+  return Object.hasOwn(published, reviewPath);
 }
 
 async function writeProposalReviewArtifact(args: {

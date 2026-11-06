@@ -5,7 +5,7 @@ import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runFixtureGit } from "../test/git-fixture";
-import { addWriteback } from "./ai";
+import { addWriteback, dismissWriteback } from "./ai";
 import {
   allocateArtifactId,
   generateArtifactId,
@@ -227,6 +227,33 @@ describe("artifact ids", () => {
 });
 
 describe("writeback publish", () => {
+  it.each([
+    false,
+    true,
+  ])("publishes dismissed status after publication (landed=%s)", async (landed) => {
+    const { remote, seed, homes } = await setupHosts(["host-a"]);
+    const home = homes["host-a"] as string;
+    const record = await addRecord(home, "publish then dismiss");
+    const args = { homeDir: home, branch: "review/dismiss" };
+    const relPath = `writebacks/global/${record.id}.md`;
+    await publishReviewArtifacts(args);
+    if (landed) {
+      await git(seed, ["fetch", "origin", "review/dismiss"], seed);
+      await git(seed, ["merge", "--ff-only", "FETCH_HEAD"], seed);
+      await git(seed, ["push", "origin", "main"], seed);
+    }
+    await dismissWriteback(record.id, {
+      homeDir: home,
+      rootDir: join(home, ".ai"),
+    });
+    const pending = join(facultAiPendingReviewRoot(home), relPath);
+    expect(await readFile(pending, "utf8")).toContain('status: "dismissed"');
+    await publishReviewArtifacts(args);
+    expect(await remoteFile(remote, "review/dismiss", relPath)).toContain(
+      'status: "dismissed"'
+    );
+  });
+
   it("keeps canonical trees clean and lands records from two hosts without collisions", async () => {
     const { remote, homes } = await setupHosts(["host-a", "host-b"]);
     const homeA = homes["host-a"] as string;
