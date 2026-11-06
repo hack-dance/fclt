@@ -36,6 +36,7 @@ import {
   facultAiJournalPath,
   facultAiProposalDir,
   facultAiReconciliationStatePath,
+  facultAiReviewPublishStatePath,
   facultAiWritebackQueuePath,
   facultAiWritebackReviewDir,
   facultMachineStateDir,
@@ -889,6 +890,9 @@ describe("ai writeback", () => {
         const reviewDir = facultAiWritebackReviewDir(tempHome, rootDir);
         const pendingPath = join(reviewDir, `${first.id}.md`);
         expect(await Bun.file(pendingPath).exists()).toBe(true);
+        const ledgerPath = facultAiReviewPublishStatePath(tempHome);
+        await mkdir(dirname(ledgerPath), { recursive: true });
+        await Bun.write(ledgerPath, '{"published":');
         await dismissWriteback(first.id, args);
         expect(await Bun.file(pendingPath).exists()).toBe(false);
         expect((await showWriteback(first.id, args))?.status).toBe("dismissed");

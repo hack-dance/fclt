@@ -140,7 +140,7 @@ scratch=$(mktemp -d)
 (
   cd "$scratch" || exit
   export HOME="$scratch" FACULT_LOCAL_STATE_DIR="$scratch/state" FACULT_ROOT_DIR="$scratch/.ai"
-  export FACULT_CACHE_DIR="$scratch/cache"
+  export FACULT_CACHE_DIR="$scratch/cache" FCLT_ALLOW_EPHEMERAL_AI_PATHS=1
   fclt paths --json
   # Run verification commands here; check that all paths stay inside "$scratch".
 )

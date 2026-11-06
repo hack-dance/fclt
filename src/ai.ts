@@ -821,9 +821,12 @@ async function writebackWasPublished(args: {
     }
     throw error;
   }
-  const ledger = JSON.parse(contents) as {
-    published?: Record<string, unknown>;
-  };
+  let ledger: { published?: Record<string, unknown> };
+  try {
+    ledger = JSON.parse(contents);
+  } catch {
+    return false;
+  }
   const reviewPath = join(
     facultAiReviewScopeRelativeDir("writebacks", args.homeDir, args.rootDir),
     `${args.record.id}.md`

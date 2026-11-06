@@ -391,15 +391,11 @@ scratch=$(mktemp -d)
 (
   cd "$scratch" || exit
   export HOME="$scratch" FACULT_LOCAL_STATE_DIR="$scratch/state" FACULT_ROOT_DIR="$scratch/.ai"
-  export FACULT_CACHE_DIR="$scratch/cache"
+  export FACULT_CACHE_DIR="$scratch/cache" FCLT_ALLOW_EPHEMERAL_AI_PATHS=1
   fclt paths --json
   # Run verification commands here; check that all paths stay inside "$scratch".
 )
 ```
-
-Dismiss removes never-published pending writeback mirrors. Previously published
-mirrors retain a dismissed-status update in pending state so the next publish can
-update the shared copy. The append-only queue retains the record in either case.
 
 ```bash
 fclt ai evolve draft EV-00001
@@ -511,6 +507,10 @@ show, group, evolve and references. Both forms sort correctly as plain strings:
 legacy ids sort first, then dated ids by day.
 
 ### Pending mirrors and publish
+
+Dismiss removes never-published pending writeback mirrors. Previously published
+mirrors retain a dismissed-status update in pending state so the next publish can
+update the shared copy. The append-only queue retains the record in either case.
 
 When `~/.ai` is a git work tree, fclt writes review mirrors to a machine-local
 pending tree (`<fclt state>/review/pending/`, same relative layout) instead of
