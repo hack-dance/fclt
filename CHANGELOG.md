@@ -1,3 +1,9 @@
+## [2.34.3](https://github.com/hack-dance/fclt/compare/v2.34.2...v2.34.3) (2026-11-06)
+
+### Bug Fixes
+
+* **writeback:** dismiss cleans pending files + scratch-dir guidance ([#117](https://github.com/hack-dance/fclt/issues/117)) ([715136c](https://github.com/hack-dance/fclt/commit/715136cd508890d385a90ca57e3bb948c59d1bfe))
+
 ## [2.34.2](https://github.com/hack-dance/fclt/compare/v2.34.1...v2.34.2) (2026-11-05)
 
 ### Bug Fixes
