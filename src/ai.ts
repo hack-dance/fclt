@@ -821,17 +821,28 @@ async function writebackWasPublished(args: {
     }
     throw error;
   }
-  let ledger: { published?: Record<string, unknown> };
+  let ledger: unknown;
   try {
     ledger = JSON.parse(contents);
   } catch {
+    return false;
+  }
+  if (typeof ledger !== "object" || ledger === null || Array.isArray(ledger)) {
+    return false;
+  }
+  const published = "published" in ledger ? ledger.published : undefined;
+  if (
+    typeof published !== "object" ||
+    published === null ||
+    Array.isArray(published)
+  ) {
     return false;
   }
   const reviewPath = join(
     facultAiReviewScopeRelativeDir("writebacks", args.homeDir, args.rootDir),
     `${args.record.id}.md`
   ).replaceAll("\\", "/");
-  return Object.hasOwn(ledger.published ?? {}, reviewPath);
+  return Object.hasOwn(published, reviewPath);
 }
 
 async function writeProposalReviewArtifact(args: {

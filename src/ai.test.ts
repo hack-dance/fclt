@@ -864,7 +864,13 @@ describe("ai writeback", () => {
     expect(snapshots).toHaveLength(3);
   });
 
-  it("removes only dismissed pending mirrors and keeps them absent on refresh", async () => {
+  it.each([
+    '{"published":',
+    "null",
+    "[]",
+    '{"published":[]}',
+    '{"published":null}',
+  ])("removes dismissed pending mirrors with invalid publish state %s", async (publishState) => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
     const originalMode = process.env.FACULT_REVIEW_MIRRORS;
@@ -892,7 +898,7 @@ describe("ai writeback", () => {
         expect(await Bun.file(pendingPath).exists()).toBe(true);
         const ledgerPath = facultAiReviewPublishStatePath(tempHome);
         await mkdir(dirname(ledgerPath), { recursive: true });
-        await Bun.write(ledgerPath, '{"published":');
+        await Bun.write(ledgerPath, publishState);
         await dismissWriteback(first.id, args);
         expect(await Bun.file(pendingPath).exists()).toBe(false);
         expect((await showWriteback(first.id, args))?.status).toBe("dismissed");

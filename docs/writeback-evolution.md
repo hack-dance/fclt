@@ -379,12 +379,9 @@ the next agent instruction.
 
 For a single weak or medium-confidence writeback, the right answer is usually more evidence, not a proposal. A useful no-op still explains what recurrence would change the decision and where the next writeback should land.
 
-Draft, review, and apply:
-
-Verify fclt writeback with FACULT_ROOT_DIR=$(mktemp -d) or a throwaway repo; never write test entries into a real project store.
-
+Scratch verification: never write test entries into a real project store.
 `FACULT_ROOT_DIR` or a throwaway repo alone does not isolate queues or review mirrors.
-For test entries, also isolate home and machine-local state for every command:
+Also isolate home and machine-local state for every verification command:
 
 ```bash
 scratch=$(mktemp -d)
@@ -396,6 +393,8 @@ scratch=$(mktemp -d)
   # Run verification commands here; check that all paths stay inside "$scratch".
 )
 ```
+
+Draft, review, and apply:
 
 ```bash
 fclt ai evolve draft EV-00001
