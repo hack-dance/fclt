@@ -11,6 +11,7 @@ import {
 import { dirname, join } from "node:path";
 import {
   capabilityCollisionPath,
+  capabilityRoot,
   optionalStat,
   safeCapabilityPath,
   snapshotCapability,
@@ -23,6 +24,7 @@ import {
   type CapabilityReceipt,
 } from "./capability-plan";
 import { hashCapability } from "./capability-registry";
+import { snapshotLibraryCapability } from "./library-editor";
 
 const APPLY_STATUSES = new Set([
   "create",
@@ -36,7 +38,13 @@ export async function applyCapability(
   id: string,
   expectedPlan: string
 ) {
-  const initial = await buildCapabilityPlan(options, id);
+  const resolvedOptions = options.libraryStateRoot
+    ? {
+        ...options,
+        libraryStateRoot: await capabilityRoot(options.libraryStateRoot),
+      }
+    : options;
+  const initial = await buildCapabilityPlan(resolvedOptions, id);
   assertApplicable(initial, expectedPlan);
   if (initial.status === "current") {
     return { ...initial, applied: false, recoveryPath: null };
@@ -54,9 +62,28 @@ export async function applyCapability(
   let recoveryPath: string | null = null;
   let installed = false;
   try {
-    const plan = await buildCapabilityPlan(options, id);
+    const plan = await buildCapabilityPlan(resolvedOptions, id);
     assertApplicable(plan, expectedPlan);
-    const snapshot = await snapshotCapability(plan.sourcePath!);
+    let snapshot = await snapshotCapability(plan.sourcePath!);
+    if (resolvedOptions.libraryStateRoot && snapshot) {
+      if (snapshot.hash !== plan.source.sha256) {
+        throw new Error("Canonical source changed after planning");
+      }
+      const effective = await snapshotLibraryCapability(
+        {
+          sourceRoot: options.sourceRoot,
+          localRoot: resolvedOptions.libraryStateRoot,
+          machine: options.host,
+        },
+        plan.sourcePath!,
+        snapshot,
+        plan.kind
+      );
+      if (effective.revision !== plan.hashes.library) {
+        throw new Error("Library overlays changed after planning");
+      }
+      snapshot = effective.snapshot;
+    }
     if (snapshot?.hash !== plan.hashes.source) {
       throw new Error("Capability source changed after planning");
     }
@@ -82,7 +109,10 @@ export async function applyCapability(
     if ((await snapshotCapability(staged))?.hash !== plan.hashes.source) {
       throw new Error("Staged capability verification failed");
     }
-    assertApplicable(await buildCapabilityPlan(options, id), expectedPlan);
+    assertApplicable(
+      await buildCapabilityPlan(resolvedOptions, id),
+      expectedPlan
+    );
     if (plan.hashes.current !== plan.hashes.source) {
       if (plan.hashes.current !== null) {
         recoveryPath = join(transaction, "previous");
@@ -113,7 +143,7 @@ export async function applyCapability(
     });
     await safeCapabilityPath(plan.statePath);
     await rename(temporaryReceipt, plan.statePath);
-    const verified = await buildCapabilityPlan(options, id);
+    const verified = await buildCapabilityPlan(resolvedOptions, id);
     if (verified.status !== "current") {
       throw new Error(
         "Capability changed during verification; recovery content retained"

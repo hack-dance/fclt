@@ -13,6 +13,9 @@ import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import { caseFold } from "unicode-case-folding";
 import { hashCapability } from "./capability-registry";
 
+export const LIBRARY_STAGING_PATHSPEC = ":(glob,exclude)**/.fclt-library-*.tmp";
+const LIBRARY_STAGING_FILE = /^\.fclt-library-[a-f0-9-]{36}\.tmp$/u;
+
 const MAX_BYTES = 32 * 1024 * 1024;
 const MAX_NODES = 4096;
 export interface CapabilityNode {
@@ -88,7 +91,9 @@ export async function snapshotCapability(
     }
     if (stat.isDirectory()) {
       nodes.push({ path: name, kind: "directory", executable: false });
-      const children = (await readdir(current)).sort();
+      const children = (await readdir(current))
+        .filter((name) => !LIBRARY_STAGING_FILE.test(name))
+        .sort();
       if (
         children.some((child) =>
           ["node_modules", "__pycache__", ".git", ".local", ".env"].includes(
