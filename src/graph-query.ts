@@ -1,3 +1,4 @@
+import { canonicalAssetsNewerThanIndex, ensureAiGraphPath } from "./ai-state";
 import type {
   AssetScope,
   AssetSourceKind,
@@ -6,7 +7,8 @@ import type {
   GraphNode,
   GraphNodeKind,
 } from "./graph";
-import { facultAiGraphPath } from "./paths";
+import { buildIndexSnapshot } from "./index-builder";
+import { facultContextRootDir } from "./paths";
 
 type QueryableGraphKind =
   | GraphNodeKind
@@ -90,12 +92,22 @@ export async function loadGraph(opts?: {
   homeDir?: string;
 }): Promise<FacultGraph> {
   const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
-  const graphPath = facultAiGraphPath(homeDir, opts?.rootDir);
-  const file = Bun.file(graphPath);
-  if (!(await file.exists())) {
-    throw new Error(`Graph not found at ${graphPath}. Run "fclt index".`);
-  }
-  return JSON.parse(await file.text()) as FacultGraph;
+  const rootDir =
+    opts?.rootDir ??
+    facultContextRootDir({ home: homeDir, cwd: process.cwd() });
+  const { path: graphPath } = await ensureAiGraphPath({
+    homeDir,
+    rootDir,
+    repair: false,
+  });
+  const stale = await canonicalAssetsNewerThanIndex({
+    homeDir,
+    rootDir,
+    indexPath: graphPath,
+  });
+  return stale
+    ? (await buildIndexSnapshot({ homeDir, rootDir })).graph
+    : ((await Bun.file(graphPath).json()) as FacultGraph);
 }
 
 export function resolveGraphNode(

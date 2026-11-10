@@ -2355,6 +2355,8 @@ export async function scan(
     homeDir?: string;
     /** Include scan defaults from `~/.ai/.facult/config.json` (scanFrom*). */
     includeConfigFrom?: boolean;
+    /** Limit discovery before scanning; never visit project sources or from roots. */
+    globalOnly?: boolean;
     /** Exact already-read config used by audit to avoid an untracked re-read. */
     configFrom?: FacultConfig | null;
     /** Exact canonical root derived from the already-read audit config. */
@@ -2426,10 +2428,20 @@ export async function scan(
     ];
     const sources: SourceResult[] = [];
     for (const spec of specs) {
+      if (
+        opts?.globalOnly &&
+        (spec.id.endsWith("-project") ||
+          spec.id === "dot-clawdbot" ||
+          spec.id === "git-hooks")
+      ) {
+        continue;
+      }
       sources.push(await buildSourceResult(spec, home, opts?.readText));
     }
 
-    const fromRootsInput = [...(cfg?.scanFrom ?? []), ...(opts?.from ?? [])];
+    const fromRootsInput = opts?.globalOnly
+      ? []
+      : [...(cfg?.scanFrom ?? []), ...(opts?.from ?? [])];
     const fromRoots: string[] = [];
     const seenAbs = new Set<string>();
     for (const root of fromRootsInput) {

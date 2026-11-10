@@ -34,6 +34,7 @@ import type {
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
+import { commandAllowsNoWrite, noWriteRequested } from "./no-write";
 import { withFacultRootScope } from "./paths";
 import type { QueryFilters } from "./query";
 import {
@@ -100,6 +101,7 @@ function printHelp() {
         {
           title: "Usage",
           lines: renderBullets([
+            "--no-write or FCLT_NO_WRITE=1 forbids writes, including optional cache writes.",
             `${renderCode("fclt list")} defaults to ${renderCode("skills")} when you do not specify a type.`,
             `${renderCode("fclt graph <asset>")} is shorthand for ${renderCode("fclt graph show <asset>")}.`,
             `${renderCode("fclt templates init ...")} is the main entry for scaffolding new canonical capability.`,
@@ -1277,7 +1279,18 @@ async function adaptersCommand(argv: string[]) {
 }
 
 async function main(argv: string[]) {
-  const [cmd, ...rest] = argv;
+  const explicitNoWrite = argv.includes("--no-write");
+  const [cmd, ...rest] = argv.filter((arg) => arg !== "--no-write");
+  if (explicitNoWrite) {
+    process.env.FCLT_NO_WRITE = "1";
+  }
+  if (cmd && noWriteRequested() && !commandAllowsNoWrite(cmd, rest)) {
+    console.error(
+      `fclt ${cmd} is a write command and is disabled by --no-write / FCLT_NO_WRITE=1.`
+    );
+    process.exitCode = 2;
+    return;
+  }
   if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
     printHelp();
     return;

@@ -1,9 +1,17 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveCliContextRoot } from "./cli-context";
+import {
+  InventoryDependencies,
+  inventoryCachePath,
+  readInventoryCache,
+  writeInventoryCache,
+} from "./inventory-cache";
 import { extractServersObject } from "./mcp-config";
 import { facultRootDir, readFacultConfig } from "./paths";
 import type { AssetFile, McpConfig, ScanResult, SourceResult } from "./scan";
 import { scan } from "./scan";
+import { packageVersion } from "./status";
 import { parseJsonLenient } from "./util/json";
 import { computeSkillOccurrences } from "./util/skills";
 
@@ -70,6 +78,7 @@ export interface InventorySource {
 }
 
 export interface AgentInventory {
+  cache?: { hit: boolean; generatedAt: string; key: string };
   version: 1;
   generatedAt: string;
   cwd: string;
@@ -677,10 +686,39 @@ export async function buildAgentInventory(
   const homeDir = opts?.homeDir ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
   const includeConfigFrom = opts?.includeConfigFrom ?? true;
-  const configuredFrom = includeConfigFrom ? configuredScanFrom(homeDir) : [];
+  const globalOnly = opts?.sourceMode === "global";
+  const canonicalRoot = globalOnly
+    ? resolveCliContextRoot({ homeDir, cwd, scope: "global" })
+    : facultRootDir(homeDir);
+  const configuredFrom =
+    includeConfigFrom && !globalOnly ? configuredScanFrom(homeDir) : [];
+  const dependencies = new InventoryDependencies();
+  const cacheable = globalOnly && !opts?.showSecrets;
+  const key = JSON.stringify({
+    schema: 2,
+    version: await packageVersion(),
+    homeDir,
+    cwd,
+    root: canonicalRoot,
+    tool: opts?.tool,
+    includeGitHooks: opts?.includeGitHooks ?? false,
+  });
+  const cachePath = inventoryCachePath(homeDir, key, canonicalRoot);
+  if (cacheable) {
+    const cached = await readInventoryCache(cachePath, key);
+    if (cached) {
+      return cached;
+    }
+    await dependencies.captureTree(join(canonicalRoot, "instructions"));
+    await dependencies.capturePath(join(canonicalRoot, "AGENTS.global.md"));
+    await dependencies.capturePath(
+      join(canonicalRoot, "AGENTS.override.global.md")
+    );
+  }
   const explicitFrom = opts?.from ?? [];
-  const effectiveFrom =
-    configuredFrom.length === 0 && explicitFrom.length === 0
+  const effectiveFrom = globalOnly
+    ? []
+    : configuredFrom.length === 0 && explicitFrom.length === 0
       ? opts?.sourceMode === "project"
         ? [cwd]
         : ["~"]
@@ -688,7 +726,15 @@ export async function buildAgentInventory(
   const scanResult = await scan([], {
     cwd,
     homeDir,
-    includeConfigFrom,
+    includeConfigFrom: includeConfigFrom && !globalOnly,
+    globalOnly,
+    canonicalRoot,
+    tracking: cacheable
+      ? {
+          capturePath: (path) => dependencies.capturePath(path),
+          captureTree: (path) => dependencies.captureTree(path),
+        }
+      : undefined,
     includeGitHooks: opts?.includeGitHooks,
     from: effectiveFrom,
   });
@@ -718,7 +764,7 @@ export async function buildAgentInventory(
     version: 1,
     generatedAt: new Date().toISOString(),
     cwd,
-    canonicalRoot: facultRootDir(homeDir),
+    canonicalRoot,
     scanFrom: [...new Set([...configuredFrom, ...effectiveFrom])].sort(),
     sources,
     mcpCapabilities,
@@ -735,10 +781,25 @@ export async function buildAgentInventory(
       truncatedSourceCount: sources.filter((source) => source.truncated).length,
     },
   };
-  return filterInventoryBySource(inventory, {
+  const filtered = filterInventoryBySource(inventory, {
     sourceMode: opts?.sourceMode,
     tool: opts?.tool,
   });
+  if (cacheable) {
+    filtered.cache = {
+      hit: false,
+      generatedAt: filtered.generatedAt,
+      key: await dependencies.fingerprint(key),
+    };
+    await writeInventoryCache({
+      homeDir,
+      path: cachePath,
+      key,
+      dependencies,
+      inventory: filtered,
+    });
+  }
+  return filtered;
 }
 
 function printHelp() {

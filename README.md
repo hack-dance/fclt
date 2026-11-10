@@ -742,3 +742,7 @@ account home. Add `--json` for structured output, or use
 are skipped by default; `--include-ln` explicitly reads those homes. The existing `inventory --json`
 contract is unchanged. See [the layered inventory guide](docs/harness-inventory.md)
 for discovery, precedence, token estimates, and offline limitations.
+
+### Read-only queries and inventory caching
+
+Capability reads (`list`, `show`, `find`, `graph`, `status`, `inventory`) leave canonical roots unchanged. Global inventory scans known tool roots and uses a machine-local cache. Pass `--no-write` or set `FCLT_NO_WRITE=1` to disable optional cache writes and reject write commands. See [the read-only contract and cache location](docs/read-only-inventory.md).
