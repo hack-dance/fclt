@@ -260,7 +260,7 @@ describe("query filters", () => {
     expect(alpha.trusted).toBeUndefined();
   });
 
-  it("repairs a legacy root index into generated ai state on read", async () => {
+  it("reads a legacy root index without copying it into generated state", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
@@ -288,10 +288,9 @@ describe("query filters", () => {
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
     expect(Object.keys(loaded.skills)).toEqual(["alpha"]);
 
-    const repaired = JSON.parse(
-      await Bun.file(facultAiIndexPath(tempHome, rootDir)).text()
-    ) as FacultIndex;
-    expect(Object.keys(repaired.skills)).toEqual(["alpha"]);
+    expect(await Bun.file(facultAiIndexPath(tempHome, rootDir)).exists()).toBe(
+      false
+    );
   });
 
   it("rebuilds a stale generated index when canonical agent manifests are newer", async () => {

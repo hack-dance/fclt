@@ -1,0 +1,20 @@
+---
+title: Read path and machine cache
+---
+stateDiagram-v2
+    direction TB
+    [*] --> Read
+    Read --> CacheCheck: global inventory
+    CacheCheck --> Result: cache hit
+    CacheCheck --> ScopedScan: cache miss
+    ScopedScan --> StateCache: writes allowed
+    ScopedScan --> Result: explicit no-write
+    StateCache --> Result: atomic cache write
+    Read --> IndexCheck: query
+    IndexCheck --> Result: index current
+    IndexCheck --> MemoryRebuild: missing or stale
+    MemoryRebuild --> Result: snapshot
+    Result --> [*]
+    note right of MemoryRebuild
+      Canonical roots stay unchanged
+    end note

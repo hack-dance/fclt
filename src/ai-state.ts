@@ -1,6 +1,6 @@
 import type { Dirent } from "node:fs";
-import { copyFile, mkdir, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { copyFile, mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { buildIndex } from "./index-builder";
 import {
   facultAiGraphPath,
@@ -19,7 +19,10 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function newestPathMtime(path: string): Promise<number> {
+async function newestPathMtime(
+  path: string,
+  ancestors = new Set<string>()
+): Promise<number> {
   try {
     const st = await stat(path);
     if (st.isFile()) {
@@ -28,6 +31,11 @@ async function newestPathMtime(path: string): Promise<number> {
     if (!st.isDirectory()) {
       return 0;
     }
+    const identity = await realpath(path);
+    if (ancestors.has(identity)) {
+      return 0;
+    }
+    const nextAncestors = new Set([...ancestors, identity]);
     let newest = st.mtimeMs;
     let entries: Dirent<string>[] = [];
     try {
@@ -47,8 +55,8 @@ async function newestPathMtime(path: string): Promise<number> {
         }
         continue;
       }
-      if (entry.isDirectory()) {
-        newest = Math.max(newest, await newestPathMtime(child));
+      if (entry.isDirectory() || entry.isSymbolicLink()) {
+        newest = Math.max(newest, await newestPathMtime(child, nextAncestors));
       }
     }
     return newest;
@@ -61,10 +69,12 @@ async function watchedPathMtime(path: string): Promise<number> {
   return await newestPathMtime(path);
 }
 
-async function canonicalAssetsNewerThanIndex(args: {
+export async function canonicalAssetsNewerThanIndex(args: {
   homeDir: string;
   rootDir: string;
   indexPath: string;
+  /** Read snapshots also verify deletions; explicit repair retains its existing policy. */
+  checkRemovedPaths?: boolean;
 }): Promise<boolean> {
   let indexMtimeMs = 0;
   try {
@@ -77,6 +87,7 @@ async function canonicalAssetsNewerThanIndex(args: {
     "AGENTS.global.md",
     "AGENTS.override.global.md",
     "agents",
+    "automations",
     "config.toml",
     "instructions",
     "mcp",
@@ -94,6 +105,18 @@ async function canonicalAssetsNewerThanIndex(args: {
   }
 
   for (const root of watchedRoots) {
+    // Removing an entire watched path changes only its parent's mtime.
+    if (args.checkRemovedPaths) {
+      try {
+        if ((await stat(root)).mtimeMs > indexMtimeMs) {
+          return true;
+        }
+      } catch {
+        if (root === args.rootDir) {
+          return true;
+        }
+      }
+    }
     for (const rel of watchedRelPaths) {
       if ((await watchedPathMtime(join(root, rel))) > indexMtimeMs) {
         return true;
@@ -101,6 +124,65 @@ async function canonicalAssetsNewerThanIndex(args: {
     }
   }
 
+  if (!args.checkRemovedPaths) {
+    return false;
+  }
+  // Filesystem timestamps may tie within one clock tick. Confirm that paths
+  // recorded by a real index/graph still exist, so deletions cannot hide in a tie.
+  try {
+    const saved = (await Bun.file(args.indexPath).json()) as Record<
+      string,
+      unknown
+    >;
+    const collections = [
+      saved.skills,
+      saved.agents,
+      saved.automations,
+      saved.snippets,
+      saved.instructions,
+      saved.nodes,
+    ];
+    const mcp = saved.mcp as { servers?: unknown } | undefined;
+    collections.push(mcp?.servers);
+    const paths = new Set<string>();
+    for (const collection of collections) {
+      if (!collection || typeof collection !== "object") {
+        continue;
+      }
+      for (const entry of Object.values(
+        collection as Record<string, unknown>
+      )) {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          !("path" in entry) ||
+          typeof entry.path !== "string"
+        ) {
+          continue;
+        }
+        const path = entry.path;
+        if (
+          watchedRoots.some((root) => {
+            const rel = relative(root, path);
+            return (
+              rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+            );
+          })
+        ) {
+          paths.add(path);
+        }
+      }
+    }
+    for (const path of paths) {
+      try {
+        await stat(path);
+      } catch {
+        return true;
+      }
+    }
+  } catch {
+    return true;
+  }
   return false;
 }
 
@@ -208,7 +290,7 @@ export async function ensureAiIndexPath(args: {
         await copyFile(legacyPath, generatedPath);
       }
       return {
-        path: generatedPath,
+        path: args.repair === false ? legacyPath : generatedPath,
         repaired: args.repair !== false,
         source: "legacy",
       };
@@ -292,7 +374,10 @@ export async function ensureAiGraphPath(args: {
           await copyFile(legacyGeneratedPath, generatedPath);
         }
       }
-      return { path: generatedPath, rebuilt: args.repair !== false };
+      return {
+        path: args.repair === false ? legacyGeneratedPath : generatedPath,
+        rebuilt: args.repair !== false,
+      };
     }
   }
 

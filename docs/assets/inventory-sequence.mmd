@@ -1,0 +1,22 @@
+---
+title: HTP inventory requests
+---
+sequenceDiagram
+    autonumber
+    participant HTP
+    participant fclt
+    participant Cache as Machine cache
+    participant Roots as Known global roots
+    HTP->>fclt: inventory --global --json
+    fclt->>Cache: Read snapshot and dependencies
+    fclt->>Roots: Check dependency metadata
+    alt Valid cache
+        Cache-->>fclt: Cached inventory
+    else Missing or changed
+        fclt->>Roots: Scoped capability scan
+        Roots-->>fclt: Inventory
+        opt Writes allowed
+            fclt->>Cache: Atomic snapshot write
+        end
+    end
+    fclt-->>HTP: Stable JSON and cache metadata

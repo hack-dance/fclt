@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { ensureAiIndexPath } from "./ai-state";
+import { canonicalAssetsNewerThanIndex, ensureAiIndexPath } from "./ai-state";
 import type { AssetScope, AssetSourceKind } from "./graph";
 import type {
   AgentEntry,
@@ -9,6 +9,7 @@ import type {
   SkillEntry,
   SnippetEntry,
 } from "./index-builder";
+import { buildIndexSnapshot } from "./index-builder";
 import {
   facultAiIndexPath,
   facultContextRootDir,
@@ -177,14 +178,25 @@ export async function loadIndex(opts?: {
   const { path: indexPath } = await ensureAiIndexPath({
     homeDir: resolvedHome,
     rootDir,
-    repair: true,
+    repair: false,
   });
-  const file = Bun.file(indexPath);
-  if (!(await file.exists())) {
-    throw new Error(`Index not found at ${indexPath}. Run "fclt index".`);
-  }
-  const raw = await file.text();
-  const parsed = JSON.parse(raw) as FacultIndex;
+  const stale = await canonicalAssetsNewerThanIndex({
+    checkRemovedPaths: true,
+    homeDir: resolvedHome,
+    rootDir,
+    indexPath,
+  });
+  const parsed = stale
+    ? (
+        await buildIndexSnapshot({
+          homeDir: resolvedHome,
+          rootDir,
+          previousIndex: (await Bun.file(indexPath)
+            .json()
+            .catch(() => undefined)) as FacultIndex | undefined,
+        })
+      ).index
+    : ((await Bun.file(indexPath).json()) as FacultIndex);
   return await applyOrgTrustList(parsed, { homeDir: resolvedHome });
 }
 

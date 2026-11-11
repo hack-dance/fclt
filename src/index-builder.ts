@@ -1578,6 +1578,8 @@ function registerManagedRenderedTargets(args: {
 
 interface BuildIndexOptions {
   force?: boolean;
+  /** Existing read-only snapshot metadata, including legacy trust and enable settings. */
+  previousIndex?: FacultIndex;
   /** Override the default canonical root dir (useful for tests). */
   rootDir?: string;
   /** Override home directory for generated state placement (useful for tests). */
@@ -1630,8 +1632,9 @@ async function buildIndexInternal(
     opts?.machineStateDir
   );
 
-  let previousIndex: Record<string, unknown> | null = null;
-  if (!force) {
+  let previousIndex: Record<string, unknown> | null =
+    !force && opts?.previousIndex ? { ...opts.previousIndex } : null;
+  if (!(force || previousIndex)) {
     try {
       const existing = indexFile(outputPath);
       if (await existing.exists()) {

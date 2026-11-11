@@ -66,12 +66,17 @@ export async function indexDirectory(dir: string): Promise<IndexDirent[]> {
   const names = await readAiDirectory(dir, root);
   const entries: IndexDirent[] = [];
   for (const name of names) {
-    const metadata = await aiStatPath(join(dir, name), root);
-    entries.push({
-      name,
-      isDirectory: () => metadata.isDirectory(),
-      isFile: () => metadata.isFile(),
-    });
+    try {
+      const metadata = await aiStatPath(join(dir, name), root);
+      entries.push({
+        name,
+        isDirectory: () => metadata.isDirectory(),
+        isFile: () => metadata.isFile(),
+      });
+    } catch {
+      // Optional broken or unreadable entries must not erase healthy siblings.
+      // Keep guarded stat validation for every child that is included.
+    }
   }
   return entries;
 }
