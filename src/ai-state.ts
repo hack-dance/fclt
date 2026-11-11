@@ -1,12 +1,15 @@
 import type { Dirent } from "node:fs";
-import { copyFile, mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import {
+  withGeneratedStateLock,
+  writeGeneratedState,
+} from "./generated-state-io";
 import { buildIndex } from "./index-builder";
 import {
   facultAiGraphPath,
   facultAiIndexPath,
-  legacyFacultAiStateDirs,
-  legacyFacultStateDirForRoot,
+  legacyFacultAiIndexPaths,
   preferredGlobalAiRoot,
   projectRootFromAiRoot,
 } from "./paths";
@@ -198,49 +201,20 @@ export function legacyAiIndexPath(rootDir: string): string {
   return join(rootDir, "index.json");
 }
 
-function legacyGeneratedAiIndexPath(homeDir: string, rootDir: string): string {
-  return join(
-    legacyFacultStateDirForRoot(rootDir, homeDir),
-    "ai",
-    "index.json"
-  );
-}
-
 function legacyGeneratedAiIndexPaths(
   homeDir: string,
   rootDir: string
 ): string[] {
-  return [
-    ...new Set([
-      ...legacyFacultAiStateDirs(homeDir, rootDir).map((dir) =>
-        join(dir, "index.json")
-      ),
-      legacyGeneratedAiIndexPath(homeDir, rootDir),
-      legacyAiIndexPath(rootDir),
-    ]),
-  ];
-}
-
-function legacyGeneratedAiGraphPath(homeDir: string, rootDir: string): string {
-  return join(
-    legacyFacultStateDirForRoot(rootDir, homeDir),
-    "ai",
-    "graph.json"
-  );
+  return legacyFacultAiIndexPaths(homeDir, rootDir);
 }
 
 function legacyGeneratedAiGraphPaths(
   homeDir: string,
   rootDir: string
 ): string[] {
-  return [
-    ...new Set([
-      ...legacyFacultAiStateDirs(homeDir, rootDir).map((dir) =>
-        join(dir, "graph.json")
-      ),
-      legacyGeneratedAiGraphPath(homeDir, rootDir),
-    ]),
-  ];
+  return legacyFacultAiIndexPaths(homeDir, rootDir)
+    .filter((path) => path !== legacyAiIndexPath(rootDir))
+    .map((path) => join(dirname(path), "graph.json"));
 }
 
 export async function ensureAiIndexPath(args: {
@@ -252,6 +226,20 @@ export async function ensureAiIndexPath(args: {
   repaired: boolean;
   source: "generated" | "legacy" | "rebuilt" | "missing";
 }> {
+  if (args.repair !== false) {
+    return await withGeneratedStateLock({
+      directory: dirname(facultAiIndexPath(args.homeDir, args.rootDir)),
+      operation: () => ensureAiIndexPathInternal(args),
+    });
+  }
+  return await ensureAiIndexPathInternal(args);
+}
+
+async function ensureAiIndexPathInternal(args: {
+  homeDir: string;
+  rootDir: string;
+  repair?: boolean;
+}): ReturnType<typeof ensureAiIndexPath> {
   const generatedPath = facultAiIndexPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
     if (
@@ -285,8 +273,6 @@ export async function ensureAiIndexPath(args: {
             indexPath: legacyPath,
           })
         ) {
-          await mkdir(dirname(generatedPath), { recursive: true });
-          await copyFile(legacyPath, generatedPath);
           const { outputPath } = await buildIndex({
             rootDir: args.rootDir,
             homeDir: args.homeDir,
@@ -294,8 +280,10 @@ export async function ensureAiIndexPath(args: {
           });
           return { path: outputPath, repaired: true, source: "rebuilt" };
         }
-        await mkdir(dirname(generatedPath), { recursive: true });
-        await copyFile(legacyPath, generatedPath);
+        await writeGeneratedState(
+          generatedPath,
+          await Bun.file(legacyPath).text()
+        );
       }
       return {
         path: args.repair === false ? legacyPath : generatedPath,
@@ -327,6 +315,22 @@ export async function ensureAiGraphPath(args: {
   path: string;
   rebuilt: boolean;
 }> {
+  if (args.repair !== false) {
+    return await withGeneratedStateLock({
+      directory: dirname(facultAiGraphPath(args.homeDir, args.rootDir)),
+      operation: () => ensureAiGraphPathInternal(args),
+    });
+  }
+  return await ensureAiGraphPathInternal(args);
+}
+
+async function ensureAiGraphPathInternal(args: {
+  homeDir: string;
+  rootDir: string;
+  repair?: boolean;
+  rebuild?: () => Promise<{ graphPath: string }>;
+  copyGenerated?: (source: string, destination: string) => Promise<void>;
+}): ReturnType<typeof ensureAiGraphPath> {
   const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
     const generatedIndexPath = facultAiIndexPath(args.homeDir, args.rootDir);
@@ -378,8 +382,10 @@ export async function ensureAiGraphPath(args: {
         if (args.copyGenerated) {
           await args.copyGenerated(legacyGeneratedPath, generatedPath);
         } else {
-          await mkdir(dirname(generatedPath), { recursive: true });
-          await copyFile(legacyGeneratedPath, generatedPath);
+          await writeGeneratedState(
+            generatedPath,
+            await Bun.file(legacyGeneratedPath).text()
+          );
         }
       }
       return {

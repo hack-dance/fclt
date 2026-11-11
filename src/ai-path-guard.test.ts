@@ -1535,7 +1535,9 @@ describe("AI generated-state repair guard", () => {
         operation === "capture"
           ? addWriteback({ ...args, allowEphemeral })
           : proposeEvolution({ ...args, allowEphemeral });
-      await expect(mutate()).rejects.toThrow("OS temporary directory");
+      await expect(mutate()).rejects.toThrow(
+        layout === "directory" ? ROOT_ERROR_RE : "OS temporary directory"
+      );
       expect(await snapshot()).toEqual(before);
       expect(existsSync(facultAiProposalDir(homeDir, rootDir))).toBe(false);
       await expect(mutate(true)).rejects.toThrow(ROOT_ERROR_RE);

@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getAdapter } from "./adapters";
@@ -8,6 +7,11 @@ import {
   resolveCliContextRoot,
   resolveCliContextScope,
 } from "./cli-context";
+import {
+  assertGeneratedStateTarget,
+  withGeneratedStateLock,
+  writeGeneratedState,
+} from "./generated-state-io";
 import {
   type AssetScope,
   type AssetSourceKind,
@@ -29,6 +33,10 @@ import {
   facultAiIndexPath,
   facultMachineStateDir,
   facultRootDir,
+  legacyFacultAiIndexPaths,
+  legacyFacultAiStateDirs,
+  pathIsPhysicallyInsideOrEqual,
+  pathsPhysicallyEquivalent,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
   withFacultRootScope,
@@ -238,7 +246,10 @@ function findPreviousEntryByCanonicalRef(
       if (!isPlainObject(value)) {
         continue;
       }
-      if (value.canonicalRef === canonicalRef) {
+      if (
+        value.canonicalRef === canonicalRef &&
+        legacyFallbackMatchesSource(value, source)
+      ) {
         return value;
       }
     }
@@ -274,7 +285,8 @@ function findPreviousMcpEntry(
   }
   if (
     typeof canonicalRef === "string" &&
-    candidate.canonicalRef === canonicalRef
+    candidate.canonicalRef === canonicalRef &&
+    legacyFallbackMatchesSource(candidate, source)
   ) {
     return candidate;
   }
@@ -285,8 +297,22 @@ function pathIsWithinRoot(pathValue: string, rootDir: string): boolean {
   if (!isAbsolute(pathValue)) {
     return false;
   }
-  const rel = relative(rootDir, pathValue);
-  return rel === "" || !(rel.startsWith("..") || isAbsolute(rel));
+  try {
+    return pathIsPhysicallyInsideOrEqual(pathValue, rootDir);
+  } catch {
+    return false;
+  }
+}
+
+function sameSourceRoot(left: string, right: string | undefined): boolean {
+  if (!right) {
+    return false;
+  }
+  try {
+    return pathsPhysicallyEquivalent(left, right);
+  } catch {
+    return false;
+  }
 }
 
 function legacyFallbackMatchesSource(
@@ -314,7 +340,7 @@ function legacyFallbackMatchesSource(
   const entryProjectRoot = entry.projectRoot;
   if (typeof entryProjectRoot === "string") {
     hasSourceSignal = true;
-    if (entryProjectRoot !== source.projectRoot) {
+    if (!sameSourceRoot(entryProjectRoot, source.projectRoot)) {
       return false;
     }
   }
@@ -322,7 +348,7 @@ function legacyFallbackMatchesSource(
   const entrySourceRoot = entry.sourceRoot;
   if (typeof entrySourceRoot === "string") {
     hasSourceSignal = true;
-    if (entrySourceRoot !== source.rootDir) {
+    if (!sameSourceRoot(entrySourceRoot, source.rootDir)) {
       return false;
     }
   }
@@ -1635,24 +1661,22 @@ async function buildIndexInternal(
   let previousIndex: Record<string, unknown> | null =
     !force && opts?.previousIndex ? { ...opts.previousIndex } : null;
   if (!(force || previousIndex)) {
-    try {
-      const existing = indexFile(outputPath);
-      if (await existing.exists()) {
-        previousIndex = JSON.parse(await existing.text()) as Record<
-          string,
-          unknown
-        >;
+    const candidates = opts?.machineStateDir
+      ? [outputPath]
+      : [outputPath, ...legacyFacultAiIndexPaths(homeDir, rootDir)];
+    for (const path of candidates) {
+      try {
+        const existing = indexFile(path);
+        if (await existing.exists()) {
+          const parsed: unknown = JSON.parse(await existing.text());
+          if (isPlainObject(parsed)) {
+            previousIndex = parsed;
+            break;
+          }
+        }
+      } catch {
+        // Preserve readable legacy metadata if a newer snapshot is unavailable.
       }
-    } catch {
-      previousIndex = null;
-    }
-  }
-
-  if (force && persist) {
-    try {
-      await Bun.write(outputPath, "");
-    } catch {
-      // ignore
     }
   }
 
@@ -1853,9 +1877,13 @@ async function buildIndexInternal(
   }
 
   if (persist) {
-    await mkdir(dirname(outputPath), { recursive: true });
-    await Bun.write(outputPath, `${JSON.stringify(index, null, 2)}\n`);
-    await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
+    await assertGeneratedStateTarget(outputPath);
+    await assertGeneratedStateTarget(graphPath);
+    await writeGeneratedState(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
+    await writeGeneratedState(
+      outputPath,
+      `${JSON.stringify(index, null, 2)}\n`
+    );
   }
 
   return { index, outputPath, graph, graphPath };
@@ -1864,7 +1892,18 @@ async function buildIndexInternal(
 export async function buildIndex(
   opts?: BuildIndexOptions
 ): Promise<BuildIndexResult> {
-  return await buildIndexInternal({ ...opts, persist: true });
+  const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
+  const rootDir = canonicalProjectAiRoot(
+    opts?.rootDir ?? facultRootDir(homeDir),
+    homeDir
+  );
+  const directory = opts?.machineStateDir
+    ? join(opts.machineStateDir, "ai")
+    : dirname(facultAiIndexPath(homeDir, rootDir));
+  return await withGeneratedStateLock({
+    directory,
+    operation: () => buildIndexInternal({ ...opts, persist: true }),
+  });
 }
 
 export async function buildIndexSnapshot(
@@ -1883,6 +1922,12 @@ export async function buildIndexSnapshot(
     globalRoot,
     facultBuiltinPackRoot(),
     opts?.machineStateDir ?? facultMachineStateDir(homeDir, rootDir),
+    ...(opts?.machineStateDir
+      ? []
+      : [
+          dirname(facultAiIndexPath(homeDir, rootDir)),
+          ...legacyFacultAiStateDirs(homeDir, rootDir),
+        ]),
   ];
   const { graph, index } = await withGuardedIndexReads(roots, () =>
     buildIndexInternal({

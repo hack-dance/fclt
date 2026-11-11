@@ -576,12 +576,12 @@ restored from `HEAD` in the working tree. A tracked file with staged changes
 is kept, and the index is never changed. Rerunning with `--remove-migrated`
 after a successful migration cleans up without another commit.
 
-Generated `~/.ai/.facult/ai/index.json` and `graph.json` are rebuilt by
-`fclt index`. If the canonical repository tracks them, a reindex makes the tree
-dirty. Ignoring them is not enough on its own, because `.gitignore` does not
-apply to tracked files: stop tracking them in a reviewed change
-(`git rm --cached .facult/ai/index.json .facult/ai/graph.json`) and add both
-paths to `.gitignore`.
+Generated index and graph snapshots now live outside canonical source, under
+machine-local `fclt` state. `fclt index` and `fclt doctor --repair` retain legacy
+metadata without deleting or changing old files. Read-only commands can still
+use legacy snapshots. Existing tracked `.facult/ai/index.json` and `graph.json`
+remain untouched; removing them from Git is a separate reviewed change.
+See [Generated state](./generated-state.md) for paths and migration behavior.
 
 ## Approval Rule
 

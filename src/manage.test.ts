@@ -29,7 +29,11 @@ import {
   syncManagedTools,
   unmanageTool,
 } from "./manage";
-import { facultMachineStateDir, legacyFacultStateDirForRoot } from "./paths";
+import {
+  facultAiIndexPath,
+  facultMachineStateDir,
+  legacyFacultStateDirForRoot,
+} from "./paths";
 
 const BUNDLED_PLUGIN_VERSION = (
   JSON.parse(
@@ -1229,10 +1233,7 @@ describe("manage/unmanage", () => {
       join(rootDir, "skills", "legacy-skill")
     );
 
-    const indexRaw = await readFile(
-      join(home, ".ai", ".facult", "ai", "index.json"),
-      "utf8"
-    );
+    const indexRaw = await readFile(facultAiIndexPath(home, rootDir), "utf8");
     const index = JSON.parse(indexRaw) as {
       skills: Record<string, { path: string }>;
     };

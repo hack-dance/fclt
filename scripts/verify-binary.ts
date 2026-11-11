@@ -551,8 +551,20 @@ for (const pathValue of forbiddenPreviewWrites) {
   }
 }
 await run(["index", "--global", "--root", customGlobalRoot]);
+const customPaths = JSON.parse(
+  await run(["paths", "--global", "--root", customGlobalRoot, "--json"])
+) as { generated: { indexPath: string; graphPath: string } };
+if (
+  !customPaths.generated.indexPath.startsWith(
+    join(tempHome, ".local", "state", "fclt", "global", "roots")
+  )
+) {
+  throw new Error(
+    "Expected compiled global generated state outside canonical source"
+  );
+}
 const customIndex = JSON.parse(
-  await Bun.file(join(customGlobalRoot, ".facult", "ai", "index.json")).text()
+  await Bun.file(customPaths.generated.indexPath).text()
 ) as { skills?: Record<string, { sourceKind?: string }> };
 if (
   customIndex.skills?.["compiled-preview"]?.sourceKind !== "global" ||

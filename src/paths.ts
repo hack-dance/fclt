@@ -747,14 +747,36 @@ export function facultGeneratedStateDir(args?: {
   rootDir?: string;
 }): string {
   const home = args?.home ?? defaultHomeDir();
-  return facultStateDir(home, args?.rootDir);
+  const rootDir = args?.rootDir ?? facultRootDir(home);
+  if (projectRootFromAiRoot(rootDir, home)) {
+    return facultMachineStateDir(home, rootDir);
+  }
+  // Global runtime queues retain their existing location. Only generated
+  // snapshots are keyed by source root, so alternate stores cannot share them.
+  const identity = resolvePhysicalPath(rootDir);
+  const key = createHash("sha256")
+    .update(process.platform === "win32" ? identity.toLowerCase() : identity)
+    .digest("hex");
+  const generated = join(facultLocalStateRoot(home), "global", "roots", key);
+  if (pathIsPhysicallyInsideOrEqual(generated, rootDir)) {
+    throw new Error("Generated state must be outside the canonical root.");
+  }
+  return generated;
 }
 
 export function facultAiStateDir(
   home: string = defaultHomeDir(),
   rootDir?: string
 ): string {
-  return join(facultGeneratedStateDir({ home, rootDir }), "ai");
+  const resolvedRoot = rootDir ?? facultRootDir(home);
+  const generated = join(
+    facultGeneratedStateDir({ home, rootDir: resolvedRoot }),
+    "ai"
+  );
+  if (pathIsPhysicallyInsideOrEqual(generated, resolvedRoot)) {
+    throw new Error("Generated state must be outside the canonical root.");
+  }
+  return generated;
 }
 
 export function legacyRepoLocalFacultAiStateDir(
@@ -774,6 +796,8 @@ export function legacyFacultAiStateDirs(
   const resolvedRoot = rootDir ?? facultRootDir(home);
   const current = resolve(facultAiStateDir(home, resolvedRoot));
   const legacyDirs = [
+    join(facultStateDir(home, resolvedRoot), "ai"),
+    join(resolvedRoot, ".facult", "ai"),
     legacyRepoLocalFacultAiStateDir(home, resolvedRoot),
     join(legacyFacultStateDirForRoot(resolvedRoot, home), "ai"),
   ];
@@ -784,6 +808,25 @@ export function legacyFacultAiStateDirs(
         .filter((pathValue): pathValue is string => Boolean(pathValue))
         .filter((pathValue) => resolve(pathValue) !== current)
     ),
+  ];
+}
+
+/** Root-specific legacy snapshots precede the oldest root index. */
+export function legacyFacultAiIndexPaths(
+  home: string,
+  rootDir: string
+): string[] {
+  const sharedLegacyDir = resolve(
+    join(legacyExternalFacultStateDir(home), "ai")
+  );
+  const allowSharedLegacy =
+    Boolean(projectRootFromAiRoot(rootDir, home)) ||
+    shouldUsePreferredGlobalStateDir(rootDir, home);
+  return [
+    ...legacyFacultAiStateDirs(home, rootDir)
+      .filter((dir) => allowSharedLegacy || resolve(dir) !== sharedLegacyDir)
+      .map((dir) => join(dir, "index.json")),
+    join(rootDir, "index.json"),
   ];
 }
 

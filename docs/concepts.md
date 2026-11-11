@@ -71,11 +71,14 @@ Generated state is rebuildable.
 Examples:
 
 ```text
-~/.ai/.facult/ai/index.json
-~/.ai/.facult/ai/graph.json
+<fclt-local-state>/global/roots/<canonical-root-hash>/ai/index.json
+<fclt-local-state>/global/roots/<canonical-root-hash>/ai/graph.json
 ```
 
-Project generated state lives in machine-local `fclt` state, not in the repo.
+Global and project generated state live in machine-local `fclt` state, outside
+canonical source. Global snapshots are keyed by the physical canonical root;
+project snapshots keep their project-specific machine-state path. Use
+`fclt paths --json` to inspect the active paths. See [Generated state](./generated-state.md).
 
 Machine runtime state records local behavior and history.
 
