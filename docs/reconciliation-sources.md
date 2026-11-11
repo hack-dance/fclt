@@ -2,7 +2,10 @@
 
 Use `fclt ai review sources` to prepare narrow source entries and inspect their local inputs.
 These commands do not write configuration, scan source content, refresh cursors, create reviews,
-contact vendors, or change scheduling. Run them in the same scope as the intended review.
+contact vendors, or change scheduling. Project context resolution may run bounded, read-only Git
+metadata commands to verify canonical checkout and state ownership. If that ownership cannot be
+verified, the command fails closed; it does not guess another root. Run these tools in the same
+scope as the intended review.
 
 ## Generate an entry
 
@@ -54,8 +57,10 @@ source and target metadata:
 - Writebacks list current and legacy queue paths for the selected source scope. Missing queues
   are listed too; an empty writeback source can be valid.
 - Git sources show the local repository, path filters, revision selection, and default-branch
-  policy. These describe the history query, not a list of working-tree files. No Git command or
-  fetch runs during preview; Git sources without a project root are unavailable.
+  policy. These describe the history query, not a list of working-tree files. Preview does not
+  run the source's history query or fetch. Scope resolution still uses local Git metadata, so a
+  project checkout with missing Git or invalid metadata fails before preview. Git sources without
+  a project root are unavailable.
 - Disabled sources have no read targets.
 
 `available` means file metadata is accessible, not that content can be read or parsed or that a

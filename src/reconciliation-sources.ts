@@ -179,7 +179,7 @@ export async function previewReconciliationSource(args: {
       ...base,
       state: projectRoot ? "not_checked" : "unavailable",
       reason: projectRoot
-        ? "Local Git history query; no Git command, fetch, or content scan was run"
+        ? "Local Git history query target; no source-history query, fetch, or content scan was run"
         : "No project repository is available in global scope",
       repository: projectRoot,
       paths: source.paths ?? [],
@@ -368,7 +368,7 @@ export async function reconciliationSourcesCommand(args: {
   }
   return [
     `config: ${path}`,
-    "Metadata preview only; no content scan, network call, or state write. Files can change before reconciliation.",
+    "Metadata preview only; project routing may read local Git metadata. No source-content scan, network call, or state write. Files can change before reconciliation.",
     ...inputs.flatMap((input) => [
       `${input.sourceId}: inputs ${input.state}${input.reason ? ` — ${input.reason}` : ""}`,
       ...("repository" in input && input.repository
