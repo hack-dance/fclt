@@ -1925,7 +1925,12 @@ Options:
   });
   const { outputPath } = await withFacultRootScope(
     { rootDir, scope },
-    async () => buildIndex({ force, homeDir, rootDir })
+    async () => {
+      const result = await buildIndex({ force, homeDir, rootDir });
+      const { refreshReadSnapshot } = await import("./read-snapshot");
+      await refreshReadSnapshot({ homeDir, rootDir });
+      return result;
+    }
   );
   console.log(`Index written to ${outputPath}`);
 }

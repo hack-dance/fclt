@@ -109,6 +109,9 @@ interface InventoryOptions {
   showSecrets?: boolean;
   sourceMode?: "machine" | "global" | "project";
   tool?: string;
+  /** Explicit snapshot publishers collect fresh discovery dependencies. */
+  dependencies?: InventoryDependencies;
+  refresh?: boolean;
 }
 
 const SECRET_KEY_RE = /(TOKEN|KEY|SECRET|PASSWORD|PASS|BEARER|AUTH)/i;
@@ -692,7 +695,7 @@ export async function buildAgentInventory(
     : facultRootDir(homeDir);
   const configuredFrom =
     includeConfigFrom && !globalOnly ? configuredScanFrom(homeDir) : [];
-  const dependencies = new InventoryDependencies();
+  const dependencies = opts?.dependencies ?? new InventoryDependencies();
   const cacheable = globalOnly && !opts?.showSecrets;
   const key = JSON.stringify({
     schema: 4,
@@ -704,7 +707,9 @@ export async function buildAgentInventory(
   });
   const cachePath = inventoryCachePath(homeDir, key, canonicalRoot);
   if (cacheable) {
-    const cached = await readInventoryCache(cachePath, key);
+    const cached = opts?.refresh
+      ? null
+      : await readInventoryCache(cachePath, key);
     if (cached) {
       return { ...cached, cwd };
     }
@@ -728,13 +733,14 @@ export async function buildAgentInventory(
     includeConfigFrom: includeConfigFrom && !globalOnly,
     globalOnly,
     canonicalRoot,
-    tracking: cacheable
-      ? {
-          shallowGlobDependencies: true,
-          capturePath: (path) => dependencies.capturePath(path),
-          captureTree: (path) => dependencies.captureTree(path),
-        }
-      : undefined,
+    tracking:
+      cacheable || opts?.dependencies
+        ? {
+            shallowGlobDependencies: true,
+            capturePath: (path) => dependencies.capturePath(path),
+            captureTree: (path) => dependencies.captureTree(path),
+          }
+        : undefined,
     includeGitHooks: opts?.includeGitHooks,
     from: effectiveFrom,
   });
@@ -791,13 +797,15 @@ export async function buildAgentInventory(
       generatedAt: filtered.generatedAt,
       key: await dependencies.fingerprint(key),
     };
-    await writeInventoryCache({
-      homeDir,
-      path: cachePath,
-      key,
-      dependencies,
-      inventory: filtered,
-    });
+    if (!opts?.refresh) {
+      await writeInventoryCache({
+        homeDir,
+        path: cachePath,
+        key,
+        dependencies,
+        inventory: filtered,
+      });
+    }
   }
   return filtered;
 }
@@ -950,14 +958,50 @@ export async function inventoryCommand(argv: string[]) {
     return;
   }
 
-  const inventory = await buildAgentInventory({
-    from: opts.from,
-    showSecrets: opts.showSecrets,
-    includeGitHooks: opts.includeGitHooks,
-    includeConfigFrom: opts.includeConfigFrom,
-    sourceMode: opts.sourceMode,
-    tool: opts.tool,
-  });
+  try {
+    const scoped =
+      opts.sourceMode === "global" || opts.sourceMode === "project";
+    if (
+      scoped &&
+      (opts.showSecrets || opts.includeGitHooks || opts.from.length)
+    ) {
+      throw new Error(
+        "Scoped inventory reads a redacted snapshot. Use inventory without a scope flag for explicit discovery options."
+      );
+    }
+    const inventory = scoped
+      ? await import("./read-snapshot").then(async ({ loadReadSnapshot }) => {
+          const homeDir = homedir();
+          const cwd = process.cwd();
+          const rootDir = resolveCliContextRoot({
+            homeDir,
+            cwd,
+            scope: opts.sourceMode as "global" | "project",
+          });
+          const record = await loadReadSnapshot({ homeDir, rootDir });
+          return filterInventoryBySource(
+            {
+              ...record.inventory,
+              cwd,
+              cache: record.inventory.cache
+                ? { ...record.inventory.cache, hit: true }
+                : undefined,
+            },
+            { sourceMode: opts.sourceMode, tool: opts.tool }
+          );
+        })
+      : await buildAgentInventory({
+          from: opts.from,
+          showSecrets: opts.showSecrets,
+          includeGitHooks: opts.includeGitHooks,
+          includeConfigFrom: opts.includeConfigFrom,
+          sourceMode: opts.sourceMode,
+          tool: opts.tool,
+        });
 
-  console.log(`${JSON.stringify(inventory, null, 2)}\n`);
+    console.log(`${JSON.stringify(inventory, null, 2)}\n`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }

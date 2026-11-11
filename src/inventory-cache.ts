@@ -94,7 +94,7 @@ export class InventoryDependencies {
   }
 }
 
-async function dependenciesMatch(
+export async function dependenciesMatch(
   dependencies: [string, string][]
 ): Promise<boolean> {
   // Bound concurrent filesystem work even for large plugin/skill installations.

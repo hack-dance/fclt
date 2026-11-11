@@ -76,7 +76,7 @@ function cli(home: string, args: string[], extra: Record<string, string> = {}) {
   );
 }
 
-test("read commands preserve canonical file hashes and mtimes with missing and stale indexes", async () => {
+test("CLI reads distinguish missing and stale snapshots without changing any files", async () => {
   const { home, root } = await fixture();
   try {
     const commands = [
@@ -97,7 +97,7 @@ test("read commands preserve canonical file hashes and mtimes with missing and s
           "---\nname: alpha\ndescription: changed\n---\n# Changed\n"
         );
       }
-      const before = await snapshot(root);
+      const before = await snapshot(home);
       for (const args of commands) {
         const child = cli(home, args);
         const [stdout, stderr, code] = await Promise.all([
@@ -105,14 +105,25 @@ test("read commands preserve canonical file hashes and mtimes with missing and s
           new Response(child.stderr).text(),
           child.exited,
         ]);
-        expect({ args, stderr, code }).toEqual({ args, stderr: "", code: 0 });
-        if (args[0] === "list") {
-          const alpha = (
-            JSON.parse(stdout) as { name: string; description: string }[]
-          ).find((entry) => entry.name === "alpha");
-          expect(alpha?.description).toBe(stale ? "changed" : "first");
+        if (args[0] === "status" || args[0] === "doctor") {
+          expect({ args, stderr, code }).toEqual({ args, stderr: "", code: 0 });
+          if (args[0] === "status") {
+            expect(
+              JSON.parse(stdout).issues.some(
+                (issue: { code: string }) =>
+                  issue.code ===
+                  (stale ? "snapshot-stale" : "snapshot-unavailable")
+              )
+            ).toBe(true);
+          }
+        } else {
+          expect(code).toBe(1);
+          expect(stdout).toBe("");
+          expect(stderr).toContain(
+            stale ? "snapshot-stale" : "snapshot-unavailable"
+          );
         }
-        expect(await snapshot(root)).toEqual(before);
+        expect(await snapshot(home)).toEqual(before);
       }
     }
   } finally {
@@ -123,6 +134,7 @@ test("read commands preserve canonical file hashes and mtimes with missing and s
 test("explicit no-write blocks mutations before any files change and disables cache writes", async () => {
   const { home } = await fixture();
   try {
+    expect(await cli(home, ["index"]).exited).toBe(0);
     const before = await snapshot(home);
     for (const args of [
       ["index", "--no-write"],
@@ -204,6 +216,7 @@ test("project reads preserve both project and global canonical roots", async () 
       join(project, "skills", "local", "SKILL.md"),
       "---\nname: local\ndescription: local\n---\n# Local\n"
     );
+    expect(await cli(home, ["index", "--root", project]).exited).toBe(0);
     const before = {
       global: await snapshot(root),
       project: await snapshot(project),
@@ -286,7 +299,8 @@ test("cache override inside a canonical root never writes there", async () => {
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect({ stderr, code }).toEqual({ stderr: "", code: 0 });
+    expect(code).toBe(1);
+    expect(stderr).toContain("snapshot-unavailable");
     expect(await snapshot(root)).toEqual(before);
   } finally {
     await rm(home, { recursive: true, force: true });
