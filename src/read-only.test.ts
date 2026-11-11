@@ -313,6 +313,9 @@ test("stale legacy-only indexes preserve trust and enable settings without migra
       join(root, "skills", "alpha", "SKILL.md"),
       "---\nname: alpha\ndescription: revised\n---\n# Revised\n"
     );
+    const tiedTime = new Date(Date.now() + 60_000);
+    await utimes(join(root, "index.json"), tiedTime, tiedTime);
+    await utimes(join(root, "skills", "alpha", "SKILL.md"), tiedTime, tiedTime);
     const before = await snapshot(root);
     const loaded = await loadIndex({ homeDir: home, rootDir: root });
     expect(loaded.skills.alpha).toMatchObject({
@@ -516,3 +519,46 @@ test.skipIf(process.platform === "win32")(
     }
   }
 );
+
+test("read snapshots rebuild edited assets when index and asset timestamps tie", async () => {
+  const { home, root } = await fixture();
+  try {
+    const { outputPath, graphPath } = await buildIndex({
+      homeDir: home,
+      rootDir: root,
+    });
+    const skill = join(root, "skills", "alpha", "SKILL.md");
+    await Bun.write(
+      skill,
+      "---\nname: alpha\ndescription: revised\n---\n# Revised\n"
+    );
+    const instruction = join(root, "instructions", "WORK.md");
+    await Bun.write(join(root, "instructions", "TARGET.md"), "# Target\n");
+    await Bun.write(instruction, "Read @ai/instructions/TARGET.md.\n");
+    // Put the tie ahead of directory timestamps so it is the only freshness signal.
+    const tiedTime = new Date(Date.now() + 60_000);
+    for (const path of [outputPath, graphPath, skill, instruction]) {
+      await utimes(path, tiedTime, tiedTime);
+    }
+    const before = await snapshot(root);
+    const index = await loadIndex({ homeDir: home, rootDir: root });
+    expect(index.skills.alpha?.description).toBe("revised");
+    const graph = await loadGraph({ homeDir: home, rootDir: root });
+    const target = Object.values(graph.nodes).find(
+      (node) => node.path === join(root, "instructions", "TARGET.md")
+    );
+    const work = Object.values(graph.nodes).find(
+      (node) => node.path === join(root, "instructions", "WORK.md")
+    );
+    expect(target).toBeDefined();
+    expect(work).toBeDefined();
+    expect(
+      graph.edges.some(
+        (edge) => edge.from === work!.id && edge.to === target!.id
+      )
+    ).toBe(true);
+    expect(await snapshot(root)).toEqual(before);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

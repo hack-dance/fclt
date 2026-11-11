@@ -118,7 +118,15 @@ export async function canonicalAssetsNewerThanIndex(args: {
       }
     }
     for (const rel of watchedRelPaths) {
-      if ((await watchedPathMtime(join(root, rel))) > indexMtimeMs) {
+      const watchedMtime = await watchedPathMtime(join(root, rel));
+      // A same-tick edit cannot be distinguished from a fresh source by mtime.
+      // Reads rebuild conservatively; explicit repair retains its existing policy.
+      if (
+        watchedMtime > indexMtimeMs ||
+        (args.checkRemovedPaths &&
+          watchedMtime > 0 &&
+          watchedMtime === indexMtimeMs)
+      ) {
         return true;
       }
     }
