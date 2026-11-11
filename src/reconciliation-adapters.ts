@@ -364,6 +364,8 @@ const writebackAdapter: ReconciliationAdapter = {
             Date.parse(timestamp) <= Date.parse(context.window.until)
           );
         })
+        // Stable sorting must prefer the last append when lifecycle timestamps tie.
+        .reverse()
         .sort(
           (left, right) =>
             Date.parse(right.updatedAt ?? right.ts ?? "") -
