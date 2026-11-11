@@ -1,0 +1,12 @@
+flowchart TD
+  Notice[Notice useful signal] --> Correlate[Check and correlate evidence]
+  Correlate --> Decide{Choose next action}
+  Decide --> Propose[Review a small proposal]
+  Decide --> Task[Hand off authorized work]
+  Decide --> Watch[Wait for stronger evidence]
+  Propose --> Verify[Verify the producing workflow]
+  Task --> Verify
+  Watch --> Notice
+  Verify --> Notice
+  class Watch wait
+  class Verify ok
