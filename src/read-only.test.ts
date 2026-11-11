@@ -1,9 +1,21 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { loadGraph } from "./graph-query";
+import { buildIndex } from "./index-builder";
 import { buildAgentInventory } from "./inventory";
+import { facultMachineStateDir } from "./paths";
+import { loadIndex } from "./query";
 
 async function snapshot(root: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {};
@@ -89,7 +101,10 @@ test("read commands preserve canonical file hashes and mtimes with missing and s
         ]);
         expect({ args, stderr, code }).toEqual({ args, stderr: "", code: 0 });
         if (args[0] === "list") {
-          expect(stdout).toContain("alpha");
+          const alpha = (
+            JSON.parse(stdout) as { name: string; description: string }[]
+          ).find((entry) => entry.name === "alpha");
+          expect(alpha?.description).toBe(stale ? "changed" : "first");
         }
         expect(await snapshot(root)).toEqual(before);
       }
@@ -106,6 +121,7 @@ test("explicit no-write blocks mutations before any files change and disables ca
     for (const args of [
       ["index", "--no-write"],
       ["sync"],
+      ["ai", "writeback", "add", "--summary", "-h"],
       ["doctor", "--repair"],
       ["ai", "writeback", "add", "--summary", "blocked"],
     ]) {
@@ -266,6 +282,187 @@ test("cache override inside a canonical root never writes there", async () => {
     ]);
     expect({ stderr, code }).toEqual({ stderr: "", code: 0 });
     expect(await snapshot(root)).toEqual(before);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("stale legacy-only indexes preserve trust and enable settings without migrating", async () => {
+  const { home, root } = await fixture();
+  try {
+    const { index, outputPath, graphPath } = await buildIndex({
+      homeDir: home,
+      rootDir: root,
+    });
+    Object.assign(index.skills.alpha!, {
+      trusted: true,
+      trustedAt: "2026-01-01",
+      enabledFor: ["codex"],
+      auditStatus: "passed",
+    });
+    await Bun.write(outputPath, JSON.stringify(index));
+    await rename(outputPath, join(root, "index.json"));
+    await rm(graphPath);
+    await Bun.write(
+      join(root, "skills", "alpha", "SKILL.md"),
+      "---\nname: alpha\ndescription: revised\n---\n# Revised\n"
+    );
+    const before = await snapshot(root);
+    const loaded = await loadIndex({ homeDir: home, rootDir: root });
+    expect(loaded.skills.alpha).toMatchObject({
+      trusted: true,
+      trustedAt: "2026-01-01",
+      enabledFor: ["codex"],
+      auditStatus: "passed",
+      description: "revised",
+    });
+    const graph = await loadGraph({ homeDir: home, rootDir: root });
+    expect(
+      Object.values(graph.nodes).some((node) => node.name === "alpha")
+    ).toBe(true);
+    expect(await snapshot(root)).toEqual(before);
+    expect(await Bun.file(outputPath).exists()).toBe(false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("removing entire asset directories and top-level documents refreshes reads", async () => {
+  const { home, root } = await fixture();
+  try {
+    await Bun.write(join(root, "AGENTS.global.md"), "# Global\n");
+    await buildIndex({ homeDir: home, rootDir: root });
+    await rm(join(root, "skills"), { recursive: true });
+    await rm(join(root, "AGENTS.global.md"));
+    const before = await snapshot(root);
+    const loaded = await loadIndex({ homeDir: home, rootDir: root });
+    expect(loaded.skills.alpha).toBeUndefined();
+    const graph = await loadGraph({ homeDir: home, rootDir: root });
+    expect(
+      Object.values(graph.nodes).some(
+        (node) =>
+          node.name === "alpha" || node.path === join(root, "AGENTS.global.md")
+      )
+    ).toBe(false);
+    expect(await snapshot(root)).toEqual(before);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("global cache is shared across working directories and files are private", async () => {
+  const { home, root } = await fixture();
+  try {
+    const options = { homeDir: home, cwd: home, sourceMode: "global" as const };
+    const first = await buildAgentInventory(options);
+    const second = await buildAgentInventory({
+      ...options,
+      cwd: join(home, "elsewhere"),
+    });
+    expect(second.cache?.hit).toBe(true);
+    expect(second.cache?.key).toBe(first.cache?.key);
+    expect(second.cwd).toBe(join(home, "elsewhere"));
+    const cacheDir = join(
+      facultMachineStateDir(home, root),
+      "cache",
+      "inventory"
+    );
+    const files = await readdir(cacheDir);
+    expect(files).toHaveLength(1);
+    if (process.platform !== "win32") {
+      expect((await stat(join(cacheDir, files[0]!))).mode % 0o1000).toBe(0o600);
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("plugin changes and symlink retargets invalidate the global cache", async () => {
+  const { home } = await fixture();
+  try {
+    const options = { homeDir: home, cwd: home, sourceMode: "global" as const };
+    await buildAgentInventory(options);
+    const plugin = join(
+      home,
+      ".claude",
+      "plugins",
+      "cache",
+      "market",
+      "example",
+      "1"
+    );
+    await Bun.write(
+      join(plugin, "skills", "plugin-skill", "SKILL.md"),
+      "# Plugin\n"
+    );
+    await Bun.write(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({ plugins: { example: [{ installPath: plugin }] } })
+    );
+    let result = await buildAgentInventory(options);
+    expect(result.cache?.hit).toBe(false);
+    expect(result.skills.some((skill) => skill.name === "plugin-skill")).toBe(
+      true
+    );
+    expect((await buildAgentInventory(options)).cache?.hit).toBe(true);
+    await Bun.write(
+      join(plugin, "skills", "plugin-skill", "SKILL.md"),
+      "# Edited\n"
+    );
+    expect((await buildAgentInventory(options)).cache?.hit).toBe(false);
+    if (process.platform !== "win32") {
+      const linked = join(home, ".codex", "skills");
+      await mkdir(join(home, ".codex"), { recursive: true });
+      for (const name of ["one", "two"]) {
+        await Bun.write(join(home, name, name, "SKILL.md"), `# ${name}\n`);
+      }
+      await symlink(join(home, "one"), linked);
+      expect((await buildAgentInventory(options)).cache?.hit).toBe(false);
+      expect((await buildAgentInventory(options)).cache?.hit).toBe(true);
+      await rm(linked);
+      await symlink(join(home, "two"), linked);
+      result = await buildAgentInventory(options);
+      expect(result.cache?.hit).toBe(false);
+      expect(result.skills.some((skill) => skill.name === "two")).toBe(true);
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("simple global globs ignore unrelated history edits but detect new matched skill roots", async () => {
+  const { home } = await fixture();
+  try {
+    await Bun.write(join(home, ".gemini", "history", "session.json"), "{}");
+    await mkdir(join(home, ".gemini", "antigravity-one"), { recursive: true });
+    const options = { homeDir: home, cwd: home, sourceMode: "global" as const };
+    await buildAgentInventory(options);
+    await Bun.write(
+      join(home, ".gemini", "history", "session.json"),
+      '{"changed":true}'
+    );
+    expect((await buildAgentInventory(options)).cache?.hit).toBe(true);
+    await Bun.write(
+      join(home, ".gemini", "antigravity-one", "skills", "new", "SKILL.md"),
+      "# New\n"
+    );
+    const result = await buildAgentInventory(options);
+    expect(result.cache?.hit).toBe(false);
+    expect(result.skills.some((skill) => skill.name === "new")).toBe(true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("non-empty no-write environment spellings fail closed", async () => {
+  const { home } = await fixture();
+  try {
+    const before = await snapshot(home);
+    for (const value of ["true", "yes", "unexpected"]) {
+      const child = cli(home, ["index"], { FCLT_NO_WRITE: value });
+      expect(await child.exited).toBe(2);
+      expect(await snapshot(home)).toEqual(before);
+    }
   } finally {
     await rm(home, { recursive: true, force: true });
   }

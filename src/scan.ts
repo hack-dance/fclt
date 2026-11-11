@@ -86,6 +86,8 @@ interface SourceSpec {
 type ScanReadText = (path: string) => Promise<string>;
 
 interface ScanTracking {
+  /** Cache discovery may bind simple globs without walking unrelated siblings. */
+  shallowGlobDependencies?: boolean;
   capturePath?: (path: string) => Promise<void>;
   captureTree?: (
     path: string,
@@ -247,7 +249,31 @@ async function expandPathPatterns(
     }
 
     const baseDir = globBaseDir(abs);
-    await scanTracking.getStore()?.captureTree?.(baseDir);
+    const tracking = scanTracking.getStore();
+    const suffix = relative(baseDir, abs).split(sep);
+    const shallow =
+      tracking?.shallowGlobDependencies &&
+      !suffix[0]?.includes("**") &&
+      suffix.slice(1).every((segment) => !hasGlobChars(segment));
+    if (shallow) {
+      await tracking?.capturePath?.(baseDir);
+      const glob = new Bun.Glob(suffix[0]!);
+      try {
+        for await (const match of glob.scan({
+          cwd: baseDir,
+          onlyFiles: false,
+        })) {
+          await tracking?.capturePath?.(join(baseDir, match));
+          await tracking?.capturePath?.(
+            join(baseDir, match, ...suffix.slice(1))
+          );
+        }
+      } catch {
+        /* Missing optional glob root. */
+      }
+    } else {
+      await tracking?.captureTree?.(baseDir);
+    }
     const baseSt = await statSafe(baseDir);
     if (!baseSt?.isDir) {
       continue;

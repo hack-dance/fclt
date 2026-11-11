@@ -1,15 +1,17 @@
 /** Explicit no-write mode also disables optional machine-local cache writes. */
 export function noWriteRequested(): boolean {
-  return process.env.FCLT_NO_WRITE === "1";
+  const value = process.env.FCLT_NO_WRITE?.trim().toLowerCase();
+  return Boolean(value && !["0", "false", "no"].includes(value));
 }
 
 /** Fail closed for commands whose handlers may mutate state. */
 export function commandAllowsNoWrite(command: string, args: string[]): boolean {
-  if (args.includes("--help") || args.includes("-h") || command === "help") {
-    return true;
-  }
   if (
     [
+      "help",
+      "--help",
+      "-h",
+      "protocol",
       "inventory",
       "status",
       "list",

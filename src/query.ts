@@ -181,12 +181,21 @@ export async function loadIndex(opts?: {
     repair: false,
   });
   const stale = await canonicalAssetsNewerThanIndex({
+    checkRemovedPaths: true,
     homeDir: resolvedHome,
     rootDir,
     indexPath,
   });
   const parsed = stale
-    ? (await buildIndexSnapshot({ homeDir: resolvedHome, rootDir })).index
+    ? (
+        await buildIndexSnapshot({
+          homeDir: resolvedHome,
+          rootDir,
+          previousIndex: (await Bun.file(indexPath)
+            .json()
+            .catch(() => undefined)) as FacultIndex | undefined,
+        })
+      ).index
     : ((await Bun.file(indexPath).json()) as FacultIndex);
   return await applyOrgTrustList(parsed, { homeDir: resolvedHome });
 }

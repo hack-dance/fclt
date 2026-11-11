@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, realpath, rename, stat } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  realpath,
+  rename,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { AgentInventory } from "./inventory";
 import { noWriteRequested } from "./no-write";
@@ -176,7 +183,7 @@ export async function writeInventoryCache(args: {
     }
     await mkdir(dirname(args.path), { recursive: true, mode: 0o700 });
     const temporary = `${args.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-    await Bun.write(
+    await writeFile(
       temporary,
       JSON.stringify({
         schema: 1,

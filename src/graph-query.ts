@@ -1,4 +1,8 @@
-import { canonicalAssetsNewerThanIndex, ensureAiGraphPath } from "./ai-state";
+import {
+  canonicalAssetsNewerThanIndex,
+  ensureAiGraphPath,
+  ensureAiIndexPath,
+} from "./ai-state";
 import type {
   AssetScope,
   AssetSourceKind,
@@ -7,7 +11,7 @@ import type {
   GraphNode,
   GraphNodeKind,
 } from "./graph";
-import { buildIndexSnapshot } from "./index-builder";
+import { buildIndexSnapshot, type FacultIndex } from "./index-builder";
 import { facultContextRootDir } from "./paths";
 
 type QueryableGraphKind =
@@ -101,13 +105,28 @@ export async function loadGraph(opts?: {
     repair: false,
   });
   const stale = await canonicalAssetsNewerThanIndex({
+    checkRemovedPaths: true,
     homeDir,
     rootDir,
     indexPath: graphPath,
   });
-  return stale
-    ? (await buildIndexSnapshot({ homeDir, rootDir })).graph
-    : ((await Bun.file(graphPath).json()) as FacultGraph);
+  if (!stale) {
+    return (await Bun.file(graphPath).json()) as FacultGraph;
+  }
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir,
+    rootDir,
+    repair: false,
+  });
+  return (
+    await buildIndexSnapshot({
+      homeDir,
+      rootDir,
+      previousIndex: (await Bun.file(indexPath)
+        .json()
+        .catch(() => undefined)) as FacultIndex | undefined,
+    })
+  ).graph;
 }
 
 export function resolveGraphNode(

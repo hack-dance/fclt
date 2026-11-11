@@ -695,10 +695,9 @@ export async function buildAgentInventory(
   const dependencies = new InventoryDependencies();
   const cacheable = globalOnly && !opts?.showSecrets;
   const key = JSON.stringify({
-    schema: 2,
+    schema: 4,
     version: await packageVersion(),
     homeDir,
-    cwd,
     root: canonicalRoot,
     tool: opts?.tool,
     includeGitHooks: opts?.includeGitHooks ?? false,
@@ -707,7 +706,7 @@ export async function buildAgentInventory(
   if (cacheable) {
     const cached = await readInventoryCache(cachePath, key);
     if (cached) {
-      return cached;
+      return { ...cached, cwd };
     }
     await dependencies.captureTree(join(canonicalRoot, "instructions"));
     await dependencies.capturePath(join(canonicalRoot, "AGENTS.global.md"));
@@ -731,6 +730,7 @@ export async function buildAgentInventory(
     canonicalRoot,
     tracking: cacheable
       ? {
+          shallowGlobDependencies: true,
           capturePath: (path) => dependencies.capturePath(path),
           captureTree: (path) => dependencies.captureTree(path),
         }
