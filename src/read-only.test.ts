@@ -1,13 +1,16 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
+  readlink,
   rename,
   rm,
   stat,
   symlink,
+  utimes,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -20,7 +23,7 @@ import { loadIndex } from "./query";
 async function snapshot(root: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {};
   async function visit(path: string) {
-    const metadata = await stat(path);
+    const metadata = await lstat(path);
     result[path] = `${metadata.mtimeMs}:${metadata.size}:${
       metadata.isFile()
         ? createHash("sha256")
@@ -28,6 +31,9 @@ async function snapshot(root: string): Promise<Record<string, string>> {
             .digest("hex")
         : "dir"
     }`;
+    if (metadata.isSymbolicLink()) {
+      result[path] += `:link:${await readlink(path)}`;
+    }
     if (metadata.isDirectory()) {
       for (const entry of await readdir(path)) {
         await visit(join(path, entry));
@@ -467,3 +473,46 @@ test("non-empty no-write environment spellings fail closed", async () => {
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test.skipIf(process.platform === "win32")(
+  "snapshot reads retain valid skills and instructions beside dangling symlinks",
+  async () => {
+    const { home, root } = await fixture();
+    try {
+      const { outputPath, graphPath } = await buildIndex({
+        homeDir: home,
+        rootDir: root,
+      });
+      await symlink("missing-skill", join(root, "skills", "broken"));
+      await symlink(
+        "missing-instruction",
+        join(root, "instructions", "broken.md")
+      );
+      const past = new Date(Date.now() - 60_000);
+      await utimes(outputPath, past, past);
+      await utimes(graphPath, past, past);
+      const before = await snapshot(root);
+      const index = await loadIndex({ homeDir: home, rootDir: root });
+      expect(index.skills.alpha?.description).toBe("first");
+      expect(
+        Object.values(index.instructions).some(
+          (entry) => entry.path === join(root, "instructions", "WORK.md")
+        )
+      ).toBe(true);
+      const graph = await loadGraph({ homeDir: home, rootDir: root });
+      expect(
+        Object.values(graph.nodes).some(
+          (node) => node.kind === "skill" && node.name === "alpha"
+        )
+      ).toBe(true);
+      expect(
+        Object.values(graph.nodes).some(
+          (node) => node.path === join(root, "instructions", "WORK.md")
+        )
+      ).toBe(true);
+      expect(await snapshot(root)).toEqual(before);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+);
