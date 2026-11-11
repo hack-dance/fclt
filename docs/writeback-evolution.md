@@ -284,6 +284,10 @@ Hyphenated aliases such as `weak-verification` are accepted and normalize to
 The append-only queue can contain multiple lifecycle rows for one ID; logical reads
 return one record. Reconciliation selects the newest state within its review window,
 using the last appended row when timestamps tie. Reads preserve the queue's bytes.
+Both readers share the same migration queue order and scope/root checks, with the
+current machine-local queue read last. Legacy rows without scope metadata inherit
+the selected queue's scope. Explicit mismatches are excluded after state selection,
+so they cannot revive an older matching lifecycle row.
 
 ![Writeback reconciliation selection](diagrams/writeback-reconciliation.svg)
 

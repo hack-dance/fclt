@@ -1020,7 +1020,21 @@ describe("AI state path guard", () => {
     expect(assessment.recommendation).toBe("review_existing_proposal");
     expect(assessment.activeProposalIds).toEqual([proposal.id]);
     expect(assessment.sourceWritebacks).toEqual([base.id]);
-    expect(assessment.warnings).toHaveLength(11);
+    for (const id of [
+      "WB-00002",
+      "WB-00003",
+      "WB-00004",
+      "WB-00005",
+      "EV-00002",
+      "EV-00003",
+      "EV-00004",
+      "EV-00005",
+      "EV-00006",
+    ]) {
+      expect(assessment.warnings.some((warning) => warning.includes(id))).toBe(
+        true
+      );
+    }
     expect(await listWritebacks(args)).toHaveLength(3);
     expect(await listProposals(args)).toHaveLength(6);
     await rm(

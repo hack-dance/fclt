@@ -2,11 +2,15 @@
 title: Writeback reconciliation
 ---
 flowchart TD
-  queue[Append-only lifecycle rows] --> window[Keep rows through window end]
+  paths[Legacy and current queues] --> order[Shared migration order]
+  order --> queue[Append-only lifecycle rows]
+  queue --> window[Keep rows through window end]
   window --> latest[Newest timestamp per ID]
   latest --> tie{Timestamps tie?}
   tie -->|Yes| append[Last appended row]
   tie -->|No| selected[Selected row]
   append --> selected
-  selected --> kind[Normalize kind aliases]
+  selected --> context{Context matches?}
+  context -->|No| excluded[Exclude selected state]
+  context -->|Yes| kind[Normalize kind aliases]
   kind --> report[One state per ID]
