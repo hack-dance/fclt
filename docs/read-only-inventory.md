@@ -1,6 +1,6 @@
 # Read-only capability queries
 
-`fclt list`, `show`, `find`, `graph`, `status`, and `inventory` do not write to canonical global or project roots. A missing or stale index needed by a query is rebuilt in memory. Legacy indexes can be read without copying them. Use `fclt index` or `fclt doctor --repair` to persist or repair generated indexes explicitly.
+`fclt list`, `show`, `find`, `graph`, `status`, and `inventory` do not write to canonical global or project roots. A missing or stale index needed by a query is rebuilt in memory. Reads also rebuild when an asset and its index have equal mtimes, because an edit within one filesystem clock tick cannot safely be treated as fresh. Legacy indexes can be read without copying them. Use `fclt index` or `fclt doctor --repair` to persist or repair generated indexes explicitly.
 
 Pass `--no-write` anywhere in a command, or set `FCLT_NO_WRITE=1`, to forbid writes explicitly. Write commands fail before their handlers run. This mode also disables optional inventory cache writes; an existing valid cache can still be read. The guard fails closed for commands that are not identified as read-only. Other non-empty environment values also enable it; `0`, `false`, and `no` disable it. A help flag does not authorize a write command in this mode.
 
