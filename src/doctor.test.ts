@@ -821,7 +821,7 @@ test("doctor --repair migrates a legacy root index into generated ai state", asy
 
     expect(code).toBe(0);
     expect(err).toBe("");
-    expect(out).toContain("Repaired generated AI index");
+    expect(out).toContain("Rebuilt generated AI index");
 
     const repaired = JSON.parse(await readFile(generatedIndex, "utf8")) as {
       version: number;

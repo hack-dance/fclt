@@ -36,10 +36,10 @@ The shared `~/.facult/ai` fallback applies to the default global store, not an
 unrelated custom global root. Such roots can use their own legacy generated
 files or rebuild from their canonical assets.
 
-Read-only queries can use legacy files without moving them. Explicit repair can
-copy a fresh legacy snapshot to the new location or rebuild a stale snapshot
-from canonical source while preserving matching metadata. Existing user files
-and legacy snapshots remain in place for independent review.
+Read-only queries can use legacy files without moving them. Relocation always
+rebuilds snapshots from canonical source while preserving matching metadata,
+even when a legacy file looks fresh: its absolute paths may belong to another
+checkout. Existing user files and legacy snapshots remain in place for independent review.
 
 ## Writers and readers
 
@@ -57,4 +57,4 @@ acquire writer locks. Non-regular destination files are refused and preserved.
 
 ![Index rebuild flow](./generated-state-flow.svg)
 
-[Mermaid source](./generated-state-flow.mmd)
+[Mermaid source](https://github.com/hack-dance/fclt/blob/main/docs/generated-state-flow.mmd)

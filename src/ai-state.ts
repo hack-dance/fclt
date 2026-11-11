@@ -1,10 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import {
-  withGeneratedStateLock,
-  writeGeneratedState,
-} from "./generated-state-io";
+import { withGeneratedStateLock } from "./generated-state-io";
 import { buildIndex } from "./index-builder";
 import {
   facultAiGraphPath,
@@ -266,28 +263,18 @@ async function ensureAiIndexPathInternal(args: {
   )) {
     if (await fileExists(legacyPath)) {
       if (args.repair !== false) {
-        if (
-          await canonicalAssetsNewerThanIndex({
-            homeDir: args.homeDir,
-            rootDir: args.rootDir,
-            indexPath: legacyPath,
-          })
-        ) {
-          const { outputPath } = await buildIndex({
-            rootDir: args.rootDir,
-            homeDir: args.homeDir,
-            force: false,
-          });
-          return { path: outputPath, repaired: true, source: "rebuilt" };
-        }
-        await writeGeneratedState(
-          generatedPath,
-          await Bun.file(legacyPath).text()
-        );
+        // Legacy snapshots can carry absolute paths from another checkout.
+        // Import matching metadata, but always regenerate locations and scope.
+        const { outputPath } = await buildIndex({
+          rootDir: args.rootDir,
+          homeDir: args.homeDir,
+          force: false,
+        });
+        return { path: outputPath, repaired: true, source: "rebuilt" };
       }
       return {
-        path: args.repair === false ? legacyPath : generatedPath,
-        repaired: args.repair !== false,
+        path: legacyPath,
+        repaired: false,
         source: "legacy",
       };
     }
@@ -310,7 +297,6 @@ export async function ensureAiGraphPath(args: {
   rootDir: string;
   repair?: boolean;
   rebuild?: () => Promise<{ graphPath: string }>;
-  copyGenerated?: (source: string, destination: string) => Promise<void>;
 }): Promise<{
   path: string;
   rebuilt: boolean;
@@ -329,7 +315,6 @@ async function ensureAiGraphPathInternal(args: {
   rootDir: string;
   repair?: boolean;
   rebuild?: () => Promise<{ graphPath: string }>;
-  copyGenerated?: (source: string, destination: string) => Promise<void>;
 }): ReturnType<typeof ensureAiGraphPath> {
   const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
@@ -363,34 +348,18 @@ async function ensureAiGraphPathInternal(args: {
   )) {
     if (await fileExists(legacyGeneratedPath)) {
       if (args.repair !== false) {
-        if (
-          await canonicalAssetsNewerThanIndex({
-            homeDir: args.homeDir,
-            rootDir: args.rootDir,
-            indexPath: legacyGeneratedPath,
-          })
-        ) {
-          const { graphPath } = await (args.rebuild
-            ? args.rebuild()
-            : buildIndex({
-                rootDir: args.rootDir,
-                homeDir: args.homeDir,
-                force: false,
-              }));
-          return { path: graphPath, rebuilt: true };
-        }
-        if (args.copyGenerated) {
-          await args.copyGenerated(legacyGeneratedPath, generatedPath);
-        } else {
-          await writeGeneratedState(
-            generatedPath,
-            await Bun.file(legacyGeneratedPath).text()
-          );
-        }
+        const { graphPath } = await (args.rebuild
+          ? args.rebuild()
+          : buildIndex({
+              rootDir: args.rootDir,
+              homeDir: args.homeDir,
+              force: false,
+            }));
+        return { path: graphPath, rebuilt: true };
       }
       return {
-        path: args.repair === false ? legacyGeneratedPath : generatedPath,
-        rebuilt: args.repair !== false,
+        path: legacyGeneratedPath,
+        rebuilt: false,
       };
     }
   }

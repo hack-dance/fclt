@@ -16,7 +16,6 @@ import { withGeneratedStateLock } from "./generated-state-io";
 import { loadGraph } from "./graph-query";
 import { buildIndex } from "./index-builder";
 import {
-  facultAiGraphPath,
   facultAiIndexPath,
   facultAiWritebackQueuePath,
   pathIsPhysicallyInsideOrEqual,
@@ -130,7 +129,7 @@ describe("machine-local global generated state", () => {
     ).toBe(before);
   });
 
-  it("reads legacy files without creating local state, then atomically copies fresh snapshots", async () => {
+  it("reads legacy files without creating local state, then rebuilds fresh snapshots preserving metadata", async () => {
     const args = await fixture();
     const legacy = await legacyFixture(args);
     expect((await ensureAiIndexPath({ ...args, repair: false })).path).toBe(
@@ -143,12 +142,15 @@ describe("machine-local global generated state", () => {
       await Bun.file(facultAiIndexPath(args.homeDir, args.rootDir)).exists()
     ).toBe(false);
     const result = await ensureAiIndexPath({ ...args, repair: true });
-    expect(result.source).toBe("legacy");
+    expect(result.source).toBe("rebuilt");
     await ensureAiGraphPath({ ...args, repair: true });
-    expect(await Bun.file(result.path).text()).toBe(legacy.index);
-    expect(
-      await Bun.file(facultAiGraphPath(args.homeDir, args.rootDir)).text()
-    ).toBe(legacy.graph);
+    expect((await loadIndex(args)).skills.sample?.trusted).toBe(true);
+    expect(await Bun.file(join(legacy.legacyDir, "index.json")).text()).toBe(
+      legacy.index
+    );
+    expect(await Bun.file(join(legacy.legacyDir, "graph.json")).text()).toBe(
+      legacy.graph
+    );
     expect(await readdir(dirname(result.path))).toEqual(
       expect.arrayContaining(["index.json", "graph.json"])
     );
@@ -185,7 +187,10 @@ describe("machine-local global generated state", () => {
     expect(await Bun.file(first.outputPath).json()).toEqual(first.index);
   });
 
-  it("does not transfer legacy trust to a matching name from another root", async () => {
+  it.each([
+    "index",
+    "graph",
+  ])("rebuilds fresh foreign legacy %s snapshots without transferring trust", async (entrypoint) => {
     const args = await fixture();
     const legacy = await legacyFixture(args);
     const foreign = JSON.parse(legacy.index);
@@ -201,9 +206,23 @@ describe("machine-local global generated state", () => {
       join(legacy.legacyDir, "index.json"),
       JSON.stringify(foreign)
     );
-    const rebuilt = await buildIndex(args);
-    expect(rebuilt.index.skills.sample?.trusted).toBe(false);
-    expect(rebuilt.index.skills.sample?.enabledFor).toBeUndefined();
+    const future = Date.now() / 1000 + 60;
+    await utimes(join(legacy.legacyDir, "index.json"), future, future);
+    await utimes(join(legacy.legacyDir, "graph.json"), future, future);
+    if (entrypoint === "index") {
+      await ensureAiIndexPath({ ...args, repair: true });
+    } else {
+      await ensureAiGraphPath({ ...args, repair: true });
+    }
+    const rebuilt = await loadIndex(args);
+    expect(rebuilt.skills.sample?.path).toBe(
+      join(args.rootDir, "skills", "sample")
+    );
+    expect(rebuilt.skills.sample?.trusted).toBe(false);
+    expect(rebuilt.skills.sample?.enabledFor).toBeUndefined();
+    expect(
+      JSON.parse(await Bun.file(join(legacy.legacyDir, "index.json")).text())
+    ).toEqual(foreign);
   });
 
   it("keeps snapshot identity and matching metadata through a canonical-root alias", async () => {
