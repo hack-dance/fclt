@@ -109,6 +109,9 @@ interface InventoryOptions {
   showSecrets?: boolean;
   sourceMode?: "machine" | "global" | "project";
   tool?: string;
+  /** Explicit snapshot publishers collect fresh discovery dependencies. */
+  dependencies?: InventoryDependencies;
+  refresh?: boolean;
 }
 
 const SECRET_KEY_RE = /(TOKEN|KEY|SECRET|PASSWORD|PASS|BEARER|AUTH)/i;
@@ -579,7 +582,11 @@ function isInstructionAsset(kind: string): boolean {
   );
 }
 
-async function listMarkdownFiles(root: string): Promise<string[]> {
+async function listMarkdownFiles(
+  root: string,
+  dependencies?: InventoryDependencies
+): Promise<string[]> {
+  await dependencies?.captureTree(root, new Set(), { includeIgnored: true });
   try {
     const stat = await Bun.file(root).stat();
     if (!stat.isDirectory()) {
@@ -598,12 +605,15 @@ async function listMarkdownFiles(root: string): Promise<string[]> {
 }
 
 async function canonicalInstructionAssets(
-  source: SourceResult
+  source: SourceResult,
+  dependencies?: InventoryDependencies
 ): Promise<InventoryInstruction[]> {
   const out: InventoryInstruction[] = [];
   for (const root of source.roots) {
     const candidates = [
-      ...(await listMarkdownFiles(join(root, "instructions"))).map((path) => ({
+      ...(
+        await listMarkdownFiles(join(root, "instructions"), dependencies)
+      ).map((path) => ({
         kind: "canonical-instruction",
         path,
       })),
@@ -614,6 +624,7 @@ async function canonicalInstructionAssets(
       },
     ];
     for (const candidate of candidates) {
+      await dependencies?.capturePath(candidate.path);
       try {
         const stat = await Bun.file(candidate.path).stat();
         if (!stat.isFile()) {
@@ -635,7 +646,8 @@ async function canonicalInstructionAssets(
 }
 
 async function inventoryInstructions(
-  result: ScanResult
+  result: ScanResult,
+  dependencies?: InventoryDependencies
 ): Promise<InventoryInstruction[]> {
   const out: InventoryInstruction[] = [];
   for (const source of result.sources) {
@@ -653,7 +665,7 @@ async function inventoryInstructions(
       });
     }
     if (source.id === "facult" || source.id.endsWith("-project")) {
-      out.push(...(await canonicalInstructionAssets(source)));
+      out.push(...(await canonicalInstructionAssets(source, dependencies)));
     }
   }
 
@@ -692,7 +704,7 @@ export async function buildAgentInventory(
     : facultRootDir(homeDir);
   const configuredFrom =
     includeConfigFrom && !globalOnly ? configuredScanFrom(homeDir) : [];
-  const dependencies = new InventoryDependencies();
+  const dependencies = opts?.dependencies ?? new InventoryDependencies();
   const cacheable = globalOnly && !opts?.showSecrets;
   const key = JSON.stringify({
     schema: 4,
@@ -704,15 +716,12 @@ export async function buildAgentInventory(
   });
   const cachePath = inventoryCachePath(homeDir, key, canonicalRoot);
   if (cacheable) {
-    const cached = await readInventoryCache(cachePath, key);
+    const cached = opts?.refresh
+      ? null
+      : await readInventoryCache(cachePath, key);
     if (cached) {
       return { ...cached, cwd };
     }
-    await dependencies.captureTree(join(canonicalRoot, "instructions"));
-    await dependencies.capturePath(join(canonicalRoot, "AGENTS.global.md"));
-    await dependencies.capturePath(
-      join(canonicalRoot, "AGENTS.override.global.md")
-    );
   }
   const explicitFrom = opts?.from ?? [];
   const effectiveFrom = globalOnly
@@ -728,13 +737,19 @@ export async function buildAgentInventory(
     includeConfigFrom: includeConfigFrom && !globalOnly,
     globalOnly,
     canonicalRoot,
-    tracking: cacheable
-      ? {
-          shallowGlobDependencies: true,
-          capturePath: (path) => dependencies.capturePath(path),
-          captureTree: (path) => dependencies.captureTree(path),
-        }
-      : undefined,
+    tracking:
+      cacheable || opts?.dependencies
+        ? {
+            shallowGlobDependencies: true,
+            capturePath: (path) => dependencies.capturePath(path),
+            captureTree: (path) => dependencies.captureTree(path),
+            captureMcpConfig: (path) => dependencies.captureMcpConfig(path),
+            captureStructure: (path) => dependencies.captureStructure(path),
+            readDirectory: opts?.refresh
+              ? (path, options) => dependencies.readDirectory(path, options)
+              : undefined,
+          }
+        : undefined,
     includeGitHooks: opts?.includeGitHooks,
     from: effectiveFrom,
   });
@@ -743,7 +758,10 @@ export async function buildAgentInventory(
       showSecrets: opts?.showSecrets ?? false,
     }),
     Promise.resolve(inventorySkills(scanResult)),
-    inventoryInstructions(scanResult),
+    inventoryInstructions(
+      scanResult,
+      cacheable || opts?.dependencies ? dependencies : undefined
+    ),
   ]);
   const mcpCapabilities = inventoryMcpCapabilities(mcpServers);
   const sources = scanResult.sources.map((source) => ({
@@ -791,13 +809,15 @@ export async function buildAgentInventory(
       generatedAt: filtered.generatedAt,
       key: await dependencies.fingerprint(key),
     };
-    await writeInventoryCache({
-      homeDir,
-      path: cachePath,
-      key,
-      dependencies,
-      inventory: filtered,
-    });
+    if (!opts?.refresh) {
+      await writeInventoryCache({
+        homeDir,
+        path: cachePath,
+        key,
+        dependencies,
+        inventory: filtered,
+      });
+    }
   }
   return filtered;
 }
@@ -944,20 +964,69 @@ export async function inventoryCommand(argv: string[]) {
   let opts: ReturnType<typeof parseInventoryArgs>;
   try {
     opts = parseInventoryArgs(argv);
+    if (
+      opts.sourceMode === "project" &&
+      opts.includeConfigFrom &&
+      configuredScanFrom(homedir()).length
+    ) {
+      console.error(
+        "Scoped project inventory excludes configured scanFrom roots. Pass --no-config-from to acknowledge this, or omit --project for explicit discovery."
+      );
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 2;
     return;
   }
 
-  const inventory = await buildAgentInventory({
-    from: opts.from,
-    showSecrets: opts.showSecrets,
-    includeGitHooks: opts.includeGitHooks,
-    includeConfigFrom: opts.includeConfigFrom,
-    sourceMode: opts.sourceMode,
-    tool: opts.tool,
-  });
+  try {
+    const scoped =
+      opts.sourceMode === "global" || opts.sourceMode === "project";
+    if (
+      scoped &&
+      (opts.showSecrets || opts.includeGitHooks || opts.from.length)
+    ) {
+      throw new Error(
+        "Scoped inventory reads a redacted snapshot. Use inventory without a scope flag for explicit discovery options."
+      );
+    }
+    const inventory = scoped
+      ? await import("./read-snapshot").then(async ({ loadReadSnapshot }) => {
+          const homeDir = homedir();
+          const cwd = process.cwd();
+          const rootDir = resolveCliContextRoot({
+            homeDir,
+            cwd,
+            scope: opts.sourceMode as "global" | "project",
+          });
+          const record = await loadReadSnapshot({
+            homeDir,
+            rootDir,
+            surface: "inventory",
+          });
+          return filterInventoryBySource(
+            {
+              ...record.inventory,
+              cwd,
+              cache: record.inventory.cache
+                ? { ...record.inventory.cache, hit: true }
+                : undefined,
+            },
+            { sourceMode: opts.sourceMode, tool: opts.tool }
+          );
+        })
+      : await buildAgentInventory({
+          from: opts.from,
+          showSecrets: opts.showSecrets,
+          includeGitHooks: opts.includeGitHooks,
+          includeConfigFrom: opts.includeConfigFrom,
+          sourceMode: opts.sourceMode,
+          tool: opts.tool,
+        });
 
-  console.log(`${JSON.stringify(inventory, null, 2)}\n`);
+    console.log(`${JSON.stringify(inventory, null, 2)}\n`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }

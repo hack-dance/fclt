@@ -2307,7 +2307,7 @@ async function doctorCommandWithScope(
 
     if (repair && result.source === "legacy") {
       console.log(
-        `Repaired generated AI index from legacy root index: ${generated}`
+        `Repaired generated AI index from legacy snapshot: ${generated}`
       );
       return;
     }
@@ -2337,7 +2337,7 @@ async function doctorCommandWithScope(
 
     if (result.source === "legacy") {
       console.log(
-        "Legacy root index detected. Run `fclt doctor --repair` to reconcile it."
+        "Legacy AI index detected. Run `fclt doctor --repair` or `fclt index` to migrate generated state into machine-local storage."
       );
       process.exitCode = 1;
       return;

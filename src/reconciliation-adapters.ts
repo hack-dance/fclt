@@ -1,13 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { resolveCliContextRoot } from "./cli-context";
-import {
-  facultAiStateDir,
-  facultAiWritebackQueuePath,
-  legacyFacultAiStateDirs,
-  projectRootFromAiRoot,
-} from "./paths";
+import { projectRootFromAiRoot } from "./paths";
 import type {
   AdapterScanResult,
   EvidenceExportSourceConfig,
@@ -21,6 +16,11 @@ import type {
   WritebackSourceConfig,
 } from "./reconciliation-types";
 import { normalizeWritebackArrays } from "./writeback-arrays";
+import {
+  type WritebackScopeMetadata,
+  writebackMatchesContext,
+  writebackQueueReadPaths,
+} from "./writeback-read";
 
 const ISSUE_REF_RE = /\b[A-Z][A-Z0-9]+-\d+\b/g;
 // Dated ids (WB-20261030-7K2M9QXA) and legacy sequential ids (WB-00001).
@@ -247,7 +247,7 @@ function record(args: {
   };
 }
 
-interface WritebackQueueRecord {
+interface WritebackQueueRecord extends WritebackScopeMetadata {
   id?: string;
   ts?: string;
   updatedAt?: string;
@@ -279,18 +279,10 @@ const writebackAdapter: ReconciliationAdapter = {
     const scope = projectRootFromAiRoot(sourceRoot, context.homeDir)
       ? "project"
       : "global";
-    const paths = [
-      ...legacyFacultAiStateDirs(context.homeDir, sourceRoot).map((dir) =>
-        join(dir, scope, "writeback", "queue.jsonl")
-      ),
-      join(
-        facultAiStateDir(context.homeDir, sourceRoot),
-        scope,
-        "writeback",
-        "queue.jsonl"
-      ),
-      facultAiWritebackQueuePath(context.homeDir, sourceRoot),
-    ];
+    const paths = writebackQueueReadPaths({
+      homeDir: context.homeDir,
+      rootDir: sourceRoot,
+    });
     const existingPaths = [
       ...new Set(
         (
@@ -373,6 +365,15 @@ const writebackAdapter: ReconciliationAdapter = {
         )[0];
       const observedAt = entry?.updatedAt ?? entry?.ts;
       if (!(entry?.id && observedAt && inWindow(observedAt, context))) {
+        return [];
+      }
+      if (
+        !writebackMatchesContext({
+          record: entry,
+          homeDir: context.homeDir,
+          rootDir: sourceRoot,
+        })
+      ) {
         return [];
       }
       const normalized = normalizeWritebackArrays(entry);

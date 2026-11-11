@@ -821,7 +821,7 @@ test("doctor --repair migrates a legacy root index into generated ai state", asy
 
     expect(code).toBe(0);
     expect(err).toBe("");
-    expect(out).toContain("Repaired generated AI index");
+    expect(out).toContain("Rebuilt generated AI index");
 
     const repaired = JSON.parse(await readFile(generatedIndex, "utf8")) as {
       version: number;
@@ -1129,12 +1129,34 @@ test("doctor --repair preserves an explicit custom global root and state scope",
       expect(launchctlLog).not.toContain("bootout");
     }
     expect(await Bun.file(join(stateRoot, "projects")).exists()).toBe(false);
+    const paths = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "./src/index.ts",
+        "paths",
+        "--global",
+        "--root",
+        rootDir,
+        "--json",
+      ],
+      { cwd: process.cwd(), env, stdout: "pipe", stderr: "pipe" }
+    );
+    const report = JSON.parse(await new Response(paths.stdout).text()) as {
+      generated: { indexPath: string; graphPath: string };
+    };
+    expect(await paths.exited).toBe(0);
+    expect(report.generated.indexPath).toStartWith(
+      join(stateRoot, "global", "roots")
+    );
+    expect(await Bun.file(report.generated.indexPath).exists()).toBe(true);
+    expect(await Bun.file(report.generated.graphPath).exists()).toBe(true);
     expect(
       await Bun.file(join(rootDir, ".facult", "ai", "index.json")).exists()
-    ).toBe(true);
+    ).toBe(false);
     expect(
       await Bun.file(join(rootDir, ".facult", "ai", "graph.json")).exists()
-    ).toBe(true);
+    ).toBe(false);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

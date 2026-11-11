@@ -327,7 +327,17 @@ describe("read-only audit boundary", () => {
       home
     );
     expect(cli.exitCode).toBe(0);
-    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    expect(
+      JSON.parse(await readFile(indexPath, "utf8")).skills.review.auditStatus
+    ).toBe("pending");
+    const paths = await runAuditCli(["paths", "--json", "--global"], home);
+    expect(paths.exitCode).toBe(0);
+    const generated = JSON.parse(paths.stdout) as {
+      generated: { indexPath: string };
+    };
+    const index = JSON.parse(
+      await readFile(generated.generated.indexPath, "utf8")
+    );
     expect(index.skills.review.auditStatus).toBe("passed");
     expect(index.skills.review.lastAuditAt).toBe(
       JSON.parse(cli.stdout).timestamp

@@ -893,6 +893,10 @@ describe("ai CLI", () => {
     const rootDir = join(tempHome, ".ai");
     process.env.FACULT_ROOT_DIR = rootDir;
     await mkdir(join(rootDir, "instructions"), { recursive: true });
+    await Bun.write(
+      join(rootDir, "instructions", "VERIFICATION.md"),
+      "# Verification\n"
+    );
     await mkdir(join(tempHome, ".ai", ".facult", "ai"), { recursive: true });
     await Bun.write(
       join(tempHome, ".ai", ".facult", "ai", "graph.json"),

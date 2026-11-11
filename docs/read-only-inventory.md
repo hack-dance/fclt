@@ -1,25 +1,44 @@
 # Read-only capability queries
 
-`fclt list`, `show`, `find`, `graph`, `status`, and `inventory` do not write to canonical global or project roots. A missing or stale index needed by a query is rebuilt in memory. Reads also rebuild when an asset and its index have equal mtimes, because an edit within one filesystem clock tick cannot safely be treated as fresh. Legacy indexes can be read without copying them. Use `fclt index` or `fclt doctor --repair` to persist or repair generated indexes explicitly.
+`fclt list`, `show`, `find`, `graph`, `status`, and scoped `inventory` do not write caches or canonical global or project roots. Queries and `inventory --global` / `--project` read a prebuilt snapshot. A missing or stale snapshot never triggers discovery, repair, or an in-memory rebuild.
 
-Pass `--no-write` anywhere in a command, or set `FCLT_NO_WRITE=1`, to forbid writes explicitly. Write commands fail before their handlers run. This mode also disables optional inventory cache writes; an existing valid cache can still be read. The guard fails closed for commands that are not identified as read-only. Other non-empty environment values also enable it; `0`, `false`, and `no` disable it. A help flag does not authorize a write command in this mode.
+Run `fclt index` for the selected scope to publish a snapshot explicitly. Successful managed rendering (`manage` or `sync`) and project render apply/rollback for project `.ai` roots also publish it. Planning, check mode, and dry runs do not. A publication error after a completed render produces a stderr warning without changing the render result. Publication captures index, graph, and inventory together in one private file under `<machineStateDir>/cache/reads/`, keyed by canonical root. Replacement is atomic. Source metadata is checked before publication to reject mixed snapshots during concurrent edits. Storage relocation of the generated index/graph is independent of this cache.
 
-## Global inventory cache
+Queries check only index/graph inputs: resolved canonical and builtin roots, fclt config, managed state, and generated metadata. Inventory separately checks its recorded discovery inputs. Checks bind the package version and root identity and compare missing paths, sizes, identities, mtimes, and ctimes. No read performs recursive discovery. If a recorded MCP config changes, inventory compares a digest of its parsed MCP portion; unrelated settings do not invalidate it. Changed project-directory metadata triggers a nonrecursive comparison of recorded discovery names, so ordinary file additions do not invalidate the inventory. Directories consumed by recursive asset enumeration record every entry name, including arbitrary rule and instruction filenames; high-level discovery keeps its restricted name set, including the .git traversal marker. Instruction enumeration outside the scanner records its actual instruction trees and both global instruction candidates before publication, including absent paths. Additions, removals, equal-mtime edits, plugin changes, and symlink retargets invalidate the snapshot. Freshness is checked on every call; there is no process-local time-to-live hiding changes.
+
+Successful JSON shapes stay unchanged: lists and searches remain arrays, and inventory keeps its existing object fields. `generatedAt` identifies the published inventory; `cache.hit` is true when read. Unavailable or malformed snapshots produce `snapshot-unavailable` on stderr and exit 1 with no stdout. A changed source or package version produces `snapshot-stale` with the same exit behavior. Neither case is an empty search result. `status --json` remains available and reports the corresponding code in its existing `issues` array. Consumers can distinguish failed reads from an empty library; displaying stale separately in a UI requires consumer integration.
+
+The low-level TypeScript `loadIndex` / `loadGraph` builders retain their in-memory compatibility mode for existing callers. CLI query handlers always select `cachedOnly`; they cannot enter that fallback. `fclt doctor --repair` can repair generated indexes, but use `index` or `sync` to publish the scoped read snapshot afterward.
+
+Pass `--no-write` anywhere in a command, or set `FCLT_NO_WRITE=1`, to forbid writes explicitly. Write commands fail before their handlers run. This mode also disables optional discovery-cache writes; an existing valid snapshot can still be read. The guard fails closed for commands that are not identified as read-only. Other non-empty environment values also enable it; `0`, `false`, and `no` disable it. A help flag does not authorize a write command in this mode.
+
+## Scoped inventory and explicit discovery
 
 ```sh
+fclt index --global
 fclt inventory --global --no-config-from --json
 fclt inventory --global --json --no-write
 FCLT_NO_WRITE=1 fclt list skills --global --json
+fclt index --project
+fclt inventory --project --no-config-from --json
 ```
 
-Global inventory scans only the scanner's known canonical and tool sources, including their declared skill directories and installed Claude plugin paths. It skips project sources and all `scanFrom` / `--from` discovery roots before scanning. Use machine inventory without `--global` for broad discovery, or `--project` for project discovery. `--no-config-from` remains accepted with `--global`. In global JSON, `scanFrom` is now `[]`, project-only `dot-clawdbot` and `git-hooks` sources are omitted, and `canonicalRoot` selects the global root even in a project-scoped shell. These values describe the roots actually scanned; the field names and types stay the same.
+Global publication scans only known canonical and tool sources, including declared skill directories and installed Claude plugin paths. It skips project sources and `scanFrom` discovery roots. Global JSON retains `scanFrom: []`. Project publication uses project discovery with configured extra roots disabled. `--no-config-from` remains accepted for both scoped reads. A cached `--tool` filter applies to the published inventory without scanning.
 
-Redacted global results are cached under `<machineStateDir>/cache/inventory/`, outside canonical roots. `fclt status --json` reports `machineStateDir`. The default global location is `$XDG_STATE_HOME/fclt/global` (or `~/.local/state/fclt/global`) on Linux and `~/Library/Application Support/fclt/global` on macOS. The existing `FACULT_LOCAL_STATE_DIR` override also applies. A cache destination resolving inside the canonical root is skipped.
+Use `inventory` without a scope flag, or `scan`, for explicit discovery. Broad discovery may traverse home and configured roots; it is not the library read path. Scoped `--show-secrets`, `--from`, and `--include-git-hooks` are rejected with a discovery hint rather than silently ignored or served from a redacted snapshot.
 
-The cache checks the fclt package version, effective canonical root, command options, and filesystem metadata for discovery dependencies. It records directory and file mtimes, sizes and identities, including missing paths. Nested additions, edits, removals, and symlink target changes invalidate the cache. Only known discovery trees are traversed; unrelated home directories, tool session histories, and inactive plugin caches are not walked. Cache writes are atomic and optional: inaccessible or corrupt caches fall back to scanning. `--show-secrets` results are never cached.
+The low-level global discovery builder retains its optional cache under `<machineStateDir>/cache/inventory/`. Inaccessible or corrupt discovery caches fall back to explicit scanning; CLI scoped reads never enter that builder. `--show-secrets` results are never cached. Cache destinations resolving inside canonical roots are rejected or skipped. All read snapshots and inventory-cache files are private and replaced atomically.
 
-Inventory retains its JSON contract and adds `cache: { hit, generatedAt, key }` for cached global queries. `generatedAt` identifies the scanned snapshot, so it is stable on a cache hit. The cache is shared across working directories; the returned `cwd` always reflects the current caller. Cache hit rates depend on source activity: a tool rewriting a scanned MCP config invalidates its snapshot even if its MCP entries happen to be unchanged. `fclt --version` and `status --json`'s `packageVersion` identify the installed release. Package release notes are generated from Conventional Commits; this change does not publish a release.
+`status --json` reports `machineStateDir`. The default global runtime location is `$XDG_STATE_HOME/fclt/global` (or `~/.local/state/fclt/global`) on Linux and `~/Library/Application Support/fclt/global` on macOS. The `FACULT_LOCAL_STATE_DIR` override also applies. Cache keys bind to the canonical root; output `cwd` always reflects the current caller. Routine tool-home auth/session activity does not invalidate queries or inventory. A capability change in a tool config invalidates inventory without blocking canonical queries.
 
 ![Read path](assets/read-path.svg)
 
 ![Inventory requests](assets/inventory-sequence.svg)
+
+Snapshot writers use independent temporary files and validate both dependency sets before atomic replacement. Concurrent publishers can complete without blocking a successful render. Interrupted publication cannot leave a permanent lock; readers ignore abandoned temporary files and never remove or repair them.
+
+Only the inventory portion is redacted. The index portion preserves raw MCP definitions, including possible inline environment values, just as the generated index does. The entire file is private (0600) outside canonical roots.
+
+An install or version upgrade invalidates existing snapshots. Rollout must explicitly run index or sync for each required scope before library/search reads resume; reads never perform this migration.
+
+Project scoped reads without --no-config-from warn on stderr when configured scanFrom roots are excluded. Successful JSON on stdout remains unchanged.

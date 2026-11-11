@@ -92,6 +92,10 @@ import {
   type PublishResult,
   publishReviewArtifacts,
 } from "./writeback-publish";
+import {
+  writebackMatchesContext,
+  writebackQueueReadPaths,
+} from "./writeback-read";
 
 const NEWLINE_RE = /\r?\n/;
 const TRAILING_NEWLINE_RE = /\n$/;
@@ -569,15 +573,6 @@ async function validateProposalDraftAccess(
       );
     }
   });
-}
-
-function aiWritebackQueueReadPaths(homeDir: string, rootDir: string): string[] {
-  return [
-    ...legacyAiRuntimeScopeDirs(homeDir, rootDir).map((dir) =>
-      join(dir, "writeback", "queue.jsonl")
-    ),
-    facultAiWritebackQueuePath(homeDir, rootDir),
-  ];
 }
 
 function aiJournalReadPaths(homeDir: string, rootDir: string): string[] {
@@ -1224,10 +1219,11 @@ async function latestWritebackMap(args: {
   excludedIds?: Set<string>;
 }): Promise<Map<string, AiWritebackRecord>> {
   const entries = await readJsonLinesFromPaths<AiWritebackRecord>(
-    aiWritebackQueueReadPaths(args.homeDir, args.rootDir),
+    writebackQueueReadPaths(args),
     args
   );
   const latest = new Map<string, AiWritebackRecord>();
+  const scope = resolveScopeContext(args.rootDir, args.homeDir);
   for (const entry of entries) {
     try {
       assertAiRecordId(entry.id, "WB");
@@ -1238,25 +1234,7 @@ async function latestWritebackMap(args: {
       continue;
     }
 
-    const scope = resolveScopeContext(args.rootDir, args.homeDir);
-    let authorized = entry.scope === scope.scope;
-    try {
-      authorized =
-        authorized &&
-        ((entry.projectRoot &&
-          scope.projectRoot &&
-          pathsPhysicallyEquivalent(entry.projectRoot, scope.projectRoot)) ||
-          !entry.sourceRoot ||
-          pathsPhysicallyEquivalent(
-            canonicalProjectAiRoot(entry.sourceRoot, args.homeDir),
-            canonicalProjectAiRoot(args.rootDir, args.homeDir)
-          )) &&
-        (!(entry.projectRoot && scope.projectRoot) ||
-          pathsPhysicallyEquivalent(entry.projectRoot, scope.projectRoot));
-    } catch {
-      authorized = false;
-    }
-    if (!authorized) {
+    if (!writebackMatchesContext({ ...args, record: entry })) {
       args.warnings?.push(
         `Excluded ${entry.id}: writeback is outside authorized scope.`
       );
@@ -1264,7 +1242,7 @@ async function latestWritebackMap(args: {
       latest.delete(entry.id);
       continue;
     }
-    latest.set(entry.id, entry);
+    latest.set(entry.id, { ...entry, scope: scope.scope });
   }
   for (const [id, entry] of latest) {
     if (typeof entry.kind !== "string") {
@@ -1452,32 +1430,20 @@ async function resolveAssetSelection(args: {
       const snapshot = await buildIndexSnapshot({
         homeDir: args.homeDir,
         rootDir: args.rootDir,
-        force: true,
+        force: false,
       });
-      await writeAiText(
-        facultAiIndexPath(args.homeDir, args.rootDir),
-        `${JSON.stringify(snapshot.index, null, 2)}\n`,
-        args.homeDir
-      );
       const graphPath = facultAiGraphPath(args.homeDir, args.rootDir);
       await writeAiText(
         graphPath,
         `${JSON.stringify(snapshot.graph, null, 2)}\n`,
         args.homeDir
       );
-      return { graphPath };
-    },
-    copyGenerated: async (source, destination) => {
-      const root =
-        projectRootFromAiRoot(args.rootDir, args.homeDir) ??
-        (aiPathWithin(source, args.rootDir)
-          ? args.rootDir
-          : dirname(dirname(source)));
       await writeAiText(
-        destination,
-        await readAiText(source, "utf8", root),
+        facultAiIndexPath(args.homeDir, args.rootDir),
+        `${JSON.stringify(snapshot.index, null, 2)}\n`,
         args.homeDir
       );
+      return { graphPath };
     },
   });
   const graph = await loadGraph({
@@ -1592,7 +1558,7 @@ export async function addWriteback(
   const persistedIds = new Set(
     (
       await readJsonLinesFromPaths<unknown>(
-        aiWritebackQueueReadPaths(homeDir, args.rootDir),
+        writebackQueueReadPaths({ homeDir, rootDir: args.rootDir }),
         { homeDir, rootDir: args.rootDir }
       )
     ).flatMap((entry) =>

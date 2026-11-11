@@ -37,7 +37,7 @@ Root model:
 - Global canonical root: usually `~/.ai`
 - Project canonical root: `<repo>/.ai`
 - Built-in source root: `assets/packs/facult-operating-model/`
-- Generated global index/graph: under `~/.ai/.facult/ai/`
+- Generated global index/graph: under machine-local fclt state, keyed by canonical root
 - Machine-local global runtime state: under the OS app-data path for fclt
 - Machine-local project runtime state: under the OS app-data path for fclt, keyed by project
 - Global review mirrors: `~/.ai/writebacks/...` and `~/.ai/evolution/...`

@@ -151,15 +151,25 @@ describe("paths", () => {
     expect(facultRootDir(tempHome)).toBe(join(tempHome, ".ai"));
   });
 
-  it("uses ~/.ai/.facult/ai for generated index state", async () => {
+  it("keeps global generated state outside the canonical root and isolates roots", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
 
-    expect(facultAiStateDir(tempHome)).toBe(
-      join(tempHome, ".ai", ".facult", "ai")
+    const rootDir = join(tempHome, ".ai");
+    const generated = facultAiStateDir(tempHome, rootDir);
+    expect(generated).toStartWith(
+      join(expectedLocalStateRoot(tempHome), "global", "roots")
     );
-    expect(facultAiIndexPath(tempHome)).toBe(
-      join(tempHome, ".ai", ".facult", "ai", "index.json")
+    expect(pathIsPhysicallyInsideOrEqual(generated, rootDir)).toBe(false);
+    expect(facultAiIndexPath(tempHome)).toBe(join(generated, "index.json"));
+    expect(facultAiStateDir(tempHome, join(tempHome, "other-store"))).not.toBe(
+      generated
+    );
+    expect(legacyFacultAiStateDirs(tempHome, rootDir)).toContain(
+      join(rootDir, ".facult", "ai")
+    );
+    expect(legacyFacultAiStateDirs(tempHome, rootDir)).toContain(
+      join(tempHome, ".facult", "ai")
     );
   });
 

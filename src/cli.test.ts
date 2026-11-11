@@ -276,6 +276,7 @@ describe("CLI output contracts", () => {
     };
 
     try {
+      let generatedIndexPath = "";
       for (const command of ["status", "paths"]) {
         const proc = Bun.spawn(
           [
@@ -301,7 +302,7 @@ describe("CLI output contracts", () => {
           contextRoot: string;
           machineStateDir?: string;
           projectRoot: string | null;
-          generated?: { stateDir: string };
+          generated?: { stateDir: string; indexPath: string };
           runtime?: { machineStateDir: string };
         };
         expect(parsed.contextRoot).toBe(rootDir);
@@ -310,7 +311,10 @@ describe("CLI output contracts", () => {
           join(stateRoot, "global")
         );
         if (parsed.generated) {
-          expect(parsed.generated.stateDir).toBe(join(rootDir, ".facult"));
+          expect(parsed.generated.stateDir).toStartWith(
+            join(stateRoot, "global", "roots")
+          );
+          generatedIndexPath = parsed.generated.indexPath;
         }
       }
       const indexProc = Bun.spawn(
@@ -331,9 +335,7 @@ describe("CLI output contracts", () => {
       ]);
       expect(indexCode).toBe(0);
       expect(indexError).toBe("");
-      const index = JSON.parse(
-        await Bun.file(join(rootDir, ".facult", "ai", "index.json")).text()
-      ) as {
+      const index = JSON.parse(await Bun.file(generatedIndexPath).text()) as {
         skills: Record<string, { sourceKind?: string }>;
       };
       expect(index.skills["custom-global"]?.sourceKind).toBe("global");
@@ -406,8 +408,25 @@ describe("CLI output contracts", () => {
       expect(code).toBe(0);
       expect(err).toBe("");
       expect(out).toContain(rootDir);
-      const indexPath = join(rootDir, ".facult", "ai", "index.json");
-      const graphPath = join(rootDir, ".facult", "ai", "graph.json");
+      const pathsProc = Bun.spawn(
+        [
+          "bun",
+          "run",
+          join(process.cwd(), "src/index.ts"),
+          "paths",
+          "--global",
+          "--root",
+          rootDir,
+          "--json",
+        ],
+        { cwd: home, env, stdout: "pipe", stderr: "pipe" }
+      );
+      const paths = JSON.parse(await new Response(pathsProc.stdout).text()) as {
+        generated: { indexPath: string; graphPath: string };
+      };
+      expect(await pathsProc.exited).toBe(0);
+      const { indexPath, graphPath } = paths.generated;
+      expect(indexPath).toStartWith(join(stateRoot, "global", "roots"));
       expect(await Bun.file(indexPath).exists()).toBe(true);
       expect(await Bun.file(graphPath).exists()).toBe(true);
       const index = JSON.parse(await Bun.file(indexPath).text()) as {

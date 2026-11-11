@@ -1,4 +1,10 @@
 import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { ensureAiIndexPath } from "../ai-state";
+import {
+  withGeneratedStateLock,
+  writeGeneratedState,
+} from "../generated-state-io";
 import type { FacultIndex } from "../index-builder";
 import { facultAiIndexPath, facultRootDir } from "../paths";
 import { computeStoredAuditStatus } from "./status";
@@ -22,7 +28,11 @@ function ensureIndexStructure(index: FacultIndex): FacultIndex {
 }
 
 async function loadIndex(homeDir: string): Promise<FacultIndex | null> {
-  const indexPath = facultAiIndexPath(homeDir, facultRootDir(homeDir));
+  const { path: indexPath } = await ensureAiIndexPath({
+    homeDir,
+    rootDir: facultRootDir(homeDir),
+    repair: true,
+  });
   const file = Bun.file(indexPath);
   if (!(await file.exists())) {
     return null;
@@ -36,7 +46,7 @@ async function loadIndex(homeDir: string): Promise<FacultIndex | null> {
 
 async function writeIndex(homeDir: string, index: FacultIndex) {
   const indexPath = facultAiIndexPath(homeDir);
-  await Bun.write(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+  await writeGeneratedState(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
 export async function updateIndexFromAuditReport(opts: {
@@ -45,6 +55,27 @@ export async function updateIndexFromAuditReport(opts: {
   results: AuditItemResult[];
 }): Promise<{ updated: boolean; reason?: string }> {
   const home = opts.homeDir ?? homedir();
+  const current = await ensureAiIndexPath({
+    homeDir: home,
+    rootDir: facultRootDir(home),
+    repair: false,
+  });
+  if (current.source === "missing") {
+    return { updated: false, reason: "index-missing" };
+  }
+  return await withGeneratedStateLock({
+    directory: dirname(facultAiIndexPath(home)),
+    operation: () =>
+      updateIndexFromAuditReportLocked({ ...opts, homeDir: home }),
+  });
+}
+
+async function updateIndexFromAuditReportLocked(opts: {
+  homeDir: string;
+  timestamp: string;
+  results: AuditItemResult[];
+}): Promise<{ updated: boolean; reason?: string }> {
+  const home = opts.homeDir;
   const loaded = await loadIndex(home);
   if (!loaded) {
     return { updated: false, reason: "index-missing" };

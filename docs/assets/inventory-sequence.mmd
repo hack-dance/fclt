@@ -1,22 +1,17 @@
 ---
-title: HTP inventory requests
+title: Scoped capability requests
 ---
 sequenceDiagram
     autonumber
-    participant HTP
+    participant Client
     participant fclt
     participant Cache as Machine cache
-    participant Roots as Known global roots
-    HTP->>fclt: inventory --global --json
+    participant Roots as Recorded dependencies
+    Client->>fclt: Scoped inventory or query
     fclt->>Cache: Read snapshot and dependencies
     fclt->>Roots: Check dependency metadata
     alt Valid cache
-        Cache-->>fclt: Cached inventory
+        fclt-->>Client: Existing JSON shape
     else Missing or changed
-        fclt->>Roots: Scoped capability scan
-        Roots-->>fclt: Inventory
-        opt Writes allowed
-            fclt->>Cache: Atomic snapshot write
-        end
+        fclt-->>Client: snapshot-stale or snapshot-unavailable
     end
-    fclt-->>HTP: Stable JSON and cache metadata

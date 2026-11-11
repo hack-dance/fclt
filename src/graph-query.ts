@@ -92,6 +92,7 @@ function matchesSelection(
 }
 
 export async function loadGraph(opts?: {
+  cachedOnly?: boolean;
   rootDir?: string;
   homeDir?: string;
 }): Promise<FacultGraph> {
@@ -99,6 +100,10 @@ export async function loadGraph(opts?: {
   const rootDir =
     opts?.rootDir ??
     facultContextRootDir({ home: homeDir, cwd: process.cwd() });
+  if (opts?.cachedOnly) {
+    const { loadReadSnapshot } = await import("./read-snapshot");
+    return (await loadReadSnapshot({ homeDir, rootDir })).graph;
+  }
   const { path: graphPath } = await ensureAiGraphPath({
     homeDir,
     rootDir,

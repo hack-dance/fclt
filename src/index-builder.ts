@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { getAdapter } from "./adapters";
@@ -8,6 +7,11 @@ import {
   resolveCliContextRoot,
   resolveCliContextScope,
 } from "./cli-context";
+import {
+  assertGeneratedStateTarget,
+  withGeneratedStateLock,
+  writeGeneratedState,
+} from "./generated-state-io";
 import {
   type AssetScope,
   type AssetSourceKind,
@@ -29,6 +33,9 @@ import {
   facultAiIndexPath,
   facultMachineStateDir,
   facultRootDir,
+  legacyFacultAiIndexPaths,
+  legacyFacultAiStateDirs,
+  pathsPhysicallyEquivalent,
   projectRootFromAiRoot,
   projectSlugFromAiRoot,
   withFacultRootScope,
@@ -228,7 +235,8 @@ function findPreviousEntryByCanonicalRef(
   previous: Record<string, unknown> | undefined,
   canonicalRef: string | undefined,
   fallbackName: string,
-  source: IndexedSource
+  source: IndexedSource,
+  currentPaths: string[]
 ): unknown {
   if (!previous) {
     return undefined;
@@ -238,7 +246,10 @@ function findPreviousEntryByCanonicalRef(
       if (!isPlainObject(value)) {
         continue;
       }
-      if (value.canonicalRef === canonicalRef) {
+      if (
+        value.canonicalRef === canonicalRef &&
+        legacyFallbackMatchesSource(value, source, currentPaths)
+      ) {
         return value;
       }
     }
@@ -247,7 +258,7 @@ function findPreviousEntryByCanonicalRef(
   if (
     isPlainObject(legacyFallback) &&
     typeof legacyFallback.canonicalRef !== "string" &&
-    legacyFallbackMatchesSource(legacyFallback, source)
+    legacyFallbackMatchesSource(legacyFallback, source, currentPaths)
   ) {
     return legacyFallback;
   }
@@ -258,7 +269,8 @@ function findPreviousMcpEntry(
   previous: Record<string, unknown> | undefined,
   canonicalRef: string | undefined,
   name: string,
-  source: IndexedSource
+  source: IndexedSource,
+  currentPath: string
 ): unknown {
   if (!previous) {
     return undefined;
@@ -268,30 +280,35 @@ function findPreviousMcpEntry(
     return undefined;
   }
   if (typeof candidate.canonicalRef !== "string") {
-    return legacyFallbackMatchesSource(candidate, source)
+    return legacyFallbackMatchesSource(candidate, source, [currentPath])
       ? candidate
       : undefined;
   }
   if (
     typeof canonicalRef === "string" &&
-    candidate.canonicalRef === canonicalRef
+    candidate.canonicalRef === canonicalRef &&
+    legacyFallbackMatchesSource(candidate, source, [currentPath])
   ) {
     return candidate;
   }
   return undefined;
 }
 
-function pathIsWithinRoot(pathValue: string, rootDir: string): boolean {
-  if (!isAbsolute(pathValue)) {
+function sameSourceRoot(left: string, right: string | undefined): boolean {
+  if (!right) {
     return false;
   }
-  const rel = relative(rootDir, pathValue);
-  return rel === "" || !(rel.startsWith("..") || isAbsolute(rel));
+  try {
+    return pathsPhysicallyEquivalent(left, right);
+  } catch {
+    return false;
+  }
 }
 
 function legacyFallbackMatchesSource(
   entry: Record<string, unknown>,
-  source: IndexedSource
+  source: IndexedSource,
+  currentPaths: string[]
 ): boolean {
   let hasSourceSignal = false;
 
@@ -314,7 +331,7 @@ function legacyFallbackMatchesSource(
   const entryProjectRoot = entry.projectRoot;
   if (typeof entryProjectRoot === "string") {
     hasSourceSignal = true;
-    if (entryProjectRoot !== source.projectRoot) {
+    if (!sameSourceRoot(entryProjectRoot, source.projectRoot)) {
       return false;
     }
   }
@@ -322,7 +339,7 @@ function legacyFallbackMatchesSource(
   const entrySourceRoot = entry.sourceRoot;
   if (typeof entrySourceRoot === "string") {
     hasSourceSignal = true;
-    if (entrySourceRoot !== source.rootDir) {
+    if (!sameSourceRoot(entrySourceRoot, source.rootDir)) {
       return false;
     }
   }
@@ -330,7 +347,10 @@ function legacyFallbackMatchesSource(
   const entryPath = entry.path;
   if (typeof entryPath === "string") {
     hasSourceSignal = true;
-    return pathIsWithinRoot(entryPath, source.rootDir);
+    return (
+      isAbsolute(entryPath) &&
+      currentPaths.some((path) => sameSourceRoot(entryPath, path))
+    );
   }
 
   return hasSourceSignal;
@@ -632,7 +652,8 @@ async function indexSkills(
         previous,
         canonicalRef,
         name,
-        source
+        source,
+        [d, skillMd]
       );
       const meta = extractIndexMeta(prev);
 
@@ -694,7 +715,13 @@ async function indexMcpServers(
     const lm = await statIsoTime(mcpConfigPath);
     for (const name of Object.keys(serversObj).sort()) {
       const canonicalRef = canonicalRefForPath(source, "mcp", mcpConfigPath);
-      const prev = findPreviousMcpEntry(previous, canonicalRef, name, source);
+      const prev = findPreviousMcpEntry(
+        previous,
+        canonicalRef,
+        name,
+        source,
+        mcpConfigPath
+      );
       const meta = extractIndexMeta(prev);
       out[name] = {
         name,
@@ -746,7 +773,8 @@ async function indexAgents(
       previous,
       canonicalRef,
       name,
-      source
+      source,
+      [p]
     );
     const meta = extractIndexMeta(prev);
     let description: string | undefined;
@@ -1635,24 +1663,27 @@ async function buildIndexInternal(
   let previousIndex: Record<string, unknown> | null =
     !force && opts?.previousIndex ? { ...opts.previousIndex } : null;
   if (!(force || previousIndex)) {
-    try {
-      const existing = indexFile(outputPath);
-      if (await existing.exists()) {
-        previousIndex = JSON.parse(await existing.text()) as Record<
-          string,
-          unknown
-        >;
+    const candidates = opts?.machineStateDir
+      ? [outputPath]
+      : [outputPath, ...legacyFacultAiIndexPaths(homeDir, rootDir)];
+    for (const path of candidates) {
+      try {
+        const existing = indexFile(path);
+        await existing.stat();
+        const parsed: unknown = JSON.parse(await existing.text());
+        if (isPlainObject(parsed)) {
+          previousIndex = parsed;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          continue;
+        }
       }
-    } catch {
-      previousIndex = null;
-    }
-  }
-
-  if (force && persist) {
-    try {
-      await Bun.write(outputPath, "");
-    } catch {
-      // ignore
+      // Only a missing current snapshot permits migration. Unreadable current
+      // metadata must not revive trust or enablement from an older legacy file.
+      if (previousIndex || path === outputPath) {
+        break;
+      }
     }
   }
 
@@ -1853,9 +1884,13 @@ async function buildIndexInternal(
   }
 
   if (persist) {
-    await mkdir(dirname(outputPath), { recursive: true });
-    await Bun.write(outputPath, `${JSON.stringify(index, null, 2)}\n`);
-    await Bun.write(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
+    await assertGeneratedStateTarget(outputPath);
+    await assertGeneratedStateTarget(graphPath);
+    await writeGeneratedState(graphPath, `${JSON.stringify(graph, null, 2)}\n`);
+    await writeGeneratedState(
+      outputPath,
+      `${JSON.stringify(index, null, 2)}\n`
+    );
   }
 
   return { index, outputPath, graph, graphPath };
@@ -1864,7 +1899,18 @@ async function buildIndexInternal(
 export async function buildIndex(
   opts?: BuildIndexOptions
 ): Promise<BuildIndexResult> {
-  return await buildIndexInternal({ ...opts, persist: true });
+  const homeDir = opts?.homeDir ?? process.env.HOME ?? "";
+  const rootDir = canonicalProjectAiRoot(
+    opts?.rootDir ?? facultRootDir(homeDir),
+    homeDir
+  );
+  const directory = opts?.machineStateDir
+    ? join(opts.machineStateDir, "ai")
+    : dirname(facultAiIndexPath(homeDir, rootDir));
+  return await withGeneratedStateLock({
+    directory,
+    operation: () => buildIndexInternal({ ...opts, persist: true }),
+  });
 }
 
 export async function buildIndexSnapshot(
@@ -1883,6 +1929,12 @@ export async function buildIndexSnapshot(
     globalRoot,
     facultBuiltinPackRoot(),
     opts?.machineStateDir ?? facultMachineStateDir(homeDir, rootDir),
+    ...(opts?.machineStateDir
+      ? []
+      : [
+          dirname(facultAiIndexPath(homeDir, rootDir)),
+          ...legacyFacultAiStateDirs(homeDir, rootDir),
+        ]),
   ];
   const { graph, index } = await withGuardedIndexReads(roots, () =>
     buildIndexInternal({
@@ -1923,9 +1975,19 @@ Options:
     rootDir,
     scope: parsed.scope,
   });
-  const { outputPath } = await withFacultRootScope(
-    { rootDir, scope },
-    async () => buildIndex({ force, homeDir, rootDir })
-  );
-  console.log(`Index written to ${outputPath}`);
+  try {
+    const { outputPath } = await withFacultRootScope(
+      { rootDir, scope },
+      async () => {
+        const result = await buildIndex({ force, homeDir, rootDir });
+        const { refreshReadSnapshot } = await import("./read-snapshot");
+        await refreshReadSnapshot({ homeDir, rootDir });
+        return result;
+      }
+    );
+    console.log(`Index written to ${outputPath}`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }

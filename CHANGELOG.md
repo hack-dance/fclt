@@ -1,3 +1,11 @@
+## [2.34.6](https://github.com/hack-dance/fclt/compare/v2.34.5...v2.34.6) (2026-11-11)
+
+### Bug Fixes
+
+* serve scoped capability reads from published snapshots ([#121](https://github.com/hack-dance/fclt/issues/121)) ([1fdec3e](https://github.com/hack-dance/fclt/commit/1fdec3e800cb5f40b945088b3652a5dfac71cec8))
+* **state:** keep global index and graph outside canonical source ([#122](https://github.com/hack-dance/fclt/issues/122)) ([96e111d](https://github.com/hack-dance/fclt/commit/96e111d874a4d497f46e5b02652ef3cb46901fbe))
+* **writeback:** align report and list migration reads ([#123](https://github.com/hack-dance/fclt/issues/123)) ([0ee298e](https://github.com/hack-dance/fclt/commit/0ee298e424a504d3027dd256ec28072374a27085))
+
 ## [2.34.5](https://github.com/hack-dance/fclt/compare/v2.34.4...v2.34.5) (2026-11-11)
 
 ### Bug Fixes
