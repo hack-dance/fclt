@@ -56,9 +56,12 @@ async function fixture(merge: boolean) {
     "#!/bin/sh\nexit 0\n"
   );
   await chmod(join(repoDir, "scripts", "test-safe.sh"), 0o755);
-  await writeFile(join(bin, "bun"), '#!/bin/sh\nexit "$FORMATTER_EXIT_CODE"\n');
+  await writeFile(
+    join(bin, "bun"),
+    '#!/bin/sh\nif [ -n "$FORMATTER_FILE" ]; then printf "formatter output\\n" > "$FORMATTER_FILE"; fi\nexit "$FORMATTER_EXIT_CODE"\n'
+  );
   await chmod(join(bin, "bun"), 0o755);
-  async function hook(formatterExitCode = 0) {
+  async function hook(formatterExitCode = 0, formatterFile = "") {
     const proc = Bun.spawn({
       cmd: ["sh", join(import.meta.dir, "..", ".husky", "pre-commit")],
       cwd: repoDir,
@@ -69,6 +72,7 @@ async function fixture(merge: boolean) {
           ...process.env,
           PATH: `${bin}${delimiter}${process.env.PATH}`,
           FORMATTER_EXIT_CODE: String(formatterExitCode),
+          FORMATTER_FILE: formatterFile,
         },
       }),
       stdout: "pipe",
@@ -124,3 +128,24 @@ test("pre-commit restores unstaged changes when the formatter fails", async () =
     "unstaged work\n"
   );
 });
+
+for (const formatterEdits of [false, true]) {
+  test.each([
+    "base.txt",
+    "staged.txt",
+  ])(`pre-commit preserves partial staging in %s after formatter failure (edits: ${formatterEdits})`, async (file) => {
+    const { repoDir, git, stash, hook } = await fixture(false);
+    await writeFile(join(repoDir, file), "staged\n");
+    await git("add", file);
+    const index = await git("write-tree");
+    await writeFile(join(repoDir, file), "staged\nunstaged\n");
+    const result = await hook(7, formatterEdits ? file : "");
+    expect(result.code, result.stderr).toBe(7);
+    expect(await git("write-tree")).toBe(index);
+    expect(await readFile(join(repoDir, file), "utf8")).toBe(
+      "staged\nunstaged\n"
+    );
+    expect(await git("rev-parse", "refs/stash")).toBe(stash);
+    expect(await git("ls-files", "--unmerged")).toBe("");
+  });
+}

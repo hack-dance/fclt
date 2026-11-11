@@ -38,12 +38,28 @@ if [ -n "$PARTIALLY_STAGED" ]; then
     exit 1
   fi
   git stash push --quiet --keep-index --message "pre-commit-stash"
+  HOOK_STASH=$(git rev-parse refs/stash)
   STASHED=0
 fi
 
 # Run formatter on the staged files
 FORMAT_EXIT_CODE=0
 bun x ultracite fix || FORMAT_EXIT_CODE=$?
+
+if [ "$FORMAT_EXIT_CODE" -ne 0 ]; then
+  if [ "$STASHED" -eq 0 ]; then
+    # Restore the original working tree and index separately; stash pop can
+    # conflict when the same file had staged and unstaged changes.
+    git restore --source="$HOOK_STASH" --worktree -- .
+    git read-tree "$HOOK_STASH^2"
+    if [ "$(git rev-parse -q --verify refs/stash)" = "$HOOK_STASH" ]; then
+      git stash drop --quiet
+    fi
+  else
+    git restore --worktree -- .
+  fi
+  exit "$FORMAT_EXIT_CODE"
+fi
 
 # Restore working directory state
 if [ $STASHED -eq 0 ]; then
