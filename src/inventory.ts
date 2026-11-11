@@ -582,7 +582,11 @@ function isInstructionAsset(kind: string): boolean {
   );
 }
 
-async function listMarkdownFiles(root: string): Promise<string[]> {
+async function listMarkdownFiles(
+  root: string,
+  dependencies?: InventoryDependencies
+): Promise<string[]> {
+  await dependencies?.captureTree(root, new Set(), { includeIgnored: true });
   try {
     const stat = await Bun.file(root).stat();
     if (!stat.isDirectory()) {
@@ -601,12 +605,15 @@ async function listMarkdownFiles(root: string): Promise<string[]> {
 }
 
 async function canonicalInstructionAssets(
-  source: SourceResult
+  source: SourceResult,
+  dependencies?: InventoryDependencies
 ): Promise<InventoryInstruction[]> {
   const out: InventoryInstruction[] = [];
   for (const root of source.roots) {
     const candidates = [
-      ...(await listMarkdownFiles(join(root, "instructions"))).map((path) => ({
+      ...(
+        await listMarkdownFiles(join(root, "instructions"), dependencies)
+      ).map((path) => ({
         kind: "canonical-instruction",
         path,
       })),
@@ -617,6 +624,7 @@ async function canonicalInstructionAssets(
       },
     ];
     for (const candidate of candidates) {
+      await dependencies?.capturePath(candidate.path);
       try {
         const stat = await Bun.file(candidate.path).stat();
         if (!stat.isFile()) {
@@ -638,7 +646,8 @@ async function canonicalInstructionAssets(
 }
 
 async function inventoryInstructions(
-  result: ScanResult
+  result: ScanResult,
+  dependencies?: InventoryDependencies
 ): Promise<InventoryInstruction[]> {
   const out: InventoryInstruction[] = [];
   for (const source of result.sources) {
@@ -656,7 +665,7 @@ async function inventoryInstructions(
       });
     }
     if (source.id === "facult" || source.id.endsWith("-project")) {
-      out.push(...(await canonicalInstructionAssets(source)));
+      out.push(...(await canonicalInstructionAssets(source, dependencies)));
     }
   }
 
@@ -713,11 +722,6 @@ export async function buildAgentInventory(
     if (cached) {
       return { ...cached, cwd };
     }
-    await dependencies.captureTree(join(canonicalRoot, "instructions"));
-    await dependencies.capturePath(join(canonicalRoot, "AGENTS.global.md"));
-    await dependencies.capturePath(
-      join(canonicalRoot, "AGENTS.override.global.md")
-    );
   }
   const explicitFrom = opts?.from ?? [];
   const effectiveFrom = globalOnly
@@ -754,7 +758,10 @@ export async function buildAgentInventory(
       showSecrets: opts?.showSecrets ?? false,
     }),
     Promise.resolve(inventorySkills(scanResult)),
-    inventoryInstructions(scanResult),
+    inventoryInstructions(
+      scanResult,
+      cacheable || opts?.dependencies ? dependencies : undefined
+    ),
   ]);
   const mcpCapabilities = inventoryMcpCapabilities(mcpServers);
   const sources = scanResult.sources.map((source) => ({

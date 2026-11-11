@@ -49,6 +49,119 @@ async function cli(homeDir: string, argv: string[], cwd = homeDir) {
   return { code, stdout, stderr };
 }
 
+test("project-native instruction discovery tracks Markdown add/delete and global instruction candidates", async () => {
+  const context = await fixture();
+  try {
+    const projectRoot = join(context.homeDir, "project");
+    const project = {
+      homeDir: context.homeDir,
+      rootDir: join(projectRoot, ".ai"),
+    };
+    await Bun.write(
+      join(project.rootDir, "skills", "local", "SKILL.md"),
+      "# Local\n"
+    );
+    const toolRoot = join(projectRoot, ".codex");
+    const existing = join(toolRoot, "instructions", "existing.md");
+    await Bun.write(existing, "# Existing\n");
+    const added = join(toolRoot, "instructions", "nested", "added.md");
+    const changes = [
+      { path: added, present: true },
+      { path: existing, present: false },
+      ...["AGENTS.global.md", "AGENTS.override.global.md"].flatMap((name) => [
+        { path: join(toolRoot, name), present: true },
+        { path: join(toolRoot, name), present: false },
+      ]),
+    ];
+    for (const change of changes) {
+      await refreshReadSnapshot(project);
+      const before = await Bun.file(readSnapshotPath(project)).text();
+      if (change.present) {
+        await Bun.write(change.path, "# Changed\n");
+      } else {
+        await rm(change.path);
+      }
+      const result = await cli(
+        context.homeDir,
+        ["inventory", "--project", "--no-config-from", "--json", "--no-write"],
+        projectRoot
+      );
+      expect({
+        path: change.path,
+        code: result.code,
+        stdout: result.stdout,
+      }).toEqual({ path: change.path, code: 1, stdout: "" });
+      expect(result.stderr).toContain("snapshot-stale");
+      expect(await Bun.file(readSnapshotPath(project)).text()).toBe(before);
+      await refreshReadSnapshot(project);
+      const refreshed = await loadReadSnapshot({
+        ...project,
+        surface: "inventory",
+      });
+      expect(
+        refreshed.inventory.instructions.some(
+          (entry) => entry.path === change.path
+        )
+      ).toBe(change.present);
+    }
+  } finally {
+    await rm(context.homeDir, { recursive: true, force: true });
+  }
+});
+
+for (const markerPresent of [false, true]) {
+  test(`project discovery detects nested Git marker ${markerPresent ? "removal" : "addition"} with hook discovery disabled`, async () => {
+    const context = await fixture();
+    try {
+      const projectRoot = join(context.homeDir, "project");
+      const project = {
+        homeDir: context.homeDir,
+        rootDir: join(projectRoot, ".ai"),
+      };
+      await Bun.write(
+        join(project.rootDir, "skills", "local", "SKILL.md"),
+        "# Local\n"
+      );
+      const nested = join(projectRoot, "nested");
+      const instruction = join(nested, "deeper", "AGENTS.md");
+      const marker = join(nested, ".git");
+      await Bun.write(instruction, "# Nested\n");
+      if (markerPresent) {
+        await Bun.write(marker, "gitdir: .fixture-git\n");
+      }
+      await refreshReadSnapshot(project);
+      expect(
+        (
+          await loadReadSnapshot({ ...project, surface: "inventory" })
+        ).inventory.instructions.some((entry) => entry.path === instruction)
+      ).toBe(!markerPresent);
+      const before = await Bun.file(readSnapshotPath(project)).text();
+      if (markerPresent) {
+        await rm(marker);
+      } else {
+        await Bun.write(marker, "gitdir: .fixture-git\n");
+      }
+      const result = await cli(
+        context.homeDir,
+        ["inventory", "--project", "--no-config-from", "--json", "--no-write"],
+        projectRoot
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("snapshot-stale");
+      expect(await Bun.file(readSnapshotPath(project)).text()).toBe(before);
+      await refreshReadSnapshot(project);
+      expect(
+        (
+          await loadReadSnapshot({ ...project, surface: "inventory" })
+        ).inventory.instructions.some((entry) => entry.path === instruction)
+      ).toBe(markerPresent);
+    } finally {
+      await rm(context.homeDir, { recursive: true, force: true });
+    }
+  });
+}
+
 for (const asset of [
   { directory: [".cursor", "rules"], extension: "mdc", label: "rules" },
   {

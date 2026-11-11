@@ -54,7 +54,9 @@ async function mcpDigest(path: string): Promise<string> {
   }
 }
 
+/** File checks and traversal predicates consumed by buildFromRootResult.walk. */
 const DISCOVERY_FILES = new Set([
+  ".git",
   "SKILL.md",
   "AGENTS.md",
   "agents.md",
@@ -233,7 +235,8 @@ export class InventoryDependencies {
 
   async captureTree(
     path: string,
-    ancestors = new Set<string>()
+    ancestors = new Set<string>(),
+    options?: { includeIgnored?: boolean }
   ): Promise<void> {
     if (this.stableReads) {
       await this.captureStructure(path);
@@ -253,15 +256,16 @@ export class InventoryDependencies {
     await Promise.all(
       entries.map(async (entry) => {
         if (
-          entry.name === "node_modules" ||
-          entry.name === ".git" ||
-          entry.name === ".facult"
+          !options?.includeIgnored &&
+          (entry.name === "node_modules" ||
+            entry.name === ".git" ||
+            entry.name === ".facult")
         ) {
           return;
         }
         const child = join(path, entry.name);
         if (entry.isDirectory() || entry.isSymbolicLink()) {
-          await this.captureTree(child, nextAncestors);
+          await this.captureTree(child, nextAncestors, options);
         } else {
           await this.capturePath(child);
         }

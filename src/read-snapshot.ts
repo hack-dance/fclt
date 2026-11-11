@@ -27,7 +27,7 @@ interface SnapshotContext {
 }
 
 interface ReadSnapshot {
-  schema: 3;
+  schema: 4;
   packageVersion: string;
   homeDir: string;
   rootDir: string;
@@ -70,7 +70,7 @@ function validSnapshot(value: unknown): value is ReadSnapshot {
   }
   const record = value as ReadSnapshot;
   return (
-    record.schema === 3 &&
+    record.schema === 4 &&
     typeof record.generatedAt === "string" &&
     Array.isArray(record.dependencies) &&
     record.dependencies.length > 0 &&
@@ -224,7 +224,7 @@ async function publishReadSnapshot({
     throw new ReadSnapshotError("snapshot-stale");
   }
   const record: ReadSnapshot = {
-    schema: 3,
+    schema: 4,
     packageVersion: await packageVersion(),
     homeDir,
     rootDir,
