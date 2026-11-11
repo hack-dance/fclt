@@ -11,6 +11,7 @@ Start with [Writeback and evolution](./writeback-evolution.md) for the product's
 ## Guides
 
 - [Writeback and evolution](./writeback-evolution.md): how real-work evidence becomes reviewed and verified capability changes.
+- [Reconciliation sources](./reconciliation-sources.md): generate narrow source entries, preview read targets, and diagnose recorded checks.
 - [Concepts](./concepts.md): canonical roots, generated state, rendered outputs, scopes, and asset types.
 - [Work Units](./work-units.md): a general frame for agent work, evidence, verification, and writeback.
 - [Composable Capability](./composable-capability.md): refs, snippets, instruction templates, and evolvable units.

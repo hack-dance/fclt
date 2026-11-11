@@ -348,6 +348,9 @@ fclt ai evolve promote EV-00003 --to global --project
 
 fclt ai review init [--dry-run] [--force] [--json]
 fclt ai review status [--json]
+fclt ai review sources init --id <id> --type <git|markdown|automation|evidence-export> --path <relative-path> [--path <path>] [--file-root <project|home>] [--default-branch <ref>] [--json]
+fclt ai review sources preview [--source <id>] [--config <path>] [--json]
+fclt ai review sources doctor [--source <id>] [--config <path>] [--json]
 fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incremental] [--json]
 
 fclt ai loop enable [--rrule <rrule>] [--source <id>] [--dry-run] [--json]
@@ -361,6 +364,8 @@ fclt ai loop run [--since <date>] [--until <date>] [--source <id>] [--dry-run] [
 ```
 
 Use these to turn repeated work friction into reviewed capability changes.
+The [source tools](reconciliation-sources.md) generate entries and inspect metadata without writing
+configuration or refreshing review coverage.
 Plain list output shows the active root and scope so an empty project queue is
 not confused with the global queue. Use `--global`, `--project`, or `--root`
 when reviewing a specific scope, and use `--json` for automation.

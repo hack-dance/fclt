@@ -257,6 +257,73 @@ describe("ai CLI", () => {
     });
   });
 
+  it("routes read-only source tools through the ai namespace with a custom global root", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const rootDir = join(tempHome, "custom-capability");
+    process.chdir(tempHome);
+    const recipe = await captureConsole(async () => {
+      await aiCommand([
+        "review",
+        "sources",
+        "init",
+        "--id",
+        "notes",
+        "--type",
+        "markdown",
+        "--path",
+        "notes/*.md",
+        "--file-root",
+        "home",
+        "--root",
+        rootDir,
+        "--global",
+        "--json",
+      ]);
+    });
+    expect(recipe.errors).toEqual([]);
+    const entry = JSON.parse(recipe.logs.join("\n"));
+    expect(entry).toMatchObject({
+      configPath: join(rootDir, "reconciliation.json"),
+      writes: [],
+      source: { id: "notes", root: "home" },
+    });
+    expect(await Bun.file(entry.configPath).exists()).toBe(false);
+    await Bun.write(
+      entry.configPath,
+      JSON.stringify({ version: 1, sources: [entry.source] })
+    );
+    await Bun.write(join(tempHome, "notes/log.md"), "# evidence\n");
+    for (const command of ["preview", "doctor"]) {
+      const output = await captureConsole(async () => {
+        await aiCommand([
+          "review",
+          "sources",
+          command,
+          "--root",
+          rootDir,
+          "--global",
+          "--json",
+        ]);
+      });
+      expect(output.errors).toEqual([]);
+      expect(JSON.parse(output.logs.join("\n"))).toMatchObject({
+        version: 1,
+        configPath: entry.configPath,
+        contentScanned: false,
+        inputs: [
+          {
+            sourceId: "notes",
+            root: tempHome,
+            files: [
+              { path: join(tempHome, "notes/log.md"), state: "available" },
+            ],
+          },
+        ],
+      });
+    }
+  });
+
   it("initializes and runs a structured source review through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;

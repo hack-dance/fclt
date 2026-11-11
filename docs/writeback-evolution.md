@@ -118,6 +118,10 @@ and configured Markdown logs, runbooks, or research. Defaults are read-only:
 reconciliation does not edit issue trackers, Git, automation state, canonical assets,
 writebacks, or proposals.
 
+Use the [source setup and diagnostics guide](reconciliation-sources.md) to generate narrow entries
+with `fclt ai review sources init`, preview exact local inputs, and inspect recorded source checks
+with `fclt ai review sources doctor`. These commands preserve configuration and review state.
+
 A project configuration can opt into additional sources without storing
 credentials:
 
