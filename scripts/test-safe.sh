@@ -14,20 +14,25 @@ isolation=$("$bun_executable" "$script_dir/../test/isolation-root.ts")
   IFS= read -r FCLT_TEST_REAL_HOME
   IFS= read -r FCLT_TEST_REAL_STATE_ROOT
   IFS= read -r test_root
+  IFS= read -r test_device
+  IFS= read -r test_inode
 } <<EOF
 $isolation
 EOF
+
+
 export FCLT_TEST_REAL_HOME FCLT_TEST_REAL_STATE_ROOT
 export NODE_ENV=test
 export FCLT_ALLOW_EPHEMERAL_AI_PATHS=1
 export FCLT_TEST_SHELL_ROOT="$test_root"
+export FCLT_TEST_ROOT_DEVICE="$test_device" FCLT_TEST_ROOT_INODE="$test_inode"
+export FCLT_TEST_BUN_EXECUTABLE="$bun_executable"
 export HOME="$test_root/home"
 export XDG_STATE_HOME="$test_root/state"
 export XDG_CONFIG_HOME="$test_root/config"
 export XDG_DATA_HOME="$test_root/data"
 export XDG_CACHE_HOME="$test_root/cache"
 export TMPDIR="$test_root/tmp" TMP="$test_root/tmp" TEMP="$test_root/tmp"
-mkdir -p "$HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
 export FACULT_LOCAL_STATE_DIR='~/.local/state/fclt'
 export FACULT_CACHE_DIR='~/.cache/fclt'
 if [ "$(uname -s)" = Darwin ]; then
@@ -56,4 +61,4 @@ if [ "${1:-}" = "--ci" ]; then
   shift
 fi
 
-exec "$bun_executable" test "$@"
+exec "$bun_executable" "$script_dir/../test/run-isolated.ts" "$@"

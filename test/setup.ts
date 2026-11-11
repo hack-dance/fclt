@@ -5,7 +5,9 @@ import { delimiter, dirname, join } from "node:path";
 import { createIsolatedTestRoot } from "./isolation-root";
 
 // Run before importing any product module, including helpers that may grow new imports.
-const { realHome, realState, testRoot } = createIsolatedTestRoot("fclt-test-");
+const { realHome, realState, testRoot } = createIsolatedTestRoot("t-", {
+  preferWrapperRoot: true,
+});
 const nodeRuntime = Bun.spawnSync(["node", "--print", "process.execPath"]);
 if (nodeRuntime.exitCode !== 0) {
   throw new Error("Cannot resolve the Node test runtime before HOME isolation");
