@@ -39,9 +39,11 @@ async function assertRegularTarget(path: string): Promise<void> {
 
 async function prepareDirectory(path: string): Promise<void> {
   const parent = dirname(path);
-  if (parent !== path) {
-    await prepareDirectory(parent);
+  if (parent === path) {
+    await assertDirectoryTarget(path);
+    return;
   }
+  await prepareDirectory(parent);
   try {
     await mkdir(path);
   } catch (error) {
@@ -97,7 +99,7 @@ export async function withGeneratedStateLock<T>(args: {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(
-        `Generated state writer lock exists; retry after the writer finishes: ${lock}`
+        `Generated state writer lock exists; retry after the writer finishes: ${lock}. If no fclt writer is running, remove that abandoned lock directory. See docs/generated-state.md for recovery guidance.`
       );
     }
     throw error;

@@ -24,8 +24,10 @@ Run `fclt index` or `fclt doctor --repair` to create the new snapshots. Neither
 command deletes legacy files, removes tracked files, edits `.gitignore`, nor
 changes the canonical Git index.
 
-When rebuilding without `--force`, fclt reads metadata from the current index,
-then legacy generated locations, then the oldest canonical-root `index.json`.
+When rebuilding without `--force`, fclt reads metadata from the current index.
+Only a missing current index permits fallback to legacy generated locations,
+then the oldest canonical-root `index.json`. A damaged current index rebuilds
+with canonical defaults instead of restoring older legacy metadata.
 Matching entries retain enablement, trust and audit metadata. Matching includes
 source identity, so the same name in another root or source layer does not
 inherit that metadata. `--force` intentionally resets metadata.
@@ -45,7 +47,8 @@ checkout. Existing user files and legacy snapshots remain in place for independe
 
 Index builds and repairs share an exclusive `writer.lock` directory in the
 snapshot directory. An overlapping writer fails with a retry message instead
-of racing another build. Locks are not reclaimed automatically. After a crash,
+of racing another build. Fresh repair-mode reads return without taking the writer
+lock; repair rechecks freshness after acquiring it. Locks are not reclaimed automatically. After a crash,
 confirm that no writer is running before removing the abandoned lock directory.
 
 Each generated file is written to a unique temporary file and renamed into

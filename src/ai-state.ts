@@ -224,6 +224,17 @@ export async function ensureAiIndexPath(args: {
   source: "generated" | "legacy" | "rebuilt" | "missing";
 }> {
   if (args.repair !== false) {
+    const generatedPath = facultAiIndexPath(args.homeDir, args.rootDir);
+    if (
+      (await fileExists(generatedPath)) &&
+      !(await canonicalAssetsNewerThanIndex({
+        homeDir: args.homeDir,
+        rootDir: args.rootDir,
+        indexPath: generatedPath,
+      }))
+    ) {
+      return { path: generatedPath, repaired: false, source: "generated" };
+    }
     return await withGeneratedStateLock({
       directory: dirname(facultAiIndexPath(args.homeDir, args.rootDir)),
       operation: () => ensureAiIndexPathInternal(args),
@@ -292,6 +303,19 @@ async function ensureAiIndexPathInternal(args: {
   return { path: generatedPath, repaired: false, source: "missing" };
 }
 
+async function graphAssetsNewerThanSnapshot(args: {
+  homeDir: string;
+  rootDir: string;
+  graphPath: string;
+}): Promise<boolean> {
+  const indexPath = facultAiIndexPath(args.homeDir, args.rootDir);
+  return await canonicalAssetsNewerThanIndex({
+    homeDir: args.homeDir,
+    rootDir: args.rootDir,
+    indexPath: (await fileExists(indexPath)) ? indexPath : args.graphPath,
+  });
+}
+
 export async function ensureAiGraphPath(args: {
   homeDir: string;
   rootDir: string;
@@ -302,6 +326,16 @@ export async function ensureAiGraphPath(args: {
   rebuilt: boolean;
 }> {
   if (args.repair !== false) {
+    const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
+    if (
+      (await fileExists(generatedPath)) &&
+      !(await graphAssetsNewerThanSnapshot({
+        ...args,
+        graphPath: generatedPath,
+      }))
+    ) {
+      return { path: generatedPath, rebuilt: false };
+    }
     return await withGeneratedStateLock({
       directory: dirname(facultAiGraphPath(args.homeDir, args.rootDir)),
       operation: () => ensureAiGraphPathInternal(args),
@@ -318,16 +352,11 @@ async function ensureAiGraphPathInternal(args: {
 }): ReturnType<typeof ensureAiGraphPath> {
   const generatedPath = facultAiGraphPath(args.homeDir, args.rootDir);
   if (await fileExists(generatedPath)) {
-    const generatedIndexPath = facultAiIndexPath(args.homeDir, args.rootDir);
-    const freshnessAnchor = (await fileExists(generatedIndexPath))
-      ? generatedIndexPath
-      : generatedPath;
     if (
       args.repair !== false &&
-      (await canonicalAssetsNewerThanIndex({
-        homeDir: args.homeDir,
-        rootDir: args.rootDir,
-        indexPath: freshnessAnchor,
+      (await graphAssetsNewerThanSnapshot({
+        ...args,
+        graphPath: generatedPath,
       }))
     ) {
       const { graphPath } = await (args.rebuild

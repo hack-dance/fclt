@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
   utimes,
@@ -14,7 +15,7 @@ import { runFixtureGit } from "../test/git-fixture";
 import { ensureAiGraphPath, ensureAiIndexPath } from "./ai-state";
 import { withGeneratedStateLock } from "./generated-state-io";
 import { loadGraph } from "./graph-query";
-import { buildIndex } from "./index-builder";
+import { buildIndex, buildIndexSnapshot } from "./index-builder";
 import {
   facultAiIndexPath,
   facultAiWritebackQueuePath,
@@ -240,7 +241,62 @@ describe("machine-local global generated state", () => {
     );
   });
 
-  it("rejects overlapping writers and preserves the prior snapshots", async () => {
+  it("does not restore legacy metadata when a current snapshot is damaged", async () => {
+    const args = await fixture();
+    const legacy = await legacyFixture(args);
+    const current = await buildIndex(args);
+    await Bun.write(current.outputPath, "{truncated current snapshot");
+    const snapshot = await buildIndexSnapshot(args);
+    expect(snapshot.index.skills.sample?.trusted).toBe(false);
+    expect(snapshot.index.skills.sample?.enabledFor).toBeUndefined();
+    expect(await Bun.file(current.outputPath).text()).toBe(
+      "{truncated current snapshot"
+    );
+    const rebuilt = await buildIndex(args);
+    expect(rebuilt.index.skills.sample?.trusted).toBe(false);
+    expect(rebuilt.index.skills.sample?.enabledFor).toBeUndefined();
+    expect(rebuilt.index.skills.sample?.auditStatus).toBe("pending");
+    expect(await Bun.file(join(legacy.legacyDir, "index.json")).text()).toBe(
+      legacy.index
+    );
+  });
+
+  it("preserves metadata for unchanged symlinked canonical directories", async () => {
+    const args = await fixture();
+    const externalSkills = join(args.homeDir, "external-skills");
+    await rename(join(args.rootDir, "skills"), externalSkills);
+    await symlink(externalSkills, join(args.rootDir, "skills"), "dir");
+    const externalAgents = join(args.homeDir, "external-agents");
+    const externalMcp = join(args.homeDir, "external-mcp");
+    await mkdir(externalAgents);
+    await mkdir(externalMcp);
+    await Bun.write(
+      join(externalAgents, "worker.toml"),
+      'description = "Worker"\n'
+    );
+    await Bun.write(
+      join(externalMcp, "servers.json"),
+      JSON.stringify({ servers: { sample: { command: "example" } } })
+    );
+    await symlink(externalAgents, join(args.rootDir, "agents"), "dir");
+    await symlink(externalMcp, join(args.rootDir, "mcp"), "dir");
+    const first = await buildIndex(args);
+    const settings = {
+      trusted: true,
+      enabledFor: ["codex"],
+      auditStatus: "passed" as const,
+    };
+    Object.assign(first.index.skills.sample!, settings);
+    Object.assign(first.index.agents["worker.toml"]!, settings);
+    Object.assign(first.index.mcp.servers.sample!, settings);
+    await Bun.write(first.outputPath, JSON.stringify(first.index));
+    const second = await buildIndex(args);
+    expect(second.index.skills.sample).toMatchObject(settings);
+    expect(second.index.agents["worker.toml"]).toMatchObject(settings);
+    expect(second.index.mcp.servers.sample).toMatchObject(settings);
+  });
+
+  it("rejects overlapping writers while allowing concurrent fresh repair-mode reads", async () => {
     const args = await fixture();
     const first = await buildIndex(args);
     const directory = dirname(first.outputPath);
@@ -264,6 +320,21 @@ describe("machine-local global generated state", () => {
       await expect(buildIndex({ ...args, force: true })).rejects.toThrow(
         "writer lock exists"
       );
+      const reads = await Promise.all(
+        Array.from({ length: 3 }, async () => ({
+          index: await ensureAiIndexPath(args),
+          graph: await ensureAiGraphPath({
+            ...args,
+            rebuild: () => {
+              throw new Error("Unexpected rebuild of fresh graph");
+            },
+          }),
+        }))
+      );
+      for (const read of reads) {
+        expect(read.index.repaired).toBe(false);
+        expect(read.graph.rebuilt).toBe(false);
+      }
       expect(await Bun.file(first.outputPath).json()).toEqual(first.index);
       expect(await Bun.file(first.graphPath).json()).toEqual(first.graph);
     } finally {
@@ -272,6 +343,40 @@ describe("machine-local global generated state", () => {
     }
     await buildIndex(args);
     expect(await readdir(directory)).not.toContain("writer.lock");
+  });
+
+  it("keeps the writer lock around custom graph rebuild callbacks", async () => {
+    const args = await fixture();
+    const first = await buildIndex(args);
+    await utimes(first.outputPath, 0, 0);
+    const entered = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const repair = ensureAiGraphPath({
+      ...args,
+      rebuild: async () => {
+        entered.resolve();
+        await gate.promise;
+        return { graphPath: first.graphPath };
+      },
+    });
+    await entered.promise;
+    try {
+      await expect(buildIndex(args)).rejects.toThrow("writer lock exists");
+    } finally {
+      gate.resolve();
+      await repair;
+    }
+  });
+
+  it("explains abandoned-lock recovery without removing the lock", async () => {
+    const args = await fixture();
+    const path = facultAiIndexPath(args.homeDir, args.rootDir);
+    const lock = join(dirname(path), "writer.lock");
+    await mkdir(lock, { recursive: true });
+    await expect(buildIndex(args)).rejects.toThrow(
+      "If no fclt writer is running, remove that abandoned lock directory"
+    );
+    expect(await readdir(dirname(path))).toContain("writer.lock");
   });
 
   it.each([
