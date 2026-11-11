@@ -66,11 +66,17 @@ const DISCOVERY_FILES = new Set([
   ".claude.json",
 ]);
 
-async function directoryDigest(path: string): Promise<string> {
+async function directoryDigest(
+  path: string,
+  allEntries = false
+): Promise<string> {
   const entries = await readdir(path, { withFileTypes: true });
   return digest(
     entries
-      .filter((entry) => entry.isDirectory() || DISCOVERY_FILES.has(entry.name))
+      .filter(
+        (entry) =>
+          allEntries || entry.isDirectory() || DISCOVERY_FILES.has(entry.name)
+      )
       .map((entry) => [entry.name, entry.isDirectory(), entry.isSymbolicLink()])
       .sort(([a], [b]) => String(a).localeCompare(String(b)))
   );
@@ -89,9 +95,9 @@ async function presenceStamp(path: string): Promise<string> {
 
 async function projectedStamp(
   path: string,
-  projection: "mcp" | "directory-scan"
+  projection: "mcp" | "directory-scan" | "directory-entries"
 ): Promise<string> {
-  return `${projection}:${JSON.stringify({ metadata: await stamp(path), digest: await (projection === "mcp" ? mcpDigest(path) : directoryDigest(path)) })}`;
+  return `${projection}:${JSON.stringify({ metadata: await stamp(path), digest: await (projection === "mcp" ? mcpDigest(path) : directoryDigest(path, projection === "directory-entries")) })}`;
 }
 
 async function dependencyMatches(
@@ -105,7 +111,9 @@ async function dependencyMatches(
     ? "mcp"
     : expected.startsWith("directory-scan:")
       ? "directory-scan"
-      : null;
+      : expected.startsWith("directory-entries:")
+        ? "directory-entries"
+        : null;
   if (!projection) {
     return (await stamp(path)) === expected;
   }
@@ -132,7 +140,8 @@ async function dependencyMatches(
     return (
       (await (projection === "mcp"
         ? mcpDigest(path)
-        : directoryDigest(path))) === saved.digest
+        : directoryDigest(path, projection === "directory-entries"))) ===
+      saved.digest
     );
   } catch {
     return false;
@@ -158,6 +167,7 @@ async function stamp(path: string): Promise<string> {
 /** Record only discovery dependencies, including missing paths and glob directories. */
 export class InventoryDependencies {
   private readonly paths = new Map<string, Promise<string>>();
+  private readonly fullDirectories = new Map<string, Promise<string>>();
   private readonly trees = new Set<string>();
   private readonly structures = new Set<string>();
   private readonly projections = new Set<string>();
@@ -194,8 +204,26 @@ export class InventoryDependencies {
     await this.paths.get(path);
   }
 
-  async readDirectory(path: string): Promise<Dirent<string>[]> {
-    if (!(this.structures.has(path) || this.projections.has(path))) {
+  /** Preserve prior discovery inputs when a recursive asset reader needs every name. */
+  async readDirectory(
+    path: string,
+    options?: { allEntries?: boolean }
+  ): Promise<Dirent<string>[]> {
+    if (options?.allEntries && !this.structures.has(path)) {
+      if (!this.fullDirectories.has(path)) {
+        this.fullDirectories.set(
+          path,
+          projectedStamp(path, "directory-entries")
+        );
+      }
+      await this.fullDirectories.get(path);
+    } else if (
+      !(
+        this.structures.has(path) ||
+        this.projections.has(path) ||
+        this.fullDirectories.has(path)
+      )
+    ) {
       this.projections.add(path);
       this.paths.set(path, projectedStamp(path, "directory-scan"));
       await this.paths.get(path);
@@ -250,7 +278,7 @@ export class InventoryDependencies {
 
   async entries(): Promise<[string, string][]> {
     return await Promise.all(
-      [...this.paths]
+      [...this.paths, ...this.fullDirectories]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(async ([path, value]) => [path, await value] as [string, string])
     );

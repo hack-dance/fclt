@@ -95,7 +95,10 @@ interface ScanTracking {
     path: string,
     options?: { rejectUnsupportedEntries?: boolean }
   ) => Promise<void>;
-  readDirectory?: (path: string) => Promise<import("node:fs").Dirent[] | null>;
+  readDirectory?: (
+    path: string,
+    options?: { allEntries?: boolean }
+  ) => Promise<import("node:fs").Dirent[] | null>;
 }
 
 const scanTracking = new AsyncLocalStorage<ScanTracking>();
@@ -309,12 +312,13 @@ async function statSafe(
 }
 
 async function readdirForScan(
-  pathValue: string
+  pathValue: string,
+  options?: { allEntries?: boolean }
 ): Promise<import("node:fs").Dirent[]> {
   const tracked = scanTracking.getStore()?.readDirectory;
   if (tracked) {
     try {
-      return (await tracked(pathValue)) ?? [];
+      return (await tracked(pathValue, options)) ?? [];
     } catch (error) {
       throw new ScanTrackingError(error);
     }
@@ -1052,7 +1056,7 @@ async function listFilesRecursive(
     }
     let entries: any[];
     try {
-      entries = await readdirForScan(dir);
+      entries = await readdirForScan(dir, { allEntries: true });
     } catch (error) {
       if (error instanceof ScanTrackingError) {
         throw error;

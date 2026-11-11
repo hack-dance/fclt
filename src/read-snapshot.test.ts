@@ -49,6 +49,62 @@ async function cli(homeDir: string, argv: string[], cwd = homeDir) {
   return { code, stdout, stderr };
 }
 
+for (const asset of [
+  { directory: [".cursor", "rules"], extension: "mdc", label: "rules" },
+  {
+    directory: [".ai", "instructions"],
+    extension: "md",
+    label: "instructions",
+  },
+]) {
+  test(`project inventory detects new nested ${asset.label} consumed by recursive discovery`, async () => {
+    const context = await fixture();
+    try {
+      const projectRoot = join(context.homeDir, "project");
+      const project = {
+        homeDir: context.homeDir,
+        rootDir: join(projectRoot, ".ai"),
+      };
+      await Bun.write(
+        join(project.rootDir, "skills", "local", "SKILL.md"),
+        "# Local\n"
+      );
+      const directory = join(projectRoot, "nested", ...asset.directory);
+      const existing = join(directory, `existing.${asset.extension}`);
+      const added = join(directory, `added.${asset.extension}`);
+      await Bun.write(existing, "# Existing\n");
+      await refreshReadSnapshot(project);
+      const initial = await loadReadSnapshot({
+        ...project,
+        surface: "inventory",
+      });
+      expect(
+        initial.inventory.instructions.some((entry) => entry.path === existing)
+      ).toBe(true);
+      const snapshotPath = readSnapshotPath(project);
+      const before = await Bun.file(snapshotPath).text();
+      await Bun.write(added, "# Added\n");
+      const result = await cli(
+        context.homeDir,
+        ["inventory", "--project", "--no-config-from", "--json", "--no-write"],
+        projectRoot
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("snapshot-stale");
+      expect(await Bun.file(snapshotPath).text()).toBe(before);
+      await refreshReadSnapshot(project);
+      expect(
+        (
+          await loadReadSnapshot({ ...project, surface: "inventory" })
+        ).inventory.instructions.some((entry) => entry.path === added)
+      ).toBe(true);
+    } finally {
+      await rm(context.homeDir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("project render publishes after apply and rollback while check stays read-only", async () => {
   const context = await fixture();
   try {

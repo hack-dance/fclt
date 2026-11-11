@@ -742,7 +742,7 @@ export async function buildAgentInventory(
             captureMcpConfig: (path) => dependencies.captureMcpConfig(path),
             captureStructure: (path) => dependencies.captureStructure(path),
             readDirectory: opts?.refresh
-              ? (path) => dependencies.readDirectory(path)
+              ? (path, options) => dependencies.readDirectory(path, options)
               : undefined,
           }
         : undefined,
