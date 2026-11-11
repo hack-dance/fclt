@@ -89,11 +89,16 @@ interface ScanTracking {
   /** Cache discovery may bind simple globs without walking unrelated siblings. */
   shallowGlobDependencies?: boolean;
   capturePath?: (path: string) => Promise<void>;
+  captureMcpConfig?: (path: string) => Promise<void>;
+  captureStructure?: (path: string) => Promise<void>;
   captureTree?: (
     path: string,
     options?: { rejectUnsupportedEntries?: boolean }
   ) => Promise<void>;
-  readDirectory?: (path: string) => Promise<import("node:fs").Dirent[] | null>;
+  readDirectory?: (
+    path: string,
+    options?: { allEntries?: boolean }
+  ) => Promise<import("node:fs").Dirent[] | null>;
 }
 
 const scanTracking = new AsyncLocalStorage<ScanTracking>();
@@ -256,6 +261,7 @@ async function expandPathPatterns(
       !suffix[0]?.includes("**") &&
       suffix.slice(1).every((segment) => !hasGlobChars(segment));
     if (shallow) {
+      await tracking?.captureStructure?.(baseDir);
       await tracking?.capturePath?.(baseDir);
       const glob = new Bun.Glob(suffix[0]!);
       try {
@@ -306,12 +312,13 @@ async function statSafe(
 }
 
 async function readdirForScan(
-  pathValue: string
+  pathValue: string,
+  options?: { allEntries?: boolean }
 ): Promise<import("node:fs").Dirent[]> {
   const tracked = scanTracking.getStore()?.readDirectory;
   if (tracked) {
     try {
-      return (await tracked(pathValue)) ?? [];
+      return (await tracked(pathValue, options)) ?? [];
     } catch (error) {
       throw new ScanTrackingError(error);
     }
@@ -367,6 +374,7 @@ async function discoverMcpConfig(
   p: string,
   readText?: ScanReadText
 ): Promise<McpConfig | null> {
+  await scanTracking.getStore()?.captureMcpConfig?.(p);
   const st = await statSafe(p);
   if (!st?.isFile) {
     return null;
@@ -1048,7 +1056,7 @@ async function listFilesRecursive(
     }
     let entries: any[];
     try {
-      entries = await readdirForScan(dir);
+      entries = await readdirForScan(dir, { allEntries: true });
     } catch (error) {
       if (error instanceof ScanTrackingError) {
         throw error;

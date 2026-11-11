@@ -217,6 +217,21 @@ async function buildStatusInScope(opts?: StatusOptions): Promise<FacultStatus> {
   const managed = await loadManagedState(homeDir, contextRoot);
 
   const issues: StatusIssue[] = [];
+  const { loadReadSnapshot, ReadSnapshotError } = await import(
+    "./read-snapshot"
+  );
+  try {
+    await loadReadSnapshot({
+      homeDir,
+      rootDir: contextRoot,
+      surface: "inventory",
+    });
+  } catch (error) {
+    if (!(error instanceof ReadSnapshotError)) {
+      throw error;
+    }
+    issues.push({ severity: "info", code: error.code, message: error.message });
+  }
   if (generatedOnlyProjectRoot) {
     issues.push({
       severity: "warning",

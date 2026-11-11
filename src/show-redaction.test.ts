@@ -52,6 +52,13 @@ test("show redacts MCP secrets by default (use --show-secrets to bypass)", async
 
   const baseEnv = { ...process.env, HOME: dir, FACULT_ROOT_DIR: rootDir };
   const entrypoint = join(import.meta.dir, "index.ts");
+  const index = Bun.spawn(["bun", "run", entrypoint, "index"], {
+    cwd: dir,
+    env: baseEnv,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await index.exited).toBe(0);
 
   {
     const proc = Bun.spawn(["bun", "run", entrypoint, "show", "mcp:alpha"], {

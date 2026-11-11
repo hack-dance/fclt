@@ -7,7 +7,8 @@ import {
   readFile,
   realpath,
 } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { caseFold } from "unicode-case-folding";
 import { readDirectoryEntriesAt } from "./audit/safe-openat";
 import {
@@ -29,6 +30,22 @@ import {
 } from "./project-render-lock";
 
 declare const FCLT_COMPILED_VERSION: string | undefined;
+
+async function publishProjectReadSnapshot(
+  canonicalRoot: string
+): Promise<void> {
+  if (basename(canonicalRoot) !== ".ai") {
+    return;
+  }
+  const { withFacultRootScope } = await import("./paths");
+  const { refreshReadSnapshotAfterRender } = await import("./read-snapshot");
+  await withFacultRootScope({ rootDir: canonicalRoot, scope: "project" }, () =>
+    refreshReadSnapshotAfterRender({
+      homeDir: process.env.HOME ?? homedir(),
+      rootDir: canonicalRoot,
+    })
+  );
+}
 
 const PROJECT_RENDER_SCHEMA_VERSION = 1 as const;
 const PROJECT_RENDER_PLAN_SCHEMA_VERSION = 1 as const;
@@ -1359,6 +1376,7 @@ identity. Use --require-lock to fail when it is absent.
         canonicalRoot,
         projectRoot,
       });
+      await publishProjectReadSnapshot(canonicalRoot);
       if (parsed.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
@@ -1409,6 +1427,7 @@ identity. Use --require-lock to fail when it is absent.
         projectRoot,
         requireLock: parsed.requireLock,
       });
+      await publishProjectReadSnapshot(canonicalRoot);
       if (parsed.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (result.changed) {

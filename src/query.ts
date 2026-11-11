@@ -162,6 +162,8 @@ export function facultIndexPath(home: string = homedir()): string {
  * Load the fclt index.json into memory.
  */
 export async function loadIndex(opts?: {
+  /** CLI reads require a prebuilt snapshot; low-level builders retain compatibility. */
+  cachedOnly?: boolean;
   /** Override the default canonical root dir (useful for tests). */
   rootDir?: string;
   /** Override home directory for org trust-list loading (useful for tests). */
@@ -175,6 +177,13 @@ export async function loadIndex(opts?: {
   const rootDir =
     opts?.rootDir ??
     facultContextRootDir({ home: resolvedHome, cwd: process.cwd() });
+  if (opts?.cachedOnly) {
+    const { loadReadSnapshot } = await import("./read-snapshot");
+    return await applyOrgTrustList(
+      (await loadReadSnapshot({ homeDir: resolvedHome, rootDir })).index,
+      { homeDir: resolvedHome }
+    );
+  }
   const { path: indexPath } = await ensureAiIndexPath({
     homeDir: resolvedHome,
     rootDir,

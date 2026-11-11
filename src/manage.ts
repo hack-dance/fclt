@@ -4087,6 +4087,8 @@ async function manageToolInScope(tool: string, opts: ManageOptions) {
       `${tool}: adopted existing content ${name} into canonical store`
     );
   }
+  const { refreshReadSnapshotAfterRender } = await import("./read-snapshot");
+  await refreshReadSnapshotAfterRender({ homeDir: home, rootDir });
 }
 
 async function restoreBackup({
@@ -6314,6 +6316,8 @@ async function syncManagedToolsInScope(opts: SyncOptions) {
 
   if (!opts.dryRun) {
     await saveManagedState(state, home, rootDir);
+    const { refreshReadSnapshotAfterRender } = await import("./read-snapshot");
+    await refreshReadSnapshotAfterRender({ homeDir: home, rootDir });
   }
 }
 

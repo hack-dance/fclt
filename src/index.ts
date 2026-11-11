@@ -636,7 +636,7 @@ async function listCommand(argv: string[]) {
   let index: FacultIndex;
   try {
     index = await withContextualCommandScope(context, async (rootDir) =>
-      loadIndex({ rootDir })
+      loadIndex({ rootDir, cachedOnly: true })
     );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -798,7 +798,7 @@ async function findCommand(argv: string[]) {
   let index: FacultIndex;
   try {
     index = await withContextualCommandScope(context, async (rootDir) =>
-      loadIndex({ rootDir })
+      loadIndex({ rootDir, cachedOnly: true })
     );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -931,7 +931,7 @@ async function showCommand(argv: string[]) {
   let index: FacultIndex;
   try {
     index = await withContextualCommandScope(context, async (rootDir) =>
-      loadIndex({ rootDir })
+      loadIndex({ rootDir, cachedOnly: true })
     );
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -952,7 +952,7 @@ async function showCommand(argv: string[]) {
 
   try {
     const graph = await withContextualCommandScope(context, async (rootDir) =>
-      loadGraph({ rootDir })
+      loadGraph({ rootDir, cachedOnly: true })
     );
     const node = resolveGraphNode(graph, raw, {
       sourceKind: context.sourceKind,
@@ -1113,7 +1113,7 @@ async function graphCommand(argv: string[]) {
 
   try {
     const graph = await withContextualCommandScope(context, async (rootDir) =>
-      loadGraph({ rootDir })
+      loadGraph({ rootDir, cachedOnly: true })
     );
     const node = resolveGraphNode(graph, opts.target, {
       sourceKind: context.sourceKind,
