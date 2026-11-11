@@ -1,0 +1,12 @@
+---
+title: Writeback reconciliation
+---
+flowchart TD
+  queue[Append-only lifecycle rows] --> window[Keep rows through window end]
+  window --> latest[Newest timestamp per ID]
+  latest --> tie{Timestamps tie?}
+  tie -->|Yes| append[Last appended row]
+  tie -->|No| selected[Selected row]
+  append --> selected
+  selected --> kind[Normalize kind aliases]
+  kind --> report[One state per ID]

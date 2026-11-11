@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { restoreEnvironmentVariable } from "../test/environment";
+import { listWritebacks } from "./ai";
 import {
   facultAiReconciliationLockPath,
   facultAiReconciliationReviewDir,
@@ -595,6 +596,84 @@ describe("source reconciliation", () => {
     expect(review.evidence).toHaveLength(1);
     expect(review.evidence[0]?.body).toContain("weak_verification");
     expect(await readFile(queuePath, "utf8")).toBe(before);
+  });
+
+  it.each([
+    "WB-00020",
+    "WB-20260705-ABCDEFGH",
+  ])("uses the last appended lifecycle state when timestamps tie: %s", async (id) => {
+    const fixture = await makeFixture();
+    const queuePath = facultAiWritebackQueuePath(
+      fixture.homeDir,
+      fixture.rootDir
+    );
+    const initial = {
+      id,
+      ts: "2026-07-05T12:00:00.000Z",
+      scope: "project",
+      sourceRoot: fixture.rootDir,
+      kind: "weak-verification",
+      summary: "Verification needs outcome evidence",
+      status: "recorded",
+      evidence: [{ type: "session", ref: "lifecycle-retry" }],
+      tags: [],
+    };
+    const resolved = {
+      ...initial,
+      updatedAt: initial.ts,
+      kind: "weak_verification",
+      status: "resolved",
+      disposition: "resolve-watch",
+      dispositionTarget: "TICKET-793",
+    };
+    const rows = [
+      initial,
+      { ...initial, updatedAt: initial.ts, issueLinks: ["TICKET-793"] },
+      resolved,
+      resolved,
+    ];
+    const content = `${rows.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+    await mkdir(dirname(queuePath), { recursive: true });
+    await Bun.write(queuePath, content);
+    await Bun.write(
+      join(fixture.rootDir, "reconciliation.json"),
+      JSON.stringify({
+        version: 1,
+        sources: [{ id: "writebacks", type: "writebacks" }],
+      })
+    );
+
+    const historical = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(historical.evidence).toHaveLength(0);
+    expect(historical.signals).toHaveLength(0);
+    expect(historical.decisions).toHaveLength(1);
+    expect(historical.decisions[0]).toMatchObject({
+      sourceRecordId: id,
+      included: false,
+      classification: "noise",
+      reason:
+        "Excluded as a terminal source state that resolves prior evidence",
+    });
+
+    const logical = await listWritebacks(fixture);
+    expect(logical).toHaveLength(1);
+    expect(logical[0]).toMatchObject({
+      id,
+      kind: "weak_verification",
+      status: "resolved",
+    });
+    const retry = await reconcileSources({
+      ...fixture,
+      since: "2026-07-03T00:00:00Z",
+      until: "2026-07-10T00:00:00Z",
+    });
+    expect(retry.decisions).toEqual(historical.decisions);
+    expect(retry.evidence).toEqual(historical.evidence);
+    expect(await readFile(queuePath, "utf8")).toBe(content);
   });
 
   it("rescans explicit historical windows and selects the latest writeback state within the window", async () => {

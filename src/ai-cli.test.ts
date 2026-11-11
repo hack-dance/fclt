@@ -563,6 +563,47 @@ describe("ai CLI", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("parses kind aliases in both flag forms and preserves canonical output", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    process.env.FACULT_ROOT_DIR = join(tempHome, ".ai");
+    await mkdir(process.env.FACULT_ROOT_DIR, { recursive: true });
+    process.chdir(tempHome);
+    const inputs = [
+      ["--kind", " Weak-Verification "],
+      ["--kind=weak_verification"],
+      ["--kind=WEAK-VERIFICATION"],
+      ["--kind", "custom_signal"],
+    ];
+    for (const [index, kindArgs] of inputs.entries()) {
+      const output = await captureConsole(() =>
+        aiCommand([
+          "writeback",
+          "add",
+          "--global",
+          ...kindArgs,
+          "--summary",
+          `Independent signal ${index}`,
+          ...proposalEvidenceArgs(`kind-parser-${index}`),
+          "--json",
+        ])
+      );
+      expect(output.errors).toEqual([]);
+      const record = JSON.parse(output.logs.join("\n")) as AiWritebackRecord;
+      expect(record.kind).toBe(
+        index === 3 ? "custom_signal" : "weak_verification"
+      );
+    }
+    const grouped = await captureConsole(() =>
+      aiCommand(["writeback", "group", "--global", "--by=kind", "--json"])
+    );
+    expect(grouped.errors).toEqual([]);
+    expect(JSON.parse(grouped.logs.join("\n"))).toMatchObject([
+      { key: "custom_signal", kinds: ["custom_signal"], count: 1 },
+      { key: "weak_verification", kinds: ["weak_verification"], count: 3 },
+    ]);
+  });
+
   it("records and lists writebacks through the ai namespace", async () => {
     tempHome = await makeTempHome();
     process.env.HOME = tempHome;
