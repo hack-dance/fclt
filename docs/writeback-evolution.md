@@ -279,6 +279,14 @@ Useful kinds:
 - `capability_gap`
 - `bad_default`
 
+Hyphenated aliases such as `weak-verification` are accepted and normalize to
+`weak_verification` in new records and logical reads. Custom kinds remain supported.
+The append-only queue can contain multiple lifecycle rows for one ID; logical reads
+return one record. Reconciliation selects the newest state within its review window,
+using the last appended row when timestamps tie. Reads preserve the queue's bytes.
+
+![Writeback reconciliation selection](diagrams/writeback-reconciliation.svg)
+
 Avoid writeback for one-off preferences, vague complaints, or speculative ideas.
 
 Link implementation work and preserve the review disposition:

@@ -180,6 +180,49 @@ describe("ai writeback", () => {
     expect(await readFile(queue, "utf8")).toBe(content);
   });
 
+  it("skips queue and review mirror collisions without replacing existing records", async () => {
+    tempHome = await makeTempHome();
+    process.env.HOME = tempHome;
+    const args = { homeDir: tempHome, rootDir: join(tempHome, ".ai") };
+    const first = await addWriteback({
+      ...args,
+      kind: "weak_verification",
+      summary: "Existing signal",
+      evidence: proposalEvidence("collision-retry"),
+    });
+    const excludedId = "WB-00099";
+    const mirrorId = "WB-20260101-AAAAAAAA";
+    const availableId = "WB-20260101-BBBBBBBB";
+    const queue = facultAiWritebackQueuePath(tempHome, args.rootDir);
+    const content = `${JSON.stringify(first)}\n${JSON.stringify({ ...first, id: excludedId, scope: "project" })}\n`;
+    await Bun.write(queue, content);
+    const mirrorPath = join(
+      facultAiWritebackReviewDir(tempHome, args.rootDir),
+      `${mirrorId}.md`
+    );
+    const mirror = `---\nid: "${mirrorId}"\n---\n\nCaptured on another writer.\n`;
+    await Bun.write(mirrorPath, mirror);
+    const candidates = [first.id, excludedId, mirrorId, availableId];
+    setArtifactIdGeneratorForTests(() => candidates.shift() ?? mirrorId);
+
+    const next = await addWriteback({
+      ...args,
+      kind: "weak-verification",
+      summary: "Independent signal",
+      evidence: proposalEvidence("collision-retry"),
+    });
+    expect(next.id).toBe(availableId);
+    expect(next.kind).toBe("weak_verification");
+    expect(await readFile(queue, "utf8")).toBe(
+      `${content}${JSON.stringify(next)}\n`
+    );
+    expect(await readFile(mirrorPath, "utf8")).toBe(mirror);
+    expect((await listWritebacks(args)).map((entry) => entry.id)).toEqual([
+      first.id,
+      availableId,
+    ]);
+  });
+
   it.each([
     "add",
     "status",
