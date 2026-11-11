@@ -1057,9 +1057,9 @@ it("resolves a symlinked worktree directory to the physical enrolled checkout", 
 });
 
 it.skipIf(process.platform === "win32")(
-  "accepts plain /tmp paths while recording the resolved primary checkout",
+  "accepts plain temporary paths while recording the resolved primary checkout",
   async () => {
-    const plainRoot = await mkdtemp("/tmp/fclt-writeback-plain-");
+    const plainRoot = await mkdtemp(join(tmpdir(), "fclt-writeback-plain-"));
     fixtures.push(plainRoot);
     const args = await fixture({ repositoryDir: plainRoot });
     const record = JSON.parse(

@@ -17,6 +17,14 @@ Use the direct shell wrapper for focused tests too. Raw `bun test` or `bun run t
 ambient repository state before the JavaScript sanitizer or preload runs, so neither is the
 supported Git-safe entrypoint.
 
+Set `TMPDIR` to a filesystem with enough free space and inodes before running the wrapper or
+committing, for example `TMPDIR=/var/tmp ./scripts/test-safe.sh`. Fixtures inherit that location.
+If the requested temporary directory resolves inside the original home or state store, the isolation
+helper uses `/var/tmp` on POSIX systems or the Windows system temporary directory instead.
+
+Before committing a merge, stage or save any unstaged tracked changes. The hook refuses to stash
+them during a merge because Git's stash operations clear the merge metadata.
+
 Do not reproduce a suspected escape in a caller repository or shared worktree. Build a disposable
 repository with a linked worktree and record the caller snapshot before the test instead.
 

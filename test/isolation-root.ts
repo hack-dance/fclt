@@ -72,7 +72,7 @@ export function createIsolatedTestRoot(prefix: string) {
     isInsideOrEqual(tempBase, realHome) || isInsideOrEqual(tempBase, realState)
       ? process.platform === "win32"
         ? join(process.env.SystemRoot || "C:\\Windows", "Temp")
-        : "/tmp"
+        : "/var/tmp"
       : tempBase;
   const template = physicalPath(join(base, prefix));
   const testRoot = realpathSync(mkdtempSync(template));
