@@ -1,3 +1,14 @@
+## [2.34.4](https://github.com/hack-dance/fclt/compare/v2.34.3...v2.34.4) (2026-11-11)
+
+### Bug Fixes
+
+* **inventory:** cache scoped global discovery and keep reads non-mutating ([8cb10bb](https://github.com/hack-dance/fclt/commit/8cb10bbfd8d395c76d0bc38441da4ebc3ba6a2c1))
+* **inventory:** fast cached global inventory and no-write reads ([#118](https://github.com/hack-dance/fclt/issues/118)) ([56cec38](https://github.com/hack-dance/fclt/commit/56cec3806d660ee706ff761f2456732669c53090))
+* **inventory:** preserve legacy metadata and validate deletion freshness ([4c06e3c](https://github.com/hack-dance/fclt/commit/4c06e3c126f5336824db3358cdb56e84a352a73c))
+* **query:** rebuild read snapshots when timestamps tie ([8bf314e](https://github.com/hack-dance/fclt/commit/8bf314ed5cc82110ecd4c89f6d9cfddd9a733715))
+* **query:** rebuild read snapshots when timestamps tie ([#119](https://github.com/hack-dance/fclt/issues/119)) ([e464977](https://github.com/hack-dance/fclt/commit/e464977cfab65e59312e5a79c63e09139270abbe))
+* **query:** retain readable siblings beside broken entries ([f58d38c](https://github.com/hack-dance/fclt/commit/f58d38cb12f6987bce0a05f7b9a4376dba0798f5))
+
 ## [2.34.3](https://github.com/hack-dance/fclt/compare/v2.34.2...v2.34.3) (2026-11-06)
 
 ### Bug Fixes
