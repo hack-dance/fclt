@@ -1,3 +1,9 @@
+## [2.34.5](https://github.com/hack-dance/fclt/compare/v2.34.4...v2.34.5) (2026-11-11)
+
+### Bug Fixes
+
+* **writeback:** prefer latest append when lifecycle timestamps tie ([1e692b3](https://github.com/hack-dance/fclt/commit/1e692b332a65b2296db0fba66ab9beb741b924bf))
+
 ## [2.34.4](https://github.com/hack-dance/fclt/compare/v2.34.3...v2.34.4) (2026-11-11)
 
 ### Bug Fixes
