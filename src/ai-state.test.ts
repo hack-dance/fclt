@@ -73,11 +73,11 @@ describe("ai-state freshness repair", () => {
     expect(indexResult).toEqual({
       path: facultAiIndexPath(tempHome, projectRoot),
       repaired: true,
-      source: "legacy",
+      source: "rebuilt",
     });
     expect(graphResult).toEqual({
       path: facultAiGraphPath(tempHome, projectRoot),
-      rebuilt: true,
+      rebuilt: false,
     });
   });
 

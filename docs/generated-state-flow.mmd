@@ -1,0 +1,15 @@
+---
+title: Generated capability state
+---
+flowchart TD
+  Request[Index rebuild] --> Lock{Writer lock free?}
+  Lock -->|No| Retry[Report busy; preserve files]
+  Lock -->|Yes| Existing{Current index exists?}
+  Existing -->|Yes| Current[Read matching metadata]
+  Existing -->|No| Legacy[Read legacy metadata]
+  Current --> Build[Build from canonical assets]
+  Legacy --> Build
+  Build --> Graph[Atomically replace graph]
+  Graph --> Index[Atomically replace index]
+  Index --> Unlock[Release writer lock]
+  Legacy -.-> Preserve[Legacy files stay unchanged]

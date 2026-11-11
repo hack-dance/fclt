@@ -1452,32 +1452,20 @@ async function resolveAssetSelection(args: {
       const snapshot = await buildIndexSnapshot({
         homeDir: args.homeDir,
         rootDir: args.rootDir,
-        force: true,
+        force: false,
       });
-      await writeAiText(
-        facultAiIndexPath(args.homeDir, args.rootDir),
-        `${JSON.stringify(snapshot.index, null, 2)}\n`,
-        args.homeDir
-      );
       const graphPath = facultAiGraphPath(args.homeDir, args.rootDir);
       await writeAiText(
         graphPath,
         `${JSON.stringify(snapshot.graph, null, 2)}\n`,
         args.homeDir
       );
-      return { graphPath };
-    },
-    copyGenerated: async (source, destination) => {
-      const root =
-        projectRootFromAiRoot(args.rootDir, args.homeDir) ??
-        (aiPathWithin(source, args.rootDir)
-          ? args.rootDir
-          : dirname(dirname(source)));
       await writeAiText(
-        destination,
-        await readAiText(source, "utf8", root),
+        facultAiIndexPath(args.homeDir, args.rootDir),
+        `${JSON.stringify(snapshot.index, null, 2)}\n`,
         args.homeDir
       );
+      return { graphPath };
     },
   });
   const graph = await loadGraph({
