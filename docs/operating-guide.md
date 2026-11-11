@@ -269,6 +269,6 @@ content. For mistaken signal, `fclt ai writeback dismiss <writeback-id> --global
 lifecycle history; a proposal can be rejected with `fclt ai evolve reject <proposal-id> --global
 --reason "No longer supported by the evidence"`. Use the originating project scope when needed.
 For an already applied change, review a new correction and verify it; rejecting a proposal is
-not a filesystem undo. Global setup has no single rollback command: inspect its recorded changed
-paths and backups, then restore only reviewed files from your own version history or backup.
+not a filesystem undo. Global setup has no single rollback command: inspect the `changedPaths`
+it reported, then restore only reviewed files from your own version history.
 Do not delete the canonical root or runtime history as a repair shortcut.
