@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { facultBuiltinPackRoot } from "./builtin";
+import { resolveCliContextRoot } from "./cli-context";
 import type { FacultGraph } from "./graph";
 import { buildIndexSnapshot, type FacultIndex } from "./index-builder";
 import { type AgentInventory, buildAgentInventory } from "./inventory";
@@ -11,7 +12,9 @@ import {
   canonicalProjectAiRoot,
   facultAiGraphPath,
   facultAiIndexPath,
+  facultConfigPath,
   facultMachineStateDir,
+  legacyExternalFacultStateDir,
   preferredGlobalAiRoot,
   projectRootFromAiRoot,
   resolvePhysicalPath,
@@ -24,12 +27,14 @@ interface SnapshotContext {
 }
 
 interface ReadSnapshot {
-  schema: 1;
+  schema: 2;
   packageVersion: string;
   homeDir: string;
   rootDir: string;
   generatedAt: string;
   dependencies: [string, string][];
+  inventoryDependencies: [string, string][];
+  globalRoot: string;
   index: FacultIndex;
   graph: FacultGraph;
   inventory: AgentInventory;
@@ -65,7 +70,7 @@ function validSnapshot(value: unknown): value is ReadSnapshot {
   }
   const record = value as ReadSnapshot;
   return (
-    record.schema === 1 &&
+    record.schema === 2 &&
     typeof record.generatedAt === "string" &&
     Array.isArray(record.dependencies) &&
     record.dependencies.length > 0 &&
@@ -75,6 +80,14 @@ function validSnapshot(value: unknown): value is ReadSnapshot {
         row.length === 2 &&
         row.every((part) => typeof part === "string")
     ) &&
+    Array.isArray(record.inventoryDependencies) &&
+    record.inventoryDependencies.every(
+      (row) =>
+        Array.isArray(row) &&
+        row.length === 2 &&
+        row.every((part) => typeof part === "string")
+    ) &&
+    typeof record.globalRoot === "string" &&
     typeof record.homeDir === "string" &&
     typeof record.rootDir === "string" &&
     typeof record.packageVersion === "string" &&
@@ -91,9 +104,9 @@ function validSnapshot(value: unknown): value is ReadSnapshot {
   );
 }
 
-/** Validate recorded metadata only: no traversal, source parsing, repair or cache writes. */
+/** Validate recorded inputs without repair, writes or recursive discovery. */
 export async function loadReadSnapshot(
-  context: SnapshotContext
+  context: SnapshotContext & { surface?: "query" | "inventory" }
 ): Promise<ReadSnapshot> {
   const rootDir = canonicalProjectAiRoot(context.rootDir, context.homeDir);
   const record: unknown = await Bun.file(
@@ -110,11 +123,21 @@ export async function loadReadSnapshot(
   }
   if (
     record.packageVersion !== (await packageVersion()) ||
-    !(await dependenciesMatch(record.dependencies))
+    record.globalRoot !==
+      snapshotGlobalRoot({ homeDir: context.homeDir, rootDir }) ||
+    !(await dependenciesMatch(record.dependencies)) ||
+    (context.surface === "inventory" &&
+      !(await dependenciesMatch(record.inventoryDependencies)))
   ) {
     throw new ReadSnapshotError("snapshot-stale");
   }
   return record;
+}
+
+function snapshotGlobalRoot(context: SnapshotContext): string {
+  return projectRootFromAiRoot(context.rootDir, context.homeDir)
+    ? resolveCliContextRoot({ homeDir: context.homeDir, scope: "global" })
+    : context.rootDir;
 }
 
 /** Explicit writer used after index/render. One atomic file contains all read surfaces. */
@@ -126,9 +149,9 @@ export async function refreshReadSnapshot(
   }
   const { homeDir } = context;
   const rootDir = canonicalProjectAiRoot(context.rootDir, homeDir);
-  const globalRoot = preferredGlobalAiRoot(homeDir);
+  const globalRoot = snapshotGlobalRoot({ homeDir, rootDir });
   const path = readSnapshotPath({ homeDir, rootDir });
-  for (const root of [rootDir, globalRoot]) {
+  for (const root of [rootDir, globalRoot, preferredGlobalAiRoot(homeDir)]) {
     const rel = relative(resolvePhysicalPath(root), resolvePhysicalPath(path));
     if (
       rel === "" ||
@@ -140,20 +163,19 @@ export async function refreshReadSnapshot(
     }
   }
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const lockPath = `${path}.lock`;
-  const lock = await open(lockPath, "wx", 0o600).catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(
-        "Read snapshot publication is already in progress for this root."
-      );
-    }
-    throw error;
-  });
+  await publishReadSnapshot({ homeDir, rootDir, globalRoot, path });
+}
+
+/** Rendering is already committed; cache availability must not reverse its result. */
+export async function refreshReadSnapshotAfterRender(
+  context: SnapshotContext
+): Promise<void> {
   try {
-    await publishReadSnapshot({ homeDir, rootDir, globalRoot, path });
-  } finally {
-    await lock.close();
-    await rm(lockPath);
+    await refreshReadSnapshot(context);
+  } catch (error) {
+    console.error(
+      `Render completed; read snapshot was not published: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 
@@ -173,30 +195,43 @@ async function publishReadSnapshot({
   for (const source of [
     facultAiIndexPath(homeDir, rootDir),
     facultAiGraphPath(homeDir, rootDir),
+    facultConfigPath(homeDir),
+    join(legacyExternalFacultStateDir(homeDir), "config.json"),
     join(facultMachineStateDir(homeDir, rootDir), "managed.json"),
   ]) {
     await dependencies.capturePath(source);
   }
   const { index, graph } = await buildIndexSnapshot({ homeDir, rootDir });
+  const inventoryDependencies = new InventoryDependencies({
+    stableReads: true,
+  });
   const inventory = await buildAgentInventory({
     homeDir,
     cwd: projectRoot ?? homeDir,
     sourceMode: projectRoot ? "project" : "global",
     includeConfigFrom: false,
-    dependencies,
+    dependencies: inventoryDependencies,
     refresh: true,
   });
   const recorded = await dependencies.entries();
-  if (!(await dependenciesMatch(recorded))) {
+  const inventoryRecorded = await inventoryDependencies.entries();
+  if (
+    !(
+      (await dependenciesMatch(recorded)) &&
+      (await dependenciesMatch(inventoryRecorded))
+    )
+  ) {
     throw new ReadSnapshotError("snapshot-stale");
   }
   const record: ReadSnapshot = {
-    schema: 1,
+    schema: 2,
     packageVersion: await packageVersion(),
     homeDir,
     rootDir,
     generatedAt: new Date().toISOString(),
     dependencies: recorded,
+    inventoryDependencies: inventoryRecorded,
+    globalRoot,
     index,
     graph,
     inventory,
@@ -204,7 +239,12 @@ async function publishReadSnapshot({
   const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-    if (!(await dependenciesMatch(recorded))) {
+    if (
+      !(
+        (await dependenciesMatch(recorded)) &&
+        (await dependenciesMatch(inventoryRecorded))
+      )
+    ) {
       throw new ReadSnapshotError("snapshot-stale");
     }
     await rename(temporary, path);

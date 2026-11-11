@@ -221,7 +221,11 @@ async function buildStatusInScope(opts?: StatusOptions): Promise<FacultStatus> {
     "./read-snapshot"
   );
   try {
-    await loadReadSnapshot({ homeDir, rootDir: contextRoot });
+    await loadReadSnapshot({
+      homeDir,
+      rootDir: contextRoot,
+      surface: "inventory",
+    });
   } catch (error) {
     if (!(error instanceof ReadSnapshotError)) {
       throw error;

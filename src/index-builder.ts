@@ -1923,14 +1923,19 @@ Options:
     rootDir,
     scope: parsed.scope,
   });
-  const { outputPath } = await withFacultRootScope(
-    { rootDir, scope },
-    async () => {
-      const result = await buildIndex({ force, homeDir, rootDir });
-      const { refreshReadSnapshot } = await import("./read-snapshot");
-      await refreshReadSnapshot({ homeDir, rootDir });
-      return result;
-    }
-  );
-  console.log(`Index written to ${outputPath}`);
+  try {
+    const { outputPath } = await withFacultRootScope(
+      { rootDir, scope },
+      async () => {
+        const result = await buildIndex({ force, homeDir, rootDir });
+        const { refreshReadSnapshot } = await import("./read-snapshot");
+        await refreshReadSnapshot({ homeDir, rootDir });
+        return result;
+      }
+    );
+    console.log(`Index written to ${outputPath}`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }

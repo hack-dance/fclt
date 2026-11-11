@@ -89,6 +89,8 @@ interface ScanTracking {
   /** Cache discovery may bind simple globs without walking unrelated siblings. */
   shallowGlobDependencies?: boolean;
   capturePath?: (path: string) => Promise<void>;
+  captureMcpConfig?: (path: string) => Promise<void>;
+  captureStructure?: (path: string) => Promise<void>;
   captureTree?: (
     path: string,
     options?: { rejectUnsupportedEntries?: boolean }
@@ -256,6 +258,7 @@ async function expandPathPatterns(
       !suffix[0]?.includes("**") &&
       suffix.slice(1).every((segment) => !hasGlobChars(segment));
     if (shallow) {
+      await tracking?.captureStructure?.(baseDir);
       await tracking?.capturePath?.(baseDir);
       const glob = new Bun.Glob(suffix[0]!);
       try {
@@ -367,6 +370,7 @@ async function discoverMcpConfig(
   p: string,
   readText?: ScanReadText
 ): Promise<McpConfig | null> {
+  await scanTracking.getStore()?.captureMcpConfig?.(p);
   const st = await statSafe(p);
   if (!st?.isFile) {
     return null;

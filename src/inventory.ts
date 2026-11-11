@@ -739,6 +739,11 @@ export async function buildAgentInventory(
             shallowGlobDependencies: true,
             capturePath: (path) => dependencies.capturePath(path),
             captureTree: (path) => dependencies.captureTree(path),
+            captureMcpConfig: (path) => dependencies.captureMcpConfig(path),
+            captureStructure: (path) => dependencies.captureStructure(path),
+            readDirectory: opts?.refresh
+              ? (path) => dependencies.readDirectory(path)
+              : undefined,
           }
         : undefined,
     includeGitHooks: opts?.includeGitHooks,
@@ -952,6 +957,15 @@ export async function inventoryCommand(argv: string[]) {
   let opts: ReturnType<typeof parseInventoryArgs>;
   try {
     opts = parseInventoryArgs(argv);
+    if (
+      opts.sourceMode === "project" &&
+      opts.includeConfigFrom &&
+      configuredScanFrom(homedir()).length
+    ) {
+      console.error(
+        "Scoped project inventory excludes configured scanFrom roots. Pass --no-config-from to acknowledge this, or omit --project for explicit discovery."
+      );
+    }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 2;
@@ -978,7 +992,11 @@ export async function inventoryCommand(argv: string[]) {
             cwd,
             scope: opts.sourceMode as "global" | "project",
           });
-          const record = await loadReadSnapshot({ homeDir, rootDir });
+          const record = await loadReadSnapshot({
+            homeDir,
+            rootDir,
+            surface: "inventory",
+          });
           return filterInventoryBySource(
             {
               ...record.inventory,

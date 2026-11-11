@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Dirent } from "node:fs";
 import {
   mkdir,
   readdir,
@@ -9,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { AgentInventory } from "./inventory";
+import { extractServersObject } from "./mcp-config";
 import { noWriteRequested } from "./no-write";
 import {
   facultMachineStateDir,
@@ -16,6 +18,126 @@ import {
   preferredGlobalAiRoot,
   resolvePhysicalPath,
 } from "./paths";
+import { parseJsonLenient } from "./util/json";
+
+function digest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function sortedValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortedValue);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => [key, sortedValue(child)])
+  );
+}
+
+/** Compare only the MCP data emitted by inventory, never persist config values. */
+async function mcpDigest(path: string): Promise<string> {
+  try {
+    const text = await Bun.file(path).text();
+    const parsed: unknown = path.endsWith(".toml")
+      ? Bun.TOML.parse(text)
+      : parseJsonLenient(text);
+    const servers = path.endsWith(".toml")
+      ? (parsed as { mcp_servers?: unknown })?.mcp_servers
+      : extractServersObject(parsed);
+    return digest(sortedValue(servers ?? {}));
+  } catch {
+    return digest(["unreadable-or-invalid", await stamp(path)]);
+  }
+}
+
+const DISCOVERY_FILES = new Set([
+  "SKILL.md",
+  "AGENTS.md",
+  "agents.md",
+  "CLAUDE.md",
+  ".cursorrules",
+  "mcp.json",
+  "mcp.config.json",
+  "claude_desktop_config.json",
+  ".claude.json",
+]);
+
+async function directoryDigest(path: string): Promise<string> {
+  const entries = await readdir(path, { withFileTypes: true });
+  return digest(
+    entries
+      .filter((entry) => entry.isDirectory() || DISCOVERY_FILES.has(entry.name))
+      .map((entry) => [entry.name, entry.isDirectory(), entry.isSymbolicLink()])
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+  );
+}
+
+async function presenceStamp(path: string): Promise<string> {
+  try {
+    const metadata = await stat(path);
+    return metadata.isDirectory()
+      ? `directory:${metadata.dev}:${metadata.ino}:${await realpath(path)}`
+      : await stamp(path);
+  } catch {
+    return await stamp(path);
+  }
+}
+
+async function projectedStamp(
+  path: string,
+  projection: "mcp" | "directory-scan"
+): Promise<string> {
+  return `${projection}:${JSON.stringify({ metadata: await stamp(path), digest: await (projection === "mcp" ? mcpDigest(path) : directoryDigest(path)) })}`;
+}
+
+async function dependencyMatches(
+  path: string,
+  expected: string
+): Promise<boolean> {
+  if (expected.startsWith("directory:")) {
+    return (await presenceStamp(path)) === expected;
+  }
+  const projection = expected.startsWith("mcp:")
+    ? "mcp"
+    : expected.startsWith("directory-scan:")
+      ? "directory-scan"
+      : null;
+  if (!projection) {
+    return (await stamp(path)) === expected;
+  }
+  let saved: {
+    metadata: string;
+    digest: string;
+  };
+  try {
+    saved = JSON.parse(expected.slice(projection.length + 1));
+  } catch {
+    return false;
+  }
+  if (
+    !saved ||
+    typeof saved.metadata !== "string" ||
+    typeof saved.digest !== "string"
+  ) {
+    return false;
+  }
+  if ((await stamp(path)) === saved.metadata) {
+    return true;
+  }
+  try {
+    return (
+      (await (projection === "mcp"
+        ? mcpDigest(path)
+        : directoryDigest(path))) === saved.digest
+    );
+  } catch {
+    return false;
+  }
+}
 
 interface CacheRecord {
   schema: 1;
@@ -37,19 +159,60 @@ async function stamp(path: string): Promise<string> {
 export class InventoryDependencies {
   private readonly paths = new Map<string, Promise<string>>();
   private readonly trees = new Set<string>();
+  private readonly structures = new Set<string>();
+  private readonly projections = new Set<string>();
+  private readonly stableReads: boolean;
+
+  constructor(options?: { stableReads?: boolean }) {
+    this.stableReads = options?.stableReads === true;
+  }
 
   async capturePath(path: string): Promise<void> {
     if (!this.paths.has(path)) {
+      this.paths.set(
+        path,
+        this.stableReads ? presenceStamp(path) : stamp(path)
+      );
+    }
+    await this.paths.get(path);
+  }
+
+  async captureMcpConfig(path: string): Promise<void> {
+    if (!this.stableReads || this.projections.has(path)) {
+      return;
+    }
+    this.projections.add(path);
+    this.paths.set(path, projectedStamp(path, "mcp"));
+    await this.paths.get(path);
+  }
+
+  async captureStructure(path: string): Promise<void> {
+    if (!this.structures.has(path)) {
+      this.structures.add(path);
       this.paths.set(path, stamp(path));
     }
     await this.paths.get(path);
+  }
+
+  async readDirectory(path: string): Promise<Dirent<string>[]> {
+    if (!(this.structures.has(path) || this.projections.has(path))) {
+      this.projections.add(path);
+      this.paths.set(path, projectedStamp(path, "directory-scan"));
+      await this.paths.get(path);
+    }
+    return await readdir(path, { withFileTypes: true, encoding: "utf8" });
   }
 
   async captureTree(
     path: string,
     ancestors = new Set<string>()
   ): Promise<void> {
-    await this.capturePath(path);
+    if (this.stableReads) {
+      await this.captureStructure(path);
+    } else {
+      await this.capturePath(path);
+    }
+    await this.paths.get(path);
     const identity = await realpath(path).catch(() => path);
     if (ancestors.has(identity) || this.trees.has(path)) {
       return;
@@ -102,7 +265,9 @@ export async function dependenciesMatch(
     const matches = await Promise.all(
       dependencies
         .slice(offset, offset + 64)
-        .map(async ([path, expected]) => (await stamp(path)) === expected)
+        .map(
+          async ([path, expected]) => await dependencyMatches(path, expected)
+        )
     );
     if (matches.includes(false)) {
       return false;
