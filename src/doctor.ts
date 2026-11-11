@@ -40,6 +40,11 @@ import {
   resolveCliContextRoot,
   resolveCliContextScope,
 } from "./cli-context";
+import {
+  type CodexDiscovery,
+  inspectCodexDiscovery,
+  parseCodexDiscoveryArgs,
+} from "./codex-discovery";
 import { diagnoseEvolutionLoop } from "./evolution-loop";
 import {
   LEGACY_MANAGED_MUTATION_FLAG,
@@ -163,6 +168,7 @@ interface CodexReadiness {
   mcpDeclared: boolean;
   registered: boolean;
   freshSessionDiscovery: "not_applicable" | "requires_fresh_session";
+  discovery: CodexDiscovery;
   repair?: string;
 }
 
@@ -380,7 +386,12 @@ async function configuredCodexPlugins(home: string): Promise<Set<string>> {
   }
 }
 
-async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
+async function inspectCodexReadiness(args: {
+  home: string;
+  evidencePath?: string;
+  sessionId?: string;
+}): Promise<CodexReadiness> {
+  const { home } = args;
   const pluginRoot = join(home, "plugins", "fclt");
   const pluginPayloadPresent = await pathExists(
     join(pluginRoot, ".codex-plugin", "plugin.json")
@@ -400,6 +411,12 @@ async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
   }
   const configured = await configuredCodexPlugins(home);
   const registered = [...configured].some((name) => name.startsWith("fclt@"));
+  const discovery = await inspectCodexDiscovery({
+    homeDir: home,
+    installationReady: pluginPayloadPresent && mcpDeclared && registered,
+    evidencePath: args.evidencePath,
+    sessionId: args.sessionId,
+  });
 
   if (!(pluginPayloadPresent || registered)) {
     return {
@@ -408,6 +425,7 @@ async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
       mcpDeclared,
       registered,
       freshSessionDiscovery: "not_applicable",
+      discovery,
       repair: "Run `fclt setup codex-plugin` if Codex integration is wanted.",
     };
   }
@@ -418,8 +436,19 @@ async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
       mcpDeclared,
       registered,
       freshSessionDiscovery: "not_applicable",
+      discovery,
       repair:
         "Run `fclt setup codex-plugin`, then inspect `codex plugin list --json`.",
+    };
+  }
+  if (discovery.state === "externally_proven") {
+    return {
+      state: "ready",
+      pluginPayloadPresent,
+      mcpDeclared,
+      registered,
+      freshSessionDiscovery: "not_applicable",
+      discovery,
     };
   }
   return {
@@ -428,8 +457,9 @@ async function inspectCodexReadiness(home: string): Promise<CodexReadiness> {
     mcpDeclared,
     registered,
     freshSessionDiscovery: "requires_fresh_session",
+    discovery,
     repair:
-      "Start a fresh Codex session and confirm the `fclt_status` and `fclt_setup` tools are discoverable.",
+      "Registration is present; runtime discovery has not been assessed here. In a fresh Codex session, discover `fclt_status` and `fclt_setup`, call `fclt_status`, and supply external session evidence if already verified.",
   };
 }
 
@@ -1362,6 +1392,8 @@ Usage:
 Options:
   --json     Print read-only setup health, issues, and recommended actions
   --repair   Reconcile legacy state and remove contained background autosync launch agents
+  --codex-discovery-evidence <path>  Read external discovery/call evidence (with --json)
+  --codex-session <id>  Expected host session identity for that evidence
   ${LEGACY_MANAGED_MUTATION_FLAG}  Approve stopping a detected legacy autosync launch agent before other repair writes
 `);
 }
@@ -1371,6 +1403,8 @@ export async function buildDoctorReport(opts?: {
   homeDir?: string;
   rootArg?: string;
   scope?: "merged" | "global" | "project";
+  codexDiscoveryEvidencePath?: string;
+  codexSessionId?: string;
 }): Promise<DoctorReport> {
   const home = opts?.homeDir ?? process.env.HOME?.trim() ?? homedir();
   const cwd = opts?.cwd ?? process.cwd();
@@ -1504,7 +1538,11 @@ export async function buildDoctorReport(opts?: {
             )
           : Promise.resolve(false),
       ]).then((values) => values.some(Boolean)),
-      inspectCodexReadiness(home),
+      inspectCodexReadiness({
+        home,
+        evidencePath: opts?.codexDiscoveryEvidencePath,
+        sessionId: opts?.codexSessionId,
+      }),
     ]);
     const generatedIndexReady = result.source !== "missing";
     const assetTargeting =
@@ -2025,7 +2063,11 @@ async function doctorCommandWithScope(
   );
 
   try {
-    const parsed = parseCliContextArgs(contextArgv);
+    const discoveryArgs = parseCodexDiscoveryArgs(contextArgv);
+    if ((discoveryArgs.evidencePath || discoveryArgs.sessionId) && !json) {
+      throw new Error("Codex discovery evidence requires doctor --json");
+    }
+    const parsed = parseCliContextArgs(discoveryArgs.argv);
     const unknown = parsed.argv[0];
     if (unknown) {
       console.error(`Unknown option: ${unknown}`);
@@ -2045,6 +2087,10 @@ async function doctorCommandWithScope(
         homeDir: home,
         rootArg: parsed.rootArg,
         scope: parsed.scope,
+        codexDiscoveryEvidencePath: discoveryArgs.evidencePath
+          ? resolve(discoveryArgs.evidencePath)
+          : undefined,
+        codexSessionId: discoveryArgs.sessionId,
       });
       console.log(JSON.stringify(report, null, 2));
       return;
