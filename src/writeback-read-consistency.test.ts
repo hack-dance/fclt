@@ -242,6 +242,29 @@ describe("writeback report/list consistency", () => {
     expect(await fixture.queuesUnchanged()).toBe(true);
   });
 
+  it("keeps an empty legacy projectRoot from matching the current working directory", async () => {
+    const fixture = await makeFixture("project");
+    await fixture.seed(fixture.currentQueue, [
+      {
+        ...fixture.row,
+        projectRoot: "",
+        sourceRoot: join(fixtureRoot!, "other", ".ai"),
+      },
+    ]);
+    const originalCwd = process.cwd();
+    process.chdir(dirname(fixture.rootDir));
+    try {
+      const { listed, review, reportStates, logicalStates } =
+        await readBoth(fixture);
+      expect(reportStates).toEqual(logicalStates);
+      expect(listed).toEqual([]);
+      expect(review.decisions).toEqual([]);
+      expect(await fixture.queuesUnchanged()).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("preserves canonical project metadata from a moved checkout", async () => {
     const fixture = await makeFixture("project");
     await fixture.seed(fixture.currentQueue, [

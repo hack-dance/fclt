@@ -44,6 +44,7 @@ export function writebackMatchesContext(args: {
   }
   try {
     const projectMatches =
+      Boolean(record.projectRoot) &&
       typeof record.projectRoot === "string" &&
       projectRoot &&
       pathsPhysicallyEquivalent(record.projectRoot, projectRoot);
