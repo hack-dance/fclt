@@ -1,0 +1,9 @@
+flowchart TD
+  Fixture["Isolated fixture home"] --> Boundary["Valid package.json"]
+  Boundary --> Render["Render Codex plugin"]
+  Render --> Spawn["Node child: --self-test"]
+  Spawn --> Resolve["Resolve runtime modules"]
+  Resolve --> Stop["Stop at fixture boundary"]
+  Stop --> Success["Exit 0 and tool names"]
+  Spawn --> Failure["On failure: stdout and stderr"]
+  Parent["Invalid parent package"] -. "excluded by boundary" .-> Stop
