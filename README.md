@@ -24,6 +24,9 @@
 
 `fclt` is a feedback loop for AI capability.
 
+Start with the [everyday operating guide](./docs/operating-guide.md) for setup, project selection,
+review recipes, evidence, and safe undo.
+
 It captures what agents learn during real work, reconciles that signal across configured sources,
 turns repeated evidence into reviewable changes, and verifies whether those changes improved the
 work that produced them. Instructions, snippets, skills, agents, MCP definitions, automations, and

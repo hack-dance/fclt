@@ -77,7 +77,7 @@ export function createIsolatedTestRoot(
   const systemTemp =
     process.platform === "win32"
       ? join(process.env.SystemRoot || "C:\\Windows", "Temp")
-      : "/tmp";
+      : "/var/tmp";
   const base = [
     options.preferWrapperRoot ? wrapperRoot : null,
     tempBase,

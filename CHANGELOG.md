@@ -1,3 +1,9 @@
+## [2.34.7](https://github.com/hack-dance/fclt/compare/v2.34.6...v2.34.7) (2026-11-11)
+
+### Bug Fixes
+
+* make doctor discovery status evidence-aware ([#124](https://github.com/hack-dance/fclt/issues/124)) ([f9a1c1a](https://github.com/hack-dance/fclt/commit/f9a1c1af7f14d16c12f490a3b8490333aadc5b68))
+
 ## [2.34.6](https://github.com/hack-dance/fclt/compare/v2.34.5...v2.34.6) (2026-11-11)
 
 ### Bug Fixes

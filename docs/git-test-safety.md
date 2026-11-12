@@ -36,6 +36,14 @@ Scratch is also retained when only the test runner receives a signal.
 An uncatchable termination can also leave scratch. Raw `bun test` bypasses the wrapper's cleanup;
 the preload still isolates state. Existing scratch remains subject to the owner's cleanup policy.
 
+Set `TMPDIR` to a filesystem with enough free space and inodes before running the wrapper or
+committing, for example `TMPDIR=/var/tmp ./scripts/test-safe.sh`. Fixtures inherit that location.
+If the requested temporary directory resolves inside the original home or state store, the isolation
+helper uses `/var/tmp` on POSIX systems or the Windows system temporary directory instead.
+
+Before committing a merge, stage or save any unstaged tracked changes. The hook refuses to stash
+them during a merge because Git's stash operations clear the merge metadata.
+
 Do not reproduce a suspected escape in a caller repository or shared worktree. Build a disposable
 repository with a linked worktree and record the caller snapshot before the test instead.
 

@@ -147,8 +147,12 @@ bun run check
 
 `codex plugin list --json` proves registration, and the MCP self-test proves the packaged server
 declares its tools. Neither proves a running task has refreshed its tool registry. After plugin
-installation, start a fresh Codex task and confirm `fclt_setup` and `fclt_status` are discoverable;
-`doctor --json` reports this boundary as `requires_fresh_session` instead of inferring success.
+installation, start a fresh Codex task, confirm `fclt_setup` and `fclt_status` are discoverable,
+and successfully call `fclt_status`. Without external evidence, `doctor --json` retains the
+`requires_fresh_session` marker: registration is present, but this invocation has not assessed
+runtime discovery. It does not mean an already observed session failed. See the
+[external discovery evidence contract](./codex-discovery-evidence.md) to supply that observation
+without a persistent machine-wide ready flag.
 Reopening or resuming a task that existed before installation does not refresh that task's tool
 registry. If a genuinely new desktop task reports `MCP startup failed: No such file or directory`,
 rerun `fclt setup codex-plugin` from the installed release, then create another new task.

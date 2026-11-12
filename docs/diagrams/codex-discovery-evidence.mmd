@@ -1,0 +1,10 @@
+flowchart TD
+  Inspect[Inspect registration] --> Registered{Registered payload?}
+  Registered -->|No| Unavailable[Not installed or misconfigured]
+  Registered -->|Yes| Evidence{Evidence supplied?}
+  Evidence -->|No| Unverified[Registered and unverified]
+  Evidence -->|Yes| Validate{Session, snapshot, age, tools match?}
+  Validate -->|No| Unverified
+  Validate -->|Yes| Proven[Externally proven for this session]
+  class Unverified wait
+  class Proven ok
