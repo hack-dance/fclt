@@ -829,7 +829,12 @@ describe("managed state", () => {
   });
 
   it("syncs the builtin fclt codex plugin and marketplace by default", async () => {
-    const home = await createTempDir();
+    const fixture = await createTempDir();
+    await Bun.write(join(fixture, "package.json"), "invalid parent package");
+    const home = join(fixture, "home");
+    await mkdir(home);
+    // Node must stop package discovery here instead of reading ambient temp files.
+    await writeJson(join(home, "package.json"), { private: true });
     const rootDir = join(home, ".ai");
     await mkdir(rootDir, { recursive: true });
 
@@ -893,7 +898,10 @@ describe("managed state", () => {
       new Response(proc.stderr).text(),
       proc.exited,
     ]);
-    expect(code).toBe(0);
+    expect(
+      code,
+      `Plugin self-test failed:\nstdout:\n${stdout}\nstderr:\n${stderr}`
+    ).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain("fclt_evolve");
   });
