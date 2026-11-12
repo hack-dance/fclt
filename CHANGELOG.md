@@ -1,3 +1,9 @@
+## [2.35.0](https://github.com/hack-dance/fclt/compare/v2.34.7...v2.35.0) (2026-11-12)
+
+### Features
+
+* add narrow reconciliation source tools ([#126](https://github.com/hack-dance/fclt/issues/126)) ([efa881d](https://github.com/hack-dance/fclt/commit/efa881d29a3a45ce88e916d1e50690bdc43f1b65))
+
 ## [2.34.7](https://github.com/hack-dance/fclt/compare/v2.34.6...v2.34.7) (2026-11-11)
 
 ### Bug Fixes
