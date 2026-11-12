@@ -30,14 +30,36 @@ STAGED_HASH=$(hash_staged)
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR)
 PARTIALLY_STAGED=$(git diff --name-only)
 
-# Stash unstaged changes to preserve working directory
-# --keep-index keeps staged changes in working tree
-git stash push --quiet --keep-index --message "pre-commit-stash" || true
-STASHED=$?
+# Stash only when needed: stash push/pop clears an in-progress merge's metadata.
+STASHED=1
+if [ -n "$PARTIALLY_STAGED" ]; then
+  if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+    echo "Stage or save unstaged changes before committing a merge; the hook cannot stash them safely." >&2
+    exit 1
+  fi
+  git stash push --quiet --keep-index --message "pre-commit-stash"
+  HOOK_STASH=$(git rev-parse refs/stash)
+  STASHED=0
+fi
 
 # Run formatter on the staged files
-bun x ultracite fix
-FORMAT_EXIT_CODE=$?
+FORMAT_EXIT_CODE=0
+bun x ultracite fix || FORMAT_EXIT_CODE=$?
+
+if [ "$FORMAT_EXIT_CODE" -ne 0 ]; then
+  if [ "$STASHED" -eq 0 ]; then
+    # Restore the original working tree and index separately; stash pop can
+    # conflict when the same file had staged and unstaged changes.
+    git restore --source="$HOOK_STASH" --worktree -- .
+    git read-tree "$HOOK_STASH^2"
+    if [ "$(git rev-parse -q --verify refs/stash)" = "$HOOK_STASH" ]; then
+      git stash drop --quiet
+    fi
+  else
+    git restore --worktree -- .
+  fi
+  exit "$FORMAT_EXIT_CODE"
+fi
 
 # Restore working directory state
 if [ $STASHED -eq 0 ]; then

@@ -263,6 +263,52 @@ function toolPayload(response: unknown): {
 }
 
 describe("bundled fclt MCP plugin", () => {
+  it("forwards explicit external doctor evidence without generating discovery proof", async () => {
+    const home = await mkdtemp(join(tmpdir(), "facult-mcp-doctor-evidence-"));
+    const stub = join(home, "fclt-stub.cjs");
+    await Bun.write(stub, compatibleStubScript());
+    await chmod(stub, 0o755);
+    const child = spawnConfiguredMcp({ env: { FCLT_BIN: stub, HOME: home } });
+    try {
+      for (const [id, args, expected] of [
+        [1, {}, ["doctor", "--json"]],
+        [
+          2,
+          {
+            scope: "global",
+            cwd: home,
+            codexDiscoveryEvidencePath: "proof.json",
+            codexSessionId: "fixture-session",
+          },
+          [
+            "doctor",
+            "--global",
+            "--json",
+            "--codex-discovery-evidence",
+            "proof.json",
+            "--codex-session",
+            "fixture-session",
+          ],
+        ],
+      ] as const) {
+        child.stdin.write(
+          frame({
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name: "fclt_doctor", arguments: args },
+          })
+        );
+        const response = toolPayload(await readFrame(child.stdout));
+        expect(response.result.exitCode).toBe(0);
+        expect(response.result.stdout).toMatchObject({ argv: expected });
+        expect(response.operation.risk).toBe("read_only");
+      }
+    } finally {
+      child.kill();
+    }
+  });
+
   it("runs the shipped MCP launch contract under the exact configured Node runtime", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "facult-mcp-node-proof-"));
     const marker = join(fixtureRoot, "runtime.json");

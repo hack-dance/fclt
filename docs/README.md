@@ -5,11 +5,15 @@ capability, and optionally stores, composes, or renders the capability units inv
 
 Start with the root [README](../README.md) for installation and first workflows. Use these guides when you need the model, safety rules, or command details.
 
-Start with [Writeback and evolution](./writeback-evolution.md) for the product's central loop. The
+Read the [everyday operating guide](./operating-guide.md) for the short path from global setup
+to selected project loops, readable results, and safe undo.
+
+For the detailed central loop, use [Writeback and evolution](./writeback-evolution.md). The
 [concepts guide](./concepts.md) explains the storage and ownership model behind it.
 
 ## Guides
 
+- [Everyday operating guide](./operating-guide.md): setup, useful signal, project selection, review cadence, evidence, and undo.
 - [Writeback and evolution](./writeback-evolution.md): how real-work evidence becomes reviewed and verified capability changes.
 - [Reconciliation sources](./reconciliation-sources.md): generate narrow source entries, preview read targets, and diagnose recorded checks.
 - [Concepts](./concepts.md): canonical roots, generated state, rendered outputs, scopes, and asset types.
@@ -31,6 +35,7 @@ Start with [Writeback and evolution](./writeback-evolution.md) for the product's
 
 New users should read:
 
+- [Everyday operating guide](./operating-guide.md)
 - [Writeback and evolution](./writeback-evolution.md)
 - [Concepts](./concepts.md)
 - [Work Units](./work-units.md)
