@@ -15,6 +15,7 @@ For the detailed central loop, use [Writeback and evolution](./writeback-evoluti
 
 - [Everyday operating guide](./operating-guide.md): setup, useful signal, project selection, review cadence, evidence, and undo.
 - [Writeback and evolution](./writeback-evolution.md): how real-work evidence becomes reviewed and verified capability changes.
+- [Reconciliation sources](./reconciliation-sources.md): generate narrow source entries, preview read targets, and diagnose recorded checks.
 - [Concepts](./concepts.md): canonical roots, generated state, rendered outputs, scopes, and asset types.
 - [Work Units](./work-units.md): a general frame for agent work, evidence, verification, and writeback.
 - [Composable Capability](./composable-capability.md): refs, snippets, instruction templates, and evolvable units.

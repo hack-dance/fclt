@@ -2136,6 +2136,69 @@ export async function reconciliationStatus(args: {
   }
 }
 
+/** Recorded checks are evidence about the last run, never proof of a fresh scan. */
+export async function reconciliationSourceDiagnostics(args: {
+  homeDir: string;
+  rootDir: string;
+  config: ReconciliationConfig;
+}) {
+  const statePath = facultAiReconciliationStatePath(args.homeDir, args.rootDir);
+  const state = await loadState(statePath);
+  const sources = args.config.sources.map((source) => {
+    const previous = state.sources[source.id];
+    const matches =
+      previous?.configDigest === sourceStateDigest(source) &&
+      previous?.adapterVersion ===
+        reconciliationAdapterFor(source.type).version;
+    const status =
+      source.enabled === false
+        ? "disabled"
+        : previous
+          ? matches
+            ? previous.coverageState === "unavailable"
+              ? "unavailable"
+              : previous.coverageState === "stale" ||
+                  previous.freshnessState === "stale"
+                ? "stale"
+                : "checked"
+            : "configuration_changed"
+          : "not_checked";
+    const explanations = {
+      disabled:
+        "Disabled in configuration; reconciliation will not read this source.",
+      not_checked:
+        "No recorded check for this ID. Renaming an ID starts a new cursor.",
+      configuration_changed:
+        "Configuration or adapter changed since the recorded check; reconcile again.",
+      unavailable:
+        "The last matching check could not prove source coverage; inspect the review and reconcile again.",
+      stale:
+        "The last matching check reported stale coverage or freshness; inspect the review and reconcile again.",
+      checked:
+        "A matching check is recorded. This diagnostic does not scan content or refresh coverage.",
+    };
+    return {
+      sourceId: source.id,
+      status,
+      explanation: explanations[status],
+      lastCheckedAt: previous?.lastCheckedAt,
+      coverageState: previous?.coverageState,
+      freshnessState: previous?.freshnessState,
+    };
+  });
+  const configuredIds = new Set(args.config.sources.map((source) => source.id));
+  const removedSources = Object.entries(state.sources)
+    .filter(([id]) => !configuredIds.has(id))
+    .map(([sourceId, previous]) => ({
+      sourceId,
+      status: "retired_or_renamed" as const,
+      explanation:
+        "No longer configured. It may be retired or renamed; history is preserved and cursors are not transferred to another ID.",
+      lastCheckedAt: previous.lastCheckedAt,
+    }));
+  return { statePath, sources, removedSources };
+}
+
 export async function latestReconciliationReview(args: {
   homeDir: string;
   rootDir: string;

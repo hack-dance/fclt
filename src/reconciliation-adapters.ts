@@ -3,6 +3,11 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { resolveCliContextRoot } from "./cli-context";
 import { projectRootFromAiRoot } from "./paths";
+import {
+  MAX_RECONCILIATION_FILE_BYTES,
+  MAX_RECONCILIATION_FILES,
+  reconciliationFilePaths,
+} from "./reconciliation-files";
 import type {
   AdapterScanResult,
   EvidenceExportSourceConfig,
@@ -46,7 +51,6 @@ const PEM_PRIVATE_KEY_MARKER_RE =
 const PEM_BLANK_LINE_RE = /\r?\n[\t ]*\r?\n/;
 const PEM_HEADER_LINE_RE = /^[A-Za-z][A-Za-z0-9-]*:\s*\S.*$/;
 const LINE_SPLIT_RE = /\r?\n/;
-const PATH_SEGMENT_RE = /[\\/]/;
 const MARKDOWN_SECTION_RE = /(?=^#{1,3}\s+)/m;
 const MARKDOWN_HEADING_RE = /^#{1,3}\s+(.+)$/m;
 const DATE_HEADING_RE = /^(\d{4}-\d{2}-\d{2})\b/;
@@ -60,8 +64,7 @@ const ISSUE_OUTCOME_RE = /proof|verified|released|deployed|completed/;
 const FILE_RELEVANCE_RE =
   /capabilit|writeback|evolution|instruction|skill|runbook|verification|reconcil|outcome|signal/i;
 const WHITESPACE_RE = /\s+/g;
-const MAX_FILE_BYTES = 1_000_000;
-const MAX_FILES = 500;
+const MAX_FILE_BYTES = MAX_RECONCILIATION_FILE_BYTES;
 const MAX_BODY_CHARS = 4000;
 const URL_USERINFO_RE = /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
 const GIT_OBJECT_ID_RE = /^[0-9a-f]{40,64}$/i;
@@ -1081,16 +1084,6 @@ function safeFileRoot(
   return context.projectRoot;
 }
 
-function validateGlob(pattern: string): void {
-  if (
-    isAbsolute(pattern) ||
-    pattern.split(PATH_SEGMENT_RE).includes("..") ||
-    pattern.includes("\0")
-  ) {
-    throw new Error(`Unsafe reconciliation path pattern: ${pattern}`);
-  }
-}
-
 function splitTextRecords(
   text: string,
   path: string
@@ -1173,30 +1166,11 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
         };
       }
       try {
-        const paths = new Set<string>();
-        let truncated = false;
-        for (const pattern of config.paths) {
-          if (truncated) {
-            break;
-          }
-          validateGlob(pattern);
-          const glob = new Bun.Glob(pattern);
-          for await (const path of glob.scan({
-            cwd: root,
-            onlyFiles: true,
-            dot: true,
-          })) {
-            if (paths.has(path)) {
-              continue;
-            }
-            if (paths.size >= MAX_FILES) {
-              truncated = true;
-              break;
-            }
-            paths.add(path);
-          }
-        }
-        if (paths.size === 0) {
+        const { paths, truncated } = await reconciliationFilePaths({
+          root,
+          patterns: config.paths,
+        });
+        if (paths.length === 0) {
           return {
             state: "unavailable",
             records: [],
@@ -1298,7 +1272,7 @@ function fileAdapter(type: "automation" | "markdown"): ReconciliationAdapter {
             state: "stale",
             records,
             cursor,
-            staleReason: `File scan truncated at the ${MAX_FILES}-file safety cap`,
+            staleReason: `File scan truncated at the ${MAX_RECONCILIATION_FILES}-file safety cap`,
             latestSourceAt,
           };
         }

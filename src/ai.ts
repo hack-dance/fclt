@@ -4096,7 +4096,7 @@ function aiHelp(): string {
 Usage:
   fclt ai writeback <add|list|show|link|disposition|dismiss|promote> [args...]
   fclt ai evolve <assess|propose|list|show|draft|review|accept|reject|supersede|apply|verify> [args...]
-  fclt ai review <init|status|reconcile> [args...]
+  fclt ai review <init|status|sources|reconcile> [args...]
   fclt ai loop <enable|disable|status|report|activity|history|resolve|decide|run> [args...]
 `;
 }
@@ -4130,6 +4130,9 @@ function reviewHelp(): string {
 Usage:
   fclt ai review init [--dry-run] [--force] [--json]
   fclt ai review status [--json]
+  fclt ai review sources init --id <id> --type <git|markdown|automation|evidence-export> --path <relative-path> [--path <path>] [--file-root <project|home>] [--default-branch <ref>] [--json]
+  fclt ai review sources preview [--source <id>] [--config <path>] [--json]
+  fclt ai review sources doctor [--source <id>] [--config <path>] [--json]
   fclt ai review reconcile --since <date> [--until <date>] [--source <id>] [--incremental] [--config <path>] [--json]
 
 Reconciliation reads configured sources and writes machine-local cursors plus a
@@ -5317,6 +5320,19 @@ async function reviewCommand(argv: string[], rootDir: string): Promise<void> {
   const homeDir = process.env.HOME ?? homedir();
   const json = commandArgs.includes("--json");
   try {
+    if (sub === "sources") {
+      const { reconciliationSourcesCommand } = await import(
+        "./reconciliation-sources"
+      );
+      await writeCliOutput(
+        await reconciliationSourcesCommand({
+          argv: commandArgs,
+          homeDir,
+          rootDir,
+        })
+      );
+      return;
+    }
     if (sub === "init") {
       const { initializeReconciliationConfig } = await import(
         "./reconciliation-config"

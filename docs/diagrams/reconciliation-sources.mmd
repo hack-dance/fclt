@@ -1,0 +1,11 @@
+flowchart TD
+  Choose[Choose explicit inputs] --> Recipe[Generate source entry]
+  Recipe --> Edit[Review configuration]
+  Edit --> Preview[Preview read targets]
+  Preview --> Diagnose[Inspect recorded checks]
+  Diagnose --> Ready{Inputs ready?}
+  Ready -->|No| Edit
+  Ready -->|Yes| Reconcile[Run bounded reconciliation]
+  Reconcile --> Evidence[Record new coverage]
+  class Diagnose wait
+  class Evidence ok
