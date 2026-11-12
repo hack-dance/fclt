@@ -40,7 +40,7 @@ for (const entry of ["preload", "wrapper"] as const) {
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
       ]);
-      expect(code).toBe(0);
+      expect(code, stderr).toBe(0);
       expect(stderr).toContain("0 fail");
       expect(readdirSync(home)).toEqual([]);
       expect(readdirSync(state)).toEqual([]);

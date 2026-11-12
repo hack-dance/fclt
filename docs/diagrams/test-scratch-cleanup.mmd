@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> Created
+  Created --> Running : StartTests
+  Running --> Cleaning : PassOrFail
+  Running --> Retained : KeepOrInterrupt
+  Cleaning --> Removed : IdentityMatches
+  Cleaning --> Retained : OwnershipChanged
+  Removed --> [*]
+  Retained --> [*]
+  class Removed ok
+  class Retained wait

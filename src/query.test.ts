@@ -159,11 +159,6 @@ describe("query filters", () => {
       instructions: {},
     };
 
-    await Bun.write(
-      facultAiIndexPath(tempHome, rootDir),
-      JSON.stringify(index)
-    );
-
     const trustPayload = {
       version: 1,
       issuer: "acme-sec",
@@ -181,6 +176,12 @@ describe("query filters", () => {
     await Bun.write(
       join(trustDir, "org-list.json"),
       `${JSON.stringify(orgTrust, null, 2)}\n`
+    );
+
+    // Snapshot after canonical directories exist so freshness checks retain it.
+    await Bun.write(
+      facultAiIndexPath(tempHome, rootDir),
+      JSON.stringify(index)
     );
 
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });
@@ -233,10 +234,6 @@ describe("query filters", () => {
       snippets: {},
       instructions: {},
     };
-    await Bun.write(
-      facultAiIndexPath(tempHome, rootDir),
-      JSON.stringify(index)
-    );
 
     const trustDir = join(tempHome, ".ai", ".facult", "trust");
     await mkdir(trustDir, { recursive: true });
@@ -253,6 +250,12 @@ describe("query filters", () => {
         null,
         2
       )
+    );
+
+    // Snapshot after canonical directories exist so freshness checks retain it.
+    await Bun.write(
+      facultAiIndexPath(tempHome, rootDir),
+      JSON.stringify(index)
     );
 
     const loaded = await loadIndex({ rootDir, homeDir: tempHome });

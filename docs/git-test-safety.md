@@ -17,6 +17,25 @@ Use the direct shell wrapper for focused tests too. Raw `bun test` or `bun run t
 ambient repository state before the JavaScript sanitizer or preload runs, so neither is the
 supported Git-safe entrypoint.
 
+The wrapper removes its own newly created isolation root after success or failure, including
+nested preload roots. It captures the root's device and inode at creation and refuses cleanup
+if that identity, the physical path, or the original home/state boundary no longer matches.
+It never scans for or deletes roots from previous runs. Test failures keep their exit status;
+a cleanup failure after successful tests returns a failing status and reports the retained path.
+Preload roots use short names directly under the wrapper root to keep local socket paths bounded.
+
+To retain fixtures for diagnosis, opt in for that invocation:
+
+```bash
+FCLT_TEST_KEEP_TMP=1 ./scripts/test-safe.sh src/ai.test.ts
+```
+
+The retained path is printed to stderr. HUP, INT, and TERM stop the owned test runner, preserve
+scratch because descendants may still be using it, and return the corresponding signal status.
+Scratch is also retained when only the test runner receives a signal.
+An uncatchable termination can also leave scratch. Raw `bun test` bypasses the wrapper's cleanup;
+the preload still isolates state. Existing scratch remains subject to the owner's cleanup policy.
+
 Set `TMPDIR` to a filesystem with enough free space and inodes before running the wrapper or
 committing, for example `TMPDIR=/var/tmp ./scripts/test-safe.sh`. Fixtures inherit that location.
 If the requested temporary directory resolves inside the original home or state store, the isolation
