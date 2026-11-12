@@ -1,3 +1,9 @@
+## [2.35.1](https://github.com/hack-dance/fclt/compare/v2.35.0...v2.35.1) (2026-11-12)
+
+### Bug Fixes
+
+* **test:** isolate rendered plugin self-test package discovery ([#132](https://github.com/hack-dance/fclt/issues/132)) ([aa6d5ca](https://github.com/hack-dance/fclt/commit/aa6d5caa59cd004821f39b3d35184e5946dc9165))
+
 ## [2.35.0](https://github.com/hack-dance/fclt/compare/v2.34.7...v2.35.0) (2026-11-12)
 
 ### Features
