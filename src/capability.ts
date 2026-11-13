@@ -13,6 +13,7 @@ import { writeCliOutput } from "./util/cli-output";
 const FLAGS = new Set([
   "--manifest",
   "--source-root",
+  "--library-state-root",
   "--target-root",
   "--state-root",
   "--host",
@@ -66,6 +67,7 @@ export async function capabilityCommand(argv: string[]): Promise<void> {
 
 All commands emit JSON. Optional selectors: --host <name> --platform <platform>.
 Apply ordered platform/machine/private patches with repeated --overlay <file>.
+Consume saved library field layers with --library-state-root <runtime-dir>.
 Source root defaults to the manifest directory; host/platform default to this machine.
 Apply handles one fclt-owned entry. Conflicts, disabled entries, unavailable credentials,
 and native/external ownership never mutate targets. See docs/capability-registry.md.`);
@@ -114,6 +116,9 @@ and native/external ownership never mutate targets. See docs/capability-registry
     const options: CapabilityContext = {
       manifest,
       overlays,
+      ...(flags.has("--library-state-root")
+        ? { libraryStateRoot: flags.get("--library-state-root")! }
+        : {}),
       sourceRoot: flags.get("--source-root") ?? dirname(manifest),
       targetRoot: required(flags, "--target-root"),
       stateRoot: required(flags, "--state-root"),

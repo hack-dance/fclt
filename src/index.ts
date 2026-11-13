@@ -1381,6 +1381,11 @@ async function main(argv: string[]) {
     case "manage":
       await import("./manage").then(({ manageCommand }) => manageCommand(rest));
       return;
+    case "library":
+      await import("./library-command").then(({ libraryCommand }) =>
+        libraryCommand(rest)
+      );
+      return;
     case "capability":
       await import("./capability").then(({ capabilityCommand }) =>
         capabilityCommand(rest)

@@ -41,6 +41,8 @@ export async function protocolReport(): Promise<FcltProtocolReport> {
       "json-output-v1",
       "plugin-runtime-handshake-v1",
       "scoped-capability-roots-v1",
+      "library-editor-v1",
+      "library-capability-overlays-v1",
     ],
   };
 }
