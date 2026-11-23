@@ -1599,6 +1599,8 @@ describe("ai writeback", () => {
       rootDir,
       kind: "weak_verification",
       summary: "Verification guidance needs stronger proof language.",
+      details: "Repeated checks passed without exercising the producing loop.",
+      desiredOutcome: "Verify the actual producing loop after apply.",
       asset: "instruction:VERIFICATION",
       evidence: proposalEvidence("draft-apply"),
     });
@@ -1623,12 +1625,23 @@ describe("ai writeback", () => {
     );
     expect(draftText).toContain("Generated Draft");
     expect(draftText).toContain("weak_verification");
+    expect(draftText).toContain("## Review Context");
+    expect(draftText).toContain(
+      "Repeated checks passed without exercising the producing loop."
+    );
+    expect(draftText).toContain(
+      "Verify the actual producing loop after apply."
+    );
     const patchText = await readFile(
       join(facultAiDraftDir(tempHome, rootDir), `${proposal!.id}.patch`),
       "utf8"
     );
     expect(patchText).toContain(`--- ${targetPath}`);
     expect(patchText).toContain(`+++ ${targetPath}`);
+    expect(patchText).not.toContain("## Review Context");
+    expect(patchText).not.toContain(
+      "Repeated checks passed without exercising the producing loop."
+    );
     expect(patchText).toContain(
       "Facult Evolution Applied: EV-20260101-00000001"
     );

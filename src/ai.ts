@@ -3100,6 +3100,33 @@ function renderDraftBody(
   ].join("\n");
 }
 
+function renderDraftReviewContext(writebacks: AiWritebackRecord[]): string {
+  return [
+    "## Review Context",
+    "",
+    "Compare the patch with the current target before accepting. Check whether the target already covers the signal and replace repeated guidance with a concrete change.",
+    "The generated addition is a starting point; provenance alone does not demonstrate a capability improvement.",
+    "",
+    ...writebacks.flatMap((entry) => {
+      return [
+        `### ${entry.id}`,
+        `Summary: ${entry.summary}`,
+        ...(entry.capture?.sensitivity === "private"
+          ? ["Supplemental context: omitted (private)"]
+          : [
+              `Details: ${entry.capture?.details ?? "not provided"}`,
+              `Impact: ${entry.capture?.impact ?? "not provided"}`,
+              `Attempted workaround: ${entry.capture?.attemptedWorkaround ?? "not provided"}`,
+              `Desired outcome: ${entry.capture?.desiredOutcome ?? "not provided"}`,
+            ]),
+        "",
+      ];
+    }),
+  ]
+    .map((line) => redactReconciliationText(line))
+    .join("\n");
+}
+
 function renderAppliedContent(
   proposal: AiProposalRecord,
   writebacks: AiWritebackRecord[]
@@ -3393,7 +3420,9 @@ export async function draftProposal(
     rootDir: args.rootDir,
     allowEphemeral: args.allowEphemeral,
   });
-  const generatedBody = renderDraftBody(current, writebacks);
+  const generatedBody = isAppendProposalKind(current.kind)
+    ? `${renderDraftBody(current, writebacks)}\n${renderDraftReviewContext(writebacks)}`
+    : renderDraftBody(current, writebacks);
   const priorDraft = existingDraftPath
     ? await readAiText(
         existingDraftPath,
