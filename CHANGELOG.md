@@ -1,3 +1,9 @@
+## [2.35.2](https://github.com/hack-dance/fclt/compare/v2.35.1...v2.35.2) (2026-11-23)
+
+### Bug Fixes
+
+* **ai:** include captured context in evolution draft reviews ([#133](https://github.com/hack-dance/fclt/issues/133)) ([d29468e](https://github.com/hack-dance/fclt/commit/d29468e3c489da4b53659fbaa5d6fb7867ebbe31))
+
 ## [2.35.1](https://github.com/hack-dance/fclt/compare/v2.35.0...v2.35.1) (2026-11-12)
 
 ### Bug Fixes
